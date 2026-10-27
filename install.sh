@@ -11,6 +11,10 @@
 # The script downloads the release asset, checks its SHA-256 against
 # checksums.txt, and then installs the binary. If the user cannot write to
 # BINDIR, the script uses sudo only to copy the binary.
+#
+# The latest version comes from the redirect of github.com/x-mesh/edc/releases/latest,
+# not from api.github.com. The API allows 60 anonymous requests per hour per IP, and a
+# shared IP spends them quickly. The script asks the API only when the redirect gives no tag.
 
 set -eu
 
@@ -37,6 +41,28 @@ download() {
 	else
 		fail "curl or wget is required"
 	fi
+}
+
+# latest_version prints the latest release version without the leading v. It reads the Location
+# header of the releases/latest redirect and does not follow it, so no page body is downloaded.
+# GNU wget and BusyBox wget both print the header with -S --spider.
+latest_version() {
+	url="https://github.com/$REPO/releases/latest"
+	location=""
+	if command -v curl >/dev/null 2>&1; then
+		location=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$url" 2>/dev/null) || location=""
+	elif command -v wget >/dev/null 2>&1; then
+		location=$(wget -S --spider "$url" 2>&1 | sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*//p' | sed 's/ \[following\]$//' | head -1 | tr -d '\r')
+	fi
+	case "$location" in
+	*/releases/tag/v*)
+		printf '%s\n' "${location##*/releases/tag/v}"
+		return 0
+		;;
+	esac
+	echo "install.sh: no redirect from $url; asking the GitHub API" >&2
+	download "https://api.github.com/repos/$REPO/releases/latest" "$tmp/release.json"
+	sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$tmp/release.json" | head -1
 }
 
 need tar
@@ -71,9 +97,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 if [ "$VERSION" = "latest" ]; then
-	download "https://api.github.com/repos/$REPO/releases/latest" "$tmp/release.json"
-	VERSION=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$tmp/release.json" | head -1)
-	[ -n "$VERSION" ] || fail "cannot read the latest version from the GitHub API"
+	VERSION=$(latest_version)
+	[ -n "$VERSION" ] || fail "cannot read the latest version from https://github.com/$REPO/releases/latest"
 fi
 
 asset="edc_${VERSION}_${os}_${arch}.tar.gz"

@@ -217,7 +217,7 @@ command:
       semantic_init: "build or rebuild the local semantic index"
       semantic_status: "show semantic index metadata"
       semantic_clear: "remove the semantic index"
-      semantic: "use an initialized local embedding index with --ask"
+      semantic: "search code with the initialized local embedding index (implies --ask)"
       ask: "search code by meaning with a local embedding index"
       ask_json: "emit JSON for --ask"
       ask_limit: "maximum --ask results (default 10, max 100)"

@@ -282,3 +282,17 @@ func TestGrepSemanticSkipsRecollectWhenNothingWasEmbedded(t *testing.T) {
 		t.Fatalf("code %d text %s stderr %s", code, text, errtext)
 	}
 }
+
+func TestGrepSemanticFlagImpliesAsk(t *testing.T) {
+	oldRoot := grepSemanticCacheRoot
+	defer func() { grepSemanticCacheRoot = oldRoot }()
+	grepSemanticCacheRoot = t.TempDir()
+	root := t.TempDir()
+	code, out, stderr := grepCommand(t, "", "--semantic", "where is my function?", root)
+	if code != 2 || out != "" || !strings.Contains(stderr, "--semantic-init") {
+		t.Fatalf("code %d out %q stderr %q", code, out, stderr)
+	}
+	if code, _, stderr := grepCommand(t, "", "--semantic", "--keyword", "x", root); code != 2 || !strings.Contains(stderr, "usage") {
+		t.Fatalf("keyword conflict code %d stderr %q", code, stderr)
+	}
+}

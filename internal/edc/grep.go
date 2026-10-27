@@ -124,6 +124,9 @@ func parseGrepOptionsForInput(args []string, stderr io.Writer, now time.Time, te
 		return options, nil, err
 	}
 	filtered := *level != "" || *status != "" || *since != "" || *until != ""
+	if options.semantic {
+		options.askMode = true
+	}
 	if options.askMode {
 		if options.askKeyword && options.semantic {
 			return options, nil, errors.New(T("cli.usage", grepUsage))

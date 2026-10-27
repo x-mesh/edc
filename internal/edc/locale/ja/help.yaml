@@ -217,7 +217,7 @@ command:
       semantic_init: "ローカル semantic index の作成・再作成"
       semantic_status: "semantic index の情報を表示"
       semantic_clear: "semantic index を削除"
-      semantic: "--ask で初期化済みのローカル embedding index を使用"
+      semantic: "初期化済みのローカル embedding index でコードを検索 (--ask を含む)"
       ask: "ローカル embedding index で関連コードを検索"
       ask_json: "--ask の結果を JSON で出力"
       ask_limit: "--ask の最大件数 (既定 10、最大 100)"

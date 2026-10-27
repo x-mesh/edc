@@ -308,12 +308,13 @@ semantic 검색은 영문 `all-MiniLM-L6-v2` 모델과 native ONNX Runtime을 �
 ```sh
 edc grep --semantic-init
 edc grep --ask 'Where is authentication configuration loaded?'
+edc grep --semantic 'Where is authentication configuration loaded?'
 edc grep --semantic-status
 edc grep --semantic-clear
 edc grep --model-clear
 ```
 
-`--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다.
+`--semantic`은 `--ask`와 같습니다. `--ask`는 기본으로 semantic 검색을 사용합니다. `--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다.
 
 검색은 오프라인으로 실행합니다. 현재 파일을 확인해 변경된 조각만 다시 벡터화하며, 변경이 없으면 index를 다시 쓰지 않습니다. 벡터화 중 파일이 바뀌면 오래된 결과를 저장하지 않고 오류를 반환합니다. `--semantic-init`은 이전 다국어 모델의 index도 다시 만듭니다. 실패하거나 중단된 다운로드는 사용 가능한 모델로 취급하지 않습니다. 검색 질의는 영어를 사용합니다. 에이전트가 사용자 질문을 영어로 바꿔 호출할 수 있으며, 한국어로만 된 주석·문서는 영문 모델이 놓칠 수 있습니다.
 

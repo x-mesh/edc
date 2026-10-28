@@ -89,6 +89,9 @@ func TestGrepScanRangeEqualsNaive(t *testing.T) {
 		{"ignore case with digits", "orders/41", false, true},
 		{"regex", `orders/[0-9]+/cancel`, true, false},
 		{"regex alternation", `timeout|login`, true, false},
+		{"regex without a prefix", `[0-9]+/cancel`, true, false},
+		{"regex alternation with a common run", `(GET|POST) /api/(users|orders)`, true, false},
+		{"regex with an optional prefix", `(Timeout )?waiting`, true, false},
 		{"empty pattern matches every line", "", false, false},
 	} {
 		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
@@ -239,6 +242,12 @@ func TestGrepMatcherNeedles(t *testing.T) {
 		{`orders/[0-9]+`, true, false, "orders/"},
 		{`(?i)orders`, true, false, ""},
 		{`a|b`, true, false, ""},
+		{`[a-z]+_[a-z]+Test\(`, true, false, "Test("},
+		{`Unmarshal|Marshal[A-Z]`, true, false, "arshal"},
+		{`(foo)?bar[0-9]+`, true, false, "bar"},
+		{`x*y?`, true, false, ""},
+		{`[0-9]+(?i:cancel)`, true, false, ""},
+		{`(GET|POST) /api/(users|orders)`, true, false, " /api/"},
 	} {
 		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
 		if err != nil {

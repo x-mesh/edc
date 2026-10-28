@@ -337,13 +337,17 @@ Semantic search uses the English `all-MiniLM-L6-v2` model and a native ONNX Runt
 ```sh
 edc grep --semantic-init
 edc grep --ask 'where is the auth configuration loaded?'
+edc grep --semantic 'where is the auth configuration loaded?'
 edc grep --semantic-status
+edc grep --semantic-files
 edc grep --semantic-clear
 edc grep --model-clear
 ```
 
-`--semantic-init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created only by initialization. Another project reuses the model but needs its own index. `--semantic-clear` removes only the current project index. `--model-clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `--semantic-status` reports the model and stored index, not whether source files have changed.
+`--semantic` does the same as `--ask`. `--ask` uses semantic search by default. `--semantic-init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created only by initialization. Another project reuses the model but needs its own index. `--semantic-clear` removes only the current project index. `--model-clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `--semantic-status` reports the model and stored index, not whether source files have changed. `--semantic-files` reads the current files again and prints `indexed/total chunks` and the path for each file. If a path contains a tab, a line break, another control character, or a double quote, edc prints it as a quoted Go string. A file with fewer indexed chunks than total chunks gets new embeddings on the next search.
 
-Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `--semantic-init` rebuilds the current project's index, including indexes made by the earlier multilingual model. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
+If a directory search finds generated files, lock files, or test fixtures, it does not index or rank them. Generated files start with a comment that contains `Code generated ... DO NOT EDIT` or `auto-generated`. Lock files include `go.sum`, `package-lock.json`, `yarn.lock`, and `Cargo.lock`. Test fixtures are files under `testdata/`, except `.md` and `.txt` files. If you name such a file as the path, edc searches it.
+
+Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `--semantic-init` rebuilds the current project's index, including indexes made by the earlier multilingual model or stored in the earlier format. The index stores vectors as 16-bit floats. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
 
 Scores combine cosine similarity (95%) and normalized keyword relevance (5%); they are not probabilities. Each embedding uses at most 3,000 characters and 128 model tokens per chunk. File-size and search limits are shared with keyword search. The model and native runtime support Linux and macOS on amd64 and arm64. The official Linux runtime requires glibc and libstdc++; a musl-only environment such as Alpine is not supported by this runtime without compatible libraries.

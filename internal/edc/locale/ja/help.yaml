@@ -216,8 +216,9 @@ command:
       ask_keyword: "--ask をモデルなしのキーワード順位付けで実行"
       semantic_init: "ローカル semantic index の作成・再作成"
       semantic_status: "semantic index の情報を表示"
+      semantic_files: "ファイルごとに index 済みのチャンク数と全チャンク数"
       semantic_clear: "semantic index を削除"
-      semantic: "--ask で初期化済みのローカル embedding index を使用"
+      semantic: "初期化済みのローカル embedding index でコードを検索 (--ask を含む)"
       ask: "ローカル embedding index で関連コードを検索"
       ask_json: "--ask の結果を JSON で出力"
       ask_limit: "--ask の最大件数 (既定 10、最大 100)"
@@ -317,6 +318,7 @@ command:
       all: "TCP と UDP、unix domain socket をすべて表示します"
       watch: "中断するまで開閉する port を表示"
       verbose: "アカウントと descriptor、キューの列を開きます"
+      full: "各行の下に作業ディレクトリとコマンドラインを表示します"
     notes:
       - "既定は LISTEN 状態の TCP socket とバインドされた UDP socket です。"
       - "種類の flag は加算ではなく filter です。--tcp は TCP だけ残します。"
@@ -326,6 +328,10 @@ command:
       - "-v はアカウントと file descriptor、キューの列を開きます。"
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
       - "-v が増やすのは列だけです。行は変わりません。"
+      - "--full は各行の下に作業ディレクトリとコマンドラインを灰色の行で加えます。"
+      - "node、python、ruby、perl、php はスクリプト名を先頭に置きます。"
+      - "--password や --token などのオプションの値と URL のパスワードは *** で隠します。"
+      - "edc listen --json は読める process の args と cwd を含めます。--full は --watch と併用できません。"
   svc:
     summary: "systemd service の一覧、または service 一つを一画面に (Linux)"
     notes:

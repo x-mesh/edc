@@ -2,6 +2,7 @@ package edc
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -95,11 +96,11 @@ func TestFormatListenTableDetailColumns(t *testing.T) {
 		{Proto: "tcp", Address: "0.0.0.0", Port: 22, Process: "sshd", PID: "1", User: "root", FD: "3", RecvQ: 0, SendQ: 4096, HasQueue: true},
 		{Proto: "unix", Address: "/run/docker.sock", Process: "dockerd", PID: "895"},
 	}
-	plain := formatListenTable(sockets, false)
+	plain := formatListenTable(sockets, false, nil)
 	if strings.Contains(plain, "4096") {
 		t.Fatalf("-v가 없는데 상세 열이 나왔다:\n%s", plain)
 	}
-	detail := formatListenTable(sockets, true)
+	detail := formatListenTable(sockets, true, nil)
 	if !strings.Contains(detail, "0/4096") {
 		t.Fatalf("큐 열이 없다:\n%s", detail)
 	}
@@ -146,7 +147,7 @@ func TestFormatListenBindingScopeLocales(t *testing.T) {
 	for _, lang := range []string{"en", "ko", "ja"} {
 		setLanguage(lang)
 		for _, detail := range []bool{false, true} {
-			table := formatListenTable(sockets, detail)
+			table := formatListenTable(sockets, detail, nil)
 			lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
 			if len(lines) != 4 {
 				t.Fatalf("%s rows = %d", lang, len(lines))
@@ -180,10 +181,63 @@ func TestFormatListenBindingScopeLocales(t *testing.T) {
 
 func TestListenBindingSocketJSONUnchanged(t *testing.T) {
 	socket := listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "app", PID: "42"}
-	formatListenTable([]listenSocket{socket}, true)
+	formatListenTable([]listenSocket{socket}, true, nil)
 	got, err := json.Marshal(socket)
 	want := `{"proto":"tcp","address":"127.0.0.1","port":80,"process":"app","pid":"42","recv_q":0,"send_q":0,"has_queue":false}`
 	if err != nil || string(got) != want {
 		t.Fatalf("socket JSON = %s, error = %v", got, err)
+	}
+}
+
+func TestListenCommandLine(t *testing.T) {
+	const home = "/home/dev"
+	tests := []struct {
+		name   string
+		socket listenSocket
+		want   string
+	}{
+		{"interpreter shows the script", listenSocket{Process: "node", Args: []string{"node", "/home/dev/web/node_modules/.bin/vite", "--port", "5173"}, Cwd: "/home/dev/web"}, "~/web   vite --port 5173"},
+		{"versioned interpreter", listenSocket{Process: "python3.13", Args: []string{"/usr/bin/python3.13", "tools/devserver.py"}}, "devserver.py"},
+		{"interpreter flag keeps the interpreter", listenSocket{Process: "node", Args: []string{"node", "--inspect", "app.js"}}, "node --inspect app.js"},
+		{"rewritten argv keeps its title", listenSocket{Process: "nginx", Args: []string{"nginx: master process /usr/sbin/nginx"}}, "nginx: master process /usr/sbin/nginx"},
+		{"argument with a space is quoted", listenSocket{Process: "app", Args: []string{"/opt/app", "--name", "my app"}}, `app --name "my app"`},
+		{"empty arguments are dropped", listenSocket{Process: "node", Args: []string{"Raycast Backend", "", ""}}, "Raycast Backend"},
+		{"nothing beyond the process column", listenSocket{Process: "sshd", Args: []string{"/usr/sbin/sshd"}, Cwd: "/"}, ""},
+		{"truncated comm", listenSocket{Process: "systemd-resolve", Args: []string{"/usr/lib/systemd/systemd-resolved"}}, ""},
+		{"working directory alone", listenSocket{Process: "sshd", Args: []string{"/usr/sbin/sshd"}, Cwd: "/srv"}, "/srv"},
+		{"control characters are replaced", listenSocket{Process: "x", Args: []string{"x", "a\x1b[2Jb"}}, "x a?[2Jb"},
+		{"no command", listenSocket{Process: "x"}, ""},
+	}
+	for _, tt := range tests {
+		if got := listenCommandLine(tt.socket, home); got != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestListenMaskArgs(t *testing.T) {
+	got := listenMaskArgs([]string{"app", "--password", "server", "--password=a", "--api-key", "k", "--db-token=t", "--token", "-abc123", "--verbose", "--secret", "--port", "5432", "postgres://user:pw@db:5432/app", "--name", "token", "--bypass", "cache", "--passthrough=on"})
+	want := []string{"app", "--password", "***", "--password=***", "--api-key", "***", "--db-token=***", "--token", "***", "--verbose", "--secret", "***", "5432", "postgres://user:***@db:5432/app", "--name", "token", "--bypass", "cache", "--passthrough=on"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}
+
+// --full은 행을 늘리지 않고 각 행 아래에 명령줄을 붙인다. 명령줄이 없는 행에는 붙이지 않는다.
+func TestFormatListenTableCommandLines(t *testing.T) {
+	sockets := []listenSocket{
+		{Proto: "tcp", Address: "*", Port: 5173, Process: "node", PID: "7", Args: []string{"node", "vite"}, Cwd: "/srv/web"},
+		{Proto: "tcp", Address: "127.0.0.1", Port: 6379, Process: "redis", PID: "8"},
+	}
+	table := formatListenTable(sockets, false, func(text string) string { return "<" + text + ">" })
+	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("lines = %d, want header, two rows and one command:\n%s", len(lines), table)
+	}
+	if want := strings.Repeat(" ", len("PORT")+2) + "<↳ /srv/web   vite>"; lines[2] != want {
+		t.Fatalf("command line %q, want %q", lines[2], want)
+	}
+	if plain := formatListenTable(sockets, false, nil); strings.Contains(plain, "vite") {
+		t.Fatalf("command lines without --full:\n%s", plain)
 	}
 }

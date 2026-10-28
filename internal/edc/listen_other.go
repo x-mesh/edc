@@ -10,3 +10,5 @@ import (
 func collectListenSockets(listenFamilies) ([]listenSocket, error) {
 	return nil, fmt.Errorf("listening sockets are not readable on %s", runtime.GOOS)
 }
+
+func listenProcessCommand(string) ([]string, string) { return nil, "" }

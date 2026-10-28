@@ -451,6 +451,7 @@ func runListen(args []string, version string) int {
 	unix := set.Bool("unix", false, T("command.listen.option.unix"))
 	all := set.Bool("all", false, T("command.listen.option.all"))
 	watch := set.Bool("watch", false, T("command.listen.option.watch"))
+	full := set.Bool("full", false, T("command.listen.option.full"))
 	intervalText := "1"
 	set.StringVar(&intervalText, "i", intervalText, T("command.watch.option.interval"))
 	set.StringVar(&intervalText, "interval", intervalText, T("command.watch.option.interval"))
@@ -462,6 +463,11 @@ func runListen(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", listenProbeID))
 		return 2
 	}
+	if *watch && *full {
+		// watch의 변화 줄에는 명령줄을 둘 자리가 없다. 받고 무시하면 켠 줄 알고 기다리게 된다.
+		fmt.Fprintln(os.Stderr, T("observe.listen.full_no_watch"))
+		return 2
+	}
 	if *watch {
 		return runListenWatch(options, selectedListenFamilies(*tcp, *udp, *unix, *all), intervalText, *duration)
 	}
@@ -470,10 +476,20 @@ func runListen(args []string, version string) int {
 	defer cancel()
 	defer deadline()
 	result := probeListen(ctx, selectedListenFamilies(*tcp, *udp, *unix, *all))
+	if *full || options.jsonPath != "" {
+		if sockets, ok := result.Metrics["sockets"].([]listenSocket); ok {
+			attachListenCommands(sockets)
+		}
+	}
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, nil, []Result{result}, options.redact))
 	}
 	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	style := newTextStyle(color)
+	var note func(string) string
+	if *full {
+		note = style.dim
+	}
 	var output io.Writer = os.Stdout
 	var buffer strings.Builder
 	if options.redact {
@@ -482,8 +498,8 @@ func runListen(args []string, version string) int {
 	fmt.Fprint(output, formatResultLine(result, color))
 	printResultDetail(output, result, false, color)
 	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
-	if table := listenTableOf(result, options.verbose); table != "" {
-		fmt.Fprint(output, "\n"+newTextStyle(color).table(table))
+	if table := listenTableOf(result, options.verbose, note); table != "" {
+		fmt.Fprint(output, "\n"+style.table(table))
 	}
 	if options.redact {
 		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))
@@ -492,10 +508,10 @@ func runListen(args []string, version string) int {
 }
 
 // listenTableOf는 결과의 metrics에 담아 둔 목록으로 표를 만든다.
-func listenTableOf(result Result, detail bool) string {
+func listenTableOf(result Result, detail bool, note func(string) string) string {
 	sockets, ok := result.Metrics["sockets"].([]listenSocket)
 	if !ok || len(sockets) == 0 {
 		return ""
 	}
-	return formatListenTable(sockets, detail)
+	return formatListenTable(sockets, detail, note)
 }

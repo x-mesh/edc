@@ -16,7 +16,7 @@ grep:
     changed: "ベクトル化中にファイルが変更されました。コマンドを再実行してください"
     method: "semantic 検索 (ローカル embedding + キーワード)"
     init_required: "まず --semantic-init でローカル index を作成してください。"
-    usage: "edc grep --semantic-init [--yes] [directory] | --semantic-status [directory] | --semantic-clear [directory] | --model-clear"
+    usage: "edc grep --semantic-init [--yes] [directory] | --semantic-status [directory] | --semantic-files [directory] | --semantic-clear [directory] | --model-clear"
     one_root: "semantic 検索にはディレクトリが一つ必要です"
     invalid: "semantic index が不正です。--semantic-init で再作成してください"
     backend_error: "ローカル ONNX Runtime の実行に失敗しました"

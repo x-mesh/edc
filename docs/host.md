@@ -391,5 +391,8 @@ Use `listen` to inspect open ports separately from the host overview. Add `--uni
 
 ```bash
 edc listen
+edc listen --full
 edc listen --watch -i 0.5 --duration 10s
 ```
+
+`--full` adds a gray line below each row. The line shows the working directory and then the command line of the process, so you can tell apart several `node` or `python` servers. For `node`, `python`, `ruby`, `perl`, and `php`, the line starts with the script name. In a terminal, the line is cut at the screen width, so the command line loses its end first. The values of options such as `--password` and `--token` and the password in a URL show as `***`. With `--json`, `edc listen` includes `args` and `cwd` when edc can read them. Without root, edc cannot read the processes of other accounts on macOS, or their working directories on Linux. `--full` does not work with `--watch`.

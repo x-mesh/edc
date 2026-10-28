@@ -100,7 +100,8 @@ func newGrepONNX(libraryPath, modelPath string) (*grepONNX, error) {
 	if err := o.check(createOptions(&o.options)); err != nil {
 		return fail(err)
 	}
-	threads := min(runtime.NumCPU(), 4)
+	// 8코어 Apple Silicon 측정에서 8개가 4개보다 임베딩이 34% 빨랐고, 10개와 ORT 기본값은 효율 코어까지 써서 더 느렸다.
+	threads := min(runtime.NumCPU(), 8)
 	if threads < 1 {
 		threads = 1
 	}

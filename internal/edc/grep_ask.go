@@ -12,8 +12,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -22,6 +25,11 @@ const grepAskMaxFileBytes = 2 << 20
 const grepAskChunkLines = 32
 const grepAskMaxScanBytes = 32 << 20
 const grepAskMaxChunks = 50000
+
+// 디렉터리를 훑어 찾은 파일 중 아래 파일은 검색 결과를 흐리기만 하므로 수집하지 않는다. 경로로 직접 지정한 파일은 그대로 수집한다.
+var grepAskLockFiles = map[string]bool{"go.sum": true, "package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true, "Cargo.lock": true, "poetry.lock": true, "uv.lock": true, "composer.lock": true, "Gemfile.lock": true}
+
+var grepAskGeneratedHeader = regexp.MustCompile(`^\s*(//|/\*|#|--|<!--).*(?i:code generated .*do not edit|auto-?generated)`)
 
 type grepAskResult struct {
 	Path    string  `json:"path"`
@@ -337,13 +345,86 @@ func grepAsk(paths []string, options grepOptions, stdout, stderr io.Writer) int 
 	return 0
 }
 
+// grepAskFile은 읽기를 마친 파일이다. problems와 skipped는 이 파일을 읽은 직후의 값이라, 청크 한도에 걸린 파일 뒤의 결과를 버릴 때 쓴다.
+type grepAskFile struct {
+	path     string
+	data     []byte
+	problems int
+	skipped  int
+	chunks   []grepAskChunk
+}
+
+// grepAskChunkFiles는 파일마다 청크를 병렬로 나눈다. 수집 시간의 대부분이 Go 파싱과 토큰화이기 때문이다.
+func grepAskChunkFiles(files []grepAskFile) {
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(files)) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for i := range jobs {
+				files[i].chunks = grepAskChunks(files[i].path, files[i].data)
+				files[i].data = nil
+			}
+		}()
+	}
+	for i := range files {
+		jobs <- i
+	}
+	close(jobs)
+	group.Wait()
+}
+
+// grepAskWalkedPath는 path가 디렉터리 root 아래에서 찾은 파일이면 root 기준 상대 경로를 돌려준다. 파일 root로 직접 지정한 path는 디렉터리 아래에 있어도 찾은 파일로 보지 않는다.
+func grepAskWalkedPath(roots []grepPathRoot, path string) (string, bool) {
+	for _, root := range roots {
+		if !root.directory && filepath.Clean(root.path) == filepath.Clean(path) {
+			return "", false
+		}
+	}
+	for _, root := range roots {
+		if !root.directory {
+			continue
+		}
+		relative, err := filepath.Rel(root.path, path)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return relative, true
+		}
+	}
+	return "", false
+}
+
+// grepAskExcludedPath는 lock 파일과 testdata 아래 fixture를 고른다. testdata의 .md와 .txt는 사람이 쓴 설명이라 남긴다.
+func grepAskExcludedPath(relative string) bool {
+	if grepAskLockFiles[filepath.Base(relative)] {
+		return true
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if part == "testdata" {
+			extension := filepath.Ext(relative)
+			return extension != ".md" && extension != ".txt"
+		}
+	}
+	return false
+}
+
+func grepAskGenerated(data []byte) bool {
+	line, _, _ := bytes.Cut(data, []byte("\n"))
+	return grepAskGeneratedHeader.Match(line)
+}
+
 func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, []string) {
 	targets, _, problems := grepCodeTargets(paths, options)
 	roots := grepPathRoots(paths)
-	var chunks []grepAskChunk
+	var files []grepAskFile
 	skipped := 0
 	scanned := 0
 	for _, path := range targets {
+		relative, walked := grepAskWalkedPath(roots, path)
+		if walked && grepAskExcludedPath(relative) {
+			continue
+		}
 		file, err := os.Open(path)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", path, err))
@@ -385,12 +466,20 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			skipped++
 			continue
 		}
+		if walked && grepAskGenerated(data) {
+			continue
+		}
 		scanned += len(data)
 		if scanned > grepAskMaxScanBytes {
 			problems = append(problems, T("grep.ask.budget"))
 			break
 		}
-		fileChunks := grepAskChunks(path, data)
+		files = append(files, grepAskFile{path: path, data: data, problems: len(problems), skipped: skipped})
+	}
+	grepAskChunkFiles(files)
+	var chunks []grepAskChunk
+	for _, file := range files {
+		path, fileChunks := file.path, file.chunks
 		for _, root := range roots {
 			relative := filepath.Base(path)
 			if root.directory {
@@ -408,8 +497,8 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			break
 		}
 		if len(chunks)+len(fileChunks) > grepAskMaxChunks {
-			problems = append(problems, T("grep.ask.budget"))
-			break
+			// 파일을 하나씩 처리하던 때처럼 이 파일 뒤에서 생긴 문제와 건너뛴 파일은 결과에 넣지 않는다.
+			return chunks, file.skipped, append(problems[:file.problems], T("grep.ask.budget"))
 		}
 		chunks = append(chunks, fileChunks...)
 	}

@@ -286,7 +286,7 @@ _edc() {
           _arguments '-n[마지막 N줄]:count' '(-f -F)'{-f,-F}'[pipe에서 tail -F처럼 따라가기]' '1:file:_files'
           ;;
         grep)
-          _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--ask[rank code]' '--keyword[rank without a model]' '--semantic[local embedding search]' '--semantic-init[build semantic index]' '--semantic-status[index status]' '--semantic-clear[remove semantic index]' '--model-clear[remove shared model]' '--yes[confirm download]' '--json[output JSON with --ask]' '--limit[maximum results]:count' '--code[search code]' '(-f --files)'{-f,--files}'[search file paths]' '--hidden[include hidden files]' '--no-ignore[ignore .gitignore]' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
+          _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--ask[rank code]' '--keyword[rank without a model]' '--semantic[local embedding search]' '--semantic-init[build semantic index]' '--semantic-status[index status]' '--semantic-files[indexed chunks per file]' '--semantic-clear[remove semantic index]' '--model-clear[remove shared model]' '--yes[confirm download]' '--json[output JSON with --ask]' '--limit[maximum results]:count' '--code[search code]' '(-f --files)'{-f,--files}'[search file paths]' '--hidden[include hidden files]' '--no-ignore[ignore .gitignore]' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
           ;;
         tunnel)
           _arguments $common \
@@ -503,7 +503,7 @@ _edc() {
         --level) COMPREPLY=($(compgen -W "trace debug info warn error fatal" -- "$cur")); return ;;
         -C|--status|--since|--until|--last|--jobs|--limit) COMPREPLY=(); return ;;
       esac
-      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-i -E -n -l -C --ask --keyword --semantic --semantic-init --semantic-status --semantic-clear --model-clear --yes --json --limit --code -f --files --hidden --no-ignore --level --status --since --until --last --ordered --index --no-index --jobs --verify-index" -- "$cur"))
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-i -E -n -l -C --ask --keyword --semantic --semantic-init --semantic-status --semantic-files --semantic-clear --model-clear --yes --json --limit --code -f --files --hidden --no-ignore --level --status --since --until --last --ordered --index --no-index --jobs --verify-index" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     tunnel)
       case "$prev" in

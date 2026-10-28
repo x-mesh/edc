@@ -54,7 +54,8 @@ du:
     refresh_off_reason: "更新オフ (%s)"
     refreshing: "更新中…"
     refresh_partial: "一部のみ"
-    refresh_delta: "%s 増加 (%s から)"
+    refresh_removed: "削除済み"
+    refresh_delta: "%s (%s から)"
     refresh_new: "新規"
   diff:
     count: "ディレクトリの変化 %d 件"

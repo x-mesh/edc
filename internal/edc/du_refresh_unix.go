@@ -4,6 +4,8 @@ package edc
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -14,7 +16,7 @@ const duMtimeSlack = 2 * time.Second
 
 // duPoll은 트리의 디렉터리 mtime과 남긴 큰 파일의 크기를 다시 본다. since보다 늦게 바뀐 디렉터리는 바로 아래 항목만 다시
 // 읽는다. 디렉터리 mtime은 항목이 생기거나 지워질 때만 바뀌므로, 제자리에서 커지는 파일은 큰 파일 줄로 남긴 것만 잡힌다.
-func duPoll(ctx context.Context, walker *duWalker, root *duNode, since time.Time, floor uint64) duRefreshResult {
+func duPoll(ctx context.Context, walker *duWalker, root *duNode, since time.Time, floor uint64, forced map[*duNode]bool) duRefreshResult {
 	result := duRefreshResult{started: time.Now()}
 	type item struct {
 		node  *duNode
@@ -42,12 +44,17 @@ func duPoll(ctx context.Context, walker *duWalker, root *duNode, since time.Time
 			}
 			continue
 		}
-		// 지워진 디렉터리는 부모의 mtime이 바뀌어 부모를 다시 읽을 때 빠진다.
-		if err != nil {
+		// 지워진 디렉터리는 부모의 mtime이 바뀌어 부모를 다시 읽을 때 빠진다. 탐색한 디렉터리 자신은 부모가 없어서 여기서 뺀다.
+		if current.node == root && (err == nil && stat.Mode&unix.S_IFMT != unix.S_IFDIR || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)) {
+			result.dirs = append(result.dirs, duDirRescan{node: root, gone: true})
+			result.duration = time.Since(result.started)
+			return result
+		}
+		if err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 			continue
 		}
 		// FAT과 HFS+는 mtime을 1~2초 단위로 적는다. 기준보다 조금 앞선 변경도 다시 읽어야 놓치지 않는다.
-		if duStatMtime(&stat).After(since.Add(-duMtimeSlack)) {
+		if forced[current.node] || duStatMtime(&stat).After(since.Add(-duMtimeSlack)) {
 			changed = append(changed, current)
 		}
 		for _, child := range current.node.children {
@@ -83,6 +90,10 @@ func duPoll(ctx context.Context, walker *duWalker, root *duNode, since time.Time
 func duRescan(ctx context.Context, walker *duWalker, node *duNode, path string, full bool, floor uint64) (duDirRescan, bool) {
 	var stat unix.Stat_t
 	if err := unix.Lstat(path, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		// 지워졌거나 디렉터리가 아니게 됐다. 그 밖의 오류는 다음 폴링에 맡긴다.
+		if err == nil || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) {
+			return duDirRescan{node: node, gone: true}, true
+		}
 		return duDirRescan{}, false
 	}
 	own := uint64(stat.Blocks) * 512
@@ -95,7 +106,7 @@ func duRescan(ctx context.Context, walker *duWalker, node *duNode, path string, 
 	if full {
 		duSubtree(node, owned)
 	}
-	walker.forget(owned)
+	released := walker.forget(owned)
 	existing := map[string]bool{}
 	oldFiles := map[string]bool{}
 	if !full {
@@ -116,7 +127,7 @@ func duRescan(ctx context.Context, walker *duWalker, node *duNode, path string, 
 	if walker.stopped.Load() {
 		return duDirRescan{}, false
 	}
-	rescan := duDirRescan{node: node, fresh: fresh, full: full, directories: walker.directories.Load() - before}
+	rescan := duDirRescan{node: node, fresh: fresh, full: full, directories: walker.directories.Load() - before, recount: walker.orphans(released)}
 	for _, file := range walker.files.heap {
 		if file.parent == fresh && !full {
 			if !oldFiles[file.name] {
@@ -153,24 +164,48 @@ func duRescan(ctx context.Context, walker *duWalker, node *duNode, path string, 
 	return rescan, true
 }
 
-// forget은 nodes가 센 hard link 기록을 지운다. 그 디렉터리를 다시 읽으면 같은 파일을 다시 센다.
-func (walker *duWalker) forget(nodes map[*duNode]bool) {
+// forget은 nodes가 센 hard link에서 주인을 지우고 그 파일을 돌려준다. 그 디렉터리를 다시 읽으면 같은 파일을 다시 센다.
+// nodes는 세지 않고 지나간 목록에서도 뺀다.
+func (walker *duWalker) forget(nodes map[*duNode]bool) []duInode {
 	walker.mu.Lock()
 	defer walker.mu.Unlock()
-	for key, owner := range walker.seen {
-		if nodes[owner] {
-			delete(walker.seen, key)
+	var released []duInode
+	for key, link := range walker.seen {
+		if nodes[link.owner] {
+			link.owner = nil
+			released = append(released, key)
+		}
+		link.others = slices.DeleteFunc(link.others, func(node *duNode) bool { return nodes[node] })
+	}
+	return released
+}
+
+// orphans는 released 중 다시 읽은 뒤에도 주인이 없는 파일을, 세지 않고 지나간 디렉터리로 돌려준다. 그 디렉터리를 다시
+// 읽어야 남은 링크가 합계에 든다.
+func (walker *duWalker) orphans(released []duInode) []*duNode {
+	walker.mu.Lock()
+	defer walker.mu.Unlock()
+	var nodes []*duNode
+	for _, key := range released {
+		if link := walker.seen[key]; link != nil && link.owner == nil {
+			nodes = append(nodes, link.others...)
 		}
 	}
+	return nodes
 }
 
 // reown은 다시 읽을 때 쓴 노드의 hard link 기록을 실제 트리의 노드로 옮긴다.
 func (walker *duWalker) reown(from, to *duNode) {
 	walker.mu.Lock()
 	defer walker.mu.Unlock()
-	for key, owner := range walker.seen {
-		if owner == from {
-			walker.seen[key] = to
+	for _, link := range walker.seen {
+		if link.owner == from {
+			link.owner = to
+		}
+		for index, node := range link.others {
+			if node == from {
+				link.others[index] = to
+			}
 		}
 	}
 }
@@ -178,7 +213,10 @@ func (walker *duWalker) reown(from, to *duNode) {
 func (walker *duWalker) owner(dev, ino uint64) *duNode {
 	walker.mu.Lock()
 	defer walker.mu.Unlock()
-	return walker.seen[duInode{dev: dev, ino: ino}]
+	if link := walker.seen[duInode{dev: dev, ino: ino}]; link != nil {
+		return link.owner
+	}
+	return nil
 }
 
 func (walker *duWalker) floor() uint64 { return walker.files.floor.Load() }

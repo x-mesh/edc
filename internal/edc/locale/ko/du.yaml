@@ -54,7 +54,8 @@ du:
     refresh_off_reason: "갱신 꺼짐 (%s)"
     refreshing: "갱신 중…"
     refresh_partial: "일부만 셈"
-    refresh_delta: "%s 증가 (%s부터)"
+    refresh_removed: "지워짐"
+    refresh_delta: "%s (%s부터)"
     refresh_new: "새로 생김"
   diff:
     count: "디렉터리 변화 %d개"

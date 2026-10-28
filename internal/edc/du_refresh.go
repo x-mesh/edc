@@ -69,9 +69,11 @@ type duRefresher struct {
 	// generation은 a로 껐다 켤 때 앞서 걸어 둔 타이머를 무시하게 한다.
 	generation int
 	pending    *duNode
-	count      int
-	last       time.Time
-	started    time.Time
+	// forced는 mtime과 관계없이 다음 폴링이 다시 읽을 디렉터리다. 하드링크를 센 디렉터리가 빠지면 남은 링크가 있는 곳이다.
+	forced  map[*duNode]bool
+	count   int
+	last    time.Time
+	started time.Time
 }
 
 type duRefreshTickMsg struct{ generation int }
@@ -107,6 +109,9 @@ type duDirRescan struct {
 	kept        map[*duNode]uint64
 	newBig      []*duNode
 	directories int64
+	// gone은 다시 읽으려던 디렉터리가 지워졌다는 뜻이다. recount는 이 디렉터리가 세던 hard link를 대신 셀 디렉터리다.
+	gone    bool
+	recount []*duNode
 }
 
 // duMarkBase는 탐색이 끝난 트리의 크기를 기준으로 남긴다.
@@ -311,8 +316,8 @@ func (refresher *duRefresher) tick() tea.Cmd {
 // poll은 트리 전체를 다시 보는 Cmd다. 돌아올 때까지 Update는 트리를 고치지 않는다.
 func (refresher *duRefresher) poll(root *duNode) tea.Cmd {
 	refresher.running = true
-	ctx, walker, since, floor := refresher.ctx, refresher.walker, refresher.since, refresher.floor
-	return func() tea.Msg { return duRefreshDoneMsg{duPoll(ctx, walker, root, since, floor)} }
+	ctx, walker, since, floor, forced := refresher.ctx, refresher.walker, refresher.since, refresher.floor, refresher.takeForced()
+	return func() tea.Msg { return duRefreshDoneMsg{duPoll(ctx, walker, root, since, floor, forced)} }
 }
 
 func (refresher *duRefresher) rescan(node *duNode) tea.Cmd {
@@ -330,12 +335,39 @@ func (refresher *duRefresher) apply(scan *duScan, result duRefreshResult) {
 	for _, file := range result.files {
 		duApplyFile(file)
 	}
+	var recount []*duNode
+	rootGone := false
 	for _, rescan := range result.dirs {
 		if !duAttached(rescan.node) {
 			continue
 		}
-		dropped := duApplyRescan(rescan)
-		refresher.walker.reown(rescan.fresh, rescan.node)
+		var dropped []*duNode
+		if rescan.gone && rescan.node.parent == nil {
+			// 탐색한 디렉터리 자체가 없어졌다. 뺄 부모가 없으므로 비우고, 다시 볼 곳이 없으니 자동 갱신을 끈다.
+			root := rescan.node
+			gone := map[*duNode]bool{}
+			duSubtree(root, gone)
+			refresher.walker.forget(gone)
+			root.children, root.bytes, root.own, root.entries, root.total, root.count = nil, 0, 0, 0, 0, 0
+			scan.directories = 0
+			refresher.on, refresher.reason = false, T("du.browse.refresh_removed")
+			refresher.generation++
+			rootGone = true
+			break
+		}
+		if rescan.gone {
+			// 같은 자리에 파일이 생겼을 수 있다. 부모를 다시 읽어야 그 파일이 합계에 든다.
+			parent := rescan.node.parent
+			duDetach(rescan.node)
+			dropped = []*duNode{rescan.node}
+			recount = append(recount, parent)
+		} else {
+			dropped = duApplyRescan(rescan)
+			refresher.walker.reown(rescan.fresh, rescan.node)
+			// 다시 읽은 디렉터리 자신은 이미 센 디렉터리다.
+			scan.directories += rescan.directories - 1
+			recount = append(recount, rescan.recount...)
+		}
 		gone := map[*duNode]bool{}
 		for _, node := range dropped {
 			if node.dir {
@@ -344,10 +376,16 @@ func (refresher *duRefresher) apply(scan *duScan, result duRefreshResult) {
 			scan.directories -= duCountDirs(node)
 		}
 		if len(gone) > 0 {
-			refresher.walker.forget(gone)
+			recount = append(recount, refresher.walker.orphans(refresher.walker.forget(gone))...)
 		}
-		// 다시 읽은 디렉터리 자신은 이미 센 디렉터리다.
-		scan.directories += rescan.directories - 1
+	}
+	for _, node := range recount {
+		if duAttached(node) && !rootGone {
+			if refresher.forced == nil {
+				refresher.forced = map[*duNode]bool{}
+			}
+			refresher.forced[node] = true
+		}
 	}
 	if result.usageOK {
 		scan.filesystem.SizeBytes, scan.filesystem.UsedBytes = result.usage.Size, result.usage.Used
@@ -361,4 +399,10 @@ func (refresher *duRefresher) apply(scan *duScan, result duRefreshResult) {
 		refresher.since = result.started
 		refresher.interval = refresher.setting.interval(result.duration)
 	}
+}
+
+func (refresher *duRefresher) takeForced() map[*duNode]bool {
+	forced := refresher.forced
+	refresher.forced = nil
+	return forced
 }

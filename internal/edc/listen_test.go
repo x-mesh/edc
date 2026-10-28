@@ -216,8 +216,8 @@ func TestListenCommandLine(t *testing.T) {
 }
 
 func TestListenMaskArgs(t *testing.T) {
-	got := listenMaskArgs([]string{"app", "--password", "server", "--password=a", "--api-key", "k", "--db-token=t", "--verbose", "--secret", "--port", "5432", "postgres://user:pw@db:5432/app", "--name", "token", "--bypass", "cache", "--passthrough=on"})
-	want := []string{"app", "--password", "***", "--password=***", "--api-key", "***", "--db-token=***", "--verbose", "--secret", "--port", "5432", "postgres://user:***@db:5432/app", "--name", "token", "--bypass", "cache", "--passthrough=on"}
+	got := listenMaskArgs([]string{"app", "--password", "server", "--password=a", "--api-key", "k", "--db-token=t", "--token", "-abc123", "--verbose", "--secret", "--port", "5432", "postgres://user:pw@db:5432/app", "--name", "token", "--bypass", "cache", "--passthrough=on"})
+	want := []string{"app", "--password", "***", "--password=***", "--api-key", "***", "--db-token=***", "--token", "***", "--verbose", "--secret", "***", "5432", "postgres://user:***@db:5432/app", "--name", "token", "--bypass", "cache", "--passthrough=on"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got  %q\nwant %q", got, want)
 	}

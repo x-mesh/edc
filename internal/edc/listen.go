@@ -308,7 +308,9 @@ func listenMaskArgs(args []string) []string {
 		}
 		if hasValue {
 			masked[index] = arg[:strings.IndexByte(arg, '=')+1] + "***"
-		} else if index+1 < len(masked) && !strings.HasPrefix(masked[index+1], "-") {
+		} else if index+1 < len(masked) {
+			// 값이 -로 시작할 수 있어서(base64url 토큰) 다음 인자가 옵션처럼 보여도 가린다. 불리언 옵션 뒤의 옵션을
+			// 가리는 쪽이 비밀을 내보내는 쪽보다 낫다.
 			index++
 			masked[index] = "***"
 		}

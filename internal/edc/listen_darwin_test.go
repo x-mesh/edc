@@ -222,8 +222,15 @@ func TestParseDarwinProcArgsStopsBeforeTheEnvironment(t *testing.T) {
 	if got := parseDarwinProcArgs(raw); !slices.Equal(got, []string{"node", "vite", "--port"}) {
 		t.Fatalf("args = %q", got)
 	}
-	if got := parseDarwinProcArgs([]byte{1, 0}); got != nil {
-		t.Fatalf("short buffer gave %q", got)
+	for name, raw := range map[string][]byte{
+		"short buffer":            {1, 0},
+		"zero argc":               append(binary.LittleEndian.AppendUint32(nil, 0), "/bin/x\x00x\x00"...),
+		"argc over the limit":     append(binary.LittleEndian.AppendUint32(nil, darwinProcArgsMaxArgs+1), "/bin/x\x00x\x00"...),
+		"exec path without a NUL": append(binary.LittleEndian.AppendUint32(nil, 1), "/bin/x"...),
+	} {
+		if got := parseDarwinProcArgs(raw); got != nil {
+			t.Errorf("%s gave %q", name, got)
+		}
 	}
 }
 

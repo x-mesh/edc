@@ -3,10 +3,12 @@ package edc
 import (
 	"bufio"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
@@ -84,7 +86,7 @@ func grepCodeTargets(paths []string, options grepOptions) ([]string, int, []stri
 			continue
 		}
 		directories++
-		// WalkDir는 하위 경로를 정리된 형태로 만든다. levels의 루트 키도 같은 형태여야 부모 규칙을 찾는다.
+		// 하위 경로는 filepath.Join으로 정리된 형태가 된다. 루트도 정리해야 "src/"와 "src"가 같은 결과를 낸다.
 		root = filepath.Clean(root)
 		absolute, err := filepath.Abs(root)
 		if err != nil {
@@ -109,77 +111,104 @@ func grepCodeTargets(paths []string, options grepOptions) ([]string, int, []stri
 		}
 		ancestors = append(ancestors, base)
 		for i := len(ancestors) - 1; i >= 1 && !options.noIgnore; i-- {
-			if err := grepReadIgnore(ancestors[i], base, &patterns); err != nil {
+			if err := grepReadIgnore(ancestors[i], grepIgnoreDomain(base, ancestors[i]), &patterns); err != nil {
 				problems = append(problems, err.Error())
 			}
 		}
-		levels := map[string][]gitignore.Pattern{}
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				problems = append(problems, fmt.Sprintf("%s: %v", path, err))
-				return nil
-			}
-			if path != root {
-				if entry.Name() == ".git" || (!options.hidden && strings.HasPrefix(entry.Name(), ".")) {
-					if entry.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				abs, err := filepath.Abs(path)
-				if err != nil {
-					return err
-				}
-				relative, err := filepath.Rel(base, abs)
-				if err != nil {
-					return err
-				}
-				parent := levels[filepath.Dir(path)]
-				if !options.noIgnore && gitignore.NewMatcher(parent).Match(strings.Split(filepath.ToSlash(relative), "/"), entry.IsDir()) {
-					if entry.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				if entry.IsDir() {
-					levels[path] = append([]gitignore.Pattern(nil), parent...)
-				}
-			} else {
-				levels[path] = append([]gitignore.Pattern(nil), patterns...)
-			}
-			if entry.IsDir() {
-				if !options.noIgnore {
-					p := levels[path]
-					abs, err := filepath.Abs(path)
-					if err != nil {
-						return err
-					}
-					if err := grepReadIgnore(abs, base, &p); err != nil {
-						problems = append(problems, err.Error())
-					}
-					levels[path] = p
-				}
-				return nil
-			}
-			if entry.Type().IsRegular() {
-				relative, relErr := filepath.Rel(root, path)
-				if relErr != nil {
-					return relErr
-				}
-				if !options.pathMode || grepPathMatch(filepath.ToSlash(relative), options) {
-					files = append(files, path)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			problems = append(problems, err.Error())
-		}
+		walk := grepCodeWalk{options: options, slots: make(chan struct{}, runtime.GOMAXPROCS(0))}
+		result := walk.dir(root, "", grepIgnoreDomain(base, absolute), patterns)
+		files, problems = append(files, result.files...), append(problems, result.problems...)
 	}
 	return files, directories, problems
 }
 
-func grepReadIgnore(dir, base string, patterns *[]gitignore.Pattern) error {
+// grepCodeWalk는 코드 검색 대상을 이름 순서로 모은다. filepath.WalkDir 대신 디렉터리를 직접 읽어, 목록에 .gitignore가
+// 있을 때만 연다. 디렉터리마다 없는 .gitignore를 열어 보는 시스템 호출이 큰 저장소 탐색 시간의 절반을 넘었다.
+// 디렉터리를 여는 시스템 호출도 하나에 수십 µs라서 하위 디렉터리는 병렬로 읽고, 결과는 이름 순서대로 잇는다.
+type grepCodeWalk struct {
+	options grepOptions
+	// slots는 동시에 디렉터리를 읽는 goroutine 수를 제한한다. 하위 결과를 기다리는 동안에는 잡지 않아야 막히지 않는다.
+	slots chan struct{}
+}
+
+type grepCodeWalkResult struct {
+	files, problems []string
+}
+
+// dir는 path 아래를 훑는다. relative는 검색 루트에서 본 경로, parts는 저장소 루트에서 본 경로 조각이다.
+func (walk *grepCodeWalk) dir(path, relative string, parts []string, patterns []gitignore.Pattern) grepCodeWalkResult {
+	var result grepCodeWalkResult
+	walk.slots <- struct{}{}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		result.problems = append(result.problems, fmt.Sprintf("%s: %v", path, err))
+	}
+	if !walk.options.noIgnore {
+		for _, entry := range entries {
+			if entry.Name() == ".gitignore" {
+				// 형제 디렉터리가 같은 배열에 덧붙이지 않도록 용량을 잘라 둔다.
+				patterns = slices.Clip(patterns)
+				if err := grepReadIgnore(path, parts, &patterns); err != nil {
+					result.problems = append(result.problems, err.Error())
+				}
+				break
+			}
+		}
+	}
+	<-walk.slots
+	matcher := gitignore.NewMatcher(patterns)
+	// items는 파일 경로이거나, 아직 읽고 있는 하위 디렉터리의 결과다. 이름 순서를 지키려고 섞어서 둔다.
+	type item struct {
+		file  string
+		child *grepCodeWalkResult
+	}
+	var items []item
+	var group sync.WaitGroup
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".git" || (!walk.options.hidden && strings.HasPrefix(name, ".")) {
+			continue
+		}
+		childParts := append(slices.Clip(parts), name)
+		if !walk.options.noIgnore && matcher.Match(childParts, entry.IsDir()) {
+			continue
+		}
+		child, childRelative := filepath.Join(path, name), name
+		if relative != "" {
+			childRelative = relative + "/" + name
+		}
+		if entry.IsDir() {
+			pending := &grepCodeWalkResult{}
+			items = append(items, item{child: pending})
+			group.Go(func() { *pending = walk.dir(child, childRelative, childParts, patterns) })
+			continue
+		}
+		if entry.Type().IsRegular() && (!walk.options.pathMode || grepPathMatch(childRelative, walk.options)) {
+			items = append(items, item{file: child})
+		}
+	}
+	group.Wait()
+	for _, item := range items {
+		if item.child == nil {
+			result.files = append(result.files, item.file)
+			continue
+		}
+		result.files = append(result.files, item.child.files...)
+		result.problems = append(result.problems, item.child.problems...)
+	}
+	return result
+}
+
+// grepIgnoreDomain은 저장소 루트 base에서 본 dir의 경로 조각이다. .gitignore 규칙은 이 조각에 상대적으로 맞춘다.
+func grepIgnoreDomain(base, dir string) []string {
+	relative, err := filepath.Rel(base, dir)
+	if err != nil || relative == "." {
+		return nil
+	}
+	return strings.Split(filepath.ToSlash(relative), "/")
+}
+
+func grepReadIgnore(dir string, domain []string, patterns *[]gitignore.Pattern) error {
 	path := filepath.Join(dir, ".gitignore")
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -189,14 +218,6 @@ func grepReadIgnore(dir, base string, patterns *[]gitignore.Pattern) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	defer f.Close()
-	relative, err := filepath.Rel(base, dir)
-	if err != nil {
-		return err
-	}
-	var domain []string
-	if relative != "." {
-		domain = strings.Split(filepath.ToSlash(relative), "/")
-	}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()

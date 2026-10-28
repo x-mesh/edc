@@ -1,10 +1,14 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -201,8 +205,10 @@ func TestGrepMatcherNeedles(t *testing.T) {
 		needle     string
 	}{
 		{"Error 500", false, false, "Error 500"},
-		{"Error 500 at", false, true, " 500 "},
-		{"timeout", false, true, ""},
+		{"Error 500 at", false, true, "error 500 at"},
+		{"timeout", false, true, "timeout"},
+		{"Status 500 ok", false, true, " 500 "},
+		{"skip", false, true, ""},
 		{`orders/[0-9]+`, true, false, "orders/"},
 		{`(?i)orders`, true, false, ""},
 		{`a|b`, true, false, ""},
@@ -258,6 +264,102 @@ func TestGrepScanLastKeepsMatchesBeforeAReadError(t *testing.T) {
 		expected := tail[len(tail)-len(got)+index]
 		if got[index].offset != expected.offset || !bytes.Equal(got[index].text, expected.text) {
 			t.Fatalf("line %d at %d, want %d", index, got[index].offset, expected.offset)
+		}
+	}
+}
+
+func TestGrepMatcherWithSampleKeepsCompiledPattern(t *testing.T) {
+	compiled, err := newGrepMatcher("cancel", true, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher := compiled.withSample([]byte(strings.Repeat("aaaa", 100) + "cancel"))
+	if matcher.regex != compiled.regex {
+		t.Fatal("withSample compiled the pattern again")
+	}
+	if compiled.pivot != -1 || compiled.second != -1 {
+		t.Fatalf("withSample changed the shared matcher: pivot %d, second %d", compiled.pivot, compiled.second)
+	}
+}
+
+func TestGrepSearchFileReusesReadBuffer(t *testing.T) {
+	dir := t.TempDir()
+	var paths []string
+	for _, name := range []string{"a.go", "b.go"} {
+		path := dir + "/" + name
+		if err := os.WriteFile(path, []byte("package a\nfunc main() {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	options := grepOptions{pattern: "main", codeMode: true, minLevel: -1, index: grepIndexOff}
+	matcher, err := newGrepMatcher(options.pattern, false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffers := &grepBuffers{}
+	printer := &grepPrinter{out: bufio.NewWriter(io.Discard)}
+	hints := &grepHints{options: options}
+	var first *byte
+	for _, path := range paths {
+		found, err := grepSearchFile(path, options, matcher, buffers, printer, hints)
+		if err != nil || !found {
+			t.Fatalf("%s: found %v, err %v", path, found, err)
+		}
+		data := buffers.buffer[:1]
+		if first == nil {
+			first = &data[0]
+		} else if &data[0] != first {
+			t.Fatal("the second file allocated a new read buffer")
+		}
+	}
+}
+
+func TestGrepFoldMatchesIgnoreCaseRegex(t *testing.T) {
+	data := append(grepFixture(1000), "\nTIMEOUT\nTiMeOuT x\ntime-out\nORDERS/41/CANCEL\nKelvin Key\nſecret\n"...)
+	lines := bytes.Split(data, []byte("\n"))
+	sample := data[:min(len(data), grepSampleSize)]
+	for _, scenario := range []struct {
+		pattern string
+		fold    bool
+	}{
+		{"timeout", true},
+		{"/41/cancel", true},
+		{"T", true},
+		{"/41/", true},
+		{"key", false},
+		{"secret", false},
+	} {
+		matcher, err := newGrepMatcher(scenario.pattern, false, true, sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matcher.fold != scenario.fold {
+			t.Fatalf("%s: fold %v, want %v", scenario.pattern, matcher.fold, scenario.fold)
+		}
+		regex := regexp.MustCompile("(?i)" + regexp.QuoteMeta(scenario.pattern))
+		matched := 0
+		for _, line := range lines {
+			if got, want := matcher.match(line), regex.Match(line); got != want {
+				t.Fatalf("%s: match(%q) = %v, regex %v", scenario.pattern, line, got, want)
+			} else if got {
+				matched++
+			}
+		}
+		if matched == 0 {
+			t.Fatalf("%s: no line matched", scenario.pattern)
+		}
+		if scenario.fold {
+			for position := 0; position < len(data); {
+				got, want := matcher.find(data[position:]), regex.FindIndex(data[position:])
+				if (want == nil) != (got < 0) || (want != nil && got != want[0]) {
+					t.Fatalf("%s at %d: find %d, regex %v", scenario.pattern, position, got, want)
+				}
+				if got < 0 {
+					break
+				}
+				position += got + 1
+			}
 		}
 	}
 }

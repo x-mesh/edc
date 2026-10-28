@@ -1,6 +1,9 @@
 package edc
 
 import (
+	"bufio"
+	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -210,6 +213,64 @@ func TestGrepLifecycleFlagsDispatchInAnyPosition(t *testing.T) {
 		got, ok := grepLifecycleArgs(tc.args)
 		if ok != (tc.want != "") || strings.Join(got, " ") != tc.want {
 			t.Fatalf("%v: got %v %t", tc.args, got, ok)
+		}
+	}
+}
+
+func TestGrepCodeParallelSearchKeepsSequentialOutput(t *testing.T) {
+	root := t.TempDir()
+	for index := range 120 {
+		dir := filepath.Join(root, fmt.Sprintf("d%d", index%7))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		var content strings.Builder
+		// 일부 파일은 표본보다 커서 파일에서 다시 읽는 길도 지난다.
+		lines := 5 + index%11
+		if index%17 == 0 {
+			lines = grepSampleSize / 10
+		}
+		for line := range lines {
+			if (line+index)%4 == 0 {
+				fmt.Fprintf(&content, "line %d Needle %d\n", line, index)
+			} else {
+				fmt.Fprintf(&content, "line %d plain\n", line)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%03d.go", index)), []byte(content.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"--code", "Needle"},
+		{"--code", "-C", "1", "Needle"},
+		{"--code", "-l", "Needle"},
+		{"--code", "-i", "needle"},
+		{"--code", "-E", "Needle [0-9]+5$"},
+		// 겹치는 경로 인자로 같은 파일이 두 번 들어와도 두 번 낸다.
+		{"--code", "Needle", filepath.Join(root, "d0", "f000.go")},
+	} {
+		args = append(args, root)
+		options, paths, err := parseGrepOptions(args, io.Discard, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets, _, _ := grepCodeTargets(paths, options)
+		matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want bytes.Buffer
+		printer := &grepPrinter{out: bufio.NewWriter(&want), showPath: true, numbers: options.numbers, context: options.context}
+		for _, path := range targets {
+			if _, err := grepSearchFile(path, options, matcher, &grepBuffers{}, printer, &grepHints{options: options}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		printer.out.Flush()
+		code, got, stderr := grepCommand(t, "", args...)
+		if code != 0 || stderr != "" || got != want.String() || want.Len() == 0 {
+			t.Fatalf("%v: code %d stderr %q\ngot:\n%s\nwant:\n%s", args, code, stderr, got, want.String())
 		}
 	}
 }

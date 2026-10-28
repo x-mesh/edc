@@ -12,8 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -273,12 +275,24 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 	if options.pathMode && printer.color {
 		pathRoots = grepPathRoots(paths)
 	}
+	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, nil)
+	if err != nil {
+		fmt.Fprintln(stderr, T("grep.failed", err))
+		return 2
+	}
+	// 코드 검색은 작은 파일 수만 개를 읽는다. 파일마다 2 MiB 읽기 버퍼를 새로 만들면 할당과 GC가 검색보다 오래 걸린다.
+	buffers := &grepBuffers{}
 	if len(paths) == 0 {
-		ok, err := grepSequentialSearch(stdin, T("grep.stdin"), options, printer, hints)
+		ok, err := grepSequentialSearch(stdin, T("grep.stdin"), options, matcher, printer, hints)
 		found, failed = found || ok, failed || err != nil
 		if err != nil {
 			fmt.Fprintln(stderr, T("grep.failed", err))
 		}
+	}
+	if options.codeMode && !options.pathMode && len(targets) > 1 {
+		ok, searchFailed := grepSearchCodeFiles(targets, options, matcher, printer, stderr)
+		found, failed = found || ok, failed || searchFailed
+		targets = nil
 	}
 	for _, path := range targets {
 		if options.pathMode {
@@ -286,7 +300,7 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 			found = true
 			continue
 		}
-		ok, err := grepSearchFile(path, options, printer, hints)
+		ok, err := grepSearchFile(path, options, matcher, buffers, printer, hints)
 		found = found || ok
 		if err != nil {
 			failed = true
@@ -403,7 +417,7 @@ const (
 )
 
 // grepSearchFile은 파일 하나를 검색한다. .gz는 풀면서 차례로 읽고, 그 밖의 파일은 index와 건너뛰기를 쓴다.
-func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
+func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buffers *grepBuffers, printer *grepPrinter, hints *grepHints) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return false, err
@@ -427,10 +441,10 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 			return false, err
 		}
 		defer reader.Close()
-		return grepSequentialSearch(reader, path, options, printer, hints)
+		return grepSequentialSearch(reader, path, options, compiled, printer, hints)
 	}
 	size := info.Size()
-	sample := make([]byte, min(size, int64(grepSampleSize)))
+	sample := buffers.sampleOf(int(min(size, int64(grepSampleSize))))
 	if _, err := io.ReadFull(io.NewSectionReader(file, 0, int64(len(sample))), sample); err != nil {
 		return false, err
 	}
@@ -438,10 +452,13 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		hints.binary = append(hints.binary, path)
 		return false, nil
 	}
-	format := grepDetectFormat(sample, int64(len(sample)) == size)
-	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, sample)
-	if err != nil {
-		return false, err
+	// 코드 검색은 로그 조건과 index를 쓰지 않아 형식이 필요 없다. 소스 파일은 대부분 작아서, pivot을 고르려고 표본의 바이트
+	// 빈도를 세는 비용이 검색 비용과 비슷하다. 그래서 둘 다 건너뛰고 컴파일한 패턴을 그대로 쓴다.
+	var format viewFormat
+	matcher := compiled
+	if !options.codeMode {
+		format = grepDetectFormat(sample, int64(len(sample)) == size)
+		matcher = compiled.withSample(sample)
 	}
 	filter := grepFilterFor(format, options)
 	// 시간 순서라고 한 파일만, 안의 마지막 시각이 --since 앞일 때 건너뛴다. 표본으로 순서를 확인하므로 사용자가 보증해야 한다.
@@ -450,6 +467,12 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		return false, nil
 	}
 	scanner := newGrepScanner(matcher, filter)
+	scanner.buffers = buffers
+	// 표본이 파일 전체이면 다시 읽지 않는다. 작은 소스 파일 수만 개를 찾을 때 두 번째 pread가 시간의 상당 부분이었다.
+	var source io.ReaderAt = file
+	if int64(len(sample)) == size {
+		source = bytes.NewReader(sample)
+	}
 	printer.begin(path, matcher)
 	report := &grepFileReport{path: path, size: size}
 	defer func() { hints.reports = append(hints.reports, *report) }()
@@ -459,7 +482,7 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		if options.listFiles {
 			return false
 		}
-		printer.match(ref, file)
+		printer.match(ref, source)
 		return true
 	}
 	defer func() {
@@ -469,7 +492,7 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 	}()
 	if options.last > 0 {
 		report.index = grepIndexOutcomeLast
-		lines, read, err := scanner.scanLast(file, size, options.last)
+		lines, read, err := scanner.scanLast(source, size, options.last)
 		report.lastRead = read
 		// 끝에서 읽은 줄은 번호를 모른다. -n이면 처음부터 첫 일치까지, 그 뒤로는 일치 사이의 줄바꿈을 세어 번호를 매긴다.
 		// 앞 블록에서 읽기가 실패했으면 처음부터 셀 수 없으므로 번호 없이 낸다.
@@ -509,7 +532,58 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 	if plan.build {
 		return grepSearchAndBuild(file, size, format, scanner, filter, options, plan, report, emit)
 	}
-	return grepSearchPlain(file, size, scanner, filter, options, report, emit)
+	return grepSearchPlain(source, size, scanner, filter, options, report, emit)
+}
+
+// grepSearchCodeFiles는 코드 검색 대상을 CPU 수만큼의 worker로 나눠 찾는다. 작은 파일 수만 개를 한 스레드에서 열고 읽으면
+// 시스템 호출을 기다리는 시간이 검색보다 길다. worker는 파일마다 출력을 모아 두고, 여기서 대상 순서대로 내므로 결과는
+// 차례로 찾을 때와 같다. 코드 검색은 index를 쓰지 않으므로 파일 사이에 나누는 상태가 없다.
+func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMatcher, printer *grepPrinter, stderr io.Writer) (bool, bool) {
+	type fileResult struct {
+		output []byte
+		found  bool
+		err    error
+	}
+	results := make([]chan fileResult, len(targets))
+	for index := range results {
+		results[index] = make(chan fileResult, 1)
+	}
+	var next atomic.Int64
+	for range min(runtime.GOMAXPROCS(0), len(targets)) {
+		go func() {
+			buffers := &grepBuffers{}
+			var output bytes.Buffer
+			local := *printer
+			local.out = bufio.NewWriterSize(&output, 64<<10)
+			hints := &grepHints{options: options}
+			for {
+				index := int(next.Add(1)) - 1
+				if index >= len(targets) {
+					return
+				}
+				ok, err := grepSearchFile(targets[index], options, matcher, buffers, &local, hints)
+				local.out.Flush()
+				var text []byte
+				if output.Len() > 0 {
+					text = bytes.Clone(output.Bytes())
+				}
+				results[index] <- fileResult{output: text, found: ok, err: err}
+				output.Reset()
+				hints.reports = hints.reports[:0]
+			}
+		}()
+	}
+	found, failed := false, false
+	for index, path := range targets {
+		result := <-results[index]
+		printer.out.Write(result.output)
+		found = found || result.found
+		if result.err != nil {
+			failed = true
+			fmt.Fprintln(stderr, T("grep.failed", fmt.Sprintf("%s: %v", path, result.err)))
+		}
+	}
+	return found, failed
 }
 
 type grepIndexPlan struct {
@@ -700,7 +774,7 @@ func grepSearchAndBuild(file *os.File, size int64, format viewFormat, scanner gr
 }
 
 // grepSearchPlain은 파일을 훑는다. --since가 있고 로그가 시간 순서면 그 자리를 이진 탐색해 앞부분을 건너뛴다.
-func grepSearchPlain(file *os.File, size int64, scanner grepScanner, filter *grepFilter, options grepOptions, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
+func grepSearchPlain(file io.ReaderAt, size int64, scanner grepScanner, filter *grepFilter, options grepOptions, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
 	found := false
 	wrapped := func(ref grepLineRef) bool {
 		found = true
@@ -747,7 +821,7 @@ func grepSearchPlain(file *os.File, size int64, scanner grepScanner, filter *gre
 
 // grepSequentialSearch는 stdin과 .gz처럼 되감을 수 없는 입력이다. 줄을 차례로 읽으며 조건을 대고, -C는 앞 줄을 ring에 둔다.
 // --last는 마지막 N개만 남겨 끝에 낸다.
-func grepSequentialSearch(reader io.Reader, name string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
+func grepSequentialSearch(reader io.Reader, name string, options grepOptions, compiled *grepMatcher, printer *grepPrinter, hints *grepHints) (bool, error) {
 	buffered := bufio.NewReaderSize(reader, 1<<20)
 	sample, _ := buffered.Peek(grepSampleSize)
 	if bytes.IndexByte(sample[:min(len(sample), grepBinaryProbe)], 0) >= 0 {
@@ -755,10 +829,7 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 		return false, nil
 	}
 	format := grepDetectFormat(sample, len(sample) < grepSampleSize)
-	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, sample)
-	if err != nil {
-		return false, err
-	}
+	matcher := compiled.withSample(sample)
 	filter := grepFilterFor(format, options)
 	accept := matcher.match
 	if filter != nil {

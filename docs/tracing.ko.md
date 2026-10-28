@@ -195,6 +195,8 @@ HTTP/1은 나뉜 header를 합친 뒤 body가 끝나기 전에 metadata를 출�
 
 요청은 `http_request` event입니다. 응답은 `http_1xx`부터 `http_5xx`까지이고 `status`에 코드가 나옵니다. HTTP/1.x는 한 연결에서 요청 순서대로 응답하므로, 응답은 같은 연결에서 아직 응답이 없는 가장 오래된 요청과 짝짓습니다. `latency_ms`는 client가 요청을 보낸 때부터 응답을 읽은 때까지입니다. `1xx` 응답은 요청을 끝내지 않습니다.
 
+전체 화면은 요청과 그 최종 응답을 한 행에 보여 줍니다. 행에는 응답 event, status, 응답 시간이 나옵니다. 응답이 오지 않은 요청은 `http_request` 행으로 남습니다. `1xx` 응답과 짝이 없는 응답은 따로 행이 됩니다. 상세 보기는 요청 아래 `response:`에 응답 message를 보여 주고, 미리 보기는 응답 message를 보여 줍니다. JSON, text, `--raw` 출력은 event마다 한 줄입니다.
+
 HTTP event의 `target`은 `Host` header이고, `Host`가 없으면 서버 주소입니다. 서버 쪽 `latency_ms`는 서버가 요청을 읽은 때부터 응답을 쓴 때까지입니다.
 
 `trace http`는 이 host에서 일어나는 HTTP를 두 쪽으로 나눠 보여 줍니다. event 행 앞에 쪽이 붙습니다.

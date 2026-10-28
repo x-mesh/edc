@@ -108,10 +108,12 @@ type traceDetailSnapshot struct {
 	decode           bool
 	event            captureEvent
 	response         *captureEvent
-	payload          string
-	gzipRaw          string
-	notes            []string
-	payloadEvicted   bool
+	// responseMessage는 HTTP 요청과 한 행으로 합친 응답 message다. 상세 보기가 요청 아래에 응답 header와 body를 붙인다.
+	responseMessage *traceDetailSnapshot
+	payload         string
+	gzipRaw         string
+	notes           []string
+	payloadEvicted  bool
 }
 
 func cloneTraceEvent(event captureEvent) captureEvent {
@@ -331,6 +333,7 @@ func (model traceScreenModel) detailSnapshot(number int, generation uint64) trac
 	}
 	gzipRaw, _ := model.gzipped.get(number)
 	var response *captureEvent
+	var responseMessage *traceDetailSnapshot
 	var responseRevision uint64
 	responseNumber := -1
 	if traceScreenPairs(model.protocol) {
@@ -340,11 +343,15 @@ func (model traceScreenModel) detailSnapshot(number int, generation uint64) trac
 				response = &value
 				responseNumber = row.response
 				responseRevision = model.payloadRevisions[row.response]
+				if model.protocol == "http" {
+					message := model.detailSnapshot(row.response, generation)
+					responseMessage = &message
+				}
 				break
 			}
 		}
 	}
-	return traceDetailSnapshot{generation: generation, revision: model.payloadRevisions[number], responseRevision: responseRevision, responseNumber: responseNumber, number: number, width: model.width, protocol: model.protocol, filter: model.filter, secrets: model.secrets, decode: model.decode, event: event, response: response, payload: payload, gzipRaw: gzipRaw, notes: slices.Clone(notes), payloadEvicted: model.payloadEvicted[number]}
+	return traceDetailSnapshot{generation: generation, revision: model.payloadRevisions[number], responseRevision: responseRevision, responseNumber: responseNumber, number: number, width: model.width, protocol: model.protocol, filter: model.filter, secrets: model.secrets, decode: model.decode, event: event, response: response, responseMessage: responseMessage, payload: payload, gzipRaw: gzipRaw, notes: slices.Clone(notes), payloadEvicted: model.payloadEvicted[number]}
 }
 
 func (model traceScreenModel) detailShell(number int, status string) *traceDetail {
@@ -386,7 +393,7 @@ func (model *traceScreenModel) startDetailBuild(snapshot traceDetailSnapshot) te
 }
 
 func sameTraceDetailSnapshot(left, right traceDetailSnapshot) bool {
-	return left.kind == right.kind && left.generation == right.generation && left.revision == right.revision && left.responseRevision == right.responseRevision && left.responseNumber == right.responseNumber && left.number == right.number && left.width == right.width && left.protocol == right.protocol && left.filter == right.filter && left.secrets == right.secrets && left.decode == right.decode && left.payloadEvicted == right.payloadEvicted
+	return left.kind == right.kind && left.generation == right.generation && left.revision == right.revision && left.responseRevision == right.responseRevision && left.responseNumber == right.responseNumber && left.number == right.number && left.width == right.width && left.protocol == right.protocol && left.filter == right.filter && left.secrets == right.secrets && left.decode == right.decode && left.payloadEvicted == right.payloadEvicted && (left.responseMessage == nil) == (right.responseMessage == nil) && (left.responseMessage == nil || left.responseMessage.payloadEvicted == right.responseMessage.payloadEvicted)
 }
 
 func traceBuildDetail(snapshot traceDetailSnapshot) *traceDetail {
@@ -394,7 +401,12 @@ func traceBuildDetail(snapshot traceDetailSnapshot) *traceDetail {
 	detail := newTraceDetail(result.event, result.payload, result.notes, snapshot.number, snapshot.width)
 	detail.revision = snapshot.revision
 	detail.responseRevision = snapshot.responseRevision
-	if snapshot.response != nil {
+	if message := snapshot.responseMessage; message != nil {
+		result := tracePreparePayload(*message)
+		response := newTraceDetail(result.event, result.payload, result.notes, message.number, message.width)
+		detail.raw = append(append(detail.raw, "", "response:"), response.raw...)
+		detail.wrap(snapshot.width)
+	} else if snapshot.response != nil {
 		detail.raw = append(detail.raw, tracePairResponseDetailLines(*snapshot.response)...)
 		detail.wrap(snapshot.width)
 	}

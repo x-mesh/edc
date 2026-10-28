@@ -162,7 +162,7 @@ const duNamesBatch = 4096
 func duWalkTree(ctx context.Context, options duOptions, sources duSources, root *duNode, dev uint64) (duScan, []diskMount) {
 	walker := &duWalker{
 		ctx: ctx, options: options, sources: sources, rootDev: dev,
-		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]struct{}{},
+		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]*duLink{},
 		directories: options.progress, activity: options.activity,
 	}
 	if walker.directories == nil {
@@ -196,7 +196,7 @@ func duWalkTree(ctx context.Context, options duOptions, sources duSources, root 
 	sort.Strings(walker.unreadable)
 	scan := duScan{
 		root: root, directories: walker.directories.Load(), mounts: walker.skipped, unreadable: walker.unreadable,
-		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings,
+		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings, walker: walker,
 	}
 	return scan, walker.mounts
 }
@@ -292,7 +292,7 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 			subdirs = append(subdirs, duDir{node: child, path: path})
 			continue
 		}
-		if stat.Nlink > 1 && walker.counted(stat.Dev, stat.Ino) {
+		if stat.Nlink > 1 && walker.counted(stat.Dev, stat.Ino, dir.node) {
 			continue
 		}
 		dir.node.bytes += bytes

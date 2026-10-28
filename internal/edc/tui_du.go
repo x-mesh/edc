@@ -41,6 +41,10 @@ type duBrowser struct {
 	width         int
 	height        int
 	color         bool
+	// refresh는 탐색이 끝난 뒤에 생긴다. refreshSetting과 refreshCtx는 그때 쓸 --refresh 값과 화면의 수명이다.
+	refresh        *duRefresher
+	refreshSetting duRefreshSetting
+	refreshCtx     context.Context
 }
 
 // duScanJob은 화면 밖에서 도는 탐색이다. finished를 닫아 끝을 알린다. 화면이 먼저 끝나도 결과를 다시 읽을 수
@@ -68,14 +72,18 @@ const (
 	duBarWidth   = 10
 )
 
-func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions, sources duSources, started time.Time, noBrowse bool) (duScan, error) {
+func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions, sources duSources, started time.Time, noBrowse bool, refresh duRefreshSetting) (duScan, error) {
 	options.progress = new(atomic.Int64)
 	job := &duScanJob{finished: make(chan struct{})}
 	go func() {
 		job.scan, job.err = duWalk(ctx, options, sources)
 		close(job.finished)
 	}()
+	// 화면은 탐색의 --timeout보다 오래 열려 있을 수 있다. 다시 읽기는 화면이 닫힐 때 멈춘다.
+	refreshCtx, stopRefresh := context.WithCancel(context.Background())
+	defer stopRefresh()
 	model := newDuBrowseModel(options, cancel, job, started, noBrowse)
+	model.refreshSetting, model.refreshCtx = refresh, refreshCtx
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -131,6 +139,20 @@ func (model duBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, tea.Quit
 		}
 		model.current, model.cursor, model.offset = model.scan.root, 0, 0
+		if model.refreshCtx != nil {
+			model.refresh = newDuRefresher(model.refreshCtx, model.refreshSetting, model.scan, model.started)
+		}
+		if model.refresh != nil && model.refresh.on {
+			return model, model.refresh.tick()
+		}
+	case duRefreshTickMsg:
+		refresher := model.refresh
+		if refresher == nil || !refresher.on || refresher.running || value.generation != refresher.generation {
+			return model, nil
+		}
+		return model, refresher.poll(model.scan.root)
+	case duRefreshDoneMsg:
+		return model.refreshed(value.result)
 	case tea.KeyPressMsg:
 		if model.noBrowse && value.String() != "ctrl+c" {
 			return model, nil
@@ -162,9 +184,26 @@ func (model duBrowser) stopKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (model duBrowser) browseKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	rows := model.rows()
 	page := max(1, model.listRows())
+	var command tea.Cmd
 	switch key.String() {
 	case "q", "ctrl+c":
 		return model, tea.Quit
+	case "a":
+		if refresher := model.refresh; refresher != nil {
+			refresher.on, refresher.reason = !refresher.on, ""
+			refresher.generation++
+			if refresher.on && !refresher.running {
+				command = refresher.tick()
+			}
+		}
+	case "r":
+		if refresher := model.refresh; refresher != nil {
+			if refresher.running {
+				refresher.pending = model.current
+			} else {
+				command = refresher.rescan(model.current)
+			}
+		}
 	case "up", "k":
 		model.cursor--
 	case "down", "j":
@@ -196,6 +235,44 @@ func (model duBrowser) browseKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	model.keepCursor()
+	return model, command
+}
+
+// refreshed는 다시 읽은 결과를 옮긴다. 보던 디렉터리가 빠졌으면 남아 있는 가장 가까운 조상으로 올라가고, 고른 줄은
+// 다시 정렬된 뒤에도 같은 항목에 둔다.
+func (model duBrowser) refreshed(result duRefreshResult) (tea.Model, tea.Cmd) {
+	refresher := model.refresh
+	if refresher == nil {
+		return model, nil
+	}
+	var selected *duNode
+	if rows := model.rows(); model.cursor >= 0 && model.cursor < len(rows) {
+		selected = rows[model.cursor].node
+	}
+	refresher.apply(&model.scan, result)
+	for model.current.parent != nil && !duAttached(model.current) {
+		model.current, selected = model.current.parent, nil
+	}
+	for index, row := range model.rows() {
+		if selected != nil && row.node == selected {
+			model.cursor = index
+		}
+	}
+	model.keepCursor()
+	if pending := refresher.pending; pending != nil {
+		refresher.pending = nil
+		if duAttached(pending) {
+			return model, refresher.rescan(pending)
+		}
+	}
+	// 하드링크를 세던 디렉터리가 빠졌으면 남은 링크가 있는 디렉터리를 바로 다시 읽는다. 자동 갱신이 꺼져 있어도 합계가
+	// 틀린 채 남지 않게 한다.
+	if len(refresher.forced) > 0 {
+		return model, refresher.poll(model.scan.root)
+	}
+	if refresher.on {
+		return model, refresher.tick()
+	}
 	return model, nil
 }
 
@@ -279,6 +356,17 @@ func (model duBrowser) cells(row duBrowseRow) duBrowseCells {
 	}
 	if row.node != nil && row.node.unreadable {
 		cells.notes = append(cells.notes, duBrowseNote{T("du.browse.unreadable"), richYellow})
+	}
+	if row.node != nil && model.refresh != nil && model.refresh.count > 0 {
+		node := row.node
+		switch {
+		case node.known && node.total > node.base:
+			cells.notes = append(cells.notes, duBrowseNote{"+" + formatSizeShort(node.total-node.base), richYellow})
+		case node.known && node.total < node.base:
+			cells.notes = append(cells.notes, duBrowseNote{"-" + formatSizeShort(node.base-node.total), richGray})
+		case !node.known && node.dir:
+			cells.notes = append(cells.notes, duBrowseNote{T("du.browse.refresh_new"), richYellow})
+		}
 	}
 	if row.node != nil {
 		if label := model.scan.labels[duNodePath(row.node)]; label != "" {
@@ -440,7 +528,11 @@ func (model duBrowser) progressLines() []string {
 }
 
 func (model duBrowser) browseLines() []string {
-	lines := []string{model.title(), liveKeyHints(T("du.browse.help"), model.color)}
+	help, on := T("du.browse.help"), false
+	if model.refresh != nil {
+		help, on = T("du.browse.help_refresh"), model.refresh.on
+	}
+	lines := []string{model.title(), liveKeyHints(help, model.color, liveHintItem{key: "a", on: on})}
 	rows := model.rows()
 	texts := make([]string, len(rows))
 	width := 0
@@ -538,7 +630,29 @@ func (model duBrowser) footerParts() []duBrowseNote {
 	if model.scan.unreadableCount > 0 {
 		parts = append(parts, duBrowseNote{T("du.browse.unreadable_count", model.scan.unreadableCount), richYellow})
 	}
+	if refresher := model.refresh; refresher != nil {
+		parts = append(parts, model.refreshNote(refresher))
+		if root := model.scan.root; root.total != root.base {
+			change := "+" + formatSizeShort(root.total-root.base)
+			if root.total < root.base {
+				change = "-" + formatSizeShort(root.base-root.total)
+			}
+			parts = append(parts, duBrowseNote{T("du.browse.refresh_delta", change, refresher.started.Format("15:04")), richYellow})
+		}
+	}
 	return parts
+}
+
+func (model duBrowser) refreshNote(refresher *duRefresher) duBrowseNote {
+	switch {
+	case refresher.running:
+		return duBrowseNote{T("du.browse.refreshing"), richGray}
+	case refresher.on:
+		return duBrowseNote{T("du.browse.refresh_on", refresher.interval.Round(time.Second)), richGray}
+	case refresher.reason != "":
+		return duBrowseNote{T("du.browse.refresh_off_reason", refresher.reason), richGray}
+	}
+	return duBrowseNote{T("du.browse.refresh_off"), richGray}
 }
 
 func (model duBrowser) richFooter() string {

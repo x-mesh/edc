@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -68,6 +69,9 @@ type duNode struct {
 	// own은 디렉터리 자신의 block이다. bytes에서 빼면 children으로 따로 두지 않은 파일의 합이 남는다.
 	own        uint64
 	unreadable bool
+	// base는 탐색이 끝났을 때의 total이다. 화면이 다시 읽은 뒤 늘어난 양을 보인다. known은 탐색 때 있던 항목이다.
+	base  uint64
+	known bool
 }
 
 type duMount struct {
@@ -100,6 +104,8 @@ type duScan struct {
 	labels map[string]string
 	// elapsed는 탐색에 걸린 시간이다. 화면을 닫은 뒤 결과를 만들므로 화면을 본 시간을 넣지 않으려고 따로 잰다.
 	elapsed time.Duration
+	// walker는 탐색을 마친 탐색기다. 화면이 디렉터리를 다시 읽을 때 hard link 기록과 마운트 경계를 그대로 쓴다.
+	walker *duWalker
 }
 
 type duUsage struct{ Size, Used uint64 }
@@ -176,10 +182,17 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	crossMounts := set.Bool("cross-mounts", false, T("command.du.option.cross_mounts"))
 	noBrowse := set.Bool("no-browse", false, T("command.du.option.no_browse"))
 	set.BoolVar(noBrowse, "B", false, T("command.du.option.no_browse"))
+	refreshText := set.String("refresh", duRefreshAuto, T("command.du.option.refresh"))
 	err := parseReordered(set, args)
 	if err != nil {
 		return 2
 	}
+	refresh, err := parseDuRefresh(*refreshText)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	set.Visit(func(item *flag.Flag) { refresh.explicit = refresh.explicit || item.Name == "refresh" })
 	if set.NArg() > 1 || *workers < 1 || *rows < 0 {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc du [options] [path]"))
 		return 2
@@ -197,6 +210,11 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	// svc, ctr과 같이 사람이 보는 터미널에서만 화면을 연다. pipe, --json, NO_COLOR는 그대로 출력한다.
 	live := terminal && liveTerminal()
 	browse := live && !*noBrowse
+	// 출력 모드의 결과는 한 시점의 값이어야 한다. 받고 무시하면 켠 줄 알고 기다리게 된다.
+	if refresh.explicit && !browse {
+		fmt.Fprintln(os.Stderr, T("du.error.refresh_needs_browse"))
+		return 2
+	}
 	scanOptions := duOptions{workers: *workers, rows: *rows, crossMounts: *crossMounts}
 	if scanOptions.rows == 0 {
 		scanOptions.rows = duDefaultRows(stdout, terminal)
@@ -212,7 +230,7 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	scanOptions.root, err = duResolveRoot(path)
 	var scan duScan
 	if err == nil && live {
-		scan, err = duBrowse(ctx, cancel, scanOptions, sources, started, *noBrowse)
+		scan, err = duBrowse(ctx, cancel, scanOptions, sources, started, *noBrowse, refresh)
 	} else if err == nil {
 		scan, err = duWalk(ctx, scanOptions, sources)
 	}
@@ -727,6 +745,13 @@ type duFiles struct {
 	floor atomic.Uint64
 	mu    sync.Mutex
 	heap  duFileHeap
+}
+
+// reset은 화면이 디렉터리를 다시 읽을 때 쓴다. floor는 탐색이 남긴 가장 작은 큰 파일이라, 다시 읽은 파일 중 그보다 큰
+// 것만 줄로 올린다.
+func (files *duFiles) reset(limit int, floor uint64) {
+	files.limit, files.heap = limit, nil
+	files.floor.Store(floor)
 }
 
 type duFile struct {

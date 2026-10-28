@@ -711,11 +711,15 @@ func TestTraceScreenFollowShowsTheNewestEvent(t *testing.T) {
 
 func TestTraceScreenEvictionKeepsOnlyVisibleSelection(t *testing.T) {
 	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, traceScreenEventLimit)
+	for index := range events {
+		events[index] = captureEvent{Protocol: "http"}
+	}
+	events[1].Event = "keep"
+	next, _ := model.Update(traceEventMsg{events: events})
+	model = next.(traceScreenModel)
 	model.filter, model.selected = "keep", 0
-	model.events = make([]captureEvent, traceScreenEventLimit)
-	model.arrivals = make([]time.Time, traceScreenEventLimit)
-	model.events[1] = captureEvent{Protocol: "http", Event: "keep"}
-	next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: "drop"}}})
+	next, _ = model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: "drop"}}})
 	model = next.(traceScreenModel)
 	if model.selected != model.first {
 		t.Fatalf("selected = %d, first = %d", model.selected, model.first)

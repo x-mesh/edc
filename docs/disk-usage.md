@@ -22,10 +22,19 @@ edc du -B /var                  # show progress and size bars, then exit
 edc du --no-browse /var         # the same as -B
 edc du --workers 1 /var         # read one directory at a time
 edc du --cross-mounts /var      # count the mounts below /var too
+edc du --refresh 10s /var       # refresh the screen every 10 seconds
 edc du --json - /var            # the rows in metrics.rows
 ```
 
 In a terminal, `edc du` opens a screen. While edc reads, the screen shows the number of directories that it read. Press `q` to stop, and the screen shows what edc read. `Ctrl-C` stops and closes the screen. The screen lists the current directory, with the largest entry first. Press `Enter` or `→` to open a directory. Press `←`, `Backspace`, or `Esc` to go up. `↑`, `↓`, `PgUp`, `PgDn`, `g`, and `G` move the cursor. Press `q` to close the screen, and edc prints the result. The screen does not change or delete a file. In a pipe, with `--json`, or with `NO_COLOR` set, edc prints the result and opens no screen. For the screen, edc keeps the 10,000 largest files. In each directory, the other files show as one `(N other files)` row.
+
+After the scan, the screen refreshes itself. Each refresh reads the modification time of every directory and the size of the large files on the screen. Then edc reads again only the directories that changed. A row that grew shows the growth, for example `+1.2 GB`, and a new directory shows `new`. The bottom line shows the interval and the growth of the whole tree since the scan. The interval is 5 seconds or more, and it is 50 times the duration of the last refresh, so a refresh uses 2% of the time or less. On a tree with 131,000 directories, a refresh took 0.2 to 0.4 seconds.
+
+- A small file that grows in place, and that is not a row on the screen, does not show. Press `r` to read the open directory again with all its subdirectories.
+- Press `a` to turn the refresh off or on.
+- The refresh starts off on a network file system and after a scan that stopped before the end. `--refresh 10s` sets a fixed interval and turns the refresh on, also on a network file system. `--refresh 0` turns it off.
+- `--refresh` works only on the screen. With `-B`, a pipe, or `--json`, edc stops with exit code 2.
+- When you close the screen with `q`, edc prints the tree at that time.
 
 In a terminal, `--no-browse` or `-B` shows a spinner during the scan. When the scan ends, edc prints size bars and exits.
 

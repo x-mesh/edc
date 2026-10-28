@@ -67,6 +67,9 @@ type grepOptions struct {
 	jobs    int
 	verify  bool
 	now     time.Time
+	// serial은 파일 안을 구간으로 나누지 않는다는 뜻이다. 여러 파일을 worker로 나눠 찾을 때 worker 안에서 다시 worker를
+	// 띄우지 않기 위해서다.
+	serial bool
 }
 
 func runGrep(args []string) int {
@@ -290,8 +293,8 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 			fmt.Fprintln(stderr, T("grep.failed", err))
 		}
 	}
-	if options.codeMode && !options.pathMode && len(targets) > 1 {
-		ok, searchFailed := grepSearchCodeFiles(targets, options, matcher, printer, stderr)
+	if !options.pathMode && len(targets) > 1 {
+		ok, searchFailed := grepSearchFiles(targets, options, matcher, printer, buffers, hints, stderr)
 		found, failed = found || ok, failed || searchFailed
 		targets = nil
 	}
@@ -537,25 +540,32 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 	return grepSearchPlain(source, size, scanner, filter, fresh, options, report, emit)
 }
 
-// grepSearchCodeFiles는 코드 검색 대상을 CPU 수만큼의 worker로 나눠 찾는다. 작은 파일 수만 개를 한 스레드에서 열고 읽으면
-// 시스템 호출을 기다리는 시간이 검색보다 길다. worker는 파일마다 출력을 모아 두고, 여기서 대상 순서대로 내므로 결과는
-// 차례로 찾을 때와 같다. 코드 검색은 index를 쓰지 않으므로 파일 사이에 나누는 상태가 없다.
-func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMatcher, printer *grepPrinter, stderr io.Writer) (bool, bool) {
+// grepSearchFiles는 대상 파일을 CPU 수만큼의 worker로 나눠 찾는다. 작은 파일 수만 개를 한 스레드에서 열고 읽으면 시스템
+// 호출을 기다리는 시간이 검색보다 길고, 20 MiB 로그 52개는 rg보다 8배 느렸다. worker는 파일마다 출력과 힌트를 모아 두고,
+// 여기서 대상 순서대로 내므로 결과는 차례로 찾을 때와 같다. worker 안에서는 파일을 구간으로 나누지 않는다.
+// grepIndexMinSize 이상인 파일은 index를 만들거나 쓰고 파일 안에서도 병렬로 훑으므로, worker가 맡지 않고 순서가 되면
+// 여기서 찾는다. 이 기준을 grepParallelMinSize로 낮추면 20 MiB 로그 52개가 121ms에서 277ms로 느려졌다.
+func grepSearchFiles(targets []string, options grepOptions, matcher *grepMatcher, printer *grepPrinter, buffers *grepBuffers, hints *grepHints, stderr io.Writer) (bool, bool) {
 	type fileResult struct {
 		output []byte
 		found  bool
 		err    error
+		// inline이면 worker가 찾지 않은 큰 파일이다.
+		inline bool
+		hints  grepHints
 	}
 	workers := min(runtime.GOMAXPROCS(0), len(targets))
 	// 출력을 기다리는 파일 수를 window로 묶는다. 출력이 느리면(| less) worker가 앞서 나가 결과를 모두 메모리에 쌓기 때문이다.
 	// worker는 자리를 얻은 뒤에 다음 순번을 받고, 여기서 낸 순번만큼 자리를 돌려준다. 그래서 받았지만 아직 내지 않은 순번은
 	// window개 안에 들고, 결과 자리는 순번을 window로 나눈 나머지로 겹치지 않게 다시 쓴다.
-	window := min(len(targets), workers*grepCodeWindowPerWorker)
+	window := min(len(targets), workers*grepFilesWindowPerWorker)
 	slots := make(chan struct{}, window)
 	results := make([]chan fileResult, window)
 	for index := range results {
 		results[index] = make(chan fileResult, 1)
 	}
+	serial := options
+	serial.serial = true
 	var next atomic.Int64
 	for range workers {
 		go func() {
@@ -563,7 +573,6 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 			var output bytes.Buffer
 			local := *printer
 			local.out = bufio.NewWriterSize(&output, 64<<10)
-			hints := &grepHints{options: options}
 			for {
 				slots <- struct{}{}
 				index := int(next.Add(1)) - 1
@@ -571,22 +580,34 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 					<-slots
 					return
 				}
-				ok, err := grepSearchFile(targets[index], options, matcher, buffers, &local, hints)
+				if info, err := os.Stat(targets[index]); err == nil && info.Size() >= grepIndexMinSize {
+					results[index%window] <- fileResult{inline: true}
+					continue
+				}
+				hints := grepHints{options: options}
+				ok, err := grepSearchFile(targets[index], serial, matcher, buffers, &local, &hints)
 				local.out.Flush()
 				var text []byte
 				if output.Len() > 0 {
 					text = bytes.Clone(output.Bytes())
 				}
-				results[index%window] <- fileResult{output: text, found: ok, err: err}
+				results[index%window] <- fileResult{output: text, found: ok, err: err, hints: hints}
 				output.Reset()
-				hints.reports = hints.reports[:0]
 			}
 		}()
 	}
 	found, failed := false, false
 	for index, path := range targets {
 		result := <-results[index%window]
-		printer.out.Write(result.output)
+		if result.inline {
+			result.found, result.err = grepSearchFile(path, options, matcher, buffers, printer, hints)
+		} else {
+			printer.out.Write(result.output)
+			hints.reports = append(hints.reports, result.hints.reports...)
+			hints.skippedOld = append(hints.skippedOld, result.hints.skippedOld...)
+			hints.binary = append(hints.binary, result.hints.binary...)
+			hints.verifyFailed = hints.verifyFailed || result.hints.verifyFailed
+		}
 		<-slots
 		found = found || result.found
 		if result.err != nil {
@@ -597,8 +618,8 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 	return found, failed
 }
 
-// grepCodeWindowPerWorker는 worker 하나가 출력보다 앞서 찾아 둘 수 있는 파일 수다.
-const grepCodeWindowPerWorker = 16
+// grepFilesWindowPerWorker는 worker 하나가 출력보다 앞서 찾아 둘 수 있는 파일 수다.
+const grepFilesWindowPerWorker = 16
 
 type grepIndexPlan struct {
 	path  string
@@ -831,7 +852,7 @@ func grepSearchPlain(file io.ReaderAt, size int64, scanner grepScanner, filter *
 	}
 	// 앞 줄의 level과 시각을 물려받는 필터는 구간 경계에서 상태를 probe로만 이을 수 있어 결과가 달라질 수 있다. 그런
 	// 필터는 처음부터 차례로 훑는다.
-	if workers := runtime.GOMAXPROCS(0); workers > 1 && size-from >= grepParallelMinSize && (filter == nil || !filter.needsEveryLine()) {
+	if workers := runtime.GOMAXPROCS(0); !options.serial && workers > 1 && size-from >= grepParallelMinSize && (filter == nil || !filter.needsEveryLine()) {
 		read, err := grepScanParallel(file, from, size, lineBase, workers, grepParallelSpan, fresh, wrapped)
 		report.bytesRead = read
 		return found, err
@@ -843,8 +864,9 @@ func grepSearchPlain(file io.ReaderAt, size int64, scanner grepScanner, filter *
 
 const (
 	// grepParallelMinSize보다 큰 범위는 구간으로 나눠 병렬로 훑는다. 한 스레드는 1 GiB 로그의 흔한 낱말을 0.9초에
-	// 훑었고, 10개로 나누면 0.12초였다.
-	grepParallelMinSize = 64 << 20
+	// 훑었고, 10개로 나누면 0.12초였다. 48 MiB 파일은 이 값이 64 MiB일 때 48ms, 16 MiB일 때 28ms였고, 8 MiB로 더
+	// 낮춰도 12 MiB 파일이 26ms에서 22ms가 되는 정도였다.
+	grepParallelMinSize = 16 << 20
 	// grepParallelSpan은 worker 하나가 한 번에 맡는 구간이다. 일치한 줄은 내보낼 때까지 복사해 두므로, 모든 줄이
 	// 맞아도 메모리는 구간 크기 x window 안에 든다.
 	grepParallelSpan = 2 << 20

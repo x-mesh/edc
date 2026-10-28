@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"fmt"
@@ -501,6 +502,84 @@ func TestGrepContextPrintsEveryLineBefore(t *testing.T) {
 		}
 		if code, got, _ := grepCommand(t, content, "-n", "-C", tc.context, "hit"); code != 0 || got != tc.want {
 			t.Fatalf("stdin -C %s: code %d\n%s", tc.context, code, got)
+		}
+	}
+}
+
+func TestGrepLogFilesParallelKeepsSequentialOutputAndHints(t *testing.T) {
+	dir := t.TempDir()
+	for index := range 40 {
+		var content strings.Builder
+		for line := range 50 + index {
+			if (line+index)%9 == 0 {
+				fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z ERROR order=%d failed\n", line%60, index)
+			} else {
+				fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z INFO ok %d\n", line%60, line)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("app-%02d.log", index)), []byte(content.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app-20.bin"), []byte("order=1\x00binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// grepIndexMinSize 이상인 파일은 worker가 맡지 않고 순서가 되면 직접 찾는다.
+	var large bytes.Buffer
+	for index := 0; large.Len() < grepIndexMinSize; index++ {
+		fmt.Fprintf(&large, "2026-10-27T11:%02d:00Z INFO large line %d\n", index%60, index)
+		if index%200000 == 3 {
+			fmt.Fprintf(&large, "2026-10-27T11:%02d:00Z ERROR order=%d failed in large\n", index%60, index)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app-25.log"), large.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	writer.Write([]byte("2026-10-27T10:00:00Z ERROR order=7 in gz\n"))
+	writer.Close()
+	if err := os.WriteFile(filepath.Join(dir, "app-30.log.gz"), compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"order="}, {"-n", "-C", "1", "failed"}, {"-l", "ERROR"}, {"--level", "error", "-i", "ORDER"}, {"--last", "2", "order="}} {
+		options, paths, err := parseGrepOptions(append(append([]string{"--no-index"}, args...), dir), io.Discard, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets, directories, _ := grepTargets(paths)
+		matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newPrinter := func(out *bytes.Buffer) *grepPrinter {
+			return &grepPrinter{out: bufio.NewWriter(out), showPath: len(targets) > 1 || directories > 0, numbers: options.numbers, context: options.context}
+		}
+		var want bytes.Buffer
+		printer, wantHints := newPrinter(&want), &grepHints{options: options}
+		for _, path := range targets {
+			if _, err := grepSearchFile(path, options, matcher, &grepBuffers{}, printer, wantHints); err != nil {
+				t.Fatal(err)
+			}
+		}
+		printer.out.Flush()
+		var got bytes.Buffer
+		printer, gotHints := newPrinter(&got), &grepHints{options: options}
+		// CPU가 하나인 환경에서도 worker를 여럿 둔다.
+		previous := runtime.GOMAXPROCS(max(runtime.GOMAXPROCS(0), 4))
+		_, failed := grepSearchFiles(targets, options, matcher, printer, &grepBuffers{}, gotHints, io.Discard)
+		runtime.GOMAXPROCS(previous)
+		printer.out.Flush()
+		if failed || got.String() != want.String() || want.Len() == 0 {
+			t.Fatalf("%v: failed %v\ngot:\n%s\nwant:\n%s", args, failed, got.String(), want.String())
+		}
+		if fmt.Sprint(gotHints.binary, gotHints.skippedOld) != fmt.Sprint(wantHints.binary, wantHints.skippedOld) || len(gotHints.reports) != len(wantHints.reports) {
+			t.Fatalf("%v: hints %v %v %d, want %v %v %d", args, gotHints.binary, gotHints.skippedOld, len(gotHints.reports), wantHints.binary, wantHints.skippedOld, len(wantHints.reports))
+		}
+		for index := range wantHints.reports {
+			if gotHints.reports[index].path != wantHints.reports[index].path {
+				t.Fatalf("%v: report %d is %s, want %s", args, index, gotHints.reports[index].path, wantHints.reports[index].path)
+			}
 		}
 	}
 }

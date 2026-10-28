@@ -1,8 +1,10 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -501,6 +503,201 @@ func TestGrepContextPrintsEveryLineBefore(t *testing.T) {
 		}
 		if code, got, _ := grepCommand(t, content, "-n", "-C", tc.context, "hit"); code != 0 || got != tc.want {
 			t.Fatalf("stdin -C %s: code %d\n%s", tc.context, code, got)
+		}
+	}
+}
+
+func TestGrepLogFilesParallelKeepsSequentialOutputAndHints(t *testing.T) {
+	dir := t.TempDir()
+	for index := range 40 {
+		var content strings.Builder
+		for line := range 50 + index {
+			if (line+index)%9 == 0 {
+				fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z ERROR order=%d failed\n", line%60, index)
+			} else {
+				fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z INFO ok %d\n", line%60, line)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("app-%02d.log", index)), []byte(content.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app-20.bin"), []byte("order=1\x00binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// grepIndexMinSize 이상인 파일은 worker가 맡지 않고 순서가 되면 직접 찾는다.
+	var large bytes.Buffer
+	for index := 0; large.Len() < grepIndexMinSize; index++ {
+		fmt.Fprintf(&large, "2026-10-27T11:%02d:00Z INFO large line %d\n", index%60, index)
+		if index%200000 == 3 {
+			fmt.Fprintf(&large, "2026-10-27T11:%02d:00Z ERROR order=%d failed in large\n", index%60, index)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app-25.log"), large.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	writer.Write([]byte("2026-10-27T10:00:00Z ERROR order=7 in gz\n"))
+	writer.Close()
+	if err := os.WriteFile(filepath.Join(dir, "app-30.log.gz"), compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"order="}, {"-n", "-C", "1", "failed"}, {"-l", "ERROR"}, {"--level", "error", "-i", "ORDER"}, {"--last", "2", "order="}} {
+		options, paths, err := parseGrepOptions(append(append([]string{"--no-index"}, args...), dir), io.Discard, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets, directories, _ := grepTargets(paths)
+		matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newPrinter := func(out *bytes.Buffer) *grepPrinter {
+			return &grepPrinter{out: bufio.NewWriter(out), showPath: len(targets) > 1 || directories > 0, numbers: options.numbers, context: options.context}
+		}
+		var want bytes.Buffer
+		printer, wantHints := newPrinter(&want), &grepHints{options: options}
+		for _, path := range targets {
+			if _, err := grepSearchFile(path, options, matcher, &grepBuffers{}, printer, wantHints); err != nil {
+				t.Fatal(err)
+			}
+		}
+		printer.out.Flush()
+		var got bytes.Buffer
+		printer, gotHints := newPrinter(&got), &grepHints{options: options}
+		// CPU가 하나인 환경에서도 worker를 여럿 둔다.
+		previous := runtime.GOMAXPROCS(max(runtime.GOMAXPROCS(0), 4))
+		_, failed := grepSearchFiles(targets, options, matcher, printer, &grepBuffers{}, gotHints, io.Discard)
+		runtime.GOMAXPROCS(previous)
+		printer.out.Flush()
+		if failed || got.String() != want.String() || want.Len() == 0 {
+			t.Fatalf("%v: failed %v\ngot:\n%s\nwant:\n%s", args, failed, got.String(), want.String())
+		}
+		if fmt.Sprint(gotHints.binary, gotHints.skippedOld) != fmt.Sprint(wantHints.binary, wantHints.skippedOld) || len(gotHints.reports) != len(wantHints.reports) {
+			t.Fatalf("%v: hints %v %v %d, want %v %v %d", args, gotHints.binary, gotHints.skippedOld, len(gotHints.reports), wantHints.binary, wantHints.skippedOld, len(wantHints.reports))
+		}
+		for index := range wantHints.reports {
+			if gotHints.reports[index].path != wantHints.reports[index].path {
+				t.Fatalf("%v: report %d is %s, want %s", args, index, gotHints.reports[index].path, wantHints.reports[index].path)
+			}
+		}
+	}
+}
+
+func TestGrepStdinMatchesFileSearch(t *testing.T) {
+	var content strings.Builder
+	for index := range 3000 {
+		level := []string{"INFO", "WARN", "ERROR"}[index%3]
+		fmt.Fprintf(&content, "2026-10-27T10:%02d:%02d Z %s request %d status=%d\n", index/60%60, index%60, level, index, []int{200, 404, 503}[index%3])
+		if index%250 == 0 {
+			content.WriteString("\tat stack line Cancel\r\n")
+		}
+	}
+	content.WriteString("last line without newline cancel")
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, []byte(content.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"cancel"}, {"-n", "request 1"}, {"-l", "status=503"}, {"-i", "CANCEL"}, {"-E", "request [0-9]+7 status"}, {"-n", "--level", "error", "request"}, {"--level", "warn", "-E", "status=(404|503)"}} {
+		fileCode, fromFile, _ := grepCommand(t, "", append(append([]string{"--no-index"}, args...), path)...)
+		stdinCode, fromStdin, _ := grepCommand(t, content.String(), args...)
+		// -l은 파일 경로와 stdin 이름을 내므로 무엇이 나왔는지만 비교한다.
+		if args[0] == "-l" {
+			fromFile, fromStdin = fmt.Sprint(fromFile != ""), fmt.Sprint(fromStdin != "")
+		}
+		if fileCode != stdinCode || fromFile != fromStdin || fromFile == "" || fromFile == "false" {
+			t.Fatalf("%v: file %d %q, stdin %d %q", args, fileCode, fromFile, stdinCode, fromStdin)
+		}
+	}
+}
+
+type grepErrorAfter struct {
+	data []byte
+	err  error
+}
+
+func (reader *grepErrorAfter) Read(buffer []byte) (int, error) {
+	if len(reader.data) == 0 {
+		return 0, reader.err
+	}
+	count := copy(buffer, reader.data[:min(len(reader.data), 1000)])
+	reader.data = reader.data[count:]
+	return count, nil
+}
+
+type grepEndless struct{}
+
+func (grepEndless) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = 'x'
+	}
+	return len(buffer), nil
+}
+
+func TestGrepReadAheadKeepsBytesErrorsAndStops(t *testing.T) {
+	data := bytes.Repeat([]byte("0123456789abcdef\n"), grepReadAheadChunk/8)
+	ahead := newGrepReadAhead(bytes.NewReader(data))
+	got, err := io.ReadAll(ahead)
+	ahead.Close()
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read %d of %d bytes, err %v", len(got), len(data), err)
+	}
+	broken := errors.New("broken gzip")
+	ahead = newGrepReadAhead(&grepErrorAfter{data: data, err: broken})
+	got, err = io.ReadAll(ahead)
+	ahead.Close()
+	if !errors.Is(err, broken) || !bytes.Equal(got, data) {
+		t.Fatalf("read %d of %d bytes, err %v, want %v", len(got), len(data), err, broken)
+	}
+	// 대기열이 가득 차 읽는 goroutine이 보내기를 기다리는 동안 닫아도 끝나야 한다. 끝없는 입력이라 끝까지 읽어서는
+	// 끝나지 않는다.
+	ahead = newGrepReadAhead(grepEndless{})
+	ahead.Read(make([]byte, 10))
+	for len(ahead.chunks) < grepReadAheadDepth {
+		time.Sleep(time.Millisecond)
+	}
+	done := make(chan struct{})
+	go func() {
+		ahead.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+func TestGrepGzipMatchesFileSearch(t *testing.T) {
+	var content bytes.Buffer
+	for index := 0; content.Len() < 3*grepReadAheadChunk; index++ {
+		fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z INFO request %d done\n", index%60, index)
+		if index%5000 == 7 {
+			fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z ERROR order=%d failed\n", index%60, index)
+		}
+	}
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "app.log")
+	if err := os.WriteFile(plain, content.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var zipped bytes.Buffer
+	writer := gzip.NewWriter(&zipped)
+	writer.Write(content.Bytes())
+	writer.Close()
+	compressed := filepath.Join(dir, "app.log.gz")
+	if err := os.WriteFile(compressed, zipped.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"order="}, {"-n", "failed"}, {"-l", "ERROR"}, {"-C", "1", "order=7"}, {"--last", "2", "order="}} {
+		wantCode, want, _ := grepCommand(t, "", append(append([]string{"--no-index"}, args...), plain)...)
+		gotCode, got, stderr := grepCommand(t, "", append(append([]string{"--no-index"}, args...), compressed)...)
+		if args[0] == "-l" {
+			want = strings.ReplaceAll(want, plain, compressed)
+		}
+		if gotCode != wantCode || got != want || stderr != "" || want == "" {
+			t.Fatalf("%v: code %d/%d stderr %q\ngot %q\nwant %q", args, gotCode, wantCode, stderr, got, want)
 		}
 	}
 }

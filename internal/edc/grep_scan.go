@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"regexp/syntax"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -66,6 +68,13 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 		matcher.regex = regex
 		prefix, _ := regex.LiteralPrefix()
 		matcher.needle = []byte(prefix)
+		// 앞에 고정 문자열이 없어도 모든 일치에 들어가는 문자열이 있으면 그것으로 건너뛴다. 없으면 모든 줄에 정규식을 대서,
+		// Go 소스 41 MB에 [a-z]+_[a-z]+Test\( 를 찾는 데 869ms가 걸렸고 Test( 로 건너뛰면 7ms였다.
+		if parsed, err := syntax.Parse(expr, syntax.Perl); err == nil {
+			if required := grepRequiredLiteral(parsed); len(required) > len(matcher.needle) {
+				matcher.needle = required
+			}
+		}
 		matcher.indexNeedle = matcher.needle
 		if ignoreCase && !useRegex {
 			// 대소문자를 무시해도 글자가 아닌 바이트는 그대로다. 그중 가장 긴 구간이 모든 일치에 들어간다.
@@ -134,6 +143,58 @@ func (matcher *grepMatcher) withSample(sample []byte) *grepMatcher {
 	copied := *matcher
 	copied.pivot, copied.second = copied.choosePivot(sample)
 	return &copied
+}
+
+// grepRequiredLiteral은 re에 맞는 모든 문자열에 들어가는 가장 긴 고정 문자열이다. 확실하지 않으면 nil이다. 대소문자를
+// 접는 문자열은 바이트로 찾을 수 없으므로 쓰지 않는다.
+func grepRequiredLiteral(re *syntax.Regexp) []byte {
+	switch re.Op {
+	case syntax.OpLiteral:
+		// 정규식은 잘못된 UTF-8 바이트를 U+FFFD로 읽어 맞추므로, U+FFFD가 든 문자열을 바이트로 찾으면 그런 줄을 놓친다.
+		if re.Flags&syntax.FoldCase != 0 || slices.Contains(re.Rune, utf8.RuneError) {
+			return nil
+		}
+		return []byte(string(re.Rune))
+	case syntax.OpCapture, syntax.OpPlus:
+		return grepRequiredLiteral(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return grepRequiredLiteral(re.Sub[0])
+		}
+	case syntax.OpConcat:
+		var best []byte
+		for _, sub := range re.Sub {
+			if literal := grepRequiredLiteral(sub); len(literal) > len(best) {
+				best = literal
+			}
+		}
+		return best
+	case syntax.OpAlternate:
+		// 갈래마다 들어가는 문자열의 공통 부분만 모든 일치에 들어간다.
+		common := grepRequiredLiteral(re.Sub[0])
+		for _, sub := range re.Sub[1:] {
+			if len(common) == 0 {
+				return nil
+			}
+			common = grepLongestCommonRun(common, grepRequiredLiteral(sub))
+		}
+		return common
+	}
+	return nil
+}
+
+// grepLongestCommonRun은 a와 b에 함께 들어가는 가장 긴 연속 바이트다. 정규식의 고정 문자열은 짧아 제곱 비교로 충분하다.
+func grepLongestCommonRun(a, b []byte) []byte {
+	var best []byte
+	for start := range a {
+		for end := start + len(best) + 1; end <= len(a); end++ {
+			if !bytes.Contains(b, a[start:end]) {
+				break
+			}
+			best = a[start:end]
+		}
+	}
+	return best
 }
 
 func grepLongestNonLetterRun(pattern string) []byte {

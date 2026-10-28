@@ -270,7 +270,10 @@ func TestGrepCodeParallelSearchKeepsSequentialOutput(t *testing.T) {
 			}
 		}
 		printer.out.Flush()
+		// CPU가 하나인 환경에서도 병렬 경로를 지나도록 worker를 여럿 둔다.
+		previous := runtime.GOMAXPROCS(max(runtime.GOMAXPROCS(0), 4))
 		code, got, stderr := grepCommand(t, "", args...)
+		runtime.GOMAXPROCS(previous)
 		if code != 0 || stderr != "" || got != want.String() || want.Len() == 0 {
 			t.Fatalf("%v: code %d stderr %q\ngot:\n%s\nwant:\n%s", args, code, stderr, got, want.String())
 		}

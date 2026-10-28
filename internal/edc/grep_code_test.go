@@ -290,18 +290,28 @@ func TestGrepCodeWalkBoundsGoroutines(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "leaf.go"), []byte("needle\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	base := runtime.NumGoroutine()
+	// 앞선 테스트가 남긴 goroutine도 runtime.NumGoroutine에 잡히므로, 스택에 탐색 함수가 있는 goroutine만 센다.
+	walking := func(stacks []byte) int64 {
+		count := int64(0)
+		for _, stack := range bytes.Split(stacks, []byte("\n\ngoroutine ")) {
+			if bytes.Contains(stack, []byte("(*grepCodeWalk).dir")) {
+				count++
+			}
+		}
+		return count
+	}
 	var peak atomic.Int64
 	done := make(chan struct{})
 	sampled := make(chan struct{})
 	go func() {
 		defer close(sampled)
+		stacks := make([]byte, 8<<20)
 		for {
 			select {
 			case <-done:
 				return
 			default:
-				if count := int64(runtime.NumGoroutine()); count > peak.Load() {
+				if count := walking(stacks[:runtime.Stack(stacks, true)]); count > peak.Load() {
 					peak.Store(count)
 				}
 			}
@@ -313,8 +323,8 @@ func TestGrepCodeWalkBoundsGoroutines(t *testing.T) {
 	if len(files) != 1 || len(problems) != 0 {
 		t.Fatalf("files %v problems %v", files, problems)
 	}
-	// base에는 표본을 세는 goroutine이 없으므로 하나를 더한다.
-	if limit := int64(base + 1 + runtime.GOMAXPROCS(0)*grepCodeWalkSpawnPerCPU); peak.Load() > limit {
+	// 탐색을 부른 이 goroutine도 스택에 탐색 함수가 있으므로 하나를 더한다.
+	if limit := int64(1 + runtime.GOMAXPROCS(0)*grepCodeWalkSpawnPerCPU); peak.Load() > limit {
 		t.Fatalf("walk ran %d goroutines, limit %d", peak.Load(), limit)
 	}
 }

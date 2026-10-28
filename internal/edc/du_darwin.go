@@ -92,7 +92,7 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	}
 	walker := &duWalker{ctx: ctx, options: options, sources: sources, rootDev: uint64(stat.Dev), mounts: mounts,
 		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)},
-		seen: map[duInode]struct{}{}, directories: options.progress, activity: options.activity}
+		seen: map[duInode]*duNode{}, directories: options.progress, activity: options.activity}
 	if walker.directories == nil {
 		walker.directories = new(atomic.Int64)
 	}
@@ -118,7 +118,7 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	sort.Slice(walker.skipped, func(i, j int) bool { return walker.skipped[i].Path < walker.skipped[j].Path })
 	sort.Strings(walker.unreadable)
 	scan := duScan{root: root, directories: walker.directories.Load(), mounts: walker.skipped,
-		unreadable: walker.unreadable, unreadableCount: walker.unreadableCount, partial: walker.stopped.Load()}
+		unreadable: walker.unreadable, unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), walker: walker}
 	var fs unix.Statfs_t
 	if err := unix.Statfs(options.root, &fs); err == nil {
 		scan.filesystem = duFilesystem{Mount: unix.ByteSliceToString(fs.Mntonname[:]), FSType: unix.ByteSliceToString(fs.Fstypename[:]),
@@ -324,7 +324,7 @@ func (walker *duWalker) scanDarwinFD(dir duDir, buffer []byte, fd int) []duDir {
 				dir.node.children = append(dir.node.children, child)
 				subdirs = append(subdirs, duDir{node: child, path: path})
 			} else {
-				if entry.links > 1 && walker.counted(entry.dev, entry.ino) {
+				if entry.links > 1 && walker.counted(entry.dev, entry.ino, dir.node) {
 					continue
 				}
 				dir.node.bytes += entry.bytes

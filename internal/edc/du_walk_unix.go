@@ -30,8 +30,10 @@ type duWalker struct {
 	activity    *atomic.Int64
 	stopped     atomic.Bool
 
-	mu              sync.Mutex
-	seen            map[duInode]struct{}
+	mu sync.Mutex
+	// seen은 hard link가 여럿인 파일을 처음 센 디렉터리다. 화면이 디렉터리 하나를 다시 읽을 때 그 디렉터리가 센
+	// 파일만 다시 센다.
+	seen            map[duInode]*duNode
 	skipped         []duMount
 	unreadable      []string
 	unreadableCount int64
@@ -88,15 +90,16 @@ func duJoin(dir, name string) string {
 	return dir + "/" + name
 }
 
-// counted는 hard link가 여럿인 파일을 처음 볼 때만 false를 돌려준다. link 수가 1인 파일은 표에 넣지 않는다.
-func (walker *duWalker) counted(dev, ino uint64) bool {
+// counted는 hard link가 여럿인 파일을 처음 볼 때만 false를 돌려주고 센 디렉터리를 남긴다. link 수가 1인 파일은 표에 넣지
+// 않는다.
+func (walker *duWalker) counted(dev, ino uint64, node *duNode) bool {
 	key := duInode{dev: dev, ino: ino}
 	walker.mu.Lock()
 	defer walker.mu.Unlock()
 	if _, ok := walker.seen[key]; ok {
 		return true
 	}
-	walker.seen[key] = struct{}{}
+	walker.seen[key] = node
 	return false
 }
 

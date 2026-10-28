@@ -4,6 +4,8 @@ du:
     unsupported: "edc du reads directories on Linux and macOS only"
   error:
     path: "cannot read %s"
+    refresh_needs_browse: "--refresh works only on the browse screen in a terminal"
+    refresh_value: "--refresh takes auto, 0, or an interval of 1s or more: %s"
   summary: "%s in %s, %d entries, %s, workers %d"
   summary_partial: "%s in %s so far, %d entries, stopped at %s"
   summary_stopped: "%s in %s so far, %d entries, stopped"
@@ -46,6 +48,14 @@ du:
     deleted: "deleted, open %s"
     partial: "partial"
     unreadable_count: "%d unreadable"
+    help_refresh: "↑↓ move · Enter open · ← up · r rescan · a refresh · q quit"
+    refresh_on: "refresh %s"
+    refresh_off: "refresh off"
+    refresh_off_reason: "refresh off (%s)"
+    refreshing: "refreshing…"
+    refresh_partial: "partial"
+    refresh_delta: "%s since %s"
+    refresh_new: "new"
   diff:
     count: "changed directories: %d"
     path_differs: "directories not compared, the paths differ: %s → %s"

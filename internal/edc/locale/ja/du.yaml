@@ -4,6 +4,8 @@ du:
     unsupported: "du は Linux と macOS でのみ動作します"
   error:
     path: "%s を読めませんでした"
+    refresh_needs_browse: "--refresh は端末の閲覧画面でのみ使えます"
+    refresh_value: "--refresh には auto、0、または 1s 以上の間隔を指定します: %s"
   summary: "%s (%s)、項目 %d 個、%s、worker %d 個"
   summary_partial: "ここまで %s (%s)、項目 %d 個、制限時間 %s で停止"
   summary_stopped: "ここまで %s (%s)、項目 %d 個、停止"
@@ -46,6 +48,14 @@ du:
     deleted: "削除済み・オープン中 %s"
     partial: "一部のみ"
     unreadable_count: "読めない %d 個"
+    help_refresh: "↑↓ 移動 · Enter 開く · ← 上へ · r 再読み込み · a 自動更新 · q 終了"
+    refresh_on: "更新 %s"
+    refresh_off: "更新オフ"
+    refresh_off_reason: "更新オフ (%s)"
+    refreshing: "更新中…"
+    refresh_partial: "一部のみ"
+    refresh_delta: "%s 増加 (%s から)"
+    refresh_new: "新規"
   diff:
     count: "ディレクトリの変化 %d 件"
     path_differs: "パスが異なるためディレクトリを比較しませんでした: %s → %s"

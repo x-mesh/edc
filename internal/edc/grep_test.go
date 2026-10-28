@@ -470,10 +470,12 @@ func TestGrepLargeFileParallelOutputEqualsSequential(t *testing.T) {
 		{"--status", "5xx", "/api/orders/12345"},
 	} {
 		args = append(append([]string{"--no-index"}, args...), path)
+		// CPU가 하나인 환경에서도 두 번째 검색이 병렬 경로를 지나도록 worker를 여럿 둔다.
 		previous := runtime.GOMAXPROCS(1)
 		wantCode, want, wantErr := grepCommand(t, "", args...)
-		runtime.GOMAXPROCS(previous)
+		runtime.GOMAXPROCS(max(previous, 4))
 		code, got, stderr := grepCommand(t, "", args...)
+		runtime.GOMAXPROCS(previous)
 		if code != wantCode || got != want || stderr != wantErr || want == "" {
 			t.Fatalf("%v: code %d/%d, %d/%d bytes, stderr %q/%q", args, code, wantCode, len(got), len(want), stderr, wantErr)
 		}

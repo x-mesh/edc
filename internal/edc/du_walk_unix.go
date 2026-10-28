@@ -5,6 +5,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -31,9 +32,9 @@ type duWalker struct {
 	stopped     atomic.Bool
 
 	mu sync.Mutex
-	// seen은 hard link가 여럿인 파일을 처음 센 디렉터리다. 화면이 디렉터리 하나를 다시 읽을 때 그 디렉터리가 센
+	// seen은 hard link가 여럿인 파일을 어느 디렉터리가 셌는지다. 화면이 디렉터리 하나를 다시 읽을 때 그 디렉터리가 센
 	// 파일만 다시 센다.
-	seen            map[duInode]*duNode
+	seen            map[duInode]*duLink
 	skipped         []duMount
 	unreadable      []string
 	unreadableCount int64
@@ -90,17 +91,35 @@ func duJoin(dir, name string) string {
 	return dir + "/" + name
 }
 
-// counted는 hard link가 여럿인 파일을 처음 볼 때만 false를 돌려주고 센 디렉터리를 남긴다. link 수가 1인 파일은 표에 넣지
-// 않는다.
+// duLink는 hard link가 여럿인 파일 하나다. owner가 그 파일을 셌고, others는 세지 않고 지나갔다. owner의 링크가 지워지면
+// others 중 하나가 다시 세야 합계가 맞는다.
+type duLink struct {
+	owner  *duNode
+	others []*duNode
+}
+
+// duLinkOthers는 세지 않고 지나간 디렉터리를 남기는 상한이다. 한 파일을 수만 곳에 링크한 트리에서 탐색이 느려지지 않게 한다.
+const duLinkOthers = 64
+
+// counted는 hard link가 여럿인 파일을 처음 볼 때만 false를 돌려주고 센 디렉터리를 남긴다. 센 디렉터리가 빠져 주인이 없는
+// 파일은 다음에 만난 디렉터리가 센다. link 수가 1인 파일은 표에 넣지 않는다.
 func (walker *duWalker) counted(dev, ino uint64, node *duNode) bool {
 	key := duInode{dev: dev, ino: ino}
 	walker.mu.Lock()
 	defer walker.mu.Unlock()
-	if _, ok := walker.seen[key]; ok {
-		return true
+	link := walker.seen[key]
+	if link == nil {
+		walker.seen[key] = &duLink{owner: node}
+		return false
 	}
-	walker.seen[key] = node
-	return false
+	if link.owner == nil {
+		link.owner = node
+		return false
+	}
+	if link.owner != node && len(link.others) < duLinkOthers && !slices.Contains(link.others, node) {
+		link.others = append(link.others, node)
+	}
+	return true
 }
 
 // unreadableDir는 path를 읽지 못한 디렉터리로 세고, 센 경우에 true를 돌려준다.

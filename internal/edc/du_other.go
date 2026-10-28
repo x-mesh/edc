@@ -16,11 +16,13 @@ func duHostMounts() ([]diskMount, error) { return nil, errors.ErrUnsupported }
 
 type duWalker struct{}
 
+type duInode struct{}
+
 func duWalk(context.Context, duOptions, duSources) (duScan, error) {
 	return duScan{}, errors.ErrUnsupported
 }
 
-func duPoll(context.Context, *duWalker, *duNode, time.Time, uint64) duRefreshResult {
+func duPoll(context.Context, *duWalker, *duNode, time.Time, uint64, map[*duNode]bool) duRefreshResult {
 	return duRefreshResult{err: errors.ErrUnsupported}
 }
 
@@ -32,7 +34,9 @@ func duRescanFull(context.Context, *duWalker, *duNode, string, string, uint64) d
 	return duRefreshResult{err: errors.ErrUnsupported}
 }
 
-func (*duWalker) forget(map[*duNode]bool) {}
+func (*duWalker) forget(map[*duNode]bool) []duInode { return nil }
+
+func (*duWalker) orphans([]duInode) []*duNode { return nil }
 
 func (*duWalker) reown(_, _ *duNode) {}
 

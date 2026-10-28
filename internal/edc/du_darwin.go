@@ -92,7 +92,7 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	}
 	walker := &duWalker{ctx: ctx, options: options, sources: sources, rootDev: uint64(stat.Dev), mounts: mounts,
 		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)},
-		seen: map[duInode]*duNode{}, directories: options.progress, activity: options.activity}
+		seen: map[duInode]*duLink{}, directories: options.progress, activity: options.activity}
 	if walker.directories == nil {
 		walker.directories = new(atomic.Int64)
 	}

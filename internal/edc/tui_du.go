@@ -265,6 +265,11 @@ func (model duBrowser) refreshed(result duRefreshResult) (tea.Model, tea.Cmd) {
 			return model, refresher.rescan(pending)
 		}
 	}
+	// 하드링크를 세던 디렉터리가 빠졌으면 남은 링크가 있는 디렉터리를 바로 다시 읽는다. 자동 갱신이 꺼져 있어도 합계가
+	// 틀린 채 남지 않게 한다.
+	if len(refresher.forced) > 0 {
+		return model, refresher.poll(model.scan.root)
+	}
 	if refresher.on {
 		return model, refresher.tick()
 	}

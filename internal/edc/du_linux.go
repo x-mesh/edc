@@ -162,7 +162,7 @@ const duNamesBatch = 4096
 func duWalkTree(ctx context.Context, options duOptions, sources duSources, root *duNode, dev uint64) (duScan, []diskMount) {
 	walker := &duWalker{
 		ctx: ctx, options: options, sources: sources, rootDev: dev,
-		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]*duNode{},
+		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]*duLink{},
 		directories: options.progress, activity: options.activity,
 	}
 	if walker.directories == nil {

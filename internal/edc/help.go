@@ -435,6 +435,7 @@ var commandDocs = []commandDoc{
 			{"-i, --interval 0.1", "command.watch.option.interval"},
 			{"--duration 1m", "command.watch.option.duration"},
 			{"-v, --verbose", "command.listen.option.verbose"},
+			{"--full", "command.listen.option.full"},
 		},
 		usesCommon: true,
 	},

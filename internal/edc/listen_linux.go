@@ -337,3 +337,19 @@ func attachLinuxSocketOwners(procRoot string, sockets []listenSocket) {
 		sockets[index].Process, sockets[index].PID, sockets[index].FD = name, strconv.Itoa(owner.pid), strconv.Itoa(owner.fd)
 	}
 }
+
+func listenProcessCommand(pid string) ([]string, string) {
+	return readLinuxProcessCommand("/proc", pid)
+}
+
+// readLinuxProcessCommand는 /proc/<pid>/cmdline의 argv와 cwd 링크를 읽는다. 커널 thread는 cmdline이 비고, 다른 계정의
+// cwd는 root가 아니면 읽을 수 없어 비운다.
+func readLinuxProcessCommand(procRoot, pid string) ([]string, string) {
+	directory := filepath.Join(procRoot, pid)
+	var args []string
+	if data, err := os.ReadFile(filepath.Join(directory, "cmdline")); err == nil && len(bytes.Trim(data, "\x00")) != 0 {
+		args = strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	}
+	cwd, _ := os.Readlink(filepath.Join(directory, "cwd"))
+	return args, cwd
+}

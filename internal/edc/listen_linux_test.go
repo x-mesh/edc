@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -99,7 +101,7 @@ func TestParseLinuxInetDiagMsg(t *testing.T) {
 				}
 				return
 			}
-			if !ok || got != *tt.want {
+			if !ok || !reflect.DeepEqual(got, *tt.want) {
 				t.Fatalf("got %#v (%v), want %#v", got, ok, *tt.want)
 			}
 		})
@@ -154,7 +156,7 @@ func TestParseLinuxUnixDiagMsg(t *testing.T) {
 				}
 				return
 			}
-			if !ok || got != *tt.want {
+			if !ok || !reflect.DeepEqual(got, *tt.want) {
 				t.Fatalf("got %#v (%v), want %#v", got, ok, *tt.want)
 			}
 		})
@@ -363,5 +365,30 @@ func BenchmarkCollectLinuxListenSockets(b *testing.B) {
 		if _, err := collectListenSockets(families); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestReadLinuxProcessCommand(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "42")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "cmdline"), []byte("node\x00vite\x00--port\x005173\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/srv/web", filepath.Join(directory, "cwd")); err != nil {
+		t.Fatal(err)
+	}
+	args, cwd := readLinuxProcessCommand(root, "42")
+	if !slices.Equal(args, []string{"node", "vite", "--port", "5173"}) || cwd != "/srv/web" {
+		t.Fatalf("args %q cwd %q", args, cwd)
+	}
+	// 커널 thread는 cmdline이 비어 있다.
+	if err := os.WriteFile(filepath.Join(directory, "cmdline"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := readLinuxProcessCommand(root, "42"); args != nil {
+		t.Fatalf("kernel thread args %q", args)
 	}
 }

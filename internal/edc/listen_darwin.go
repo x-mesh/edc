@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"strconv"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // lsof도 같은 libproc 호출로 소켓을 읽지만 별도 process를 띄우고 모든 fd를 글로 바꾼다. 여기서는 소켓 fd만 읽는다.
@@ -63,6 +65,12 @@ const (
 	darwinBSDName     = 64
 	darwinBSDCommSz   = 16
 	darwinBSDNameSz   = 32
+
+	darwinProcPIDVnodePathInfo = 9    // PROC_PIDVNODEPATHINFO
+	darwinVnodePathInfoSize    = 2352 // struct proc_vnodepathinfo
+	darwinVnodeInfoSize        = 152  // pvi_cdir.vip_vi. 작업 디렉터리 경로가 바로 뒤에 온다.
+	darwinMaxPathLen           = 1024
+	darwinProcArgsMaxArgs      = 4096
 )
 
 func collectListenSockets(families listenFamilies) ([]listenSocket, error) {
@@ -231,4 +239,50 @@ func darwinCString(value []byte) string {
 		value = value[:end]
 	}
 	return string(value)
+}
+
+// listenProcessCommand는 process의 argv와 작업 디렉터리를 읽는다. ps도 argv를 kern.procargs2에서 읽는다. 다른 계정의
+// process는 root가 아니면 둘 다 읽을 수 없어 비운다.
+func listenProcessCommand(pid string) ([]string, string) {
+	number, err := strconv.Atoi(pid)
+	if err != nil {
+		return nil, ""
+	}
+	var args []string
+	if raw, err := unix.SysctlRaw("kern.procargs2", number); err == nil {
+		args = parseDarwinProcArgs(raw)
+	}
+	info := make([]byte, darwinVnodePathInfoSize)
+	read, _, _ := darwinSyscall6(procPIDInfoAddr, uintptr(number), darwinProcPIDVnodePathInfo, 0, uintptr(unsafe.Pointer(&info[0])), uintptr(len(info)), 0)
+	cwd := ""
+	if int32(read) == darwinVnodePathInfoSize {
+		cwd = darwinCString(info[darwinVnodeInfoSize : darwinVnodeInfoSize+darwinMaxPathLen])
+	}
+	return args, cwd
+}
+
+// parseDarwinProcArgs는 kern.procargs2의 argv만 꺼낸다. 값은 argc, 실행 파일 경로, 정렬용 NUL, argv, 환경 변수 순이다.
+// 환경 변수에는 비밀이 들기 쉬워 argc개를 넘겨 읽지 않는다.
+func parseDarwinProcArgs(raw []byte) []string {
+	if len(raw) < 4 {
+		return nil
+	}
+	argc := int(binary.LittleEndian.Uint32(raw))
+	rest := raw[4:]
+	end := bytes.IndexByte(rest, 0)
+	if end < 0 || argc <= 0 || argc > darwinProcArgsMaxArgs {
+		return nil
+	}
+	rest = bytes.TrimLeft(rest[end:], "\x00")
+	args := make([]string, 0, min(argc, 64))
+	for len(args) < argc && len(rest) != 0 {
+		end := bytes.IndexByte(rest, 0)
+		if end < 0 {
+			args = append(args, string(rest))
+			break
+		}
+		args = append(args, string(rest[:end]))
+		rest = rest[end+1:]
+	}
+	return args
 }

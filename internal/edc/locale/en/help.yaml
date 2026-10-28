@@ -318,6 +318,7 @@ command:
       all: "show TCP, UDP and unix domain sockets"
       watch: "show ports opening and closing until interrupted"
       verbose: "add the account, the descriptor and the queue columns"
+      full: "show the working directory and the command line below each row"
     notes:
       - "It shows TCP LISTEN sockets and bound UDP sockets."
       - "A family flag is a filter. --tcp keeps TCP and drops the rest."
@@ -327,6 +328,10 @@ command:
       - "-v adds the account, the file descriptor and the queue."
       - "The queue is Recv-Q/Send-Q. For a TCP listener it is the accept queue."
       - "-v adds columns only. The rows stay the same."
+      - "--full adds a gray line below each row: the working directory and the command line."
+      - "For node, python, ruby, perl and php, the line starts with the script name."
+      - "Values of options such as --password and --token and URL passwords show as ***."
+      - "With --json, edc listen includes args and cwd when edc can read them. --full does not work with --watch."
   svc:
     summary: "systemd services, or one service on one screen (Linux)"
     notes:

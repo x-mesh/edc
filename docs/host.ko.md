@@ -386,5 +386,8 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 ```bash
 edc listen
+edc listen --full
 edc listen --watch -i 0.5 --duration 10s
 ```
+
+`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.

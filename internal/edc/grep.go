@@ -547,10 +547,11 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 }
 
 // grepSearchFiles는 대상 파일을 CPU 수만큼의 worker로 나눠 찾는다. 작은 파일 수만 개를 한 스레드에서 열고 읽으면 시스템
-// 호출을 기다리는 시간이 검색보다 길고, 20 MiB 로그 52개는 rg보다 8배 느렸다. worker는 파일마다 출력과 힌트를 모아 두고,
-// 여기서 대상 순서대로 내므로 결과는 차례로 찾을 때와 같다. worker 안에서는 파일을 구간으로 나누지 않는다.
-// grepIndexMinSize 이상인 파일은 index를 만들거나 쓰고 파일 안에서도 병렬로 훑으므로, worker가 맡지 않고 순서가 되면
-// 여기서 찾는다. 이 기준을 grepParallelMinSize로 낮추면 20 MiB 로그 52개가 121ms에서 277ms로 느려졌다.
+// 호출을 기다리는 시간이 검색보다 길고, 20 MiB 로그 52개는 rg보다 8배 느렸다. worker는 출력을 grepOutputQueue에 쌓고
+// 힌트는 파일마다 모아 두며, 여기서 대상 순서대로 내므로 결과는 차례로 찾을 때와 같다. worker 안에서는 파일을 구간으로
+// 나누지 않는다. grepIndexMinSize 이상인 파일은 index를 만들거나 쓰고 파일 안에서도 병렬로 훑으므로, worker가 맡지 않고
+// 순서가 되면 여기서 찾는다. 이 기준을 grepParallelMinSize로 낮추면 20 MiB 로그 52개가 Linux arm64에서 143ms에서
+// 617ms로 느려졌다. 파일마다 하나씩 구간으로 나눠 훑게 되어 파일 사이의 병렬이 사라지기 때문이다.
 func grepSearchFiles(targets []string, options grepOptions, matcher *grepMatcher, printer *grepPrinter, buffers *grepBuffers, hints *grepHints, stderr io.Writer) (bool, bool) {
 	workers := min(runtime.GOMAXPROCS(0), len(targets))
 	// 출력을 기다리는 파일 수를 window로 묶는다. worker는 자리를 얻은 뒤에 다음 순번을 받고, 여기서 낸 순번만큼 자리를
@@ -633,7 +634,7 @@ type grepPendingFile struct {
 	done    bool
 	result  grepFileResult
 	// signal은 이 파일에 조각이나 결과가 들어왔다고 drain에 알린다. cond 하나로 알리면 파일 1만 6천 개를 찾는 동안
-	// 다른 파일의 소식마다 drain이 깨어나 코드 검색이 153ms에서 187ms로 느려졌다.
+	// 다른 파일의 소식마다 drain이 깨어난다.
 	signal chan struct{}
 }
 

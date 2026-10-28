@@ -6,6 +6,7 @@ import (
 	"io"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -149,7 +150,8 @@ func (matcher *grepMatcher) withSample(sample []byte) *grepMatcher {
 func grepRequiredLiteral(re *syntax.Regexp) []byte {
 	switch re.Op {
 	case syntax.OpLiteral:
-		if re.Flags&syntax.FoldCase != 0 {
+		// 정규식은 잘못된 UTF-8 바이트를 U+FFFD로 읽어 맞추므로, U+FFFD가 든 문자열을 바이트로 찾으면 그런 줄을 놓친다.
+		if re.Flags&syntax.FoldCase != 0 || slices.Contains(re.Rune, utf8.RuneError) {
 			return nil
 		}
 		return []byte(string(re.Rune))

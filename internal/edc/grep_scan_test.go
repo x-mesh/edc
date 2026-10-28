@@ -248,6 +248,7 @@ func TestGrepMatcherNeedles(t *testing.T) {
 		{`x*y?`, true, false, ""},
 		{`[0-9]+(?i:cancel)`, true, false, ""},
 		{`(GET|POST) /api/(users|orders)`, true, false, " /api/"},
+		{"id=\uFFFD+ end", true, false, " end"},
 	} {
 		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
 		if err != nil {
@@ -301,6 +302,26 @@ func TestGrepScanLastKeepsMatchesBeforeAReadError(t *testing.T) {
 		if got[index].offset != expected.offset || !bytes.Equal(got[index].text, expected.text) {
 			t.Fatalf("line %d at %d, want %d", index, got[index].offset, expected.offset)
 		}
+	}
+}
+
+// 정규식은 잘못된 UTF-8 바이트를 U+FFFD로 읽으므로, U+FFFD를 needle로 쓰면 그 줄을 놓친다.
+func TestGrepRegexWithReplacementCharacterMatchesInvalidBytes(t *testing.T) {
+	matcher, err := newGrepMatcher("id=\uFFFD", true, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("ok\nid=\xff\nok\n")
+	scanner := newGrepScanner(matcher, nil)
+	var got []string
+	if _, err := scanner.scanRange(bytes.NewReader(data), 0, int64(len(data)), -1, func(ref grepLineRef) bool {
+		got = append(got, string(ref.text))
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "id=\xff" {
+		t.Fatalf("lines %q, want the line with an invalid byte", got)
 	}
 }
 

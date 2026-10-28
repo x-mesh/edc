@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/gzip"
+	"github.com/x-mesh/fastgzip"
 )
 
 const grepUsage = "edc grep [options] <pattern> [path...]"
@@ -442,9 +442,10 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 			hints.skippedOld = append(hints.skippedOld, path)
 			return false, nil
 		}
-		// klauspost/compress의 gzip은 같은 100 MB를 표준 compress/gzip(372ms)보다 빨리(248ms) 푼다. 시스템 gzip을 부르는
-		// 방법은 macOS의 Apple gzip에서만 빨랐고(100ms) Linux의 GNU gzip에서는 470ms로 더 느렸다.
-		reader, err := gzip.NewReader(bufio.NewReaderSize(file, 1<<20))
+		// fastgzip은 같은 100 MB 로그를 72ms에 풀어 klauspost/compress(241ms)와 표준 compress/gzip(357ms)보다 빠르고,
+		// macOS의 시스템 zlib(71ms)과 비슷하다. Linux arm64에서도 72ms다. 시스템 gzip을 부르는 방법은 macOS에서만 빨랐고
+		// Linux의 GNU gzip에서는 470ms로 더 느렸다. fastgzip은 입력을 256KB씩 직접 읽으므로 bufio.Reader는 복사만 늘린다.
+		reader, err := fastgzip.NewReader(file)
 		if err != nil {
 			return false, err
 		}

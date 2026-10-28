@@ -3,7 +3,6 @@ package edc
 import (
 	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/x-mesh/fastgzip"
 )
 
 const (
@@ -247,7 +248,7 @@ func grepExtractRuntime(archive, destination string, rt grepRuntimeAsset) error 
 		return err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(f)
+	gz, err := fastgzip.NewReader(f)
 	if err != nil {
 		return err
 	}

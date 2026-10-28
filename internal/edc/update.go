@@ -3,7 +3,6 @@ package edc
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/x-mesh/fastgzip"
 	"golang.org/x/term"
 )
 
@@ -231,7 +231,7 @@ func verifyChecksum(data []byte, name string, list []byte) error {
 
 // extractBinary는 tar.gz에서 edc 실행 파일 하나를 꺼낸다.
 func extractBinary(archive []byte) ([]byte, error) {
-	reader, err := gzip.NewReader(bytes.NewReader(archive))
+	reader, err := fastgzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", T("cli.update.asset_open_failed"), err)
 	}

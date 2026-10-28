@@ -11,7 +11,6 @@ require (
 	github.com/ebitengine/purego v0.10.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-git/go-git/v5 v5.16.3
-	github.com/klauspost/compress v1.20.3
 	github.com/miekg/dns v1.1.73
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/vishvananda/netlink v1.3.1
@@ -46,6 +45,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
+	github.com/x-mesh/fastgzip v0.1.0
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect

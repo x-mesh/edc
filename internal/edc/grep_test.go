@@ -626,6 +626,15 @@ func (reader *grepErrorAfter) Read(buffer []byte) (int, error) {
 	return count, nil
 }
 
+type grepEndless struct{}
+
+func (grepEndless) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = 'x'
+	}
+	return len(buffer), nil
+}
+
 func TestGrepReadAheadKeepsBytesErrorsAndStops(t *testing.T) {
 	data := bytes.Repeat([]byte("0123456789abcdef\n"), grepReadAheadChunk/8)
 	ahead := newGrepReadAhead(bytes.NewReader(data))
@@ -641,9 +650,13 @@ func TestGrepReadAheadKeepsBytesErrorsAndStops(t *testing.T) {
 	if !errors.Is(err, broken) || !bytes.Equal(got, data) {
 		t.Fatalf("read %d of %d bytes, err %v, want %v", len(got), len(data), err, broken)
 	}
-	// 다 읽기 전에 닫아도 읽는 goroutine이 끝나야 한다.
-	ahead = newGrepReadAhead(bytes.NewReader(data))
+	// 대기열이 가득 차 읽는 goroutine이 보내기를 기다리는 동안 닫아도 끝나야 한다. 끝없는 입력이라 끝까지 읽어서는
+	// 끝나지 않는다.
+	ahead = newGrepReadAhead(grepEndless{})
 	ahead.Read(make([]byte, 10))
+	for len(ahead.chunks) < grepReadAheadDepth {
+		time.Sleep(time.Millisecond)
+	}
 	done := make(chan struct{})
 	go func() {
 		ahead.Close()

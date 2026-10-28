@@ -552,33 +552,21 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 // grepIndexMinSize 이상인 파일은 index를 만들거나 쓰고 파일 안에서도 병렬로 훑으므로, worker가 맡지 않고 순서가 되면
 // 여기서 찾는다. 이 기준을 grepParallelMinSize로 낮추면 20 MiB 로그 52개가 121ms에서 277ms로 느려졌다.
 func grepSearchFiles(targets []string, options grepOptions, matcher *grepMatcher, printer *grepPrinter, buffers *grepBuffers, hints *grepHints, stderr io.Writer) (bool, bool) {
-	type fileResult struct {
-		output []byte
-		found  bool
-		err    error
-		// inline이면 worker가 찾지 않은 큰 파일이다.
-		inline bool
-		hints  grepHints
-	}
 	workers := min(runtime.GOMAXPROCS(0), len(targets))
-	// 출력을 기다리는 파일 수를 window로 묶는다. 출력이 느리면(| less) worker가 앞서 나가 결과를 모두 메모리에 쌓기 때문이다.
-	// worker는 자리를 얻은 뒤에 다음 순번을 받고, 여기서 낸 순번만큼 자리를 돌려준다. 그래서 받았지만 아직 내지 않은 순번은
-	// window개 안에 들고, 결과 자리는 순번을 window로 나눈 나머지로 겹치지 않게 다시 쓴다.
+	// 출력을 기다리는 파일 수를 window로 묶는다. worker는 자리를 얻은 뒤에 다음 순번을 받고, 여기서 낸 순번만큼 자리를
+	// 돌려준다. 그래서 받았지만 아직 내지 않은 순번은 window개 안에 들고, 결과 자리는 순번을 window로 나눈 나머지로 다시 쓴다.
 	window := min(len(targets), workers*grepFilesWindowPerWorker)
+	queue := newGrepOutputQueue(window, grepFilesOutputBudget)
 	slots := make(chan struct{}, window)
-	results := make([]chan fileResult, window)
-	for index := range results {
-		results[index] = make(chan fileResult, 1)
-	}
 	serial := options
 	serial.serial = true
 	var next atomic.Int64
 	for range workers {
 		go func() {
 			buffers := &grepBuffers{}
-			var output bytes.Buffer
+			writer := &grepQueueWriter{queue: queue}
 			local := *printer
-			local.out = bufio.NewWriterSize(&output, 64<<10)
+			local.out = bufio.NewWriterSize(writer, 64<<10)
 			for {
 				slots <- struct{}{}
 				index := int(next.Add(1)) - 1
@@ -587,28 +575,23 @@ func grepSearchFiles(targets []string, options grepOptions, matcher *grepMatcher
 					return
 				}
 				if info, err := os.Stat(targets[index]); err == nil && info.Size() >= grepIndexMinSize {
-					results[index%window] <- fileResult{inline: true}
+					queue.finish(index, grepFileResult{inline: true})
 					continue
 				}
+				writer.index = index
 				hints := grepHints{options: options}
 				ok, err := grepSearchFile(targets[index], serial, matcher, buffers, &local, &hints)
 				local.out.Flush()
-				var text []byte
-				if output.Len() > 0 {
-					text = bytes.Clone(output.Bytes())
-				}
-				results[index%window] <- fileResult{output: text, found: ok, err: err, hints: hints}
-				output.Reset()
+				queue.finish(index, grepFileResult{found: ok, err: err, hints: hints})
 			}
 		}()
 	}
 	found, failed := false, false
 	for index, path := range targets {
-		result := <-results[index%window]
+		result := queue.drain(index, printer.out)
 		if result.inline {
 			result.found, result.err = grepSearchFile(path, options, matcher, buffers, printer, hints)
 		} else {
-			printer.out.Write(result.output)
 			hints.reports = append(hints.reports, result.hints.reports...)
 			hints.skippedOld = append(hints.skippedOld, result.hints.skippedOld...)
 			hints.binary = append(hints.binary, result.hints.binary...)
@@ -624,8 +607,128 @@ func grepSearchFiles(targets []string, options grepOptions, matcher *grepMatcher
 	return found, failed
 }
 
-// grepFilesWindowPerWorker는 worker 하나가 출력보다 앞서 찾아 둘 수 있는 파일 수다.
-const grepFilesWindowPerWorker = 16
+// grepFileResult는 worker가 파일 하나를 찾은 결과다. inline이면 worker가 찾지 않은 큰 파일이다.
+type grepFileResult struct {
+	found  bool
+	err    error
+	inline bool
+	hints  grepHints
+}
+
+// grepOutputQueue는 아직 내지 않은 파일들의 출력을 쌓는다. 파일 하나의 출력을 다 모았다가 넘기면 모든 줄이 맞는 로그
+// 30개에서 723 MB를 썼고, 파일마다 몇 조각만 쌓게 하면 뒤 파일의 worker가 멈춰 20 MiB 로그 52개가 134ms에서 641ms로
+// 느려졌다. 그래서 쌓인 출력 전체를 budget 바이트로 묶는다. 지금 내고 있는 파일(current)의 출력은 바로 읽어 가므로
+// budget을 쓰지 않고, 그래서 앞 파일이 뒤 파일 때문에 멈추는 일은 없다.
+type grepOutputQueue struct {
+	mutex   sync.Mutex
+	cond    *sync.Cond
+	current int
+	budget  int64
+	files   []grepPendingFile
+}
+
+type grepPendingFile struct {
+	chunks  [][]byte
+	charged int64
+	done    bool
+	result  grepFileResult
+	// signal은 이 파일에 조각이나 결과가 들어왔다고 drain에 알린다. cond 하나로 알리면 파일 1만 6천 개를 찾는 동안
+	// 다른 파일의 소식마다 drain이 깨어나 코드 검색이 153ms에서 187ms로 느려졌다.
+	signal chan struct{}
+}
+
+func newGrepOutputQueue(window int, budget int64) *grepOutputQueue {
+	queue := &grepOutputQueue{budget: budget, files: make([]grepPendingFile, window)}
+	queue.cond = sync.NewCond(&queue.mutex)
+	for index := range queue.files {
+		queue.files[index].signal = make(chan struct{}, 1)
+	}
+	return queue
+}
+
+func (file *grepPendingFile) notify() {
+	select {
+	case file.signal <- struct{}{}:
+	default:
+	}
+}
+
+func (queue *grepOutputQueue) write(index int, chunk []byte) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	for index != queue.current && queue.budget < int64(len(chunk)) {
+		queue.cond.Wait()
+	}
+	file := &queue.files[index%len(queue.files)]
+	if index != queue.current {
+		queue.budget -= int64(len(chunk))
+		file.charged += int64(len(chunk))
+	}
+	file.chunks = append(file.chunks, chunk)
+	file.notify()
+}
+
+func (queue *grepOutputQueue) finish(index int, result grepFileResult) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	file := &queue.files[index%len(queue.files)]
+	file.done, file.result = true, result
+	file.notify()
+}
+
+// drain은 index 파일의 출력을 끝날 때까지 out에 쓰고 결과를 돌려준다.
+func (queue *grepOutputQueue) drain(index int, out io.Writer) grepFileResult {
+	queue.mutex.Lock()
+	queue.current = index
+	queue.cond.Broadcast()
+	file := &queue.files[index%len(queue.files)]
+	for {
+		if len(file.chunks) == 0 && !file.done {
+			queue.mutex.Unlock()
+			<-file.signal
+			queue.mutex.Lock()
+			continue
+		}
+		chunks, charged := file.chunks, file.charged
+		file.chunks, file.charged = nil, 0
+		if len(chunks) == 0 && file.done {
+			result := file.result
+			*file = grepPendingFile{signal: file.signal}
+			// 다음에 이 자리를 쓸 파일이 남은 알림에 속지 않도록 비운다.
+			select {
+			case <-file.signal:
+			default:
+			}
+			queue.mutex.Unlock()
+			return result
+		}
+		queue.mutex.Unlock()
+		for _, chunk := range chunks {
+			out.Write(chunk)
+		}
+		queue.mutex.Lock()
+		queue.budget += charged
+		queue.cond.Broadcast()
+	}
+}
+
+// grepQueueWriter는 bufio가 비울 때마다 조각을 복사해 지금 파일의 출력으로 쌓는다.
+type grepQueueWriter struct {
+	queue *grepOutputQueue
+	index int
+}
+
+func (writer *grepQueueWriter) Write(data []byte) (int, error) {
+	writer.queue.write(writer.index, bytes.Clone(data))
+	return len(data), nil
+}
+
+const (
+	// grepFilesWindowPerWorker는 worker 하나가 출력보다 앞서 찾아 둘 수 있는 파일 수다.
+	grepFilesWindowPerWorker = 16
+	// grepFilesOutputBudget은 아직 내지 않은 파일들의 출력을 쌓아 둘 수 있는 바이트다.
+	grepFilesOutputBudget = 64 << 20
+)
 
 type grepIndexPlan struct {
 	path  string

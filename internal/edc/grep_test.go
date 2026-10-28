@@ -481,3 +481,26 @@ func TestGrepLargeFileParallelOutputEqualsSequential(t *testing.T) {
 		}
 	}
 }
+
+func TestGrepContextPrintsEveryLineBefore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.log")
+	content := "l1\nl2\nl3\nl4 hit\nl5\nl6\nl7\nl8 hit\nl9\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		context string
+		want    string
+	}{
+		{"2", "2-l2\n3-l3\n4:l4 hit\n5-l5\n6-l6\n7-l7\n8:l8 hit\n9-l9\n"},
+		{"3", "1-l1\n2-l2\n3-l3\n4:l4 hit\n5-l5\n6-l6\n7-l7\n8:l8 hit\n9-l9\n"},
+		{"1", "3-l3\n4:l4 hit\n5-l5\n--\n7-l7\n8:l8 hit\n9-l9\n"},
+	} {
+		if code, got, _ := grepCommand(t, "", "-n", "-C", tc.context, "hit", path); code != 0 || got != tc.want {
+			t.Fatalf("file -C %s: code %d\n%s", tc.context, code, got)
+		}
+		if code, got, _ := grepCommand(t, content, "-n", "-C", tc.context, "hit"); code != 0 || got != tc.want {
+			t.Fatalf("stdin -C %s: code %d\n%s", tc.context, code, got)
+		}
+	}
+}

@@ -1115,7 +1115,7 @@ func (printer *grepPrinter) matchWithContext(before [][]byte, ref grepLineRef) {
 	}
 	printer.gap(offset)
 	for index, line := range before {
-		if offset > printer.lastEnd || printer.lastEnd < 0 {
+		if offset >= printer.lastEnd {
 			number := int64(0)
 			if ref.number > 0 {
 				number = ref.number - int64(len(before)-index)

@@ -264,6 +264,7 @@ command:
       workers: "directories to read at the same time"
       cross_mounts: "count the mounts below the path too"
       no_browse: "show progress and bars, then exit"
+      refresh: "refresh the browse screen: auto, 0 (off), or an interval such as 10s"
       timeout: "time limit, after it edc shows what it counted"
       verbose: "show every unreadable directory and skipped mount"
     notes:
@@ -275,6 +276,10 @@ command:
       - "In a terminal, it opens a screen to browse. q prints the result."
       - "On Linux, docker storage paths also show container names."
       - "On macOS, APFS shared blocks and snapshots prevent a not found comparison."
+      - "On the browse screen, edc reads again the directories that changed. The interval is 5s or more and keeps the cost under 2%."
+      - "It also checks the size of the large files on the screen. A small file that grows in place shows only after r."
+      - "r reads the open directory again, a turns the refresh off or on. A network file system starts with the refresh off."
+      - "--refresh works only on the browse screen. The output on q is the tree at that time."
   clean:
     summary: "Disk usage of known dev caches, read only (Linux and macOS)"
     option:

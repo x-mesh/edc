@@ -63,6 +63,7 @@ type httpPacket struct {
 }
 
 type httpPendingRequest struct {
+	id         uint64
 	bootTimeNS uint64
 	method     string
 	host       string
@@ -79,6 +80,7 @@ type httpTracker struct {
 	showSecrets   bool
 	progressive   bool
 	nextMessageID uint64
+	nextRequestID uint64
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면만 켠다.
 	keepGzip  bool
 	pending   map[uint64][]httpPendingRequest
@@ -613,7 +615,9 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 		if _, ok := streams[stream]; !ok {
 			tracker.h2Size++
 		}
-		streams[stream] = httpPendingRequest{bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path}
+		tracker.nextRequestID++
+		event.requestID = tracker.nextRequestID
+		streams[stream] = httpPendingRequest{id: event.requestID, bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path}
 		return event, true
 	}
 	status, err := strconv.Atoi(statusText)
@@ -624,7 +628,7 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 	if request, ok := tracker.h2Pending[packet.socket][stream]; ok {
 		event.Method, event.Path, event.Target = request.method, request.path, request.host
 		if status >= 200 {
-			event.LatencyMS, event.answered = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1
+			event.LatencyMS, event.answered, event.requestID = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1, request.id
 			tracker.forgetHTTP2Stream(packet.socket, stream)
 		}
 	}
@@ -691,7 +695,9 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 			clear(tracker.pending)
 			tracker.size = 0
 		}
-		tracker.pending[packet.socket] = append(tracker.pending[packet.socket], httpPendingRequest{bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path})
+		tracker.nextRequestID++
+		event.requestID = tracker.nextRequestID
+		tracker.pending[packet.socket] = append(tracker.pending[packet.socket], httpPendingRequest{id: event.requestID, bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path})
 		tracker.size++
 		return event, true
 	}
@@ -707,6 +713,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	if status >= 200 {
 		event.LatencyMS = traceSpan(request.bootTimeNS, packet.bootTimeNS)
 		event.answered = 1
+		event.requestID = request.id
 		tracker.pending[packet.socket] = queue[1:]
 		if len(queue) == 1 {
 			delete(tracker.pending, packet.socket)

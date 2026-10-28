@@ -56,11 +56,16 @@ func traceSplitHeightsFor(model traceScreenModel) (int, int, bool) {
 }
 
 // previewTarget은 미리 보기에 보일 event다. 고른 event가 있으면 그것이고, 없으면 filter에 맞는 가장 최근 event다.
+// previewTarget은 미리 보기에 보일 event다. HTTP 요청과 응답을 합친 행에서는 응답 body를 바로 보도록 응답을 고른다.
 func (model traceScreenModel) previewTarget() int {
-	if model.selected >= 0 {
-		return model.selected
+	number := model.selected
+	if number < 0 {
+		number = model.moveSelection(-1, 1)
 	}
-	return model.moveSelection(-1, 1)
+	if response := model.pairedHTTPResponse(number); response >= 0 {
+		return response
+	}
+	return number
 }
 
 // refreshPreview는 미리 보기의 대상이나 설정이 바뀌었으면 다시 만든다. 다른 event로 바뀌면 맨 위부터 보인다.

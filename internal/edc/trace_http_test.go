@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/net/http2/hpack"
 )
 
@@ -1696,5 +1697,107 @@ func TestHTTPTraceSummaryCountsTLSVersionsAndAlerts(t *testing.T) {
 		if !strings.Contains(output, text) {
 			t.Fatalf("summary %q does not contain %q", output, text)
 		}
+	}
+}
+
+func traceHTTPScreenWith(t *testing.T, events []captureEvent) traceScreenModel {
+	t.Helper()
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 160, 30
+	next, _ := model.Update(traceEventMsg{events: events})
+	return next.(traceScreenModel)
+}
+
+func TestTraceScreenJoinsHTTPRequestAndResponseRows(t *testing.T) {
+	tracker := newHTTPTracker(traceClientSide, true, false)
+	var events []captureEvent
+	for _, packet := range []httpPacket{
+		httpTestPacket("POST /upload HTTP/1.1\r\nHost: api.example\r\nContent-Length: 4\r\n\r\nbody", 1_000_000, true),
+		httpTestPacket("HTTP/1.1 100 Continue\r\n\r\n", 1_500_000, false),
+		httpTestPacket("HTTP/1.1 201 Created\r\nContent-Length: 13\r\n\r\nresponse-body", 3_000_000, false),
+		httpTestPacket("GET /hang HTTP/1.1\r\nHost: api.example\r\n\r\n", 4_000_000, true),
+	} {
+		event, ok := tracker.event(packet, 0)
+		if !ok {
+			t.Fatalf("no event for %q", packet.payload)
+		}
+		events = append(events, event)
+	}
+	orphan, _ := newHTTPTracker(traceClientSide, true, false).event(httpTestPacket("HTTP/1.1 404 Not Found\r\n\r\n", 5_000_000, false), 0)
+	events = append(events, orphan)
+	model := traceHTTPScreenWith(t, events)
+	rows := traceVisibleScreenRows(model)
+	if len(rows) != 4 || rows[0].primary != 0 || rows[0].response != 2 || rows[1].primary != 1 || rows[2].primary != 3 || rows[2].response != -1 || rows[3].primary != 4 || rows[3].response != -1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	_, destination, label, _ := model.displayRowLabels(rows[0])
+	if destination != "client: POST http://api.example/upload (127.0.0.1:8080)" || label != "http_2xx 201 2.0ms" {
+		t.Fatalf("joined row = %q | %q", destination, label)
+	}
+	if _, _, label, _ := model.displayRowLabels(rows[2]); label != traceHTTPRequestEvent {
+		t.Fatalf("unanswered row = %q", label)
+	}
+	if text := ansi.Strip(strings.Join(traceScreenHeader(model), "\n")); strings.Contains(text, "slow") || !strings.Contains(text, "shown pairs 1") {
+		t.Fatalf("status = %s", text)
+	}
+	detail := strings.Join(model.buildDetail(0).raw, "\n")
+	request, response, found := strings.Cut(detail, "\nresponse:\n")
+	if !found || !strings.Contains(request, "body") || !strings.Contains(response, `"status": 201`) || !strings.Contains(response, "response-body") {
+		t.Fatalf("detail = %s", detail)
+	}
+	opened := traceHTTPScreenWith(t, events[:1])
+	opened.detail = opened.buildDetail(0)
+	next, cmd := opened.Update(traceEventMsg{events: events[1:]})
+	if opened = next.(traceScreenModel); cmd == nil || !opened.detail.updating {
+		t.Fatal("the open request detail must rebuild when its response arrives")
+	}
+	model.selected = 0
+	if target := model.previewTarget(); target != 2 {
+		t.Fatalf("preview target = %d", target)
+	}
+}
+
+func TestTraceScreenJoinsConcurrentHTTP2StreamsByRequest(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	request := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/same"})
+	ok := http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"})
+	preface := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, request)...)
+	var events []captureEvent
+	for _, step := range []struct {
+		packet httpPacket
+	}{
+		{httpTestPacket(string(preface), 1_000_000, true)},
+		{http2TestPacket(http2TestFrame(1, 4, 3, request), 2_000_000, true, len(preface))},
+		{http2TestPacket(http2TestFrame(1, 4, 3, ok), 3_000_000, false, 0)},
+		{http2TestPacket(http2TestFrame(1, 4, 1, ok), 9_000_000, false, len(http2TestFrame(1, 4, 3, ok)))},
+	} {
+		got, _ := tracker.http2Events(step.packet, 0)
+		events = append(events, got...)
+	}
+	model := traceHTTPScreenWith(t, events)
+	rows := traceVisibleScreenRows(model)
+	// stream 3이 먼저 답했으므로 URL 순서로 짝지으면 두 요청의 응답이 뒤바뀐다.
+	if len(rows) != 2 || rows[0].response != 3 || rows[1].response != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestTraceScreenShowsHTTPResponseAfterItsRequestIsEvicted(t *testing.T) {
+	tracker := newHTTPTracker(traceClientSide, false, false)
+	request, _ := tracker.event(httpTestPacket("GET /old HTTP/1.1\r\nHost: api.example\r\n\r\n", 1, true), 0)
+	response, _ := tracker.event(httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 2, false), 0)
+	events := make([]captureEvent, traceScreenEventLimit-1)
+	for index := range events {
+		events[index] = captureEvent{Protocol: "http", Event: traceHTTPRequestEvent}
+	}
+	model := traceHTTPScreenWith(t, append(append([]captureEvent{request}, events[:len(events)-1]...), response))
+	if rows := traceVisibleScreenRows(model); rows[0].response != traceScreenEventLimit-1 {
+		t.Fatalf("first row = %+v", rows[0])
+	}
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent}}})
+	model = next.(traceScreenModel)
+	rows := traceVisibleScreenRows(model)
+	if len(rows) != traceScreenEventLimit || rows[len(rows)-2].primary != traceScreenEventLimit-1 {
+		t.Fatalf("rows after eviction = %d, tail %+v", len(rows), rows[len(rows)-2:])
 	}
 }

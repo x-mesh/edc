@@ -113,6 +113,9 @@ type captureEvent struct {
 	LostEvents uint64 `json:"lost_events,omitempty"`
 	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
 	answered uint64
+	// requestID는 HTTP 요청 event와 그 요청에 짝지은 최종 응답 event가 함께 갖는 번호다. 전체 화면이 둘을 한 행으로 합친다.
+	// 같은 연결에서 같은 URL을 동시에 요청하는 HTTP/2도 URL만으로는 짝을 가를 수 없어서 tracker가 짝지은 결과를 그대로 쓴다.
+	requestID uint64
 	// gzipped는 gzip message의 원본 byte다. 전체 화면의 상세 보기가 본문을 풀 때 쓰고, JSON에는 나오지 않는다.
 	gzipped []byte
 }

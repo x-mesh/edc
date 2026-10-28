@@ -496,6 +496,8 @@ HTTP/1.x answers requests in order. A response matches the oldest unanswered req
 
 On the client, `latency_ms` starts at request send and ends at response read. A `1xx` response does not end the request.
 
+The full screen shows a request and its final response in one row. The row shows the response event, the status, and the latency. A request without a response keeps its `http_request` row. A `1xx` response and a response without a request have their own rows. The detail view shows the request and then the response under `response:`. The preview shows the response. JSON, text, and `--raw` output keep one line for each event.
+
 The `target` is the `Host` header. If no `Host` header exists, the target is the server address.
 
 On the server, `latency_ms` starts when the server reads the request and ends when it writes the response.

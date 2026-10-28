@@ -125,17 +125,19 @@ type traceScreenRow struct {
 	hidden   bool
 }
 
-// traceMySQLPairKey는 요청과 응답을 짝짓는 key다. 이름은 mysql에서 왔지만 clickhouse도 같은 key를 쓴다.
+// traceMySQLPairKey는 요청과 응답을 짝짓는 key다. 이름은 mysql에서 왔지만 clickhouse도 같은 key를 쓴다. HTTP는
+// tracker가 붙인 request만 쓴다.
 type traceMySQLPairKey struct {
 	socket  uint64
 	side    string
 	command string
 	sql     string
+	request uint64
 }
 
 // traceScreenPairs는 요청과 응답을 한 행으로 짝지어 보이는 protocol인지다.
 func traceScreenPairs(protocol string) bool {
-	return traceDatabaseProtocol(protocol)
+	return protocol == "http" || traceDatabaseProtocol(protocol)
 }
 
 // tracePairOf는 event의 짝 key와 응답 여부를 꺼낸다. pending이 아닌 event(mysql_tls, clickhouse_chunked)는 답이 오지
@@ -156,6 +158,10 @@ func tracePairOf(event captureEvent) (key traceMySQLPairKey, response, pending, 
 		// 않는다.
 		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.Redis.Command, sql: event.Redis.Key}
 		return key, redisResponseEvent(event.Event), event.Event == redisEventCommand && !event.Redis.Truncated && !event.Redis.NoReply, true
+	case event.Protocol == "http" && event.requestID != 0:
+		// 1xx와 짝이 없는 응답에는 requestID가 없어서 따로 행이 된다.
+		response := event.Event != traceHTTPRequestEvent
+		return traceMySQLPairKey{socket: event.SocketID, side: event.Side, request: event.requestID}, response, !response, true
 	}
 	return traceMySQLPairKey{}, false, false, false
 }
@@ -333,7 +339,10 @@ func (model traceScreenModel) displayRowLabels(row traceScreenRow) (captureEvent
 	destination, label := traceScrollLabels(event)
 	if row.response >= model.first && row.response < model.first+len(model.events) && traceScreenPairs(event.Protocol) {
 		response := model.events[row.response-model.first]
-		if result, ok := tracePairResult(response); ok {
+		// 응답 event에 요청의 method와 URL이 들어 있어서 응답 행을 그대로 그린다.
+		if response.Protocol == "http" {
+			destination, label = traceScrollLabels(response)
+		} else if result, ok := tracePairResult(response); ok {
 			destination += " → " + result
 			label = response.Event
 			if response.LatencyMS != nil {
@@ -366,6 +375,22 @@ func (model traceScreenModel) displayRowMatches(row traceScreenRow) bool {
 		return false
 	}
 	return traceEventMatchesText(model.events[row.response-model.first], model.filter)
+}
+
+// pairedHTTPResponse는 HTTP 요청 number와 한 행으로 합친 응답의 번호다. 짝이 없거나 응답이 목록에서 빠졌으면 -1이다.
+func (model traceScreenModel) pairedHTTPResponse(number int) int {
+	if model.protocol != "http" {
+		return -1
+	}
+	index, ok := model.mysqlRowIndex[number]
+	if !ok {
+		return -1
+	}
+	response := model.mysqlRows[index].response
+	if response < model.first || response >= model.first+len(model.events) {
+		return -1
+	}
+	return response
 }
 
 func (model traceScreenModel) displayRowForSelected(rows []traceScreenRow) int {
@@ -546,7 +571,13 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				model.events = append(model.events, event)
 				model.arrivals = append(model.arrivals, now)
 				if traceScreenPairs(model.protocol) {
-					model.appendMySQLRow(event, model.first+len(model.events)-1)
+					model.appendMySQLRow(event, number)
+					// 요청의 상세 보기를 연 뒤에 응답이 오면 응답 구간을 붙여 다시 만든다.
+					if model.detail != nil {
+						if index, ok := model.mysqlRowIndex[model.detail.number]; ok && model.mysqlRows[index].response == number {
+							updatedDetail = true
+						}
+					}
 				}
 			}
 		}
@@ -985,8 +1016,10 @@ func traceScreenHeader(model traceScreenModel) []string {
 			line = append(line, traceField("raw events ", fmt.Sprint(model.received), "")...)
 			line = append(line, traceSeparator)
 			line = append(line, traceField("shown pairs ", fmt.Sprint(model.shownMySQLPairs()), "")...)
-			line = append(line, traceSeparator)
-			line = append(line, traceField("slow ", model.slow.String(), "")...)
+			if traceDatabaseProtocol(model.protocol) {
+				line = append(line, traceSeparator)
+				line = append(line, traceField("slow ", model.slow.String(), "")...)
+			}
 		} else {
 			line = append(line, traceField("events ", fmt.Sprint(model.received), "")...)
 		}
@@ -1090,6 +1123,9 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 			line = "  " + line
 		}
 		lines := []string{line}
+		if response := model.pairedHTTPResponse(row.primary); response >= 0 {
+			event = model.events[response-model.first]
+		}
 		if model.payloadLines && event.Payload != "" {
 			if !model.secrets && model.protocol == "http" {
 				event.Payload = string(traceMaskHTTPHeaders([]byte(event.Payload)))

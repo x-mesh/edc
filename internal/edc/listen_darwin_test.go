@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -130,7 +132,7 @@ func TestParseDarwinSocketInfo(t *testing.T) {
 				}
 				return
 			}
-			if !ok || got != *tt.want {
+			if !ok || !reflect.DeepEqual(got, *tt.want) {
 				t.Fatalf("got %#v (%v), want %#v", got, ok, *tt.want)
 			}
 		})
@@ -211,5 +213,31 @@ func BenchmarkCollectDarwinListenSockets(b *testing.B) {
 		if _, err := collectListenSockets(families); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestParseDarwinProcArgsStopsBeforeTheEnvironment(t *testing.T) {
+	raw := binary.LittleEndian.AppendUint32(nil, 3)
+	raw = append(raw, "/opt/homebrew/bin/node\x00\x00\x00\x00node\x00vite\x00--port\x00SECRET=1\x00HOME=/x\x00"...)
+	if got := parseDarwinProcArgs(raw); !slices.Equal(got, []string{"node", "vite", "--port"}) {
+		t.Fatalf("args = %q", got)
+	}
+	if got := parseDarwinProcArgs([]byte{1, 0}); got != nil {
+		t.Fatalf("short buffer gave %q", got)
+	}
+}
+
+// 테스트 process 자신의 argv와 작업 디렉터리를 읽는다. 구조체 offset이 틀리면 경로가 비거나 어긋난다.
+func TestListenProcessCommandReadsOwnProcess(t *testing.T) {
+	args, cwd := listenProcessCommand(strconv.Itoa(os.Getpid()))
+	if !slices.Equal(args, os.Args) {
+		t.Fatalf("args = %q, want %q", args, os.Args)
+	}
+	want, _ := os.Getwd()
+	if resolved, err := filepath.EvalSymlinks(want); err == nil {
+		want = resolved
+	}
+	if cwd != want {
+		t.Fatalf("cwd = %q, want %q", cwd, want)
 	}
 }

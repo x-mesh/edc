@@ -2,7 +2,11 @@ package edc
 
 import (
 	"net/netip"
+	"os"
 	"os/user"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +30,11 @@ type listenSocket struct {
 	RecvQ    int  `json:"recv_q"`
 	SendQ    int  `json:"send_q"`
 	HasQueue bool `json:"has_queue"`
+
+	// Args와 Cwd는 같은 이름의 process 여럿을 가르는 단서다. process마다 따로 읽어야 해서 --full과 --json일
+	// 때만 채운다. Args의 비밀 값은 담기 전에 가린다.
+	Args []string `json:"args,omitempty"`
+	Cwd  string   `json:"cwd,omitempty"`
 
 	// inode는 Linux에서 소켓을 /proc/*/fd의 주인과 잇는 열쇠다. 출력하지 않는다.
 	inode uint32
@@ -159,13 +168,21 @@ func dedupeListenSockets(sockets []listenSocket) []listenSocket {
 //
 // detail은 열을 더 여는 것일 뿐 줄을 늘리거나 줄이지 않는다. -v가 목록 자체를 바꾸면 -v를 준 화면과
 // 주지 않은 화면이 다른 사실을 말하게 된다.
-func formatListenTable(sockets []listenSocket, detail bool) string {
+//
+// note가 있으면 각 행 아래에 명령줄을 note로 칠한 줄로 붙인다. 명령줄은 길이가 process마다 크게 달라 열로
+// 두면 표 폭이 가장 긴 명령줄을 따라간다.
+func formatListenTable(sockets []listenSocket, detail bool, note func(string) string) string {
 	headers := []string{T("observe.listen.column.port"), T("observe.listen.column.proto"), T("observe.listen.column.address"), T("observe.listen.column.scope"), T("observe.listen.column.process")}
 	if detail {
 		headers = append(headers, T("observe.listen.column.user"), T("observe.listen.column.fd"), T("observe.listen.column.queue"))
 	}
+	home, _ := os.UserHomeDir()
 	rows := make([][]string, 0, len(sockets))
+	commands := make([]string, 0, len(sockets))
 	for _, socket := range sockets {
+		if note != nil {
+			commands = append(commands, listenCommandLine(socket, home))
+		}
 		process := socket.Process
 		if socket.PID != "" {
 			process += " (" + socket.PID + ")"
@@ -204,10 +221,122 @@ func formatListenTable(sockets []listenSocket, detail bool) string {
 		builder.WriteString("\n")
 	}
 	writeRow(headers)
-	for _, row := range rows {
+	for index, row := range rows {
 		writeRow(row)
+		if note != nil && commands[index] != "" {
+			builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+commands[index]) + "\n")
+		}
 	}
 	return builder.String()
+}
+
+// listenInterpreters는 첫 인자가 실제 프로그램인 실행 파일이다. node 여럿은 이름으로 가를 수 없고 스크립트
+// 이름으로 갈린다. bun과 deno는 첫 인자가 run 같은 하위 명령이라 넣지 않는다.
+var listenInterpreters = map[string]bool{"node": true, "python": true, "ruby": true, "perl": true, "php": true}
+
+// listenCommandLine은 행 아래에 둘 작업 디렉터리와 명령줄이다. 인터프리터는 스크립트 이름을 앞에 두고, 홈 경로는
+// ~로 줄인다. 표의 PROCESS 칸보다 더 알려 주는 것이 없으면 빈 문자열이다.
+func listenCommandLine(socket listenSocket, home string) string {
+	if len(socket.Args) == 0 && socket.Cwd == "" {
+		return ""
+	}
+	var words []string
+	if len(socket.Args) != 0 {
+		program, args := socket.Args[0], socket.Args[1:]
+		// nginx처럼 argv[0]을 "nginx: master process …"로 바꿔 쓰는 process가 있어서 경로일 때만 마지막 요소를 남긴다.
+		if strings.HasPrefix(program, "/") {
+			program = filepath.Base(program)
+		}
+		if listenInterpreters[strings.TrimRight(program, "0123456789.")] && len(args) != 0 && !strings.HasPrefix(args[0], "-") {
+			program, args = filepath.Base(args[0]), args[1:]
+		}
+		words = append(words, program)
+		for _, arg := range args {
+			// Electron 앱은 빈 인자를 여럿 넘긴다. 따옴표 쌍만 늘어놓아 봐야 가르는 데 보탬이 없다.
+			if arg == "" {
+				continue
+			}
+			arg = listenShortPath(arg, home)
+			if strings.ContainsAny(arg, " \t") {
+				arg = strconv.Quote(arg)
+			}
+			words = append(words, arg)
+		}
+	}
+	// Linux의 comm은 15자에서 잘려서 실행 파일 이름이 PROCESS 칸으로 시작하기만 해도 같은 process다. nginx처럼 바꿔 쓴
+	// 제목은 공백이 들어 있고 PROCESS 칸에 없는 상태를 담는다.
+	if len(words) == 1 && (words[0] == socket.Process || socket.Process != "" && strings.HasPrefix(words[0], socket.Process) && !strings.Contains(words[0], " ")) {
+		words = nil
+	}
+	line := strings.Join(words, " ")
+	// 작업 디렉터리는 앞에 둔다. 같은 명령 여럿을 가르는 단서인데, 끝에 두면 긴 명령줄이 폭에 잘릴 때 먼저 사라진다.
+	// launchd와 systemd가 띄운 process는 작업 디렉터리가 /라서 가르는 데 쓸모가 없다.
+	if socket.Cwd != "" && socket.Cwd != "/" {
+		line = strings.TrimSpace(listenShortPath(socket.Cwd, home) + "   " + line)
+	}
+	return topPrintableText(line)
+}
+
+func listenShortPath(text, home string) string {
+	if home == "" || home == "/" {
+		return text
+	}
+	if text == home {
+		return "~"
+	}
+	return strings.ReplaceAll(text, home+"/", "~/")
+}
+
+var (
+	listenSecretFlag    = regexp.MustCompile(`(?i)(^|[-_.])(pass(word|wd)?|secret|token|api[-_]?key|credentials?)s?($|[-_.])`)
+	listenURLCredential = regexp.MustCompile(`(://[^/:@\s]*:)[^/@\s]+@`)
+)
+
+// listenMaskArgs는 명령줄의 비밀 값을 가린다. listen 출력은 이슈와 history에 그대로 옮겨지는 일이 많아서
+// --redact를 주지 않아도 가린다. 이름에 비밀을 뜻하는 낱말이 든 옵션의 값과 URL의 암호가 대상이다.
+func listenMaskArgs(args []string) []string {
+	masked := slices.Clone(args)
+	for index := 1; index < len(masked); index++ {
+		arg := listenURLCredential.ReplaceAllString(masked[index], "${1}***@")
+		masked[index] = arg
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if !listenSecretFlag.MatchString(name) {
+			continue
+		}
+		if hasValue {
+			masked[index] = arg[:strings.IndexByte(arg, '=')+1] + "***"
+		} else if index+1 < len(masked) && !strings.HasPrefix(masked[index+1], "-") {
+			index++
+			masked[index] = "***"
+		}
+	}
+	return masked
+}
+
+// attachListenCommands는 소켓마다 주인 process의 명령줄과 작업 디렉터리를 채운다. 한 process가 소켓 여럿을
+// 가지는 일이 흔해 process마다 한 번만 읽는다.
+func attachListenCommands(sockets []listenSocket) {
+	type command struct {
+		args []string
+		cwd  string
+	}
+	commands := map[string]command{}
+	for index := range sockets {
+		pid := sockets[index].PID
+		if pid == "" {
+			continue
+		}
+		found, cached := commands[pid]
+		if !cached {
+			args, cwd := listenProcessCommand(pid)
+			found = command{listenMaskArgs(args), cwd}
+			commands[pid] = found
+		}
+		sockets[index].Args, sockets[index].Cwd = found.args, found.cwd
+	}
 }
 
 // listenCell은 도구가 주지 않은 값을 빈 칸 대신 없음으로 그린다. 빈 칸은 값이 0인지 모르는지를

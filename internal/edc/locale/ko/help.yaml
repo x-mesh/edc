@@ -317,6 +317,7 @@ command:
       all: "TCP와 UDP, unix domain socket을 모두 봅니다"
       watch: "중단할 때까지 열린 포트의 변화를 보여 줍니다"
       verbose: "계정과 descriptor, 큐 열을 함께 엽니다"
+      full: "행마다 아래에 작업 디렉터리와 명령줄을 보여 줍니다"
     notes:
       - "기본은 LISTEN 상태의 TCP socket과 바인드된 UDP socket입니다."
       - "종류 flag는 더하기가 아니라 filter입니다. --tcp는 TCP만 남깁니다."
@@ -326,6 +327,10 @@ command:
       - "-v는 계정과 file descriptor, 큐 열을 함께 엽니다."
       - "큐는 Recv-Q/Send-Q이고 TCP listener에서는 accept 큐입니다."
       - "-v는 열만 늘립니다. 줄은 그대로입니다."
+      - "--full은 행마다 아래에 작업 디렉터리와 명령줄을 회색 줄로 붙입니다."
+      - "node, python, ruby, perl, php는 스크립트 이름을 앞에 둡니다."
+      - "--password, --token 같은 옵션의 값과 URL의 암호는 ***로 가립니다."
+      - "edc listen --json은 읽을 수 있는 process의 args와 cwd를 담습니다. --full은 --watch와 함께 쓸 수 없습니다."
   svc:
     summary: "systemd service 목록, 또는 service 하나를 한 화면에 (Linux)"
     notes:

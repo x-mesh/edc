@@ -142,6 +142,7 @@ observe:
   listen:
     label: "接続を待つソケット"
     watch_summary: "socket 変化: open %d、close %d、error %d・%s"
+    full_no_watch: "--full は --watch と併用できません"
     column:
       port: "ポート"
       proto: "プロトコル"

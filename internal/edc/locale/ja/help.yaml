@@ -317,6 +317,7 @@ command:
       all: "TCP と UDP、unix domain socket をすべて表示します"
       watch: "中断するまで開閉する port を表示"
       verbose: "アカウントと descriptor、キューの列を開きます"
+      full: "各行の下に作業ディレクトリとコマンドラインを表示します"
     notes:
       - "既定は LISTEN 状態の TCP socket とバインドされた UDP socket です。"
       - "種類の flag は加算ではなく filter です。--tcp は TCP だけ残します。"
@@ -326,6 +327,10 @@ command:
       - "-v はアカウントと file descriptor、キューの列を開きます。"
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
       - "-v が増やすのは列だけです。行は変わりません。"
+      - "--full は各行の下に作業ディレクトリとコマンドラインを灰色の行で加えます。"
+      - "node、python、ruby、perl、php はスクリプト名を先頭に置きます。"
+      - "--password や --token などのオプションの値と URL のパスワードは *** で隠します。"
+      - "edc listen --json は読める process の args と cwd を含めます。--full は --watch と併用できません。"
   svc:
     summary: "systemd service の一覧、または service 一つを一画面に (Linux)"
     notes:

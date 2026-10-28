@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"unicode/utf8"
 )
 
 const (
@@ -29,6 +30,8 @@ type grepMatcher struct {
 	needle  []byte
 	// indexNeedle은 index의 trigram에 대는 바이트다. bloom은 대소문자를 접어 두므로 -i 문자열 패턴도 패턴 전체를 쓴다.
 	indexNeedle []byte
+	// fold는 -i 문자열 패턴을 정규식 없이 ASCII 대소문자만 접어 찾는다는 뜻이다. 그때 needle은 소문자 패턴이다.
+	fold bool
 	// pivot은 needle에서 IndexByte로 찍는 바이트의 위치다. -1이면 bytes.Index를 쓴다. second는 전체 비교 전에 확인하는
 	// 두 번째 바이트다.
 	pivot, second int
@@ -62,10 +65,69 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 			// 대소문자를 무시해도 글자가 아닌 바이트는 그대로다. 그중 가장 긴 구간이 모든 일치에 들어간다.
 			matcher.needle = grepLongestNonLetterRun(pattern)
 			matcher.indexNeedle = []byte(pattern)
+			if grepFoldsInASCII(pattern) {
+				matcher.fold = true
+				matcher.needle = bytes.ToLower([]byte(pattern))
+			}
 		}
 	}
-	matcher.pivot, matcher.second = grepChoosePivot(matcher.needle, sample)
+	matcher.pivot, matcher.second = matcher.choosePivot(sample)
 	return matcher, nil
+}
+
+// grepFoldsInASCII는 (?i)로 pattern에 맞는 글자가 모두 ASCII인지 본다. 유니코드 대소문자 접기에서 ASCII 글자 중 k와 s만
+// ASCII 밖의 글자(K U+212A, ſ U+017F)와 같다. 그런 패턴은 정규식으로 찾아야 결과가 같다.
+func grepFoldsInASCII(pattern string) bool {
+	if pattern == "" {
+		return false
+	}
+	for index := 0; index < len(pattern); index++ {
+		switch char := pattern[index]; {
+		case char >= utf8.RuneSelf, char == 'k', char == 'K', char == 's', char == 'S':
+			return false
+		}
+	}
+	return true
+}
+
+func grepASCIIUpper(char byte) byte {
+	if 'a' <= char && char <= 'z' {
+		return char - 'a' + 'A'
+	}
+	return char
+}
+
+func (matcher *grepMatcher) choosePivot(sample []byte) (int, int) {
+	if !matcher.fold {
+		return grepChoosePivot(matcher.needle, sample)
+	}
+	// 대소문자를 접어 찾을 때는 bytes.Index를 쓸 수 없으므로, 두 글자꼴을 합친 빈도가 가장 낮은 바이트를 늘 pivot으로 쓴다.
+	var histogram [256]int
+	for _, char := range sample {
+		histogram[char]++
+	}
+	pivot := 0
+	for index, char := range matcher.needle {
+		count := histogram[char]
+		if upper := grepASCIIUpper(char); upper != char {
+			count += histogram[upper]
+		}
+		best := histogram[matcher.needle[pivot]]
+		if upper := grepASCIIUpper(matcher.needle[pivot]); upper != matcher.needle[pivot] {
+			best += histogram[upper]
+		}
+		if count < best {
+			pivot = index
+		}
+	}
+	return pivot, -1
+}
+
+// withSample은 컴파일한 패턴을 그대로 두고 sample로 pivot만 다시 고른 사본이다. 파일마다 정규식을 다시 컴파일하지 않기 위해서다.
+func (matcher *grepMatcher) withSample(sample []byte) *grepMatcher {
+	copied := *matcher
+	copied.pivot, copied.second = copied.choosePivot(sample)
+	return &copied
 }
 
 func grepLongestNonLetterRun(pattern string) []byte {
@@ -117,6 +179,9 @@ func grepChoosePivot(needle, sample []byte) (int, int) {
 
 // find는 data에서 needle이 시작하는 첫 위치다.
 func (matcher *grepMatcher) find(data []byte) int {
+	if matcher.fold {
+		return matcher.findFold(data)
+	}
 	if matcher.pivot < 0 {
 		return bytes.Index(data, matcher.needle)
 	}
@@ -135,8 +200,59 @@ func (matcher *grepMatcher) find(data []byte) int {
 	}
 }
 
+// findFold는 pivot 바이트의 소문자와 대문자를 각각 IndexByte로 찾는다. 두 위치를 기억해 두어, 한쪽이 드물어도 같은
+// 구간을 다시 훑지 않는다.
+func (matcher *grepMatcher) findFold(data []byte) int {
+	needle := matcher.needle
+	lower := needle[matcher.pivot]
+	upper := grepASCIIUpper(lower)
+	indexFrom := func(position int, char byte) int {
+		if index := bytes.IndexByte(data[position:], char); index >= 0 {
+			return position + index
+		}
+		return len(data)
+	}
+	nextLower, nextUpper := -1, -1
+	if upper == lower {
+		nextUpper = len(data)
+	}
+	position := 0
+	for {
+		if nextLower < position {
+			nextLower = indexFrom(position, lower)
+		}
+		if nextUpper < position {
+			nextUpper = indexFrom(position, upper)
+		}
+		index := min(nextLower, nextUpper)
+		if index >= len(data) {
+			return -1
+		}
+		if at := index - matcher.pivot; at >= 0 && at+len(needle) <= len(data) && grepEqualASCIIFold(data[at:at+len(needle)], needle) {
+			return at
+		}
+		position = index + 1
+	}
+}
+
+// grepEqualASCIIFold는 data를 ASCII 소문자로 바꿔 lower와 비교한다.
+func grepEqualASCIIFold(data, lower []byte) bool {
+	for index, char := range data {
+		if 'A' <= char && char <= 'Z' {
+			char += 'a' - 'A'
+		}
+		if char != lower[index] {
+			return false
+		}
+	}
+	return true
+}
+
 // match는 line이 패턴에 맞는지 확정한다.
 func (matcher *grepMatcher) match(line []byte) bool {
+	if matcher.fold {
+		return matcher.findFold(line) >= 0
+	}
 	if matcher.regex != nil {
 		return matcher.regex.Match(line)
 	}
@@ -169,6 +285,15 @@ type grepScanner struct {
 // newGrepScanner는 패턴과 조건으로 scanner를 만든다. 조건이 머리 줄의 level과 시각을 물려받는 형식이면 줄을 건너뛰지 않는다.
 type grepBuffers struct {
 	buffer []byte
+	sample []byte
+}
+
+// sampleOf는 size 바이트 표본 자리다. 다음 파일을 읽으면 내용이 바뀌므로 한 파일을 찾는 동안만 쓴다.
+func (buffers *grepBuffers) sampleOf(size int) []byte {
+	if buffers.sample == nil {
+		buffers.sample = make([]byte, grepSampleSize)
+	}
+	return buffers.sample[:size]
 }
 
 func newGrepScanner(matcher *grepMatcher, filter *grepFilter) grepScanner {

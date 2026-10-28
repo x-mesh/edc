@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -272,5 +274,47 @@ func TestGrepCodeParallelSearchKeepsSequentialOutput(t *testing.T) {
 		if code != 0 || stderr != "" || got != want.String() || want.Len() == 0 {
 			t.Fatalf("%v: code %d stderr %q\ngot:\n%s\nwant:\n%s", args, code, stderr, got, want.String())
 		}
+	}
+}
+
+func TestGrepCodeWalkBoundsGoroutines(t *testing.T) {
+	root := t.TempDir()
+	// 상위 goroutine은 하위 결과를 기다리는 동안 살아 있으므로, 깊은 사슬은 깊이만큼 goroutine을 쌓을 수 있다.
+	dir := root
+	for range 200 {
+		dir = filepath.Join(dir, "d")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leaf.go"), []byte("needle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := runtime.NumGoroutine()
+	var peak atomic.Int64
+	done := make(chan struct{})
+	sampled := make(chan struct{})
+	go func() {
+		defer close(sampled)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				if count := int64(runtime.NumGoroutine()); count > peak.Load() {
+					peak.Store(count)
+				}
+			}
+		}
+	}()
+	files, _, problems := grepCodeTargets([]string{root}, grepOptions{})
+	close(done)
+	<-sampled
+	if len(files) != 1 || len(problems) != 0 {
+		t.Fatalf("files %v problems %v", files, problems)
+	}
+	// base에는 표본을 세는 goroutine이 없으므로 하나를 더한다.
+	if limit := int64(base + 1 + runtime.GOMAXPROCS(0)*grepCodeWalkSpawnPerCPU); peak.Load() > limit {
+		t.Fatalf("walk ran %d goroutines, limit %d", peak.Load(), limit)
 	}
 }

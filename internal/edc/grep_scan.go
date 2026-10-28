@@ -20,6 +20,12 @@ const (
 	// grepPivotShare는 pivot으로 쓸 수 있는 바이트의 최대 비율이다. 가장 드문 바이트가 이보다 흔하면 IndexByte로 찍는
 	// 후보가 너무 많아 bytes.Index가 빠르다. 측정에서 1.49%인 '4'까지는 pivot이 빨랐다.
 	grepPivotShare = 0.015
+	// bytes.Index는 needle의 첫 바이트로 후보를 찍다가 실패가 쌓이면 bytealg.Index로 넘어간다. 첫 바이트가 5%보다 흔하면
+	// 금방 넘어가 빠르지만, 3~5%에서는 넘어가지 못한 채 후보마다 멈춰 가장 느리다. 그 구간에서는 가장 드문 바이트가 첫
+	// 바이트의 0.8배 이하이기만 하면 pivot이 빨랐다. 로그의 status=503(첫 바이트 4.6%, 가장 드문 바이트 1.8%)은
+	// 47ms에서 28ms가 되었고, 0.8배를 넘는 =200 은 bytes.Index가 빨랐다.
+	grepPivotFirstShare = 0.05
+	grepPivotFirstRatio = 0.8
 )
 
 // grepMatcher는 한 검색의 패턴이다. needle은 모든 일치에 반드시 들어가는 바이트라서, 줄을 하나씩 보지 않고 needle이 있는
@@ -165,7 +171,8 @@ func grepChoosePivot(needle, sample []byte) (int, int) {
 			first = index
 		}
 	}
-	if float64(histogram[needle[first]])/float64(len(sample)) > grepPivotShare {
+	rare, leading := float64(histogram[needle[first]]), float64(histogram[needle[0]])
+	if rare/float64(len(sample)) > grepPivotShare && (leading/float64(len(sample)) > grepPivotFirstShare || rare > leading*grepPivotFirstRatio) {
 		return -1, -1
 	}
 	second := -1

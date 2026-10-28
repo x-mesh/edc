@@ -699,7 +699,11 @@ func (filter *grepFilter) timeAt(file io.ReaderAt, size, offset int64) (time.Tim
 
 // grepCountNewlines는 [from, to)의 줄바꿈 수다. -n과 건너뛰기를 함께 쓸 때 건너뛴 구간의 줄 수를 센다.
 func grepCountNewlines(file io.ReaderAt, from, to int64) (int64, error) {
-	buffer := make([]byte, grepBlockSize)
+	return grepCountNewlinesWith(file, from, to, make([]byte, grepBlockSize))
+}
+
+// grepCountNewlinesWith는 buffer로 읽어 센다. 병렬 검색은 구간마다 세므로 worker의 버퍼를 다시 쓴다.
+func grepCountNewlinesWith(file io.ReaderAt, from, to int64, buffer []byte) (int64, error) {
 	var count int64
 	for from < to {
 		want := to - from

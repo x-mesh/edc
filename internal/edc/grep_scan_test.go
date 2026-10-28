@@ -363,3 +363,81 @@ func TestGrepFoldMatchesIgnoreCaseRegex(t *testing.T) {
 		}
 	}
 }
+
+func TestGrepScanParallelEqualsSequential(t *testing.T) {
+	const lineLimit = 1000
+	data := grepFixture(lineLimit)
+	sample := data[:min(len(data), grepSampleSize)]
+	for _, scenario := range []struct {
+		pattern           string
+		regex, ignoreCase bool
+	}{
+		{"cancel", false, false},
+		{`orders/[0-9]+/cancel`, true, false},
+		{"timeout", false, true},
+		{"", false, false},
+	} {
+		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh := func() grepScanner {
+			scanner := newGrepScanner(matcher, nil)
+			scanner.block, scanner.lineLimit = 64, lineLimit
+			return scanner
+		}
+		for _, lineBase := range []int64{-1, 0} {
+			var want []grepLineRef
+			if _, err := fresh().scanRange(bytes.NewReader(data), 0, int64(len(data)), lineBase, func(ref grepLineRef) bool {
+				want = append(want, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+				return true
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, span := range []int64{29, 97, 4096} {
+				for _, workers := range []int{2, 5} {
+					label := fmt.Sprintf("%q numbers %v span %d workers %d", scenario.pattern, lineBase >= 0, span, workers)
+					var got []grepLineRef
+					if _, err := grepScanParallel(bytes.NewReader(data), 0, int64(len(data)), lineBase, workers, span, fresh, func(ref grepLineRef) bool {
+						got = append(got, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+						return true
+					}); err != nil {
+						t.Fatal(err)
+					}
+					grepRefsEqual(t, label, got, want, lineBase >= 0)
+					// emit이 false를 돌려주면 그 줄에서 멈춘다.
+					if len(want) > 3 {
+						got = got[:0]
+						grepScanParallel(bytes.NewReader(data), 0, int64(len(data)), lineBase, workers, span, fresh, func(ref grepLineRef) bool {
+							got = append(got, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+							return len(got) < 3
+						})
+						grepRefsEqual(t, label+" stopped", got, want[:3], lineBase >= 0)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGrepScanRangeKeepsBufferAfterDiscard(t *testing.T) {
+	data := grepFixture(1000)
+	matcher, _ := newGrepMatcher("cancel", false, false, nil)
+	scanner := newGrepScanner(matcher, nil)
+	scanner.block = 4096
+	var first *byte
+	// 줄 중간에서 시작하면 앞 조각을 버린다. 그때 버퍼를 잘라 내면 다음 호출이 배열을 새로 만든다.
+	for _, from := range []int64{5, 3001, 7777} {
+		if _, err := scanner.scanRange(bytes.NewReader(data), from, from+9000, -1, func(grepLineRef) bool { return true }); err != nil {
+			t.Fatal(err)
+		}
+		if cap(scanner.buffers.buffer) < scanner.block*2 {
+			t.Fatalf("from %d: buffer capacity %d after discard", from, cap(scanner.buffers.buffer))
+		}
+		if data := scanner.buffers.buffer[:1]; first == nil {
+			first = &data[0]
+		} else if &data[0] != first {
+			t.Fatalf("from %d allocated a new buffer", from)
+		}
+	}
+}

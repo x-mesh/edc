@@ -3,9 +3,11 @@ package edc
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -443,5 +445,37 @@ func TestGrepCommandReportsATruncatedGzip(t *testing.T) {
 	code, stdout, stderr := grepCommand(t, "", "beta", path)
 	if code != 2 || !strings.Contains(stderr, "cut.log.gz") || stdout != "beta\n" {
 		t.Fatalf("truncated gzip: code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+}
+
+func TestGrepLargeFileParallelOutputEqualsSequential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	var buffer bytes.Buffer
+	for index := 0; buffer.Len() < grepParallelMinSize+grepParallelSpan*3; index++ {
+		fmt.Fprintf(&buffer, "10.0.0.%d - - [27/Oct/2026:10:%02d:%02d +0900] \"GET /api/orders/%d HTTP/1.1\" %d 512\n", index%256, index/60%60, index%60, index, []int{200, 200, 404, 503}[index%4])
+		if index%100000 == 7 {
+			buffer.WriteString("Cancel order=41 timeout\n")
+		}
+	}
+	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"order=41"},
+		{"-n", "order=41"},
+		{"-C", "2", "-n", "order=41"},
+		{"-l", "order=41"},
+		{"-i", "cancel ORDER"},
+		{"-E", `orders/[0-9]+99 HTTP`},
+		{"--status", "5xx", "/api/orders/12345"},
+	} {
+		args = append(append([]string{"--no-index"}, args...), path)
+		previous := runtime.GOMAXPROCS(1)
+		wantCode, want, wantErr := grepCommand(t, "", args...)
+		runtime.GOMAXPROCS(previous)
+		code, got, stderr := grepCommand(t, "", args...)
+		if code != wantCode || got != want || stderr != wantErr || want == "" {
+			t.Fatalf("%v: code %d/%d, %d/%d bytes, stderr %q/%q", args, code, wantCode, len(got), len(want), stderr, wantErr)
+		}
 	}
 }

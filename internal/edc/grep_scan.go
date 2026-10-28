@@ -326,8 +326,11 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 	if cap(scanner.buffers.buffer) < scanner.block*2 {
 		scanner.buffers.buffer = make([]byte, 0, scanner.block*2)
 	}
+	// origin은 할당한 배열의 처음이다. 앞을 버릴 때 buffer를 잘라 내면 남은 용량이 줄어, 다음 호출이 배열을 새로 만든다.
+	// 그래서 남은 바이트는 늘 origin 앞으로 당기고, 돌려줄 때도 origin을 돌려준다.
 	buffer := scanner.buffers.buffer[:0]
-	defer func() { scanner.buffers.buffer = buffer[:0] }()
+	origin := buffer
+	defer func() { scanner.buffers.buffer = origin[:0] }()
 	bufferStart, readAt := from, from
 	var read int64
 	number := lineBase
@@ -352,7 +355,7 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 			if cap(buffer)-len(buffer) < want {
 				grown := make([]byte, len(buffer), 2*cap(buffer)+want)
 				copy(grown, buffer)
-				buffer = grown
+				buffer, origin = grown, grown
 			}
 			count, err := file.ReadAt(buffer[len(buffer):len(buffer)+want], readAt)
 			if err != nil && !errors.Is(err, io.EOF) {
@@ -378,7 +381,7 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 				bufferStart = readAt
 				continue
 			}
-			buffer = buffer[newline+1:]
+			buffer = append(origin[:0], buffer[newline+1:]...)
 			bufferStart += int64(newline + 1)
 			if number >= 0 {
 				number++
@@ -408,7 +411,7 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 			return read, nil
 		}
 		discard = overlong
-		buffer = append(buffer[:0], buffer[len(region):]...)
+		buffer = append(origin[:0], buffer[len(region):]...)
 		bufferStart = next
 	}
 }

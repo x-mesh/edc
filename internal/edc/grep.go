@@ -3,18 +3,23 @@ package edc
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/klauspost/compress/gzip"
 )
 
 const grepUsage = "edc grep [options] <pattern> [path...]"
@@ -64,6 +69,9 @@ type grepOptions struct {
 	jobs    int
 	verify  bool
 	now     time.Time
+	// serial은 파일 안을 구간으로 나누지 않는다는 뜻이다. 여러 파일을 worker로 나눠 찾을 때 worker 안에서 다시 worker를
+	// 띄우지 않기 위해서다.
+	serial bool
 }
 
 func runGrep(args []string) int {
@@ -273,12 +281,24 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 	if options.pathMode && printer.color {
 		pathRoots = grepPathRoots(paths)
 	}
+	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, nil)
+	if err != nil {
+		fmt.Fprintln(stderr, T("grep.failed", err))
+		return 2
+	}
+	// 코드 검색은 작은 파일 수만 개를 읽는다. 파일마다 2 MiB 읽기 버퍼를 새로 만들면 할당과 GC가 검색보다 오래 걸린다.
+	buffers := &grepBuffers{}
 	if len(paths) == 0 {
-		ok, err := grepSequentialSearch(stdin, T("grep.stdin"), options, printer, hints)
+		ok, err := grepSequentialSearch(stdin, T("grep.stdin"), options, matcher, printer, hints)
 		found, failed = found || ok, failed || err != nil
 		if err != nil {
 			fmt.Fprintln(stderr, T("grep.failed", err))
 		}
+	}
+	if !options.pathMode && len(targets) > 1 {
+		ok, searchFailed := grepSearchFiles(targets, options, matcher, printer, buffers, hints, stderr)
+		found, failed = found || ok, failed || searchFailed
+		targets = nil
 	}
 	for _, path := range targets {
 		if options.pathMode {
@@ -286,7 +306,7 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 			found = true
 			continue
 		}
-		ok, err := grepSearchFile(path, options, printer, hints)
+		ok, err := grepSearchFile(path, options, matcher, buffers, printer, hints)
 		found = found || ok
 		if err != nil {
 			failed = true
@@ -403,7 +423,7 @@ const (
 )
 
 // grepSearchFile은 파일 하나를 검색한다. .gz는 풀면서 차례로 읽고, 그 밖의 파일은 index와 건너뛰기를 쓴다.
-func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
+func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buffers *grepBuffers, printer *grepPrinter, hints *grepHints) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return false, err
@@ -422,15 +442,19 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 			hints.skippedOld = append(hints.skippedOld, path)
 			return false, nil
 		}
+		// klauspost/compress의 gzip은 같은 100 MB를 표준 compress/gzip(372ms)보다 빨리(248ms) 푼다. 시스템 gzip을 부르는
+		// 방법은 macOS의 Apple gzip에서만 빨랐고(100ms) Linux의 GNU gzip에서는 470ms로 더 느렸다.
 		reader, err := gzip.NewReader(bufio.NewReaderSize(file, 1<<20))
 		if err != nil {
 			return false, err
 		}
 		defer reader.Close()
-		return grepSequentialSearch(reader, path, options, printer, hints)
+		ahead := newGrepReadAhead(reader)
+		defer ahead.Close()
+		return grepSequentialSearch(ahead, path, options, compiled, printer, hints)
 	}
 	size := info.Size()
-	sample := make([]byte, min(size, int64(grepSampleSize)))
+	sample := buffers.sampleOf(int(min(size, int64(grepSampleSize))))
 	if _, err := io.ReadFull(io.NewSectionReader(file, 0, int64(len(sample))), sample); err != nil {
 		return false, err
 	}
@@ -438,10 +462,13 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		hints.binary = append(hints.binary, path)
 		return false, nil
 	}
-	format := grepDetectFormat(sample, int64(len(sample)) == size)
-	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, sample)
-	if err != nil {
-		return false, err
+	// 코드 검색은 로그 조건과 index를 쓰지 않아 형식이 필요 없다. 소스 파일은 대부분 작아서, pivot을 고르려고 표본의 바이트
+	// 빈도를 세는 비용이 검색 비용과 비슷하다. 그래서 둘 다 건너뛰고 컴파일한 패턴을 그대로 쓴다.
+	var format viewFormat
+	matcher := compiled
+	if !options.codeMode {
+		format = grepDetectFormat(sample, int64(len(sample)) == size)
+		matcher = compiled.withSample(sample)
 	}
 	filter := grepFilterFor(format, options)
 	// 시간 순서라고 한 파일만, 안의 마지막 시각이 --since 앞일 때 건너뛴다. 표본으로 순서를 확인하므로 사용자가 보증해야 한다.
@@ -450,6 +477,12 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		return false, nil
 	}
 	scanner := newGrepScanner(matcher, filter)
+	scanner.buffers = buffers
+	// 표본이 파일 전체이면 다시 읽지 않는다. 작은 소스 파일 수만 개를 찾을 때 두 번째 pread가 시간의 상당 부분이었다.
+	var source io.ReaderAt = file
+	if int64(len(sample)) == size {
+		source = bytes.NewReader(sample)
+	}
 	printer.begin(path, matcher)
 	report := &grepFileReport{path: path, size: size}
 	defer func() { hints.reports = append(hints.reports, *report) }()
@@ -459,7 +492,7 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		if options.listFiles {
 			return false
 		}
-		printer.match(ref, file)
+		printer.match(ref, source)
 		return true
 	}
 	defer func() {
@@ -469,7 +502,7 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 	}()
 	if options.last > 0 {
 		report.index = grepIndexOutcomeLast
-		lines, read, err := scanner.scanLast(file, size, options.last)
+		lines, read, err := scanner.scanLast(source, size, options.last)
 		report.lastRead = read
 		// 끝에서 읽은 줄은 번호를 모른다. -n이면 처음부터 첫 일치까지, 그 뒤로는 일치 사이의 줄바꿈을 세어 번호를 매긴다.
 		// 앞 블록에서 읽기가 실패했으면 처음부터 셀 수 없으므로 번호 없이 낸다.
@@ -509,8 +542,194 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 	if plan.build {
 		return grepSearchAndBuild(file, size, format, scanner, filter, options, plan, report, emit)
 	}
-	return grepSearchPlain(file, size, scanner, filter, options, report, emit)
+	fresh := func() grepScanner { return newGrepScanner(matcher, grepFilterFor(format, options)) }
+	return grepSearchPlain(source, size, scanner, filter, fresh, options, report, emit)
 }
+
+// grepSearchFiles는 대상 파일을 CPU 수만큼의 worker로 나눠 찾는다. 작은 파일 수만 개를 한 스레드에서 열고 읽으면 시스템
+// 호출을 기다리는 시간이 검색보다 길고, 20 MiB 로그 52개는 rg보다 8배 느렸다. worker는 출력을 grepOutputQueue에 쌓고
+// 힌트는 파일마다 모아 두며, 여기서 대상 순서대로 내므로 결과는 차례로 찾을 때와 같다. worker 안에서는 파일을 구간으로
+// 나누지 않는다. grepIndexMinSize 이상인 파일은 index를 만들거나 쓰고 파일 안에서도 병렬로 훑으므로, worker가 맡지 않고
+// 순서가 되면 여기서 찾는다. 이 기준을 grepParallelMinSize로 낮추면 20 MiB 로그 52개가 Linux arm64에서 143ms에서
+// 617ms로 느려졌다. 파일마다 하나씩 구간으로 나눠 훑게 되어 파일 사이의 병렬이 사라지기 때문이다.
+func grepSearchFiles(targets []string, options grepOptions, matcher *grepMatcher, printer *grepPrinter, buffers *grepBuffers, hints *grepHints, stderr io.Writer) (bool, bool) {
+	workers := min(runtime.GOMAXPROCS(0), len(targets))
+	// 출력을 기다리는 파일 수를 window로 묶는다. worker는 자리를 얻은 뒤에 다음 순번을 받고, 여기서 낸 순번만큼 자리를
+	// 돌려준다. 그래서 받았지만 아직 내지 않은 순번은 window개 안에 들고, 결과 자리는 순번을 window로 나눈 나머지로 다시 쓴다.
+	window := min(len(targets), workers*grepFilesWindowPerWorker)
+	queue := newGrepOutputQueue(window, grepFilesOutputBudget)
+	slots := make(chan struct{}, window)
+	serial := options
+	serial.serial = true
+	var next atomic.Int64
+	for range workers {
+		go func() {
+			buffers := &grepBuffers{}
+			writer := &grepQueueWriter{queue: queue}
+			local := *printer
+			local.out = bufio.NewWriterSize(writer, 64<<10)
+			for {
+				slots <- struct{}{}
+				index := int(next.Add(1)) - 1
+				if index >= len(targets) {
+					<-slots
+					return
+				}
+				if info, err := os.Stat(targets[index]); err == nil && info.Size() >= grepIndexMinSize {
+					queue.finish(index, grepFileResult{inline: true})
+					continue
+				}
+				writer.index = index
+				hints := grepHints{options: options}
+				ok, err := grepSearchFile(targets[index], serial, matcher, buffers, &local, &hints)
+				local.out.Flush()
+				queue.finish(index, grepFileResult{found: ok, err: err, hints: hints})
+			}
+		}()
+	}
+	found, failed := false, false
+	for index, path := range targets {
+		result := queue.drain(index, printer.out)
+		if result.inline {
+			result.found, result.err = grepSearchFile(path, options, matcher, buffers, printer, hints)
+		} else {
+			hints.reports = append(hints.reports, result.hints.reports...)
+			hints.skippedOld = append(hints.skippedOld, result.hints.skippedOld...)
+			hints.binary = append(hints.binary, result.hints.binary...)
+			hints.verifyFailed = hints.verifyFailed || result.hints.verifyFailed
+		}
+		<-slots
+		found = found || result.found
+		if result.err != nil {
+			failed = true
+			fmt.Fprintln(stderr, T("grep.failed", fmt.Sprintf("%s: %v", path, result.err)))
+		}
+	}
+	return found, failed
+}
+
+// grepFileResult는 worker가 파일 하나를 찾은 결과다. inline이면 worker가 찾지 않은 큰 파일이다.
+type grepFileResult struct {
+	found  bool
+	err    error
+	inline bool
+	hints  grepHints
+}
+
+// grepOutputQueue는 아직 내지 않은 파일들의 출력을 쌓는다. 파일 하나의 출력을 다 모았다가 넘기면 모든 줄이 맞는 로그
+// 30개에서 723 MB를 썼고, 파일마다 몇 조각만 쌓게 하면 뒤 파일의 worker가 멈춰 20 MiB 로그 52개가 134ms에서 641ms로
+// 느려졌다. 그래서 쌓인 출력 전체를 budget 바이트로 묶는다. 지금 내고 있는 파일(current)의 출력은 바로 읽어 가므로
+// budget을 쓰지 않고, 그래서 앞 파일이 뒤 파일 때문에 멈추는 일은 없다.
+type grepOutputQueue struct {
+	mutex   sync.Mutex
+	cond    *sync.Cond
+	current int
+	budget  int64
+	files   []grepPendingFile
+}
+
+type grepPendingFile struct {
+	chunks  [][]byte
+	charged int64
+	done    bool
+	result  grepFileResult
+	// signal은 이 파일에 조각이나 결과가 들어왔다고 drain에 알린다. cond 하나로 알리면 파일 1만 6천 개를 찾는 동안
+	// 다른 파일의 소식마다 drain이 깨어난다.
+	signal chan struct{}
+}
+
+func newGrepOutputQueue(window int, budget int64) *grepOutputQueue {
+	queue := &grepOutputQueue{budget: budget, files: make([]grepPendingFile, window)}
+	queue.cond = sync.NewCond(&queue.mutex)
+	for index := range queue.files {
+		queue.files[index].signal = make(chan struct{}, 1)
+	}
+	return queue
+}
+
+func (file *grepPendingFile) notify() {
+	select {
+	case file.signal <- struct{}{}:
+	default:
+	}
+}
+
+func (queue *grepOutputQueue) write(index int, chunk []byte) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	for index != queue.current && queue.budget < int64(len(chunk)) {
+		queue.cond.Wait()
+	}
+	file := &queue.files[index%len(queue.files)]
+	if index != queue.current {
+		queue.budget -= int64(len(chunk))
+		file.charged += int64(len(chunk))
+	}
+	file.chunks = append(file.chunks, chunk)
+	file.notify()
+}
+
+func (queue *grepOutputQueue) finish(index int, result grepFileResult) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	file := &queue.files[index%len(queue.files)]
+	file.done, file.result = true, result
+	file.notify()
+}
+
+// drain은 index 파일의 출력을 끝날 때까지 out에 쓰고 결과를 돌려준다.
+func (queue *grepOutputQueue) drain(index int, out io.Writer) grepFileResult {
+	queue.mutex.Lock()
+	queue.current = index
+	queue.cond.Broadcast()
+	file := &queue.files[index%len(queue.files)]
+	for {
+		if len(file.chunks) == 0 && !file.done {
+			queue.mutex.Unlock()
+			<-file.signal
+			queue.mutex.Lock()
+			continue
+		}
+		chunks, charged := file.chunks, file.charged
+		file.chunks, file.charged = nil, 0
+		if len(chunks) == 0 && file.done {
+			result := file.result
+			*file = grepPendingFile{signal: file.signal}
+			// 다음에 이 자리를 쓸 파일이 남은 알림에 속지 않도록 비운다.
+			select {
+			case <-file.signal:
+			default:
+			}
+			queue.mutex.Unlock()
+			return result
+		}
+		queue.mutex.Unlock()
+		for _, chunk := range chunks {
+			out.Write(chunk)
+		}
+		queue.mutex.Lock()
+		queue.budget += charged
+		queue.cond.Broadcast()
+	}
+}
+
+// grepQueueWriter는 bufio가 비울 때마다 조각을 복사해 지금 파일의 출력으로 쌓는다.
+type grepQueueWriter struct {
+	queue *grepOutputQueue
+	index int
+}
+
+func (writer *grepQueueWriter) Write(data []byte) (int, error) {
+	writer.queue.write(writer.index, bytes.Clone(data))
+	return len(data), nil
+}
+
+const (
+	// grepFilesWindowPerWorker는 worker 하나가 출력보다 앞서 찾아 둘 수 있는 파일 수다.
+	grepFilesWindowPerWorker = 16
+	// grepFilesOutputBudget은 아직 내지 않은 파일들의 출력을 쌓아 둘 수 있는 바이트다.
+	grepFilesOutputBudget = 64 << 20
+)
 
 type grepIndexPlan struct {
 	path  string
@@ -700,7 +919,8 @@ func grepSearchAndBuild(file *os.File, size int64, format viewFormat, scanner gr
 }
 
 // grepSearchPlain은 파일을 훑는다. --since가 있고 로그가 시간 순서면 그 자리를 이진 탐색해 앞부분을 건너뛴다.
-func grepSearchPlain(file *os.File, size int64, scanner grepScanner, filter *grepFilter, options grepOptions, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
+// grepSearchPlain은 index 없이 [from, size)를 훑는다. fresh는 병렬로 훑을 때 구간마다 쓸 새 scanner를 만든다.
+func grepSearchPlain(file io.ReaderAt, size int64, scanner grepScanner, filter *grepFilter, fresh func() grepScanner, options grepOptions, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
 	found := false
 	wrapped := func(ref grepLineRef) bool {
 		found = true
@@ -740,14 +960,136 @@ func grepSearchPlain(file *os.File, size int64, scanner grepScanner, filter *gre
 			return false, err
 		}
 	}
+	// 앞 줄의 level과 시각을 물려받는 필터는 구간 경계에서 상태를 probe로만 이을 수 있어 결과가 달라질 수 있다. 그런
+	// 필터는 처음부터 차례로 훑는다.
+	if workers := runtime.GOMAXPROCS(0); !options.serial && workers > 1 && size-from >= grepParallelMinSize && (filter == nil || !filter.needsEveryLine()) {
+		read, err := grepScanParallel(file, from, size, lineBase, workers, grepParallelSpan, fresh, wrapped)
+		report.bytesRead = read
+		return found, err
+	}
 	read, err := scanner.scanRange(file, from, size, lineBase, wrapped)
 	report.bytesRead = read
 	return found, err
 }
 
+const (
+	// grepParallelMinSize보다 큰 범위는 구간으로 나눠 병렬로 훑는다. 한 스레드는 1 GiB 로그의 흔한 낱말을 0.9초에
+	// 훑었고, 10개로 나누면 0.12초였다. 48 MiB 파일은 이 값이 64 MiB일 때 48ms, 16 MiB일 때 28ms였고, 8 MiB로 더
+	// 낮춰도 12 MiB 파일이 26ms에서 22ms가 되는 정도였다.
+	grepParallelMinSize = 16 << 20
+	// grepParallelSpan은 worker 하나가 한 번에 맡는 구간이다. 일치한 줄은 내보낼 때까지 복사해 두므로, 모든 줄이
+	// 맞아도 메모리는 구간 크기 x window 안에 든다.
+	grepParallelSpan = 2 << 20
+)
+
+// grepScanParallel은 [from, to)를 span 단위 구간으로 나눠 workers개가 훑고, 맞는 줄을 구간 순서대로 emit에 넘긴다.
+// 줄은 시작한 구간에만 속하므로 결과는 차례로 훑을 때와 같다. lineBase가 0 이상이면 구간마다 상대 번호로 센 뒤 앞
+// 구간들의 줄바꿈 수를 더한다. emit이 false를 돌려주면 남은 구간을 훑지 않는다.
+func grepScanParallel(file io.ReaderAt, from, to, lineBase int64, workers int, span int64, fresh func() grepScanner, emit func(grepLineRef) bool) (int64, error) {
+	// 맞는 줄은 text 하나에 이어 붙이고 ends에 끝 위치를 둔다. 내보낸 구간의 배열은 free로 돌려 다음 구간이 다시 쓴다.
+	// 모든 줄이 맞을 때 줄마다, 또는 구간마다 새로 할당하면 GC가 회수하기 전까지 쌓여 메모리가 window의 몇 배가 되었다.
+	type spanResult struct {
+		lines    []grepLineRef
+		text     []byte
+		ends     []int
+		newlines int64
+		read     int64
+		err      error
+	}
+	count := int((to - from + span - 1) / span)
+	// 내보내기를 기다리는 구간 수를 window로 묶어, 출력이 느려도 복사해 둔 줄이 쌓이지 않게 한다.
+	window := min(count, workers+2)
+	slots := make(chan struct{}, window)
+	results := make([]chan *spanResult, window)
+	for index := range results {
+		results[index] = make(chan *spanResult, 1)
+	}
+	free := make(chan *spanResult, window)
+	numbers := lineBase >= 0
+	var next atomic.Int64
+	var stopped atomic.Bool
+	done := make(chan struct{})
+	var group sync.WaitGroup
+	for range min(workers, count) {
+		group.Go(func() {
+			scanner := fresh()
+			var counting []byte
+			if numbers {
+				counting = make([]byte, grepBlockSize)
+			}
+			for {
+				select {
+				case slots <- struct{}{}:
+				case <-done:
+					return
+				}
+				index := int(next.Add(1)) - 1
+				if index >= count {
+					return
+				}
+				start := from + int64(index)*span
+				end := min(start+span, to)
+				relative := int64(-1)
+				if numbers {
+					relative = 0
+				}
+				result := &spanResult{}
+				select {
+				case result = <-free:
+				default:
+				}
+				result.read, result.err = scanner.scanRange(file, start, end, relative, func(ref grepLineRef) bool {
+					result.text = append(result.text, ref.text...)
+					result.ends = append(result.ends, len(result.text))
+					ref.text = nil
+					result.lines = append(result.lines, ref)
+					return !stopped.Load()
+				})
+				if numbers && result.err == nil {
+					result.newlines, result.err = grepCountNewlinesWith(file, start, end, counting)
+				}
+				results[index%window] <- result
+			}
+		})
+	}
+	defer func() {
+		stopped.Store(true)
+		close(done)
+		group.Wait()
+	}()
+	var read int64
+	base := lineBase
+	for index := range count {
+		result := <-results[index%window]
+		read += result.read
+		start := 0
+		for index, ref := range result.lines {
+			ref.text, start = result.text[start:result.ends[index]], result.ends[index]
+			if numbers {
+				ref.number += base
+			}
+			if !emit(ref) {
+				return read, nil
+			}
+		}
+		if result.err != nil {
+			return read, result.err
+		}
+		base += result.newlines
+		result.lines, result.text, result.ends = result.lines[:0], result.text[:0], result.ends[:0]
+		result.newlines, result.read = 0, 0
+		select {
+		case free <- result:
+		default:
+		}
+		<-slots
+	}
+	return read, nil
+}
+
 // grepSequentialSearch는 stdin과 .gz처럼 되감을 수 없는 입력이다. 줄을 차례로 읽으며 조건을 대고, -C는 앞 줄을 ring에 둔다.
 // --last는 마지막 N개만 남겨 끝에 낸다.
-func grepSequentialSearch(reader io.Reader, name string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
+func grepSequentialSearch(reader io.Reader, name string, options grepOptions, compiled *grepMatcher, printer *grepPrinter, hints *grepHints) (bool, error) {
 	buffered := bufio.NewReaderSize(reader, 1<<20)
 	sample, _ := buffered.Peek(grepSampleSize)
 	if bytes.IndexByte(sample[:min(len(sample), grepBinaryProbe)], 0) >= 0 {
@@ -755,10 +1097,7 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 		return false, nil
 	}
 	format := grepDetectFormat(sample, len(sample) < grepSampleSize)
-	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, sample)
-	if err != nil {
-		return false, err
-	}
+	matcher := compiled.withSample(sample)
 	filter := grepFilterFor(format, options)
 	accept := matcher.match
 	if filter != nil {
@@ -767,6 +1106,33 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 	}
 	printer.begin(name, matcher)
 	hints.reports = append(hints.reports, grepFileReport{path: name, index: grepIndexOutcomeSequential})
+	// -C와 --last가 없으면 파일과 같은 블록 scan으로 needle 사이를 건너뛴다. 줄마다 읽으면 1 GiB stdin에서 일치가 없어도
+	// 0.96초였고, 같은 입력을 cat으로 넘기기만 하는 데는 0.2~0.34초였다.
+	if options.context == 0 && options.last == 0 {
+		stream := &grepStreamReaderAt{reader: buffered}
+		scanner := newGrepScanner(matcher, filter)
+		lineBase := int64(-1)
+		if options.numbers {
+			lineBase = 0
+		}
+		found := false
+		_, err := scanner.scanRange(stream, 0, math.MaxInt64, lineBase, func(ref grepLineRef) bool {
+			found = true
+			if options.listFiles {
+				return false
+			}
+			printer.match(ref, nil)
+			return true
+		})
+		if found && options.listFiles {
+			printer.file(name)
+			return true, nil
+		}
+		if err == nil {
+			err = stream.err
+		}
+		return found, err
+	}
 	var before [][]byte
 	var last []grepLine
 	after := 0
@@ -826,6 +1192,118 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 		printer.file(name)
 	}
 	return found, readErr
+}
+
+// grepStreamReaderAt은 되감을 수 없는 입력을 scanRange에 넘기려고 앞에서부터 차례로만 읽는 ReaderAt이다. 끝 전에 난 읽기
+// 오류(잘린 gzip 등)는 scanRange에 EOF로 알려 이미 읽은 줄을 끝까지 처리하게 하고, err에 남겨 호출한 쪽이 돌려준다.
+type grepStreamReaderAt struct {
+	reader io.Reader
+	offset int64
+	err    error
+}
+
+func (stream *grepStreamReaderAt) ReadAt(buffer []byte, offset int64) (int, error) {
+	if offset != stream.offset {
+		return 0, fmt.Errorf("grep stream: read at %d after %d", offset, stream.offset)
+	}
+	if stream.err != nil {
+		return 0, io.EOF
+	}
+	// 읽은 만큼 바로 돌려준다. 버퍼를 채울 때까지 기다리면 kubectl logs -f처럼 흘러드는 입력을 늦게 처리한다. scanRange는
+	// 0바이트를 끝으로 보므로 무언가 읽을 때까지만 되풀이한다.
+	for {
+		count, err := stream.reader.Read(buffer)
+		stream.offset += int64(count)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				stream.err = err
+			}
+			return count, io.EOF
+		}
+		if count > 0 || len(buffer) == 0 {
+			return count, nil
+		}
+	}
+}
+
+// grepReadAhead는 reader를 다른 goroutine에서 미리 읽어 grepReadAheadDepth개까지 쌓아 둔다. .gz는 풀기와 검색을 한
+// goroutine에서 번갈아 하면 두 시간을 더한 만큼 걸리므로, 풀기를 앞서 돌려 검색과 겹친다.
+type grepReadAhead struct {
+	chunks  chan grepReadChunk
+	free    chan []byte
+	done    chan struct{}
+	current grepReadChunk
+	offset  int
+}
+
+type grepReadChunk struct {
+	data []byte
+	err  error
+}
+
+const (
+	grepReadAheadChunk = 1 << 20
+	grepReadAheadDepth = 4
+)
+
+func newGrepReadAhead(reader io.Reader) *grepReadAhead {
+	ahead := &grepReadAhead{chunks: make(chan grepReadChunk, grepReadAheadDepth), free: make(chan []byte, grepReadAheadDepth+2), done: make(chan struct{})}
+	go func() {
+		defer close(ahead.chunks)
+		for {
+			var buffer []byte
+			select {
+			case buffer = <-ahead.free:
+			default:
+				buffer = make([]byte, grepReadAheadChunk)
+			}
+			count := 0
+			var err error
+			for count < len(buffer) && err == nil {
+				var n int
+				n, err = reader.Read(buffer[count:])
+				count += n
+			}
+			select {
+			case ahead.chunks <- grepReadChunk{data: buffer[:count], err: err}:
+			case <-ahead.done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return ahead
+}
+
+func (ahead *grepReadAhead) Read(buffer []byte) (int, error) {
+	for ahead.offset == len(ahead.current.data) {
+		if ahead.current.err != nil {
+			return 0, ahead.current.err
+		}
+		if ahead.current.data != nil {
+			select {
+			case ahead.free <- ahead.current.data[:cap(ahead.current.data)]:
+			default:
+			}
+		}
+		chunk, ok := <-ahead.chunks
+		if !ok {
+			return 0, io.EOF
+		}
+		ahead.current, ahead.offset = chunk, 0
+	}
+	count := copy(buffer, ahead.current.data[ahead.offset:])
+	ahead.offset += count
+	return count, nil
+}
+
+// Close는 읽는 goroutine이 끝날 때까지 기다린다. 그 뒤에야 호출한 쪽이 gzip reader와 파일을 닫을 수 있다.
+func (ahead *grepReadAhead) Close() {
+	close(ahead.done)
+	for range ahead.chunks {
+	}
 }
 
 // grepReadLine은 줄 하나를 줄바꿈 없이 돌려준다. limit보다 긴 줄은 앞부분만 남기고 나머지는 버린다. consumed는 줄바꿈까지
@@ -908,7 +1386,7 @@ func (printer *grepPrinter) matchWithContext(before [][]byte, ref grepLineRef) {
 	}
 	printer.gap(offset)
 	for index, line := range before {
-		if offset > printer.lastEnd || printer.lastEnd < 0 {
+		if offset >= printer.lastEnd {
 			number := int64(0)
 			if ref.number > 0 {
 				number = ref.number - int64(len(before)-index)

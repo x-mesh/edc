@@ -1035,8 +1035,8 @@ func traceScreenHeader(model traceScreenModel) []string {
 	if model.groupBy == "" {
 		tableWidth = max(1, model.width-2)
 	}
-	timeColumn, destinationWidth, sourceWidth := traceScreenColumns(tableWidth)
-	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", traceScrollEventWidth) + " " + liveCell("SOURCE", sourceWidth)
+	timeColumn, destinationWidth, eventWidth, sourceWidth := traceScreenColumns(tableWidth)
+	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", eventWidth) + " " + liveCell("SOURCE", sourceWidth)
 	if timeColumn > 0 {
 		columns = liveCell("TIME", traceScrollTimeWidth) + " " + columns
 	}
@@ -1484,6 +1484,9 @@ func traceEventMatchesText(event captureEvent, filter string) bool {
 const (
 	traceScrollProcessWidth = 16
 	traceScrollEventWidth   = 20
+	// traceScrollEventMaxWidth는 넓은 화면에서 event 칸을 늘리는 상한이다. http_2xx tls 200 162.3ms처럼 결과와 응답 시간이
+	// 붙으면 20칸을 넘는다.
+	traceScrollEventMaxWidth = 32
 	// traceScrollSourceWidth는 목적지 칸을 넓힐 때 source 칸에 남기는 폭이다. 100.83.200.248:52406 같은 값이 들어간다.
 	traceScrollSourceWidth = 22
 	// TIME 칸은 15:04:05.000을 쓴다. 좁은 화면에서 목적지 칸을 더 줄이지 않도록 traceScrollTimeMinWidth 이상일 때만 둔다.
@@ -1499,11 +1502,11 @@ func traceScrollTimeColumn(width int) int {
 	return traceScrollTimeWidth + 1
 }
 
-func traceScreenColumns(tableWidth int) (int, int, int) {
+func traceScreenColumns(tableWidth int) (int, int, int, int) {
 	screenWidth := tableWidth + 2
 	timeColumn := traceScrollTimeColumn(screenWidth)
-	destination, source := traceScrollColumns(screenWidth - timeColumn)
-	return timeColumn, max(1, destination-2), source
+	destination, event, source := traceScrollColumns(screenWidth - timeColumn)
+	return timeColumn, max(1, destination-2), event, source
 }
 
 // traceEventClock은 event의 시각을 이 host의 시간대로 쓴다. 시각이 없는 event는 -다.
@@ -1514,12 +1517,18 @@ func traceEventClock(event captureEvent) string {
 	return time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000")
 }
 
-// traceScrollColumns는 스크롤 화면의 목적지와 source 칸 폭이다. 목적지에는 도메인이 붙어 길어지므로 넓은 화면에서
-// 목적지 칸을 늘린다. 좁은 화면에서는 예전처럼 32칸을 지킨다.
-func traceScrollColumns(width int) (int, int) {
-	fixed := traceScrollProcessWidth + traceScrollEventWidth + 3
-	destination := min(60, max(32, width-fixed-traceScrollSourceWidth))
-	return destination, max(1, width-fixed-destination)
+// traceScrollColumns는 스크롤 화면의 목적지, event, source 칸 폭이다. 목적지에는 도메인과 path가 붙어 길어지므로 넓은
+// 화면에서 목적지 칸을 늘린다. 좁은 화면에서는 예전처럼 32칸을 지킨다. 60칸을 넘는 폭은 event 칸을 먼저 늘리고 나머지를
+// 목적지 칸에 준다. source 값은 주소 하나라 traceScrollSourceWidth보다 넓혀도 빈칸만 는다.
+func traceScrollColumns(width int) (int, int, int) {
+	fixed := traceScrollProcessWidth + 3
+	event := traceScrollEventWidth
+	destination := min(60, max(32, width-fixed-event-traceScrollSourceWidth))
+	if spare := width - fixed - event - destination - traceScrollSourceWidth; spare > 0 {
+		grow := min(spare, traceScrollEventMaxWidth-event)
+		event, destination = event+grow, destination+spare-grow
+	}
+	return destination, event, max(1, width-fixed-event-destination)
 }
 
 func formatTraceScreenEventLabels(event captureEvent, destination, name string, width int) string {
@@ -1533,9 +1542,9 @@ func formatTraceScreenEventLabels(event captureEvent, destination, name string, 
 // traceScreenEventCells는 넓은 화면의 event 행을 칸마다 채운 값이다. TIME 칸이 있으면 맨 앞이다.
 func traceScreenEventCells(event captureEvent, destination, name string, width int) []string {
 	process, source := emptyAs(event.Process, "-"), emptyAs(event.Source, "-")
-	timeColumn, destinationWidth, sourceWidth := traceScreenColumns(width)
+	timeColumn, destinationWidth, eventWidth, sourceWidth := traceScreenColumns(width)
 	cell := func(value string, cellWidth int) string { return liveCell(traceFit(value, cellWidth), cellWidth) }
-	cells := []string{cell(process, traceScrollProcessWidth), cell(destination, destinationWidth), cell(name, traceScrollEventWidth), cell(source, sourceWidth)}
+	cells := []string{cell(process, traceScrollProcessWidth), cell(destination, destinationWidth), cell(name, eventWidth), cell(source, sourceWidth)}
 	if timeColumn > 0 {
 		cells = append([]string{cell(traceEventClock(event), traceScrollTimeWidth)}, cells...)
 	}
@@ -1568,10 +1577,10 @@ func formatTraceScreenEventLine(event captureEvent, width int) string {
 		return traceFit(strings.Join([]string{process, destination, name, source}, "  "), width)
 	}
 	timeColumn := traceScrollTimeColumn(width)
-	destinationWidth, sourceWidth := traceScrollColumns(width - timeColumn)
+	destinationWidth, eventWidth, sourceWidth := traceScrollColumns(width - timeColumn)
 	// liveCell은 칸보다 긴 값을 여러 줄로 감싸므로, 한 행을 지키려고 먼저 자른다.
 	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
-	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
+	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, eventWidth) + " " + cell(source, sourceWidth)
 	if timeColumn > 0 {
 		line = cell(traceEventClock(event), traceScrollTimeWidth) + " " + line
 	}
@@ -1582,7 +1591,7 @@ func formatTraceScreenEventLine(event captureEvent, width int) string {
 func formatTraceScreenPayload(event captureEvent, width int) string {
 	line := "↳ " + tracePayloadSummary(event)
 	if width+2 >= 72 {
-		timeColumn, _, _ := traceScreenColumns(width)
+		timeColumn, _, _, _ := traceScreenColumns(width)
 		line = strings.Repeat(" ", timeColumn+traceScrollProcessWidth+1) + line
 	}
 	line = traceFit(line, width)

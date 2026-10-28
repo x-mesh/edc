@@ -1,10 +1,14 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -85,6 +89,9 @@ func TestGrepScanRangeEqualsNaive(t *testing.T) {
 		{"ignore case with digits", "orders/41", false, true},
 		{"regex", `orders/[0-9]+/cancel`, true, false},
 		{"regex alternation", `timeout|login`, true, false},
+		{"regex without a prefix", `[0-9]+/cancel`, true, false},
+		{"regex alternation with a common run", `(GET|POST) /api/(users|orders)`, true, false},
+		{"regex with an optional prefix", `(Timeout )?waiting`, true, false},
 		{"empty pattern matches every line", "", false, false},
 	} {
 		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
@@ -190,6 +197,33 @@ func TestGrepChoosePivotUsesTheSample(t *testing.T) {
 	if first, _ := grepChoosePivot([]byte("q"), sample); first != -1 {
 		t.Fatalf("a one-byte needle has no pivot: %d", first)
 	}
+	// 첫 바이트가 3~5%로 bytes.Index가 가장 느린 구간에서는, 1.5%보다 흔해도 첫 바이트보다 충분히 드문 바이트를 쓴다.
+	log := []byte(strings.Repeat("s", 46) + strings.Repeat("3", 18) + strings.Repeat("x", 936))
+	if first, _ := grepChoosePivot([]byte("s3"), log); first != 1 {
+		t.Fatalf("a rarer byte than a 4.6%% first byte must be the pivot: %d", first)
+	}
+	if first, _ := grepChoosePivot([]byte("s3"), []byte(strings.Repeat("s", 46)+strings.Repeat("3", 40)+strings.Repeat("x", 914))); first != -1 {
+		t.Fatalf("a byte almost as common as the first byte must not be the pivot: %d", first)
+	}
+	if first, _ := grepChoosePivot([]byte("s3"), []byte(strings.Repeat("s", 100)+strings.Repeat("3", 20)+strings.Repeat("x", 880))); first != -1 {
+		t.Fatalf("bytes.Index is fast when the first byte is above 5%%: %d", first)
+	}
+	// 경계값: 첫 바이트가 정확히 5%이고 드문 바이트가 정확히 0.8배이면 pivot을 쓰고, 어느 한쪽이라도 넘으면 쓰지 않는다.
+	shares := func(first, rare int) []byte {
+		return []byte(strings.Repeat("s", first) + strings.Repeat("3", rare) + strings.Repeat("x", 1000-first-rare))
+	}
+	for _, scenario := range []struct {
+		first, rare int
+		pivot       int
+	}{
+		{50, 40, 1},
+		{51, 40, -1},
+		{50, 41, -1},
+	} {
+		if first, _ := grepChoosePivot([]byte("s3"), shares(scenario.first, scenario.rare)); first != scenario.pivot {
+			t.Fatalf("first byte %d/1000, rare byte %d/1000: pivot %d, want %d", scenario.first, scenario.rare, first, scenario.pivot)
+		}
+	}
 }
 
 func TestGrepMatcherNeedles(t *testing.T) {
@@ -201,11 +235,20 @@ func TestGrepMatcherNeedles(t *testing.T) {
 		needle     string
 	}{
 		{"Error 500", false, false, "Error 500"},
-		{"Error 500 at", false, true, " 500 "},
-		{"timeout", false, true, ""},
+		{"Error 500 at", false, true, "error 500 at"},
+		{"timeout", false, true, "timeout"},
+		{"Status 500 ok", false, true, " 500 "},
+		{"skip", false, true, ""},
 		{`orders/[0-9]+`, true, false, "orders/"},
 		{`(?i)orders`, true, false, ""},
 		{`a|b`, true, false, ""},
+		{`[a-z]+_[a-z]+Test\(`, true, false, "Test("},
+		{`Unmarshal|Marshal[A-Z]`, true, false, "arshal"},
+		{`(foo)?bar[0-9]+`, true, false, "bar"},
+		{`x*y?`, true, false, ""},
+		{`[0-9]+(?i:cancel)`, true, false, ""},
+		{`(GET|POST) /api/(users|orders)`, true, false, " /api/"},
+		{"id=\uFFFD+ end", true, false, " end"},
 	} {
 		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
 		if err != nil {
@@ -259,5 +302,259 @@ func TestGrepScanLastKeepsMatchesBeforeAReadError(t *testing.T) {
 		if got[index].offset != expected.offset || !bytes.Equal(got[index].text, expected.text) {
 			t.Fatalf("line %d at %d, want %d", index, got[index].offset, expected.offset)
 		}
+	}
+}
+
+// 정규식은 잘못된 UTF-8 바이트를 U+FFFD로 읽으므로, U+FFFD를 needle로 쓰면 그 줄을 놓친다.
+func TestGrepRegexWithReplacementCharacterMatchesInvalidBytes(t *testing.T) {
+	matcher, err := newGrepMatcher("id=\uFFFD", true, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("ok\nid=\xff\nok\n")
+	scanner := newGrepScanner(matcher, nil)
+	var got []string
+	if _, err := scanner.scanRange(bytes.NewReader(data), 0, int64(len(data)), -1, func(ref grepLineRef) bool {
+		got = append(got, string(ref.text))
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "id=\xff" {
+		t.Fatalf("lines %q, want the line with an invalid byte", got)
+	}
+}
+
+func TestGrepMatcherWithSampleKeepsCompiledPattern(t *testing.T) {
+	compiled, err := newGrepMatcher("cancel", true, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher := compiled.withSample([]byte(strings.Repeat("aaaa", 100) + "cancel"))
+	if matcher.regex != compiled.regex {
+		t.Fatal("withSample compiled the pattern again")
+	}
+	if compiled.pivot != -1 || compiled.second != -1 {
+		t.Fatalf("withSample changed the shared matcher: pivot %d, second %d", compiled.pivot, compiled.second)
+	}
+}
+
+func TestGrepSearchFileReusesReadBuffer(t *testing.T) {
+	dir := t.TempDir()
+	var paths []string
+	for _, name := range []string{"a.go", "b.go"} {
+		path := dir + "/" + name
+		if err := os.WriteFile(path, []byte("package a\nfunc main() {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	options := grepOptions{pattern: "main", codeMode: true, minLevel: -1, index: grepIndexOff}
+	matcher, err := newGrepMatcher(options.pattern, false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffers := &grepBuffers{}
+	printer := &grepPrinter{out: bufio.NewWriter(io.Discard)}
+	hints := &grepHints{options: options}
+	var first *byte
+	for _, path := range paths {
+		found, err := grepSearchFile(path, options, matcher, buffers, printer, hints)
+		if err != nil || !found {
+			t.Fatalf("%s: found %v, err %v", path, found, err)
+		}
+		data := buffers.buffer[:1]
+		if first == nil {
+			first = &data[0]
+		} else if &data[0] != first {
+			t.Fatal("the second file allocated a new read buffer")
+		}
+	}
+}
+
+func TestGrepFoldMatchesIgnoreCaseRegex(t *testing.T) {
+	data := append(grepFixture(1000), "\nTIMEOUT\nTiMeOuT x\ntime-out\nORDERS/41/CANCEL\nKelvin Key\nſecret\n"...)
+	lines := bytes.Split(data, []byte("\n"))
+	sample := data[:min(len(data), grepSampleSize)]
+	for _, scenario := range []struct {
+		pattern string
+		fold    bool
+	}{
+		{"timeout", true},
+		{"/41/cancel", true},
+		{"T", true},
+		{"/41/", true},
+		{"key", false},
+		{"secret", false},
+	} {
+		matcher, err := newGrepMatcher(scenario.pattern, false, true, sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matcher.fold != scenario.fold {
+			t.Fatalf("%s: fold %v, want %v", scenario.pattern, matcher.fold, scenario.fold)
+		}
+		regex := regexp.MustCompile("(?i)" + regexp.QuoteMeta(scenario.pattern))
+		matched := 0
+		for _, line := range lines {
+			if got, want := matcher.match(line), regex.Match(line); got != want {
+				t.Fatalf("%s: match(%q) = %v, regex %v", scenario.pattern, line, got, want)
+			} else if got {
+				matched++
+			}
+		}
+		if matched == 0 {
+			t.Fatalf("%s: no line matched", scenario.pattern)
+		}
+		if scenario.fold {
+			for position := 0; position < len(data); {
+				got, want := matcher.find(data[position:]), regex.FindIndex(data[position:])
+				if (want == nil) != (got < 0) || (want != nil && got != want[0]) {
+					t.Fatalf("%s at %d: find %d, regex %v", scenario.pattern, position, got, want)
+				}
+				if got < 0 {
+					break
+				}
+				position += got + 1
+			}
+		}
+	}
+}
+
+func TestGrepScanParallelEqualsSequential(t *testing.T) {
+	const lineLimit = 1000
+	data := grepFixture(lineLimit)
+	sample := data[:min(len(data), grepSampleSize)]
+	for _, scenario := range []struct {
+		pattern           string
+		regex, ignoreCase bool
+	}{
+		{"cancel", false, false},
+		{`orders/[0-9]+/cancel`, true, false},
+		{"timeout", false, true},
+		{"", false, false},
+	} {
+		matcher, err := newGrepMatcher(scenario.pattern, scenario.regex, scenario.ignoreCase, sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh := func() grepScanner {
+			scanner := newGrepScanner(matcher, nil)
+			scanner.block, scanner.lineLimit = 64, lineLimit
+			return scanner
+		}
+		for _, lineBase := range []int64{-1, 0} {
+			var want []grepLineRef
+			if _, err := fresh().scanRange(bytes.NewReader(data), 0, int64(len(data)), lineBase, func(ref grepLineRef) bool {
+				want = append(want, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+				return true
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, span := range []int64{29, 97, 4096} {
+				for _, workers := range []int{2, 5} {
+					label := fmt.Sprintf("%q numbers %v span %d workers %d", scenario.pattern, lineBase >= 0, span, workers)
+					var got []grepLineRef
+					if _, err := grepScanParallel(bytes.NewReader(data), 0, int64(len(data)), lineBase, workers, span, fresh, func(ref grepLineRef) bool {
+						got = append(got, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+						return true
+					}); err != nil {
+						t.Fatal(err)
+					}
+					grepRefsEqual(t, label, got, want, lineBase >= 0)
+					// emit이 false를 돌려주면 그 줄에서 멈춘다.
+					if len(want) > 3 {
+						got = got[:0]
+						grepScanParallel(bytes.NewReader(data), 0, int64(len(data)), lineBase, workers, span, fresh, func(ref grepLineRef) bool {
+							got = append(got, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+							return len(got) < 3
+						})
+						grepRefsEqual(t, label+" stopped", got, want[:3], lineBase >= 0)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGrepScanRangeKeepsBufferAfterDiscard(t *testing.T) {
+	data := grepFixture(1000)
+	matcher, _ := newGrepMatcher("cancel", false, false, nil)
+	scanner := newGrepScanner(matcher, nil)
+	scanner.block = 4096
+	var first *byte
+	// 줄 중간에서 시작하면 앞 조각을 버린다. 그때 버퍼를 잘라 내면 다음 호출이 배열을 새로 만든다.
+	for _, from := range []int64{5, 3001, 7777} {
+		if _, err := scanner.scanRange(bytes.NewReader(data), from, from+9000, -1, func(grepLineRef) bool { return true }); err != nil {
+			t.Fatal(err)
+		}
+		if cap(scanner.buffers.buffer) < scanner.block*2 {
+			t.Fatalf("from %d: buffer capacity %d after discard", from, cap(scanner.buffers.buffer))
+		}
+		if data := scanner.buffers.buffer[:1]; first == nil {
+			first = &data[0]
+		} else if &data[0] != first {
+			t.Fatalf("from %d allocated a new buffer", from)
+		}
+	}
+}
+
+func TestGrepScanParallelLongLineAndOffsets(t *testing.T) {
+	const lineLimit = 1000
+	matcher, _ := newGrepMatcher("cancel", false, false, nil)
+	fresh := func() grepScanner {
+		scanner := newGrepScanner(matcher, nil)
+		scanner.block, scanner.lineLimit = 64, lineLimit
+		return scanner
+	}
+	sequential := func(file io.ReaderAt, from, to, lineBase int64) ([]grepLineRef, error) {
+		var lines []grepLineRef
+		_, err := fresh().scanRange(file, from, to, lineBase, func(ref grepLineRef) bool {
+			lines = append(lines, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+			return true
+		})
+		return lines, err
+	}
+	parallel := func(file io.ReaderAt, from, to, lineBase int64) ([]grepLineRef, int64, error) {
+		var lines []grepLineRef
+		read, err := grepScanParallel(file, from, to, lineBase, 4, 97, fresh, func(ref grepLineRef) bool {
+			lines = append(lines, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+			return true
+		})
+		return lines, read, err
+	}
+
+	// 줄바꿈 없는 긴 줄이 여러 구간에 걸치면, 그 줄 중간에서 시작한 구간은 구간 끝에서 멈춰야 한다.
+	long := []byte(strings.Repeat("x", 20000) + " cancel\nafter cancel\n" + strings.Repeat("y", 30000))
+	want, _ := sequential(bytes.NewReader(long), 0, int64(len(long)), 0)
+	got, read, err := parallel(bytes.NewReader(long), 0, int64(len(long)), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grepRefsEqual(t, "long line", got, want, true)
+	if read > 3*int64(len(long)) {
+		t.Fatalf("read %d bytes of a %d byte file", read, len(long))
+	}
+
+	// 줄 중간에서 시작해도 줄 번호는 from 앞의 줄바꿈 수에 이어진다.
+	data := grepFixture(lineLimit)
+	for _, from := range []int64{1, 777, int64(len(data)) / 2} {
+		lineBase := int64(bytes.Count(data[:from], []byte{'\n'}))
+		want, _ := sequential(bytes.NewReader(data), from, int64(len(data)), lineBase)
+		got, _, err := parallel(bytes.NewReader(data), from, int64(len(data)), lineBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		grepRefsEqual(t, fmt.Sprintf("from %d", from), got, want, true)
+	}
+
+	// 읽기 오류는 앞 구간의 줄을 낸 뒤 그대로 돌려준다.
+	failing := grepFailingReader{data: data, limit: int64(len(data)) / 2}
+	from := failing.limit + 1
+	if _, err := sequential(failing, from, int64(len(data)), -1); err != nil {
+		t.Fatalf("the range after the failure must read: %v", err)
+	}
+	if _, _, err := parallel(failing, 0, int64(len(data)), -1); !errors.Is(err, errGrepTestRead) {
+		t.Fatalf("parallel scan error %v, want %v", err, errGrepTestRead)
 	}
 }

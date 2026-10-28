@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"regexp/syntax"
+	"slices"
+	"unicode/utf8"
 )
 
 const (
@@ -19,6 +22,12 @@ const (
 	// grepPivotShare는 pivot으로 쓸 수 있는 바이트의 최대 비율이다. 가장 드문 바이트가 이보다 흔하면 IndexByte로 찍는
 	// 후보가 너무 많아 bytes.Index가 빠르다. 측정에서 1.49%인 '4'까지는 pivot이 빨랐다.
 	grepPivotShare = 0.015
+	// bytes.Index는 needle의 첫 바이트로 후보를 찍다가 실패가 쌓이면 bytealg.Index로 넘어간다. 첫 바이트가 5%보다 흔하면
+	// 금방 넘어가 빠르지만, 3~5%에서는 넘어가지 못한 채 후보마다 멈춰 가장 느리다. 그 구간에서는 가장 드문 바이트가 첫
+	// 바이트의 0.8배 이하이기만 하면 pivot이 빨랐다. 로그의 status=503(첫 바이트 4.6%, 가장 드문 바이트 1.8%)은
+	// 47ms에서 28ms가 되었고, 0.8배를 넘는 =200 은 bytes.Index가 빨랐다.
+	grepPivotFirstShare = 0.05
+	grepPivotFirstRatio = 0.8
 )
 
 // grepMatcher는 한 검색의 패턴이다. needle은 모든 일치에 반드시 들어가는 바이트라서, 줄을 하나씩 보지 않고 needle이 있는
@@ -29,6 +38,8 @@ type grepMatcher struct {
 	needle  []byte
 	// indexNeedle은 index의 trigram에 대는 바이트다. bloom은 대소문자를 접어 두므로 -i 문자열 패턴도 패턴 전체를 쓴다.
 	indexNeedle []byte
+	// fold는 -i 문자열 패턴을 정규식 없이 ASCII 대소문자만 접어 찾는다는 뜻이다. 그때 needle은 소문자 패턴이다.
+	fold bool
 	// pivot은 needle에서 IndexByte로 찍는 바이트의 위치다. -1이면 bytes.Index를 쓴다. second는 전체 비교 전에 확인하는
 	// 두 번째 바이트다.
 	pivot, second int
@@ -57,15 +68,133 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 		matcher.regex = regex
 		prefix, _ := regex.LiteralPrefix()
 		matcher.needle = []byte(prefix)
+		// 앞에 고정 문자열이 없어도 모든 일치에 들어가는 문자열이 있으면 그것으로 건너뛴다. 없으면 모든 줄에 정규식을 대서,
+		// Go 소스 41 MB에 [a-z]+_[a-z]+Test\( 를 찾는 데 869ms가 걸렸고 Test( 로 건너뛰면 7ms였다.
+		if parsed, err := syntax.Parse(expr, syntax.Perl); err == nil {
+			if required := grepRequiredLiteral(parsed); len(required) > len(matcher.needle) {
+				matcher.needle = required
+			}
+		}
 		matcher.indexNeedle = matcher.needle
 		if ignoreCase && !useRegex {
 			// 대소문자를 무시해도 글자가 아닌 바이트는 그대로다. 그중 가장 긴 구간이 모든 일치에 들어간다.
 			matcher.needle = grepLongestNonLetterRun(pattern)
 			matcher.indexNeedle = []byte(pattern)
+			if grepFoldsInASCII(pattern) {
+				matcher.fold = true
+				matcher.needle = bytes.ToLower([]byte(pattern))
+			}
 		}
 	}
-	matcher.pivot, matcher.second = grepChoosePivot(matcher.needle, sample)
+	matcher.pivot, matcher.second = matcher.choosePivot(sample)
 	return matcher, nil
+}
+
+// grepFoldsInASCII는 (?i)로 pattern에 맞는 글자가 모두 ASCII인지 본다. 유니코드 대소문자 접기에서 ASCII 글자 중 k와 s만
+// ASCII 밖의 글자(K U+212A, ſ U+017F)와 같다. 그런 패턴은 정규식으로 찾아야 결과가 같다.
+func grepFoldsInASCII(pattern string) bool {
+	if pattern == "" {
+		return false
+	}
+	for index := 0; index < len(pattern); index++ {
+		switch char := pattern[index]; {
+		case char >= utf8.RuneSelf, char == 'k', char == 'K', char == 's', char == 'S':
+			return false
+		}
+	}
+	return true
+}
+
+func grepASCIIUpper(char byte) byte {
+	if 'a' <= char && char <= 'z' {
+		return char - 'a' + 'A'
+	}
+	return char
+}
+
+func (matcher *grepMatcher) choosePivot(sample []byte) (int, int) {
+	if !matcher.fold {
+		return grepChoosePivot(matcher.needle, sample)
+	}
+	// 대소문자를 접어 찾을 때는 bytes.Index를 쓸 수 없으므로, 두 글자꼴을 합친 빈도가 가장 낮은 바이트를 늘 pivot으로 쓴다.
+	var histogram [256]int
+	for _, char := range sample {
+		histogram[char]++
+	}
+	pivot := 0
+	for index, char := range matcher.needle {
+		count := histogram[char]
+		if upper := grepASCIIUpper(char); upper != char {
+			count += histogram[upper]
+		}
+		best := histogram[matcher.needle[pivot]]
+		if upper := grepASCIIUpper(matcher.needle[pivot]); upper != matcher.needle[pivot] {
+			best += histogram[upper]
+		}
+		if count < best {
+			pivot = index
+		}
+	}
+	return pivot, -1
+}
+
+// withSample은 컴파일한 패턴을 그대로 두고 sample로 pivot만 다시 고른 사본이다. 파일마다 정규식을 다시 컴파일하지 않기 위해서다.
+func (matcher *grepMatcher) withSample(sample []byte) *grepMatcher {
+	copied := *matcher
+	copied.pivot, copied.second = copied.choosePivot(sample)
+	return &copied
+}
+
+// grepRequiredLiteral은 re에 맞는 모든 문자열에 들어가는 가장 긴 고정 문자열이다. 확실하지 않으면 nil이다. 대소문자를
+// 접는 문자열은 바이트로 찾을 수 없으므로 쓰지 않는다.
+func grepRequiredLiteral(re *syntax.Regexp) []byte {
+	switch re.Op {
+	case syntax.OpLiteral:
+		// 정규식은 잘못된 UTF-8 바이트를 U+FFFD로 읽어 맞추므로, U+FFFD가 든 문자열을 바이트로 찾으면 그런 줄을 놓친다.
+		if re.Flags&syntax.FoldCase != 0 || slices.Contains(re.Rune, utf8.RuneError) {
+			return nil
+		}
+		return []byte(string(re.Rune))
+	case syntax.OpCapture, syntax.OpPlus:
+		return grepRequiredLiteral(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return grepRequiredLiteral(re.Sub[0])
+		}
+	case syntax.OpConcat:
+		var best []byte
+		for _, sub := range re.Sub {
+			if literal := grepRequiredLiteral(sub); len(literal) > len(best) {
+				best = literal
+			}
+		}
+		return best
+	case syntax.OpAlternate:
+		// 갈래마다 들어가는 문자열의 공통 부분만 모든 일치에 들어간다.
+		common := grepRequiredLiteral(re.Sub[0])
+		for _, sub := range re.Sub[1:] {
+			if len(common) == 0 {
+				return nil
+			}
+			common = grepLongestCommonRun(common, grepRequiredLiteral(sub))
+		}
+		return common
+	}
+	return nil
+}
+
+// grepLongestCommonRun은 a와 b에 함께 들어가는 가장 긴 연속 바이트다. 정규식의 고정 문자열은 짧아 제곱 비교로 충분하다.
+func grepLongestCommonRun(a, b []byte) []byte {
+	var best []byte
+	for start := range a {
+		for end := start + len(best) + 1; end <= len(a); end++ {
+			if !bytes.Contains(b, a[start:end]) {
+				break
+			}
+			best = a[start:end]
+		}
+	}
+	return best
 }
 
 func grepLongestNonLetterRun(pattern string) []byte {
@@ -103,7 +232,8 @@ func grepChoosePivot(needle, sample []byte) (int, int) {
 			first = index
 		}
 	}
-	if float64(histogram[needle[first]])/float64(len(sample)) > grepPivotShare {
+	rare, leading := float64(histogram[needle[first]]), float64(histogram[needle[0]])
+	if rare/float64(len(sample)) > grepPivotShare && (leading/float64(len(sample)) > grepPivotFirstShare || rare > leading*grepPivotFirstRatio) {
 		return -1, -1
 	}
 	second := -1
@@ -117,6 +247,9 @@ func grepChoosePivot(needle, sample []byte) (int, int) {
 
 // find는 data에서 needle이 시작하는 첫 위치다.
 func (matcher *grepMatcher) find(data []byte) int {
+	if matcher.fold {
+		return matcher.findFold(data)
+	}
 	if matcher.pivot < 0 {
 		return bytes.Index(data, matcher.needle)
 	}
@@ -135,8 +268,59 @@ func (matcher *grepMatcher) find(data []byte) int {
 	}
 }
 
+// findFold는 pivot 바이트의 소문자와 대문자를 각각 IndexByte로 찾는다. 두 위치를 기억해 두어, 한쪽이 드물어도 같은
+// 구간을 다시 훑지 않는다.
+func (matcher *grepMatcher) findFold(data []byte) int {
+	needle := matcher.needle
+	lower := needle[matcher.pivot]
+	upper := grepASCIIUpper(lower)
+	indexFrom := func(position int, char byte) int {
+		if index := bytes.IndexByte(data[position:], char); index >= 0 {
+			return position + index
+		}
+		return len(data)
+	}
+	nextLower, nextUpper := -1, -1
+	if upper == lower {
+		nextUpper = len(data)
+	}
+	position := 0
+	for {
+		if nextLower < position {
+			nextLower = indexFrom(position, lower)
+		}
+		if nextUpper < position {
+			nextUpper = indexFrom(position, upper)
+		}
+		index := min(nextLower, nextUpper)
+		if index >= len(data) {
+			return -1
+		}
+		if at := index - matcher.pivot; at >= 0 && at+len(needle) <= len(data) && grepEqualASCIIFold(data[at:at+len(needle)], needle) {
+			return at
+		}
+		position = index + 1
+	}
+}
+
+// grepEqualASCIIFold는 data를 ASCII 소문자로 바꿔 lower와 비교한다.
+func grepEqualASCIIFold(data, lower []byte) bool {
+	for index, char := range data {
+		if 'A' <= char && char <= 'Z' {
+			char += 'a' - 'A'
+		}
+		if char != lower[index] {
+			return false
+		}
+	}
+	return true
+}
+
 // match는 line이 패턴에 맞는지 확정한다.
 func (matcher *grepMatcher) match(line []byte) bool {
+	if matcher.fold {
+		return matcher.findFold(line) >= 0
+	}
 	if matcher.regex != nil {
 		return matcher.regex.Match(line)
 	}
@@ -169,6 +353,15 @@ type grepScanner struct {
 // newGrepScanner는 패턴과 조건으로 scanner를 만든다. 조건이 머리 줄의 level과 시각을 물려받는 형식이면 줄을 건너뛰지 않는다.
 type grepBuffers struct {
 	buffer []byte
+	sample []byte
+}
+
+// sampleOf는 size 바이트 표본 자리다. 다음 파일을 읽으면 내용이 바뀌므로 한 파일을 찾는 동안만 쓴다.
+func (buffers *grepBuffers) sampleOf(size int) []byte {
+	if buffers.sample == nil {
+		buffers.sample = make([]byte, grepSampleSize)
+	}
+	return buffers.sample[:size]
 }
 
 func newGrepScanner(matcher *grepMatcher, filter *grepFilter) grepScanner {
@@ -201,8 +394,11 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 	if cap(scanner.buffers.buffer) < scanner.block*2 {
 		scanner.buffers.buffer = make([]byte, 0, scanner.block*2)
 	}
+	// origin은 할당한 배열의 처음이다. 앞을 버릴 때 buffer를 잘라 내면 남은 용량이 줄어, 다음 호출이 배열을 새로 만든다.
+	// 그래서 남은 바이트는 늘 origin 앞으로 당기고, 돌려줄 때도 origin을 돌려준다.
 	buffer := scanner.buffers.buffer[:0]
-	defer func() { scanner.buffers.buffer = buffer[:0] }()
+	origin := buffer
+	defer func() { scanner.buffers.buffer = origin[:0] }()
 	bufferStart, readAt := from, from
 	var read int64
 	number := lineBase
@@ -218,6 +414,9 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 	}
 	eof := false
 	for {
+		// fresh는 이번에 새로 읽은 바이트의 시작이다. 그 앞은 앞 회차의 남은 줄 조각이라 줄바꿈이 없다. 한 줄이 아주 길면
+		// 구간 끝 뒤를 64 KiB씩 읽는데, 매번 버퍼 전체에서 줄바꿈을 찾으면 줄 길이의 제곱만큼 훑는다.
+		fresh := len(buffer)
 		if !eof {
 			want := scanner.block
 			if readAt >= to && want > grepTailRead {
@@ -227,7 +426,7 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 			if cap(buffer)-len(buffer) < want {
 				grown := make([]byte, len(buffer), 2*cap(buffer)+want)
 				copy(grown, buffer)
-				buffer = grown
+				buffer, origin = grown, grown
 			}
 			count, err := file.ReadAt(buffer[len(buffer):len(buffer)+want], readAt)
 			if err != nil && !errors.Is(err, io.EOF) {
@@ -246,15 +445,18 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 		if discard {
 			newline := bytes.IndexByte(buffer, '\n')
 			if newline < 0 {
-				if eof {
+				// to까지 줄바꿈이 없으면 이 구간에서 시작하는 줄이 없다. 끝까지 찾으면 줄바꿈 없는 큰 파일에서 병렬 구간마다
+				// 파일 끝까지 읽는다.
+				if eof || readAt >= to {
 					return read, nil
 				}
 				buffer = buffer[:0]
 				bufferStart = readAt
 				continue
 			}
-			buffer = buffer[newline+1:]
+			buffer = append(origin[:0], buffer[newline+1:]...)
 			bufferStart += int64(newline + 1)
+			fresh = 0
 			if number >= 0 {
 				number++
 			}
@@ -263,7 +465,10 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 				return read, nil
 			}
 		}
-		last := bytes.LastIndexByte(buffer, '\n')
+		last := bytes.LastIndexByte(buffer[fresh:], '\n')
+		if last >= 0 {
+			last += fresh
+		}
 		region := buffer[:last+1]
 		overlong := len(buffer)-len(region) > scanner.lineLimit
 		if eof || overlong {
@@ -283,7 +488,7 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 			return read, nil
 		}
 		discard = overlong
-		buffer = append(buffer[:0], buffer[len(region):]...)
+		buffer = append(origin[:0], buffer[len(region):]...)
 		bufferStart = next
 	}
 }

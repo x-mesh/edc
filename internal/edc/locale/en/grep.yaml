@@ -16,7 +16,7 @@ grep:
     changed: "files changed during embedding; run the command again"
     method: "Semantic search (local embedding + keywords)"
     init_required: "Use --semantic-init to build the local index first."
-    usage: "edc grep --semantic-init [--yes] [directory] | --semantic-status [directory] | --semantic-clear [directory] | --model-clear"
+    usage: "edc grep --semantic-init [--yes] [directory] | --semantic-status [directory] | --semantic-files [directory] | --semantic-clear [directory] | --model-clear"
     one_root: "semantic search requires one directory"
     invalid: "semantic index is invalid; rebuild it with --semantic-init"
     backend_error: "local ONNX Runtime failed"

@@ -360,6 +360,7 @@ var commandDocs = []commandDoc{
 			{"--semantic", "command.grep.option.semantic"},
 			{"--semantic-init [dir]", "command.grep.option.semantic_init"},
 			{"--semantic-status [dir]", "command.grep.option.semantic_status"},
+			{"--semantic-files [dir]", "command.grep.option.semantic_files"},
 			{"--semantic-clear [dir]", "command.grep.option.semantic_clear"},
 			{"--model-clear", "command.grep.option.model_clear"},
 			{"--yes", "command.grep.option.semantic_yes"},

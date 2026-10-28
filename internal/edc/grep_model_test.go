@@ -138,7 +138,7 @@ func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := grepSemanticSave(indexPath, &grepSemanticIndex{Version: 1, Root: canonical, Model: grepSemanticModel, Revision: "test", Vectors: map[string][]float32{}}); err != nil {
+	if err := grepSemanticSave(indexPath, &grepSemanticIndex{Version: grepSemanticVersion, Root: canonical, Model: grepSemanticModel, Revision: "test", Vectors: map[string][]float32{}}); err != nil {
 		t.Fatal(err)
 	}
 	output.Reset()

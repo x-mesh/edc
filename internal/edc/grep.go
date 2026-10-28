@@ -78,7 +78,7 @@ func grepLifecycleArgs(args []string) ([]string, bool) {
 		switch arg {
 		case "--":
 			return nil, false
-		case "--semantic-init", "--semantic-status", "--semantic-clear", "--model-clear":
+		case "--semantic-init", "--semantic-status", "--semantic-files", "--semantic-clear", "--model-clear":
 			ordered := append([]string{arg}, args[:i]...)
 			return append(ordered, args[i+1:]...), true
 		}
@@ -124,6 +124,9 @@ func parseGrepOptionsForInput(args []string, stderr io.Writer, now time.Time, te
 		return options, nil, err
 	}
 	filtered := *level != "" || *status != "" || *since != "" || *until != ""
+	if options.semantic {
+		options.askMode = true
+	}
 	if options.askMode {
 		if options.askKeyword && options.semantic {
 			return options, nil, errors.New(T("cli.usage", grepUsage))

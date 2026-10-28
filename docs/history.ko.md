@@ -308,13 +308,17 @@ semantic 검색은 영문 `all-MiniLM-L6-v2` 모델과 native ONNX Runtime을 �
 ```sh
 edc grep --semantic-init
 edc grep --ask 'Where is authentication configuration loaded?'
+edc grep --semantic 'Where is authentication configuration loaded?'
 edc grep --semantic-status
+edc grep --semantic-files
 edc grep --semantic-clear
 edc grep --model-clear
 ```
 
-`--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다.
+`--semantic`은 `--ask`와 같습니다. `--ask`는 기본으로 semantic 검색을 사용합니다. `--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다. `--semantic-files`는 현재 파일을 다시 읽어 파일마다 `index에 든 청크/전체 청크`와 경로를 출력합니다. 경로에 탭, 줄바꿈 같은 제어 문자나 큰따옴표가 있으면 Go 문자열 형식으로 따옴표를 붙여 출력합니다. 두 수가 다른 파일은 다음 검색 때 다시 벡터화합니다.
 
-검색은 오프라인으로 실행합니다. 현재 파일을 확인해 변경된 조각만 다시 벡터화하며, 변경이 없으면 index를 다시 쓰지 않습니다. 벡터화 중 파일이 바뀌면 오래된 결과를 저장하지 않고 오류를 반환합니다. `--semantic-init`은 이전 다국어 모델의 index도 다시 만듭니다. 실패하거나 중단된 다운로드는 사용 가능한 모델로 취급하지 않습니다. 검색 질의는 영어를 사용합니다. 에이전트가 사용자 질문을 영어로 바꿔 호출할 수 있으며, 한국어로만 된 주석·문서는 영문 모델이 놓칠 수 있습니다.
+디렉터리를 검색할 때 생성 파일, lock 파일, 테스트 fixture는 index에 넣지 않고 순위에서도 뺍니다. 생성 파일은 첫 줄 주석에 `Code generated ... DO NOT EDIT` 또는 `auto-generated`가 있는 파일입니다. lock 파일은 `go.sum`, `package-lock.json`, `yarn.lock`, `Cargo.lock` 등입니다. 테스트 fixture는 `testdata/` 아래 파일이며, `.md`와 `.txt`는 남깁니다. 이런 파일도 경로로 직접 지정하면 검색합니다.
+
+검색은 오프라인으로 실행합니다. 현재 파일을 확인해 변경된 조각만 다시 벡터화하며, 변경이 없으면 index를 다시 쓰지 않습니다. 벡터화 중 파일이 바뀌면 오래된 결과를 저장하지 않고 오류를 반환합니다. `--semantic-init`은 이전 다국어 모델로 만들었거나 이전 형식으로 저장한 index도 다시 만듭니다. index는 벡터를 16비트 실수로 저장합니다. 실패하거나 중단된 다운로드는 사용 가능한 모델로 취급하지 않습니다. 검색 질의는 영어를 사용합니다. 에이전트가 사용자 질문을 영어로 바꿔 호출할 수 있으며, 한국어로만 된 주석·문서는 영문 모델이 놓칠 수 있습니다.
 
 점수는 cosine similarity 95%와 정규화된 키워드 점수 5%를 합친 값이며 확률은 아닙니다. 조각마다 최대 3,000자와 모델 토큰 128개를 벡터화합니다. 파일 크기와 전체 검색 한도는 키워드 검색과 같습니다. Linux·macOS의 amd64·arm64를 지원합니다. 공식 Linux runtime은 glibc와 libstdc++가 필요하므로 Alpine 같은 musl 전용 환경은 호환 라이브러리 없이 지원하지 않습니다.

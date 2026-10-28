@@ -16,7 +16,7 @@ grep:
     changed: "벡터화 중 파일이 변경되었습니다. 명령을 다시 실행하세요"
     method: "semantic 검색 (로컬 embedding + 키워드)"
     init_required: "먼저 --semantic-init으로 로컬 index를 만드세요."
-    usage: "edc grep --semantic-init [--yes] [directory] | --semantic-status [directory] | --semantic-clear [directory] | --model-clear"
+    usage: "edc grep --semantic-init [--yes] [directory] | --semantic-status [directory] | --semantic-files [directory] | --semantic-clear [directory] | --model-clear"
     one_root: "semantic 검색은 디렉터리 하나가 필요합니다"
     invalid: "semantic index가 잘못되었습니다. --semantic-init으로 다시 만드세요"
     backend_error: "로컬 ONNX Runtime 실행에 실패했습니다"

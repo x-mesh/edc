@@ -940,10 +940,11 @@ func TestTraceScreenColorsOnlyMeaningfulText(t *testing.T) {
 	if strings.Contains(rows["tcp_connect"], traceTestColor(richRed)) || strings.Contains(rows["tcp_connect"], traceTestColor(richYellow)) || !strings.Contains(rows["tcp_connect"], traceTestColor(richGray)+"m10.0.0.2:5000") {
 		t.Fatalf("plain event row = %q", rows["tcp_connect"])
 	}
-	if !strings.Contains(rows["tcp_send_reset"], tracePaint(liveCell("tcp_send_reset", traceScrollEventWidth), richRed, false)) {
+	_, _, eventWidth, _ := traceScreenColumns(model.width - 2)
+	if !strings.Contains(rows["tcp_send_reset"], tracePaint(liveCell("tcp_send_reset", eventWidth), richRed, false)) {
 		t.Fatalf("reset row = %q", rows["tcp_send_reset"])
 	}
-	if !strings.Contains(rows["tcp_retransmit"], tracePaint(liveCell("tcp_retransmit", traceScrollEventWidth), richYellow, false)) {
+	if !strings.Contains(rows["tcp_retransmit"], tracePaint(liveCell("tcp_retransmit", eventWidth), richYellow, false)) {
 		t.Fatalf("retransmit row = %q", rows["tcp_retransmit"])
 	}
 	// 줄 단위 출력과 같은 규칙이다. HTTP는 status code의 색이다.
@@ -1243,5 +1244,27 @@ func TestTraceScreenClickHouseHTTPSlowBoundary(t *testing.T) {
 	want := []traceScreenRow{{primary: 2, response: 3}}
 	if got := traceVisibleScreenRows(model); !slices.Equal(got, want) {
 		t.Fatalf("slow rows = %+v, want %+v", got, want)
+	}
+}
+
+func TestTraceScrollColumnsGiveWideScreensToDestinationAndEvent(t *testing.T) {
+	for _, test := range []struct {
+		width                      int
+		destination, event, source int
+	}{
+		// 좁은 화면은 목적지 32칸을 지키고 source를 줄인다.
+		{width: 72, destination: 32, event: traceScrollEventWidth, source: 1},
+		{width: 120, destination: 59, event: traceScrollEventWidth, source: traceScrollSourceWidth},
+		{width: 130, destination: 60, event: traceScrollEventWidth + 9, source: traceScrollSourceWidth},
+		// 남는 폭은 source가 아니라 event 칸을 상한까지 채운 뒤 목적지 칸으로 간다.
+		{width: 200, destination: 127, event: traceScrollEventMaxWidth, source: traceScrollSourceWidth},
+	} {
+		destination, event, source := traceScrollColumns(test.width)
+		if destination != test.destination || event != test.event || source != test.source {
+			t.Errorf("width %d: columns = %d, %d, %d, want %d, %d, %d", test.width, destination, event, source, test.destination, test.event, test.source)
+		}
+		if test.width >= 120 && traceScrollProcessWidth+destination+event+source+3 != test.width {
+			t.Errorf("width %d: columns do not fill the line", test.width)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,7 +141,7 @@ func TestGrepSemanticRejectsDamagedCache(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.gob")
 	vec := make([]float32, 384)
 	vec[0] = 1
-	index := &grepSemanticIndex{Version: 1, Root: root, Model: grepSemanticModel, Revision: "revision", Vectors: map[string][]float32{"key": vec}}
+	index := &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Revision: "revision", Vectors: map[string][]float32{strings.Repeat("ab", 32): vec}}
 	if err := grepSemanticSave(path, index); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestGrepSemanticRejectsPreviousModelIndex(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(t.TempDir(), "old.gob")
 	vector := make([]float32, 384)
-	index := &grepSemanticIndex{Version: 1, Root: root, Model: "intfloat/multilingual-e5-small", Revision: "old", Vectors: map[string][]float32{"key": vector}}
+	index := &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: "intfloat/multilingual-e5-small", Revision: "old", Vectors: map[string][]float32{strings.Repeat("ab", 32): vector}}
 	if err := grepSemanticSave(path, index); err != nil {
 		t.Fatal(err)
 	}
@@ -347,5 +348,50 @@ func TestGrepSemanticFilesListsIndexedChunks(t *testing.T) {
 	}
 	if code := grepSemanticLifecycle([]string{"--semantic-files", "--yes", root}, &out, &stderr); code != 2 {
 		t.Fatalf("--yes accepted: %d", code)
+	}
+}
+
+func TestGrepSemanticStoresHalfPrecisionVectors(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(t.TempDir(), "index.bin")
+	vector := make([]float32, 384)
+	for i := range vector {
+		vector[i] = float32(math.Sin(float64(i))) / 20
+	}
+	vector[1], vector[2] = 3e-7, -1
+	key := strings.Repeat("0f", 32)
+	index := &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Revision: "revision", Vectors: map[string][]float32{key: vector}}
+	if err := grepSemanticSave(path, index); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > 36+1024+32+384*2 {
+		t.Fatalf("size %v %v", info, err)
+	}
+	loaded, err := grepSemanticRead(path, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != "revision" || len(loaded.Vectors) != 1 {
+		t.Fatalf("loaded %+v", loaded)
+	}
+	for i, x := range loaded.Vectors[key] {
+		if diff := math.Abs(float64(x - vector[i])); diff > math.Max(math.Abs(float64(vector[i]))/1024, 6e-8) {
+			t.Fatalf("dimension %d got %g want %g", i, x, vector[i])
+		}
+	}
+	if err := grepSemanticSave(path, &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Revision: "r", Vectors: map[string][]float32{"not-hex": vector}}); err == nil {
+		t.Fatal("invalid key saved")
+	}
+}
+
+func TestGrepSemanticRejectsGobIndex(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(t.TempDir(), "old.gob")
+	if err := os.WriteFile(path, append([]byte("EDC1"), make([]byte, 64)...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := grepSemanticRead(path, root); err == nil || !strings.Contains(err.Error(), "--semantic-init") {
+		t.Fatalf("old format accepted or missing instruction: %v", err)
 	}
 }

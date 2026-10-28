@@ -3,7 +3,7 @@ package edc
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/gob"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,11 +13,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 const grepSemanticModel = grepMiniLMName
+
+const grepSemanticVersion = 2
+
+const grepSemanticDimensions = 384
 
 type grepSemanticIndex struct {
 	Version  int
@@ -137,45 +142,155 @@ func grepSemanticKey(root string, chunk grepAskChunk) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// grepSemanticMagic의 숫자는 저장 형식 버전이다. EDC1(gob)로 만든 index는 읽지 않으므로 --semantic-init으로 다시 만든다.
+const grepSemanticMagic = "EDC2"
+
+const grepSemanticMaxBytes = 256 << 20
+
+// 벡터는 IEEE 754 half로 저장한다. 측정에서 float32와 검색 순위가 같았고 파일은 3분의 1, 읽기는 6분의 1로 줄었다.
+func grepFloat16(x float32) uint16 {
+	bits := math.Float32bits(x)
+	sign := uint16(bits>>16) & 0x8000
+	exponent := int(bits>>23&0xff) - 127 + 15
+	mantissa := bits & 0x7fffff
+	if exponent >= 31 {
+		if bits&0x7fffffff > 0x7f800000 {
+			return sign | 0x7e00
+		}
+		return sign | 0x7c00
+	}
+	if exponent <= 0 {
+		if exponent < -10 {
+			return sign
+		}
+		mantissa |= 0x800000
+		shift := uint(14 - exponent)
+		half := uint16(mantissa >> shift)
+		rest, halfway := mantissa&(1<<shift-1), uint32(1)<<(shift-1)
+		if rest > halfway || rest == halfway && half&1 == 1 {
+			half++
+		}
+		return sign | half
+	}
+	half := sign | uint16(exponent)<<10 | uint16(mantissa>>13)
+	if rest := mantissa & 0x1fff; rest > 0x1000 || rest == 0x1000 && half&1 == 1 {
+		half++
+	}
+	return half
+}
+
+var grepFloat16Table = sync.OnceValue(func() []float32 {
+	table := make([]float32, 1<<16)
+	for i := range table {
+		h := uint32(i)
+		sign, exponent, mantissa := h>>15<<31, h>>10&0x1f, h&0x3ff
+		switch exponent {
+		case 0:
+			table[i] = math.Float32frombits(sign | math.Float32bits(float32(mantissa)/(1<<24)))
+		case 31:
+			table[i] = math.Float32frombits(sign | 0x7f800000 | mantissa<<13)
+		default:
+			table[i] = math.Float32frombits(sign | (exponent+112)<<23 | mantissa<<13)
+		}
+	}
+	return table
+})
+
+// 형식: magic, body의 SHA-256, body. body는 길이를 앞에 붙인 Root·Model·Revision, 항목 수, 항목(32바이트 key와 half 384개)이다.
 func grepSemanticRead(path, root string) (*grepSemanticIndex, error) {
+	invalid := errors.New(T("grep.semantic.invalid"))
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	var header [36]byte
-	if _, err := io.ReadFull(file, header[:]); err != nil || string(header[:4]) != "EDC1" {
-		return nil, errors.New(T("grep.semantic.invalid"))
-	}
-	hash := sha256.New()
-	n, err := io.Copy(hash, io.LimitReader(file, (256<<20)+1))
-	if err != nil || n > 256<<20 || !bytes.Equal(header[4:], hash.Sum(nil)) {
-		return nil, errors.New(T("grep.semantic.invalid"))
-	}
-	if _, err := file.Seek(36, io.SeekStart); err != nil {
+	data, err := io.ReadAll(io.LimitReader(file, grepSemanticMaxBytes+1))
+	if err != nil {
 		return nil, err
 	}
-	var index grepSemanticIndex
-	if err := gob.NewDecoder(io.LimitReader(file, 256<<20)).Decode(&index); err != nil {
-		return nil, errors.New(T("grep.semantic.invalid"))
+	if len(data) < 36 || len(data) > grepSemanticMaxBytes || string(data[:4]) != grepSemanticMagic {
+		return nil, invalid
 	}
-	if index.Version != 1 || index.Root != root || index.Model != grepSemanticModel || index.Revision == "" || index.Vectors == nil {
-		return nil, errors.New(T("grep.semantic.invalid"))
+	body := data[36:]
+	if sum := sha256.Sum256(body); !bytes.Equal(data[4:36], sum[:]) {
+		return nil, invalid
 	}
-	for _, v := range index.Vectors {
-		if len(v) != 384 {
-			return nil, errors.New(T("grep.semantic.invalid"))
+	index := grepSemanticIndex{Version: grepSemanticVersion}
+	for _, field := range []*string{&index.Root, &index.Model, &index.Revision} {
+		if len(body) < 2 || len(body) < 2+int(binary.LittleEndian.Uint16(body)) {
+			return nil, invalid
 		}
-		for _, x := range v {
+		n := int(binary.LittleEndian.Uint16(body))
+		*field = string(body[2 : 2+n])
+		body = body[2+n:]
+	}
+	if len(body) < 4 {
+		return nil, invalid
+	}
+	count := int(binary.LittleEndian.Uint32(body))
+	body = body[4:]
+	const entry = 32 + grepSemanticDimensions*2
+	if index.Root != root || index.Model != grepSemanticModel || index.Revision == "" || len(body) != count*entry {
+		return nil, invalid
+	}
+	halves := grepFloat16Table()
+	values := make([]float32, count*grepSemanticDimensions)
+	index.Vectors = make(map[string][]float32, count)
+	for i := 0; i < count; i++ {
+		record := body[i*entry : (i+1)*entry]
+		vector := values[i*grepSemanticDimensions : (i+1)*grepSemanticDimensions : (i+1)*grepSemanticDimensions]
+		for d := range vector {
+			x := halves[binary.LittleEndian.Uint16(record[32+d*2:])]
 			if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
-				return nil, errors.New(T("grep.semantic.invalid"))
+				return nil, invalid
 			}
+			vector[d] = x
 		}
+		index.Vectors[hex.EncodeToString(record[:32])] = vector
+	}
+	if len(index.Vectors) != count {
+		return nil, invalid
 	}
 	return &index, nil
 }
 
+func grepSemanticMarshal(index *grepSemanticIndex) ([]byte, error) {
+	keys := make([]string, 0, len(index.Vectors))
+	for key := range index.Vectors {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	data := make([]byte, 36, 36+3*2+len(index.Root)+len(index.Model)+len(index.Revision)+4+len(keys)*(32+grepSemanticDimensions*2))
+	for _, field := range []string{index.Root, index.Model, index.Revision} {
+		if len(field) > math.MaxUint16 {
+			return nil, errors.New("semantic index field too long")
+		}
+		data = binary.LittleEndian.AppendUint16(data, uint16(len(field)))
+		data = append(data, field...)
+	}
+	data = binary.LittleEndian.AppendUint32(data, uint32(len(keys)))
+	for _, key := range keys {
+		raw, err := hex.DecodeString(key)
+		vector := index.Vectors[key]
+		if err != nil || len(raw) != 32 || len(vector) != grepSemanticDimensions {
+			return nil, fmt.Errorf("invalid semantic index entry %q", key)
+		}
+		data = append(data, raw...)
+		for _, x := range vector {
+			data = binary.LittleEndian.AppendUint16(data, grepFloat16(x))
+		}
+	}
+	sum := sha256.Sum256(data[36:])
+	copy(data, grepSemanticMagic)
+	copy(data[4:], sum[:])
+	return data, nil
+}
+
 func grepSemanticSave(path string, index *grepSemanticIndex) error {
+	data, err := grepSemanticMarshal(index)
+	if err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -190,20 +305,7 @@ func grepSemanticSave(path string, index *grepSemanticIndex) error {
 		f.Close()
 		return err
 	}
-	if _, err := f.Write(make([]byte, 36)); err != nil {
-		f.Close()
-		return err
-	}
-	hash := sha256.New()
-	if err := gob.NewEncoder(io.MultiWriter(f, hash)).Encode(index); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(append([]byte("EDC1"), hash.Sum(nil)...)); err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
 	}
@@ -560,7 +662,7 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 		return 2
 	}
 	defer unlock()
-	index := &grepSemanticIndex{Version: 1, Root: root, Model: grepSemanticModel, Vectors: map[string][]float32{}}
+	index := &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Vectors: map[string][]float32{}}
 
 	fmt.Fprintln(stderr, T("grep.semantic.loading"))
 	if _, _, _, err = grepSemanticSync(root, chunks, index, "", stderr); err != nil {

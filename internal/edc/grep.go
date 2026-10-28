@@ -3,7 +3,6 @@ package edc
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/klauspost/compress/gzip"
 )
 
 const grepUsage = "edc grep [options] <pattern> [path...]"
@@ -441,12 +442,16 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 			hints.skippedOld = append(hints.skippedOld, path)
 			return false, nil
 		}
+		// klauspost/compress의 gzip은 같은 100 MB를 표준 compress/gzip(372ms)보다 빨리(248ms) 푼다. 시스템 gzip을 부르는
+		// 방법은 macOS의 Apple gzip에서만 빨랐고(100ms) Linux의 GNU gzip에서는 470ms로 더 느렸다.
 		reader, err := gzip.NewReader(bufio.NewReaderSize(file, 1<<20))
 		if err != nil {
 			return false, err
 		}
 		defer reader.Close()
-		return grepSequentialSearch(reader, path, options, compiled, printer, hints)
+		ahead := newGrepReadAhead(reader)
+		defer ahead.Close()
+		return grepSequentialSearch(ahead, path, options, compiled, printer, hints)
 	}
 	size := info.Size()
 	sample := buffers.sampleOf(int(min(size, int64(grepSampleSize))))
@@ -1100,20 +1105,101 @@ func (stream *grepStreamReaderAt) ReadAt(buffer []byte, offset int64) (int, erro
 	if stream.err != nil {
 		return 0, io.EOF
 	}
-	count := 0
-	for count < len(buffer) {
-		n, err := stream.reader.Read(buffer[count:])
-		count += n
+	// 읽은 만큼 바로 돌려준다. 버퍼를 채울 때까지 기다리면 kubectl logs -f처럼 흘러드는 입력을 늦게 처리한다. scanRange는
+	// 0바이트를 끝으로 보므로 무언가 읽을 때까지만 되풀이한다.
+	for {
+		count, err := stream.reader.Read(buffer)
+		stream.offset += int64(count)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				stream.err = err
 			}
-			stream.offset += int64(count)
 			return count, io.EOF
 		}
+		if count > 0 || len(buffer) == 0 {
+			return count, nil
+		}
 	}
-	stream.offset += int64(count)
+}
+
+// grepReadAhead는 reader를 다른 goroutine에서 미리 읽어 grepReadAheadDepth개까지 쌓아 둔다. .gz는 풀기와 검색을 한
+// goroutine에서 번갈아 하면 두 시간을 더한 만큼 걸리므로, 풀기를 앞서 돌려 검색과 겹친다.
+type grepReadAhead struct {
+	chunks  chan grepReadChunk
+	free    chan []byte
+	done    chan struct{}
+	current grepReadChunk
+	offset  int
+}
+
+type grepReadChunk struct {
+	data []byte
+	err  error
+}
+
+const (
+	grepReadAheadChunk = 1 << 20
+	grepReadAheadDepth = 4
+)
+
+func newGrepReadAhead(reader io.Reader) *grepReadAhead {
+	ahead := &grepReadAhead{chunks: make(chan grepReadChunk, grepReadAheadDepth), free: make(chan []byte, grepReadAheadDepth+2), done: make(chan struct{})}
+	go func() {
+		defer close(ahead.chunks)
+		for {
+			var buffer []byte
+			select {
+			case buffer = <-ahead.free:
+			default:
+				buffer = make([]byte, grepReadAheadChunk)
+			}
+			count := 0
+			var err error
+			for count < len(buffer) && err == nil {
+				var n int
+				n, err = reader.Read(buffer[count:])
+				count += n
+			}
+			select {
+			case ahead.chunks <- grepReadChunk{data: buffer[:count], err: err}:
+			case <-ahead.done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return ahead
+}
+
+func (ahead *grepReadAhead) Read(buffer []byte) (int, error) {
+	for ahead.offset == len(ahead.current.data) {
+		if ahead.current.err != nil {
+			return 0, ahead.current.err
+		}
+		if ahead.current.data != nil {
+			select {
+			case ahead.free <- ahead.current.data[:cap(ahead.current.data)]:
+			default:
+			}
+		}
+		chunk, ok := <-ahead.chunks
+		if !ok {
+			return 0, io.EOF
+		}
+		ahead.current, ahead.offset = chunk, 0
+	}
+	count := copy(buffer, ahead.current.data[ahead.offset:])
+	ahead.offset += count
 	return count, nil
+}
+
+// Close는 읽는 goroutine이 끝날 때까지 기다린다. 그 뒤에야 호출한 쪽이 gzip reader와 파일을 닫을 수 있다.
+func (ahead *grepReadAhead) Close() {
+	close(ahead.done)
+	for range ahead.chunks {
+	}
 }
 
 // grepReadLine은 줄 하나를 줄바꿈 없이 돌려준다. limit보다 긴 줄은 앞부분만 남기고 나머지는 버린다. consumed는 줄바꿈까지

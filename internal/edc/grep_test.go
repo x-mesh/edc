@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -607,6 +608,83 @@ func TestGrepStdinMatchesFileSearch(t *testing.T) {
 		}
 		if fileCode != stdinCode || fromFile != fromStdin || fromFile == "" || fromFile == "false" {
 			t.Fatalf("%v: file %d %q, stdin %d %q", args, fileCode, fromFile, stdinCode, fromStdin)
+		}
+	}
+}
+
+type grepErrorAfter struct {
+	data []byte
+	err  error
+}
+
+func (reader *grepErrorAfter) Read(buffer []byte) (int, error) {
+	if len(reader.data) == 0 {
+		return 0, reader.err
+	}
+	count := copy(buffer, reader.data[:min(len(reader.data), 1000)])
+	reader.data = reader.data[count:]
+	return count, nil
+}
+
+func TestGrepReadAheadKeepsBytesErrorsAndStops(t *testing.T) {
+	data := bytes.Repeat([]byte("0123456789abcdef\n"), grepReadAheadChunk/8)
+	ahead := newGrepReadAhead(bytes.NewReader(data))
+	got, err := io.ReadAll(ahead)
+	ahead.Close()
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read %d of %d bytes, err %v", len(got), len(data), err)
+	}
+	broken := errors.New("broken gzip")
+	ahead = newGrepReadAhead(&grepErrorAfter{data: data, err: broken})
+	got, err = io.ReadAll(ahead)
+	ahead.Close()
+	if !errors.Is(err, broken) || !bytes.Equal(got, data) {
+		t.Fatalf("read %d of %d bytes, err %v, want %v", len(got), len(data), err, broken)
+	}
+	// 다 읽기 전에 닫아도 읽는 goroutine이 끝나야 한다.
+	ahead = newGrepReadAhead(bytes.NewReader(data))
+	ahead.Read(make([]byte, 10))
+	done := make(chan struct{})
+	go func() {
+		ahead.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+func TestGrepGzipMatchesFileSearch(t *testing.T) {
+	var content bytes.Buffer
+	for index := 0; content.Len() < 3*grepReadAheadChunk; index++ {
+		fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z INFO request %d done\n", index%60, index)
+		if index%5000 == 7 {
+			fmt.Fprintf(&content, "2026-10-27T10:%02d:00Z ERROR order=%d failed\n", index%60, index)
+		}
+	}
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "app.log")
+	if err := os.WriteFile(plain, content.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var zipped bytes.Buffer
+	writer := gzip.NewWriter(&zipped)
+	writer.Write(content.Bytes())
+	writer.Close()
+	compressed := filepath.Join(dir, "app.log.gz")
+	if err := os.WriteFile(compressed, zipped.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"order="}, {"-n", "failed"}, {"-l", "ERROR"}, {"-C", "1", "order=7"}, {"--last", "2", "order="}} {
+		wantCode, want, _ := grepCommand(t, "", append(append([]string{"--no-index"}, args...), plain)...)
+		gotCode, got, stderr := grepCommand(t, "", append(append([]string{"--no-index"}, args...), compressed)...)
+		if args[0] == "-l" {
+			want = strings.ReplaceAll(want, plain, compressed)
+		}
+		if gotCode != wantCode || got != want || stderr != "" || want == "" {
+			t.Fatalf("%v: code %d/%d stderr %q\ngot %q\nwant %q", args, gotCode, wantCode, stderr, got, want)
 		}
 	}
 }

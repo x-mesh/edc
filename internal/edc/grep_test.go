@@ -583,3 +583,30 @@ func TestGrepLogFilesParallelKeepsSequentialOutputAndHints(t *testing.T) {
 		}
 	}
 }
+
+func TestGrepStdinMatchesFileSearch(t *testing.T) {
+	var content strings.Builder
+	for index := range 3000 {
+		level := []string{"INFO", "WARN", "ERROR"}[index%3]
+		fmt.Fprintf(&content, "2026-10-27T10:%02d:%02d Z %s request %d status=%d\n", index/60%60, index%60, level, index, []int{200, 404, 503}[index%3])
+		if index%250 == 0 {
+			content.WriteString("\tat stack line Cancel\r\n")
+		}
+	}
+	content.WriteString("last line without newline cancel")
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, []byte(content.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"cancel"}, {"-n", "request 1"}, {"-l", "status=503"}, {"-i", "CANCEL"}, {"-E", "request [0-9]+7 status"}, {"-n", "--level", "error", "request"}, {"--level", "warn", "-E", "status=(404|503)"}} {
+		fileCode, fromFile, _ := grepCommand(t, "", append(append([]string{"--no-index"}, args...), path)...)
+		stdinCode, fromStdin, _ := grepCommand(t, content.String(), args...)
+		// -l은 파일 경로와 stdin 이름을 내므로 무엇이 나왔는지만 비교한다.
+		if args[0] == "-l" {
+			fromFile, fromStdin = fmt.Sprint(fromFile != ""), fmt.Sprint(fromStdin != "")
+		}
+		if fileCode != stdinCode || fromFile != fromStdin || fromFile == "" || fromFile == "false" {
+			t.Fatalf("%v: file %d %q, stdin %d %q", args, fileCode, fromFile, stdinCode, fromStdin)
+		}
+	}
+}

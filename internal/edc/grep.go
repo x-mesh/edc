@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -996,6 +997,33 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, co
 	}
 	printer.begin(name, matcher)
 	hints.reports = append(hints.reports, grepFileReport{path: name, index: grepIndexOutcomeSequential})
+	// -C와 --last가 없으면 파일과 같은 블록 scan으로 needle 사이를 건너뛴다. 줄마다 읽으면 1 GiB stdin에서 일치가 없어도
+	// 0.96초였고, 같은 입력을 cat으로 넘기기만 하는 데는 0.2~0.34초였다.
+	if options.context == 0 && options.last == 0 {
+		stream := &grepStreamReaderAt{reader: buffered}
+		scanner := newGrepScanner(matcher, filter)
+		lineBase := int64(-1)
+		if options.numbers {
+			lineBase = 0
+		}
+		found := false
+		_, err := scanner.scanRange(stream, 0, math.MaxInt64, lineBase, func(ref grepLineRef) bool {
+			found = true
+			if options.listFiles {
+				return false
+			}
+			printer.match(ref, nil)
+			return true
+		})
+		if found && options.listFiles {
+			printer.file(name)
+			return true, nil
+		}
+		if err == nil {
+			err = stream.err
+		}
+		return found, err
+	}
 	var before [][]byte
 	var last []grepLine
 	after := 0
@@ -1055,6 +1083,37 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, co
 		printer.file(name)
 	}
 	return found, readErr
+}
+
+// grepStreamReaderAt은 되감을 수 없는 입력을 scanRange에 넘기려고 앞에서부터 차례로만 읽는 ReaderAt이다. 끝 전에 난 읽기
+// 오류(잘린 gzip 등)는 scanRange에 EOF로 알려 이미 읽은 줄을 끝까지 처리하게 하고, err에 남겨 호출한 쪽이 돌려준다.
+type grepStreamReaderAt struct {
+	reader io.Reader
+	offset int64
+	err    error
+}
+
+func (stream *grepStreamReaderAt) ReadAt(buffer []byte, offset int64) (int, error) {
+	if offset != stream.offset {
+		return 0, fmt.Errorf("grep stream: read at %d after %d", offset, stream.offset)
+	}
+	if stream.err != nil {
+		return 0, io.EOF
+	}
+	count := 0
+	for count < len(buffer) {
+		n, err := stream.reader.Read(buffer[count:])
+		count += n
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				stream.err = err
+			}
+			stream.offset += int64(count)
+			return count, io.EOF
+		}
+	}
+	stream.offset += int64(count)
+	return count, nil
 }
 
 // grepReadLine은 줄 하나를 줄바꿈 없이 돌려준다. limit보다 긴 줄은 앞부분만 남기고 나머지는 버린다. consumed는 줄바꿈까지

@@ -353,6 +353,9 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 	}
 	eof := false
 	for {
+		// fresh는 이번에 새로 읽은 바이트의 시작이다. 그 앞은 앞 회차의 남은 줄 조각이라 줄바꿈이 없다. 한 줄이 아주 길면
+		// 구간 끝 뒤를 64 KiB씩 읽는데, 매번 버퍼 전체에서 줄바꿈을 찾으면 줄 길이의 제곱만큼 훑는다.
+		fresh := len(buffer)
 		if !eof {
 			want := scanner.block
 			if readAt >= to && want > grepTailRead {
@@ -381,7 +384,9 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 		if discard {
 			newline := bytes.IndexByte(buffer, '\n')
 			if newline < 0 {
-				if eof {
+				// to까지 줄바꿈이 없으면 이 구간에서 시작하는 줄이 없다. 끝까지 찾으면 줄바꿈 없는 큰 파일에서 병렬 구간마다
+				// 파일 끝까지 읽는다.
+				if eof || readAt >= to {
 					return read, nil
 				}
 				buffer = buffer[:0]
@@ -390,6 +395,7 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 			}
 			buffer = append(origin[:0], buffer[newline+1:]...)
 			bufferStart += int64(newline + 1)
+			fresh = 0
 			if number >= 0 {
 				number++
 			}
@@ -398,7 +404,10 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 				return read, nil
 			}
 		}
-		last := bytes.LastIndexByte(buffer, '\n')
+		last := bytes.LastIndexByte(buffer[fresh:], '\n')
+		if last >= 0 {
+			last += fresh
+		}
 		region := buffer[:last+1]
 		overlong := len(buffer)-len(region) > scanner.lineLimit
 		if eof || overlong {

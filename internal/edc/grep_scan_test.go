@@ -468,3 +468,63 @@ func TestGrepScanRangeKeepsBufferAfterDiscard(t *testing.T) {
 		}
 	}
 }
+
+func TestGrepScanParallelLongLineAndOffsets(t *testing.T) {
+	const lineLimit = 1000
+	matcher, _ := newGrepMatcher("cancel", false, false, nil)
+	fresh := func() grepScanner {
+		scanner := newGrepScanner(matcher, nil)
+		scanner.block, scanner.lineLimit = 64, lineLimit
+		return scanner
+	}
+	sequential := func(file io.ReaderAt, from, to, lineBase int64) ([]grepLineRef, error) {
+		var lines []grepLineRef
+		_, err := fresh().scanRange(file, from, to, lineBase, func(ref grepLineRef) bool {
+			lines = append(lines, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+			return true
+		})
+		return lines, err
+	}
+	parallel := func(file io.ReaderAt, from, to, lineBase int64) ([]grepLineRef, int64, error) {
+		var lines []grepLineRef
+		read, err := grepScanParallel(file, from, to, lineBase, 4, 97, fresh, func(ref grepLineRef) bool {
+			lines = append(lines, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+			return true
+		})
+		return lines, read, err
+	}
+
+	// 줄바꿈 없는 긴 줄이 여러 구간에 걸치면, 그 줄 중간에서 시작한 구간은 구간 끝에서 멈춰야 한다.
+	long := []byte(strings.Repeat("x", 20000) + " cancel\nafter cancel\n" + strings.Repeat("y", 30000))
+	want, _ := sequential(bytes.NewReader(long), 0, int64(len(long)), 0)
+	got, read, err := parallel(bytes.NewReader(long), 0, int64(len(long)), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grepRefsEqual(t, "long line", got, want, true)
+	if read > 3*int64(len(long)) {
+		t.Fatalf("read %d bytes of a %d byte file", read, len(long))
+	}
+
+	// 줄 중간에서 시작해도 줄 번호는 from 앞의 줄바꿈 수에 이어진다.
+	data := grepFixture(lineLimit)
+	for _, from := range []int64{1, 777, int64(len(data)) / 2} {
+		lineBase := int64(bytes.Count(data[:from], []byte{'\n'}))
+		want, _ := sequential(bytes.NewReader(data), from, int64(len(data)), lineBase)
+		got, _, err := parallel(bytes.NewReader(data), from, int64(len(data)), lineBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		grepRefsEqual(t, fmt.Sprintf("from %d", from), got, want, true)
+	}
+
+	// 읽기 오류는 앞 구간의 줄을 낸 뒤 그대로 돌려준다.
+	failing := grepFailingReader{data: data, limit: int64(len(data)) / 2}
+	from := failing.limit + 1
+	if _, err := sequential(failing, from, int64(len(data)), -1); err != nil {
+		t.Fatalf("the range after the failure must read: %v", err)
+	}
+	if _, _, err := parallel(failing, 0, int64(len(data)), -1); !errors.Is(err, errGrepTestRead) {
+		t.Fatalf("parallel scan error %v, want %v", err, errGrepTestRead)
+	}
+}

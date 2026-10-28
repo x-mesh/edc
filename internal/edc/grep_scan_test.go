@@ -194,6 +194,33 @@ func TestGrepChoosePivotUsesTheSample(t *testing.T) {
 	if first, _ := grepChoosePivot([]byte("q"), sample); first != -1 {
 		t.Fatalf("a one-byte needle has no pivot: %d", first)
 	}
+	// 첫 바이트가 3~5%로 bytes.Index가 가장 느린 구간에서는, 1.5%보다 흔해도 첫 바이트보다 충분히 드문 바이트를 쓴다.
+	log := []byte(strings.Repeat("s", 46) + strings.Repeat("3", 18) + strings.Repeat("x", 936))
+	if first, _ := grepChoosePivot([]byte("s3"), log); first != 1 {
+		t.Fatalf("a rarer byte than a 4.6%% first byte must be the pivot: %d", first)
+	}
+	if first, _ := grepChoosePivot([]byte("s3"), []byte(strings.Repeat("s", 46)+strings.Repeat("3", 40)+strings.Repeat("x", 914))); first != -1 {
+		t.Fatalf("a byte almost as common as the first byte must not be the pivot: %d", first)
+	}
+	if first, _ := grepChoosePivot([]byte("s3"), []byte(strings.Repeat("s", 100)+strings.Repeat("3", 20)+strings.Repeat("x", 880))); first != -1 {
+		t.Fatalf("bytes.Index is fast when the first byte is above 5%%: %d", first)
+	}
+	// 경계값: 첫 바이트가 정확히 5%이고 드문 바이트가 정확히 0.8배이면 pivot을 쓰고, 어느 한쪽이라도 넘으면 쓰지 않는다.
+	shares := func(first, rare int) []byte {
+		return []byte(strings.Repeat("s", first) + strings.Repeat("3", rare) + strings.Repeat("x", 1000-first-rare))
+	}
+	for _, scenario := range []struct {
+		first, rare int
+		pivot       int
+	}{
+		{50, 40, 1},
+		{51, 40, -1},
+		{50, 41, -1},
+	} {
+		if first, _ := grepChoosePivot([]byte("s3"), shares(scenario.first, scenario.rare)); first != scenario.pivot {
+			t.Fatalf("first byte %d/1000, rare byte %d/1000: pivot %d, want %d", scenario.first, scenario.rare, first, scenario.pivot)
+		}
+	}
 }
 
 func TestGrepMatcherNeedles(t *testing.T) {

@@ -44,8 +44,13 @@ func duPoll(ctx context.Context, walker *duWalker, root *duNode, since time.Time
 			}
 			continue
 		}
-		// 지워진 디렉터리는 부모의 mtime이 바뀌어 부모를 다시 읽을 때 빠진다.
-		if err != nil {
+		// 지워진 디렉터리는 부모의 mtime이 바뀌어 부모를 다시 읽을 때 빠진다. 탐색한 디렉터리 자신은 부모가 없어서 여기서 뺀다.
+		if current.node == root && (err == nil && stat.Mode&unix.S_IFMT != unix.S_IFDIR || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)) {
+			result.dirs = append(result.dirs, duDirRescan{node: root, gone: true})
+			result.duration = time.Since(result.started)
+			return result
+		}
+		if err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 			continue
 		}
 		// FAT과 HFS+는 mtime을 1~2초 단위로 적는다. 기준보다 조금 앞선 변경도 다시 읽어야 놓치지 않는다.

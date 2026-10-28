@@ -54,6 +54,7 @@ du:
     refresh_off_reason: "refresh off (%s)"
     refreshing: "refreshing…"
     refresh_partial: "partial"
+    refresh_removed: "removed"
     refresh_delta: "%s since %s"
     refresh_new: "new"
   diff:

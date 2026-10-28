@@ -398,31 +398,79 @@ func TestDuPollStoppedByTheScreenChangesNothing(t *testing.T) {
 	}
 }
 
-// r로 다시 읽을 디렉터리가 그 사이에 지워졌으면 화면에서 뺀다.
+// duBrowserDrain은 화면이 낸 다시 읽기를 끝까지 돌린다. 자동 갱신이 꺼져 있으면 타이머를 걸지 않으므로 Cmd는 모두 다시
+// 읽기다.
+func duBrowserDrain(t *testing.T, browser duBrowser, command tea.Cmd) duBrowser {
+	t.Helper()
+	for range 4 {
+		if command == nil || !browser.refresh.running {
+			return browser
+		}
+		next, again := browser.Update(command())
+		browser, command = next.(duBrowser), again
+	}
+	t.Fatal("the rescans did not end")
+	return browser
+}
+
+// r로 다시 읽을 디렉터리가 그 사이에 지워졌거나 파일로 바뀌었으면 화면에서 빼고, 부모를 다시 읽어 바뀐 자리를 센다.
 func TestDuBrowserDropsAnOpenDirectoryThatWasRemoved(t *testing.T) {
-	root := duRefreshRoot(t)
-	duRefreshWrite(t, filepath.Join(root, "a", "f"), 256<<10)
-	duRefreshWrite(t, filepath.Join(root, "b", "f"), 4<<10)
-	scan := duRefreshScan(t, root, duBrowseFiles)
-	job := &duScanJob{finished: make(chan struct{}), scan: scan}
-	close(job.finished)
-	model := newDuBrowser(root, new(atomic.Int64), nil, job, time.Now(), time.Now, false)
-	model.refreshCtx, model.refreshSetting = context.Background(), duRefreshSetting{off: true}
-	next, _ := model.Update(duScanDoneMsg{})
-	browser := duBrowserPress(t, next.(duBrowser), "enter")
-	if browser.current.name != "a" {
-		t.Fatalf("opened %q", browser.current.name)
+	for _, replace := range []bool{false, true} {
+		root := duRefreshRoot(t)
+		duRefreshWrite(t, filepath.Join(root, "a", "f"), 256<<10)
+		duRefreshWrite(t, filepath.Join(root, "b", "f"), 4<<10)
+		duRefreshAge(t, root)
+		scan := duRefreshScan(t, root, duBrowseFiles)
+		job := &duScanJob{finished: make(chan struct{}), scan: scan}
+		close(job.finished)
+		model := newDuBrowser(root, new(atomic.Int64), nil, job, time.Now(), time.Now, false)
+		model.refreshCtx, model.refreshSetting = context.Background(), duRefreshSetting{off: true}
+		next, _ := model.Update(duScanDoneMsg{})
+		browser := duBrowserPress(t, next.(duBrowser), "enter")
+		if browser.current.name != "a" {
+			t.Fatalf("opened %q", browser.current.name)
+		}
+		if err := os.RemoveAll(filepath.Join(root, "a")); err != nil {
+			t.Fatal(err)
+		}
+		if replace {
+			duRefreshWrite(t, filepath.Join(root, "a"), 64<<10)
+		}
+		next, command := browser.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+		browser = duBrowserDrain(t, next.(duBrowser), command)
+		if browser.current != browser.scan.root {
+			t.Fatalf("replace %v: the screen stayed in %q", replace, browser.current.name)
+		}
+		duRefreshSame(t, browser.scan, root)
+		if browser.scan.root.total != duRefreshScan(t, root, duBrowseFiles).root.total {
+			t.Fatalf("replace %v: root total %d", replace, browser.scan.root.total)
+		}
 	}
-	if err := os.RemoveAll(filepath.Join(root, "a")); err != nil {
-		t.Fatal(err)
+}
+
+// 탐색한 디렉터리 자체가 지워지거나 파일로 바뀌면 트리를 비우고 자동 갱신을 끈다. 이전 트리를 그대로 보이면 없는 용량을
+// 있는 것처럼 보인다.
+func TestDuPollEmptiesARootThatWasRemoved(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		parent := duRefreshRoot(t)
+		root := filepath.Join(parent, "tree")
+		duRefreshWrite(t, filepath.Join(root, "a", "f"), 64<<10)
+		scan := duRefreshScan(t, root, duBrowseFiles)
+		refresher := newDuRefresher(context.Background(), duRefreshSetting{}, scan, time.Now())
+		if err := os.RemoveAll(root); err != nil {
+			t.Fatal(err)
+		}
+		if replace {
+			duRefreshWrite(t, root, 4<<10)
+		}
+		refresher.apply(&scan, duPoll(context.Background(), scan.walker, scan.root, time.Now(), refresher.floor, nil))
+		if scan.root.total != 0 || scan.root.count != 0 || len(scan.root.children) != 0 || scan.directories != 0 {
+			t.Fatalf("replace %v: total %d count %d children %d directories %d", replace, scan.root.total, scan.root.count, len(scan.root.children), scan.directories)
+		}
+		if refresher.on || refresher.reason != T("du.browse.refresh_removed") {
+			t.Fatalf("replace %v: on %v reason %q", replace, refresher.on, refresher.reason)
+		}
 	}
-	next, command := browser.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	next, _ = next.Update(command())
-	browser = next.(duBrowser)
-	if browser.current != browser.scan.root {
-		t.Fatalf("the screen stayed in %q", browser.current.name)
-	}
-	duRefreshSame(t, browser.scan, root)
 }
 
 // 트리가 줄었을 때 하단 줄이 증가라고 적지 않는다.

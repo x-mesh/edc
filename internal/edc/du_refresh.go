@@ -336,18 +336,31 @@ func (refresher *duRefresher) apply(scan *duScan, result duRefreshResult) {
 		duApplyFile(file)
 	}
 	var recount []*duNode
+	rootGone := false
 	for _, rescan := range result.dirs {
 		if !duAttached(rescan.node) {
 			continue
 		}
 		var dropped []*duNode
+		if rescan.gone && rescan.node.parent == nil {
+			// 탐색한 디렉터리 자체가 없어졌다. 뺄 부모가 없으므로 비우고, 다시 볼 곳이 없으니 자동 갱신을 끈다.
+			root := rescan.node
+			gone := map[*duNode]bool{}
+			duSubtree(root, gone)
+			refresher.walker.forget(gone)
+			root.children, root.bytes, root.own, root.entries, root.total, root.count = nil, 0, 0, 0, 0, 0
+			scan.directories = 0
+			refresher.on, refresher.reason = false, T("du.browse.refresh_removed")
+			refresher.generation++
+			rootGone = true
+			break
+		}
 		if rescan.gone {
-			// 트리의 맨 위는 뺄 곳이 없다. 화면은 그 아래가 비었다는 사실을 다음 폴링이 보여 준다.
-			if rescan.node.parent == nil {
-				continue
-			}
+			// 같은 자리에 파일이 생겼을 수 있다. 부모를 다시 읽어야 그 파일이 합계에 든다.
+			parent := rescan.node.parent
 			duDetach(rescan.node)
 			dropped = []*duNode{rescan.node}
+			recount = append(recount, parent)
 		} else {
 			dropped = duApplyRescan(rescan)
 			refresher.walker.reown(rescan.fresh, rescan.node)
@@ -367,7 +380,7 @@ func (refresher *duRefresher) apply(scan *duScan, result duRefreshResult) {
 		}
 	}
 	for _, node := range recount {
-		if duAttached(node) {
+		if duAttached(node) && !rootGone {
 			if refresher.forced == nil {
 				refresher.forced = map[*duNode]bool{}
 			}

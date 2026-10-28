@@ -375,8 +375,13 @@ func grepAskChunkFiles(files []grepAskFile) {
 	group.Wait()
 }
 
-// grepAskWalkedPath는 path가 디렉터리 root 아래에서 찾은 파일이면 root 기준 상대 경로를 돌려준다.
+// grepAskWalkedPath는 path가 디렉터리 root 아래에서 찾은 파일이면 root 기준 상대 경로를 돌려준다. 파일 root로 직접 지정한 path는 디렉터리 아래에 있어도 찾은 파일로 보지 않는다.
 func grepAskWalkedPath(roots []grepPathRoot, path string) (string, bool) {
+	for _, root := range roots {
+		if !root.directory && filepath.Clean(root.path) == filepath.Clean(path) {
+			return "", false
+		}
+	}
 	for _, root := range roots {
 		if !root.directory {
 			continue

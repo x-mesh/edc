@@ -340,7 +340,15 @@ func TestGrepSemanticFilesListsIndexedChunks(t *testing.T) {
 	if code := grepSemanticLifecycle([]string{"--semantic-files", root}, &out, &stderr); code != 0 {
 		t.Fatalf("files %d: %s", code, stderr.String())
 	}
-	if want := "1/1\ta.go\n0/1\tc.go\n1/1\tdocs/b.md\n"; out.String() != want {
+	if err := os.WriteFile(filepath.Join(root, "tab\tname.go"), []byte("package p\nfunc T() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := grepSemanticLifecycle([]string{"--semantic-files", root}, &out, &stderr); code != 0 {
+		t.Fatalf("files %d: %s", code, stderr.String())
+	}
+	if want := "1/1\ta.go\n0/1\tc.go\n1/1\tdocs/b.md\n0/1\t\"tab\\tname.go\"\n"; out.String() != want {
 		t.Fatalf("got %q want %q", out.String(), want)
 	}
 	if args, ok := grepLifecycleArgs([]string{root, "--semantic-files"}); !ok || args[0] != "--semantic-files" {

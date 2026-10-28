@@ -206,8 +206,18 @@ func TestGrepAskSkipsGeneratedFixtureAndLockFiles(t *testing.T) {
 	if skipped != 0 || len(problems) != 0 || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v skipped %d problems %v", got, skipped, problems)
 	}
-	explicit := filepath.Join(root, "events_bpfel.go")
-	if chunks, _, _ := grepAskCollect([]string{explicit}, grepOptions{}); len(chunks) == 0 {
-		t.Fatal("an explicitly named generated file was excluded")
+	for _, name := range []string{"events_bpfel.go", "go.sum"} {
+		explicit := filepath.Join(root, name)
+		if chunks, _, _ := grepAskCollect([]string{explicit}, grepOptions{}); len(chunks) == 0 {
+			t.Fatalf("explicitly named %s was excluded", name)
+		}
+		chunks, _, _ := grepAskCollect([]string{root, explicit}, grepOptions{})
+		found := false
+		for _, chunk := range chunks {
+			found = found || chunk.result.Path == explicit
+		}
+		if !found {
+			t.Fatalf("%s named next to its directory was excluded", name)
+		}
 	}
 }

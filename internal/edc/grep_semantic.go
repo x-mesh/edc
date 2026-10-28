@@ -12,10 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 const grepSemanticModel = grepMiniLMName
@@ -721,6 +723,10 @@ func grepSemanticFiles(root, path string, stdout, stderr io.Writer) int {
 	}
 	for _, name := range names {
 		file := files[name]
+		// 탭과 줄바꿈이 든 경로가 줄과 열을 나누지 않도록 Go 문자열로 감싼다.
+		if strings.ContainsRune(name, '"') || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+			name = strconv.Quote(name)
+		}
 		if terminal {
 			name = viewSanitize(name)
 		}

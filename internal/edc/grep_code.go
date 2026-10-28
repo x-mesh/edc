@@ -115,7 +115,7 @@ func grepCodeTargets(paths []string, options grepOptions) ([]string, int, []stri
 				problems = append(problems, err.Error())
 			}
 		}
-		walk := grepCodeWalk{options: options, slots: make(chan struct{}, runtime.GOMAXPROCS(0))}
+		walk := grepCodeWalk{options: options, spawn: make(chan struct{}, runtime.GOMAXPROCS(0)*grepCodeWalkSpawnPerCPU)}
 		result := walk.dir(root, "", grepIgnoreDomain(base, absolute), patterns)
 		files, problems = append(files, result.files...), append(problems, result.problems...)
 	}
@@ -127,9 +127,14 @@ func grepCodeTargets(paths []string, options grepOptions) ([]string, int, []stri
 // 디렉터리를 여는 시스템 호출도 하나에 수십 µs라서 하위 디렉터리는 병렬로 읽고, 결과는 이름 순서대로 잇는다.
 type grepCodeWalk struct {
 	options grepOptions
-	// slots는 동시에 디렉터리를 읽는 goroutine 수를 제한한다. 하위 결과를 기다리는 동안에는 잡지 않아야 막히지 않는다.
-	slots chan struct{}
+	// spawn은 하위 디렉터리를 읽으려고 띄우는 goroutine 수의 상한이다. 자리가 없으면 지금 goroutine에서 바로 읽는다. 상위
+	// goroutine은 하위 결과를 기다리는 동안 살아 있으므로, 디렉터리마다 띄우면 큰 트리에서 디렉터리 수만큼 goroutine이 쌓인다.
+	spawn chan struct{}
 }
+
+// grepCodeWalkSpawnPerCPU는 CPU 하나에 둘 탐색 goroutine 수다. 상위 goroutine이 하위 결과를 기다리며 자리를 쥐고 있어도
+// 디렉터리를 읽는 goroutine이 CPU 수보다 넉넉하도록 몇 배로 둔다.
+const grepCodeWalkSpawnPerCPU = 4
 
 type grepCodeWalkResult struct {
 	files, problems []string
@@ -138,7 +143,6 @@ type grepCodeWalkResult struct {
 // dir는 path 아래를 훑는다. relative는 검색 루트에서 본 경로, parts는 저장소 루트에서 본 경로 조각이다.
 func (walk *grepCodeWalk) dir(path, relative string, parts []string, patterns []gitignore.Pattern) grepCodeWalkResult {
 	var result grepCodeWalkResult
-	walk.slots <- struct{}{}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		result.problems = append(result.problems, fmt.Sprintf("%s: %v", path, err))
@@ -155,7 +159,6 @@ func (walk *grepCodeWalk) dir(path, relative string, parts []string, patterns []
 			}
 		}
 	}
-	<-walk.slots
 	matcher := gitignore.NewMatcher(patterns)
 	// items는 파일 경로이거나, 아직 읽고 있는 하위 디렉터리의 결과다. 이름 순서를 지키려고 섞어서 둔다.
 	type item struct {
@@ -180,7 +183,15 @@ func (walk *grepCodeWalk) dir(path, relative string, parts []string, patterns []
 		if entry.IsDir() {
 			pending := &grepCodeWalkResult{}
 			items = append(items, item{child: pending})
-			group.Go(func() { *pending = walk.dir(child, childRelative, childParts, patterns) })
+			select {
+			case walk.spawn <- struct{}{}:
+				group.Go(func() {
+					defer func() { <-walk.spawn }()
+					*pending = walk.dir(child, childRelative, childParts, patterns)
+				})
+			default:
+				*pending = walk.dir(child, childRelative, childParts, patterns)
+			}
 			continue
 		}
 		if entry.Type().IsRegular() && (!walk.options.pathMode || grepPathMatch(childRelative, walk.options)) {

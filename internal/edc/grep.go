@@ -544,12 +544,18 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 		found  bool
 		err    error
 	}
-	results := make([]chan fileResult, len(targets))
+	workers := min(runtime.GOMAXPROCS(0), len(targets))
+	// 출력을 기다리는 파일 수를 window로 묶는다. 출력이 느리면(| less) worker가 앞서 나가 결과를 모두 메모리에 쌓기 때문이다.
+	// worker는 자리를 얻은 뒤에 다음 순번을 받고, 여기서 낸 순번만큼 자리를 돌려준다. 그래서 받았지만 아직 내지 않은 순번은
+	// window개 안에 들고, 결과 자리는 순번을 window로 나눈 나머지로 겹치지 않게 다시 쓴다.
+	window := min(len(targets), workers*grepCodeWindowPerWorker)
+	slots := make(chan struct{}, window)
+	results := make([]chan fileResult, window)
 	for index := range results {
 		results[index] = make(chan fileResult, 1)
 	}
 	var next atomic.Int64
-	for range min(runtime.GOMAXPROCS(0), len(targets)) {
+	for range workers {
 		go func() {
 			buffers := &grepBuffers{}
 			var output bytes.Buffer
@@ -557,8 +563,10 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 			local.out = bufio.NewWriterSize(&output, 64<<10)
 			hints := &grepHints{options: options}
 			for {
+				slots <- struct{}{}
 				index := int(next.Add(1)) - 1
 				if index >= len(targets) {
+					<-slots
 					return
 				}
 				ok, err := grepSearchFile(targets[index], options, matcher, buffers, &local, hints)
@@ -567,7 +575,7 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 				if output.Len() > 0 {
 					text = bytes.Clone(output.Bytes())
 				}
-				results[index] <- fileResult{output: text, found: ok, err: err}
+				results[index%window] <- fileResult{output: text, found: ok, err: err}
 				output.Reset()
 				hints.reports = hints.reports[:0]
 			}
@@ -575,8 +583,9 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 	}
 	found, failed := false, false
 	for index, path := range targets {
-		result := <-results[index]
+		result := <-results[index%window]
 		printer.out.Write(result.output)
+		<-slots
 		found = found || result.found
 		if result.err != nil {
 			failed = true
@@ -585,6 +594,9 @@ func grepSearchCodeFiles(targets []string, options grepOptions, matcher *grepMat
 	}
 	return found, failed
 }
+
+// grepCodeWindowPerWorker는 worker 하나가 출력보다 앞서 찾아 둘 수 있는 파일 수다.
+const grepCodeWindowPerWorker = 16
 
 type grepIndexPlan struct {
 	path  string

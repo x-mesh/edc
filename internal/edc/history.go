@@ -21,6 +21,8 @@ type historyOptions struct {
 	min, max *float64
 	limit    int
 	sampleID int64
+	// triggered는 list에서 edc top --auto-record가 연 run만 남긴다.
+	triggered bool
 	// metricMissing은 읽기로 연 이전 DB에 metric의 column이 아직 없다는 뜻이다. 그 지표로 거르면 맞는 기록이 없다.
 	metricMissing bool
 }
@@ -101,6 +103,9 @@ func runHistory(args []string) int {
 	}
 	if command == "process" {
 		set.StringVar(&process, "process", "", T("command.top.option.process"))
+	}
+	if command == "list" {
+		set.BoolVar(&options.triggered, "auto", false, T("history.option.auto"))
 	}
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
@@ -242,6 +247,9 @@ func historyQuery(command string, options historyOptions) (string, []any) {
 		conditions = append(conditions, runColumn+"=?")
 		values = append(values, options.run)
 	}
+	if command == "list" && options.triggered {
+		conditions = append(conditions, "json_extract(payload, '$.trigger') IS NOT NULL")
+	}
 	if command == "process" && options.sampleID > 0 {
 		conditions = append(conditions, "p.sample_id=?")
 		values = append(values, options.sampleID)
@@ -353,7 +361,7 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 	if !jsonOutput {
 		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tDISK READ/s\tDISK WRITE/s\tNET IN/s\tNET OUT/s\tSWAP OUT/s\tPROCESS FILTER"
 		if command == "list" {
-			header = "RUN\tCOMMAND\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER\tINTERFACES"
+			header = "RUN\tCOMMAND\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER\tINTERFACES\tTRIGGER"
 		} else if command == "process" {
 			header = "RUN\tTIME\tPID\tSTARTED\tCPU%\tRSS\tCOMMAND"
 		}
@@ -395,7 +403,7 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 			if run.Command == historySnapshotCommand {
 				interval, process, interfaces = "-", "-", "-"
 			}
-			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s", run.ID, historyTerminalText(run.Command), run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, interval, process, interfaces)
+			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s", run.ID, historyTerminalText(run.Command), run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, interval, process, interfaces, historyTerminalText(emptyAs(run.Trigger, "-")))
 			paints = []historyPaint{nil, nil, style.dim, style.dim, nil, historyStatusPaint(style, run.Status), nil, historyUnitPaint(style)}
 		case "top":
 			var sample historyTopSample

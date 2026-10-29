@@ -61,6 +61,9 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 			T("history.list_browser.process", process),
 			T("history.list_browser.interfaces", interfaces),
 		}
+		if run.Trigger != "" {
+			details = append(details, T("history.list_browser.trigger", run.Trigger))
+		}
 		data.entries = append(data.entries, historyReviewEntry{id: run.ID, command: run.Command, cells: []string{historyRunDescription(run), historyRelativeTime(run.StartedAt, now), duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
 	}
 	if err := rows.Err(); err != nil {
@@ -90,6 +93,9 @@ func historyRunDescription(run historyRun) string {
 	}
 	if run.Interfaces != "" && run.Interfaces != "all" {
 		parts = append(parts, run.Interfaces)
+	}
+	if run.Trigger != "" {
+		parts = append(parts, "auto "+run.Trigger)
 	}
 	return strings.Join(parts, " · ")
 }

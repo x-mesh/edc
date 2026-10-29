@@ -43,10 +43,11 @@ dist:
 		tar -czf "$(DIST)/edc_$(VERSION)_$${os}_$${arch}.tar.gz" -C "$(DIST)" edc || exit 1; \
 		rm -f "$(DIST)/edc"; \
 	done
+	cp install.sh "$(DIST)/install.sh"
 	@cd "$(DIST)" && if command -v sha256sum >/dev/null 2>&1; then \
-		sha256sum *.tar.gz > checksums.txt; \
+		sha256sum *.tar.gz install.sh > checksums.txt; \
 	else \
-		shasum -a 256 *.tar.gz > checksums.txt; \
+		shasum -a 256 *.tar.gz install.sh > checksums.txt; \
 	fi
 	@ls -1 "$(DIST)"
 

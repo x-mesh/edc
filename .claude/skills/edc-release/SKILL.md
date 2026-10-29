@@ -62,7 +62,7 @@ These four must agree. If one changes, check the others.
    ```
 9. Verify the published release from the outside.
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR=/tmp/edc-check sh
+   curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | BINDIR=/tmp/edc-check sh
    /tmp/edc-check/edc version
    ```
 10. Verify the update path from the previous version. Install the earlier version, then update.

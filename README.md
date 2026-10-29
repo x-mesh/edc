@@ -36,7 +36,7 @@ Inspection commands do not automatically repair the host. Explicit actions have 
 Linux and macOS releases include `amd64` and `arm64` binaries. The install script selects the binary and verifies its SHA-256 checksum.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | sh
 ```
 
 [Install paths, PATH setup, updates, and source builds →](docs/configuration.md#install)

@@ -375,6 +375,33 @@ func TestCollectDisksFillsTheFilesystemTypeOnDarwin(t *testing.T) {
 	t.Skip("no root mount in the df output")
 }
 
+// 필터가 없을 때도 후보의 디스크 I/O와 fd 수를 채운다. 이전에는 /proc/<pid>/io만 읽어 macOS에서 history의 디스크와
+// fd 칸이 늘 비었다. 수집기가 읽어 둔 rusage counter를 다시 쓰므로 rusage를 다시 부르지 않는다.
+func TestDarwinIOFillerUsesReaderRusageAndCountsFDs(t *testing.T) {
+	previousReader, previousNow := darwinProcessRusageReader, darwinProcessNow
+	t.Cleanup(func() { darwinProcessRusageReader, darwinProcessNow = previousReader, previousNow })
+	darwinProcessRusageReader = func(int) (darwinProcessRusage, error) {
+		t.Fatal("the filler must reuse the reader's rusage sample")
+		return darwinProcessRusage{}, nil
+	}
+	readAt := time.Unix(100, 0)
+	darwinProcessNow = func() time.Time { return readAt }
+	fill, count := newTopProcessIOFiller(), newTopProcessFDCounter()
+	process := topProcess{PID: os.Getpid(), diskSampled: true, diskStarted: 7, diskReadBytes: 100, diskWriteBytes: 50, diskSampledAt: readAt}
+	processes := []topProcess{process}
+	fill(processes)
+	count(processes)
+	if processes[0].DiskValid || processes[0].FDs == 0 {
+		t.Fatalf("first fill = %+v, want no rate yet and an fd count", processes[0])
+	}
+	process.diskReadBytes, process.diskWriteBytes, process.diskSampledAt = 1100, 250, readAt.Add(2*time.Second)
+	processes = []topProcess{process}
+	fill(processes)
+	if !processes[0].DiskValid || processes[0].DiskRead != 500 || processes[0].DiskWrite != 100 {
+		t.Fatalf("second fill = %+v, want 500 B/s read and 100 B/s write", processes[0])
+	}
+}
+
 // macOS에는 생성된 process 수를 세는 kernel counter가 없다. 직전 sample에 없던 PID 가운데 직전 최신 PID에서 가장 먼
 // 것까지의 거리를 생성 수로 센다. PID는 fork할 때만 배정되므로 새 PID는 그 사이에 만들어진 것이다.
 func TestDarwinSpawnTrackerCountsNewPIDsAcrossWrap(t *testing.T) {

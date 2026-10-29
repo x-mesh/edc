@@ -130,7 +130,18 @@ type darwinProcessIOSample struct {
 	at    time.Time
 }
 
+// newTopProcessEnricher는 필터로 고른 process에 I/O rate와 fd 수를 채운다.
 func newTopProcessEnricher() func([]topProcess) {
+	fill, count := newTopProcessIOFiller(), newTopProcessFDCounter()
+	return func(processes []topProcess) {
+		fill(processes)
+		count(processes)
+	}
+}
+
+// newTopProcessIOFiller는 수집기가 읽어 둔 rusage counter의 차이로 I/O rate를 구한다. 그 counter가 없을 때만 rusage를
+// 다시 읽는다. 필터가 없을 때도 같은 방식을 써야 macOS history에 디스크 I/O가 남는다.
+func newTopProcessIOFiller() func([]topProcess) {
 	previous := map[int]darwinProcessIOSample{}
 	return func(processes []topProcess) {
 		current := make(map[int]darwinProcessIOSample, len(processes))
@@ -159,6 +170,18 @@ func newTopProcessEnricher() func([]topProcess) {
 			process.DiskWrite = float64(stats.DiskWrite-before.stats.DiskWrite) / seconds
 		}
 		previous = current
+	}
+}
+
+// newTopProcessFDCounter는 proc_pidinfo의 fd 목록 길이로 열린 fd 수를 센다. 다른 사용자의 process는 root가 아니면
+// 목록이 비어 0으로 남는다.
+func newTopProcessFDCounter() func([]topProcess) {
+	var buffer []byte
+	return func(processes []topProcess) {
+		for index := range processes {
+			buffer = darwinListFDs(int32(processes[index].PID), buffer)
+			processes[index].FDs = len(buffer) / darwinProcFDInfoSize
+		}
 	}
 }
 

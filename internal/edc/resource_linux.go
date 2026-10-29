@@ -98,6 +98,22 @@ func newTopProcessEnricher() func([]topProcess) {
 	}
 }
 
+func newTopProcessIOFiller() func([]topProcess) {
+	tracker := &topProcessIOTracker{}
+	return func(processes []topProcess) { tracker.fill(processes, time.Now()) }
+}
+
+// newTopProcessFDCounter는 /proc/<pid>/fd의 항목 수를 센다. root가 아니면 다른 사용자의 process는 읽지 못해 0으로 남는다.
+func newTopProcessFDCounter() func([]topProcess) {
+	return func(processes []topProcess) {
+		for index := range processes {
+			if entries, err := os.ReadDir("/proc/" + strconv.Itoa(processes[index].PID) + "/fd"); err == nil {
+				processes[index].FDs = len(entries)
+			}
+		}
+	}
+}
+
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now(), NetworkHealth: collectNetworkHealth()}
 	stat, err := os.ReadFile("/proc/stat")

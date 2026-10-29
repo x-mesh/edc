@@ -8,9 +8,12 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+var duOpen = unix.Open
 
 type duInode struct{ dev, ino uint64 }
 
@@ -30,6 +33,12 @@ type duWalker struct {
 	directories *atomic.Int64
 	activity    *atomic.Int64
 	stopped     atomic.Bool
+	// tree는 탐색 goroutine이 트리를 고치는 구간이다. 시간이 다 되면 walk가 Lock으로 고치는 중인 goroutine만 기다린다.
+	tree sync.RWMutex
+	// abandoned는 시간이 다 된 뒤에도 끝나지 않은 탐색 goroutine을 남겨 두고 돌아왔다는 뜻이다.
+	abandoned bool
+	// opening은 open이 돌아오지 않은 디렉터리 수다. 남겨 둔 goroutine이 무엇을 기다리는지 경고로 알린다.
+	opening atomic.Int64
 
 	mu sync.Mutex
 	// seen은 hard link가 여럿인 파일을 어느 디렉터리가 셌는지다. 화면이 디렉터리 하나를 다시 읽을 때 그 디렉터리가 센
@@ -83,6 +92,60 @@ func (walker *duWalker) parallel(start duDir, workers int) {
 }
 
 func (walker *duWalker) advance() { walker.activity.Add(1) }
+
+func (walker *duWalker) open(open func() (int, error)) (int, error) {
+	walker.opening.Add(1)
+	defer walker.opening.Add(-1)
+	return open()
+}
+
+// abandonWarning은 남겨 둔 goroutine이 있을 때의 경고다.
+func (walker *duWalker) abandonWarning() []string {
+	if !walker.abandoned {
+		return nil
+	}
+	return []string{T("du.warning.abandoned", walker.opening.Load())}
+}
+
+// duAbandonGrace는 시간이 다 된 뒤 탐색 goroutine이 fd를 닫고 끝나기를 기다리는 시간이다. 이 안에 끝나지 않으면 돌아오지
+// 않는 시스템 호출에 막힌 것으로 본다.
+const duAbandonGrace = time.Second
+
+// walk는 search를 goroutine에서 돌리고, 끝나거나 시간이 다 될 때까지 기다린다. macOS의 TCC 보호 경로는 open이 돌아오지
+// 않아서, 끝까지 기다리면 --timeout이 지나도 센 결과를 보여 주지 못한다.
+func (walker *duWalker) walk(search func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		search()
+	}()
+	select {
+	case <-done:
+		return
+	case <-walker.ctx.Done():
+	}
+	select {
+	case <-done:
+		return
+	case <-time.After(duAbandonGrace):
+	}
+	// Lock은 트리를 고치는 중인 goroutine만 기다린다. 그 뒤에 깨어난 goroutine은 enter에서 취소된 ctx를 보고 트리를 고치지 않는다.
+	walker.tree.Lock()
+	walker.stopped.Store(true)
+	walker.abandoned = true
+	walker.tree.Unlock()
+}
+
+// enter는 트리를 고치기 전에 부른다. true면 호출한 쪽이 tree.RUnlock을 부른다.
+func (walker *duWalker) enter() bool {
+	walker.tree.RLock()
+	if walker.ctx.Err() != nil {
+		walker.tree.RUnlock()
+		walker.stopped.Store(true)
+		return false
+	}
+	return true
+}
 
 func duJoin(dir, name string) string {
 	if dir == "/" {

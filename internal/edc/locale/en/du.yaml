@@ -12,6 +12,7 @@ du:
   warning:
     partial: "edc stopped at the time limit, so the size covers only what it read"
     stopped: "you stopped edc, so the size covers only what it read"
+    abandoned: "%d directories gave no response, so edc did not wait for them. Answer a macOS permission dialog or check the mount, then run edc du again"
     unreadable_root: "%d directories are unreadable and not counted, run as root to count them"
     unreadable: "%d directories are unreadable and not counted"
     no_mountinfo: "cannot read the mount table (%s), so bind mounts below the path are counted"

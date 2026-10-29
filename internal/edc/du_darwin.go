@@ -110,15 +110,21 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 		if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
 			return duScan{}, err
 		}
-		walker.sequentialDarwin(start, max(1, min(duDarwinParentFDLimit, int(limit.Cur/duDarwinFDReserveDivisor))))
+		parentFDLimit := max(1, min(duDarwinParentFDLimit, int(limit.Cur/duDarwinFDReserveDivisor)))
+		walker.walk(func() { walker.sequentialDarwin(start, parentFDLimit) })
 	} else {
-		walker.parallel(start, options.workers)
+		walker.walk(func() { walker.parallel(start, options.workers) })
 	}
 	duFinish(root, walker.files.heap)
 	sort.Slice(walker.skipped, func(i, j int) bool { return walker.skipped[i].Path < walker.skipped[j].Path })
 	sort.Strings(walker.unreadable)
 	scan := duScan{root: root, directories: walker.directories.Load(), mounts: walker.skipped,
 		unreadable: walker.unreadable, unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), walker: walker}
+	// 남겨 둔 goroutine이 walker를 읽으므로 화면 갱신에 다시 쓰지 않는다.
+	if walker.abandoned {
+		scan.walker = nil
+		scan.warnings = walker.abandonWarning()
+	}
 	var fs unix.Statfs_t
 	if err := unix.Statfs(options.root, &fs); err == nil {
 		scan.filesystem = duFilesystem{Mount: unix.ByteSliceToString(fs.Mntonname[:]), FSType: unix.ByteSliceToString(fs.Fstypename[:]),
@@ -212,7 +218,7 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 		parent, cached := parents[dir.node.parent]
 		flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
 		if cached {
-			fd, err = unix.Openat(parent.fd, dir.node.name, flags, 0)
+			fd, err = walker.open(func() (int, error) { return unix.Openat(parent.fd, dir.node.name, flags, 0) })
 			parent.remaining--
 			if parent.remaining == 0 {
 				_ = unix.Close(parent.fd)
@@ -222,14 +228,25 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 				parents[dir.node.parent] = parent
 			}
 		} else {
-			fd, err = unix.Open(dir.path, flags, 0)
+			fd, err = walker.open(func() (int, error) { return duOpen(dir.path, flags, 0) })
 		}
 		walker.advance()
+		if !walker.enter() {
+			if err == nil {
+				_ = unix.Close(fd)
+			}
+			return
+		}
+		var children []duDir
 		if err != nil {
 			dir.node.unreadable = walker.unreadableDir(dir.path, err)
+		} else {
+			children = walker.scanDarwinFD(dir, buffer, fd)
+		}
+		walker.tree.RUnlock()
+		if err != nil {
 			continue
 		}
-		children := walker.scanDarwinFD(dir, buffer, fd)
 		if len(children) == 0 {
 			_ = unix.Close(fd)
 			continue
@@ -252,8 +269,17 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 }
 
 func (walker *duWalker) scan(dir duDir, buffer []byte) []duDir {
-	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := walker.open(func() (int, error) {
+		return duOpen(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	})
 	walker.advance()
+	if !walker.enter() {
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		return nil
+	}
+	defer walker.tree.RUnlock()
 	if err != nil {
 		dir.node.unreadable = walker.unreadableDir(dir.path, err)
 		return nil

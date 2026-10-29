@@ -187,9 +187,9 @@ func duWalkTree(ctx context.Context, options duOptions, sources duSources, root 
 	}
 	start := duDir{node: root, path: options.root}
 	if options.workers <= 1 {
-		walker.sequential(start)
+		walker.walk(func() { walker.sequential(start) })
 	} else {
-		walker.parallel(start, options.workers)
+		walker.walk(func() { walker.parallel(start, options.workers) })
 	}
 	duFinish(root, walker.files.heap)
 	sort.Slice(walker.skipped, func(i, j int) bool { return walker.skipped[i].Path < walker.skipped[j].Path })
@@ -197,6 +197,11 @@ func duWalkTree(ctx context.Context, options duOptions, sources duSources, root 
 	scan := duScan{
 		root: root, directories: walker.directories.Load(), mounts: walker.skipped, unreadable: walker.unreadable,
 		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings, walker: walker,
+	}
+	// 남겨 둔 goroutine이 walker를 읽으므로 화면 갱신에 다시 쓰지 않는다.
+	if walker.abandoned {
+		scan.walker = nil
+		scan.warnings = append(scan.warnings, walker.abandonWarning()...)
 	}
 	return scan, walker.mounts
 }
@@ -245,8 +250,17 @@ func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts
 // scan은 디렉터리 하나를 읽고 그 안의 하위 디렉터리를 돌려준다. 이름은 디렉터리 fd를 기준으로 stat한다.
 // 항목마다 전체 경로를 다시 해석하면 CPU 시간이 약 25% 늘었다.
 func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
-	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := walker.open(func() (int, error) {
+		return duOpen(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	})
 	walker.advance()
+	if !walker.enter() {
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		return nil
+	}
+	defer walker.tree.RUnlock()
 	if err != nil {
 		dir.node.unreadable = walker.unreadableDir(dir.path, err)
 		return nil

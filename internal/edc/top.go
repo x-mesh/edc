@@ -73,7 +73,7 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return 2
 	}
-	explicitSplit, explicitView, explicitPanels, explicitColumns := false, false, false, false
+	explicitSplit, explicitView, explicitPanels, explicitColumns, explicitAutoRecord := false, false, false, false, false
 	set.Visit(func(option *flag.Flag) {
 		switch option.Name {
 		case "split":
@@ -84,6 +84,8 @@ func runTop(args []string, version string) (code int) {
 			explicitPanels = true
 		case "columns":
 			explicitColumns = true
+		case "auto-record":
+			explicitAutoRecord = true
 		}
 		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" {
 			code = 2
@@ -114,6 +116,10 @@ func runTop(args []string, version string) (code int) {
 	}
 	if explicitSplit && !dashboard {
 		fmt.Fprintln(os.Stderr, T("observe.top.split_needs_view"))
+		return 2
+	}
+	if explicitAutoRecord && *autoRecord && !dashboard {
+		fmt.Fprintln(os.Stderr, T("observe.top.auto_record_needs_view"))
 		return 2
 	}
 	// config의 view, panels, process_sort는 대시보드 배치라서 표와 JSON에서는 쓰지 않는다. 플래그로 준 값만 오류로 알린다.

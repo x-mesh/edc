@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestTopRecordingShortcutStartsStopsAndRestarts(t *testing.T) {
@@ -190,5 +192,50 @@ func waitHistorySampleCount(t *testing.T, path string, want int) {
 			t.Fatalf("history has %d samples, want %d", count, want)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestTopAutoRecordStaysStoppedAfterWUntilTheConditionClears(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.recordPath = filepath.Join(t.TempDir(), "history.db")
+	model.autoRecord = &topAutoRecord{}
+	feed := func(second int, load float64) {
+		sample := topSampleAt(second)
+		sample.Load1 = load
+		model = topAfter(t, model, topSampleMsg{seq: model.seq, snapshot: sample})
+	}
+	feed(1, 20)
+	if model.recorder == nil {
+		t.Fatal("load spike did not start an auto recording")
+	}
+	model = topAfter(t, model, topKey("w"))
+	for second := 2; second <= 5; second++ {
+		feed(second, 20)
+	}
+	if model.recorder != nil {
+		t.Fatal("auto recording reopened while the user stopped it")
+	}
+	feed(6, 1)
+	feed(7, 20)
+	recorder := model.recorder
+	if recorder == nil {
+		t.Fatal("auto recording did not start again after the condition cleared")
+	}
+	t.Cleanup(func() { recorder.Close("finished") })
+}
+
+func TestTopAutoRecordStatusKeepsHelpAt80Columns(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.autoRecord = &topAutoRecord{trigger: "load 131 > 2×16"}
+	model.record = func(historyTopSample) error { return nil }
+	model.recordCount = 12345
+	lines := model.statusLines()
+	for _, line := range lines {
+		if width := topDisplayWidth(ansi.Strip(line)); width > topTableWidth {
+			t.Fatalf("status line is %d wide: %q", width, line)
+		}
+	}
+	if joined := ansi.Strip(strings.Join(lines, "\n")); !strings.Contains(joined, "load 131 > 2×16") || !strings.Contains(joined, "? help") {
+		t.Fatalf("status lines = %q", joined)
 	}
 }

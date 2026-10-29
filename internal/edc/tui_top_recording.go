@@ -24,6 +24,10 @@ func (model *topModel) attachRecorder(recorder *topRecorder) {
 
 func (model topModel) toggleRecording() (tea.Model, tea.Cmd) {
 	if model.recorder != nil {
+		if model.autoRecord != nil {
+			// 사용자가 끈 기록을 다음 sample이 다시 열지 않게, 조건이 한 번 풀릴 때까지 자동 기록을 멈춘다.
+			model.autoRecord.muted = true
+		}
 		return model.stopRecording()
 	}
 	path, err := model.historyPath()
@@ -83,6 +87,7 @@ type topAutoRecord struct {
 	samples   []historyTopSample
 	trigger   string
 	calmSince time.Time
+	muted     bool
 }
 
 // topAutoRecordTrigger는 이 구간이 이상인 이유다. 이상이 없으면 빈 문자열이다.
@@ -133,6 +138,10 @@ func (model topModel) observeAutoRecord(sample historyTopSample, rate resourceRa
 	}
 	auto.samples = auto.samples[cut:]
 	if trigger == "" {
+		auto.muted = false
+		return model, nil
+	}
+	if auto.muted {
 		return model, nil
 	}
 	path, err := model.historyPath()

@@ -472,8 +472,9 @@ func newTriggeredTopRecorder(path, version string, details hostDetails, interval
 	}
 	started := time.Now().UTC()
 	if len(backlog) > 0 {
+		// 잠자기에서 깬 직후의 sample은 구간이 몇 시간일 수 있어 interval보다 길게 거슬러 올라가지 않는다.
 		first := backlog[0]
-		started = first.Time.Add(-time.Duration(first.WindowS * float64(time.Second))).UTC()
+		started = first.Time.Add(-min(time.Duration(first.WindowS*float64(time.Second)), interval)).UTC()
 	}
 	run := historyRun{ID: runID(started), Command: "top", Hostname: details.Hostname, StartedAt: started,
 		Status: "unfinished", Version: version, System: details.System, OS: details.OS,

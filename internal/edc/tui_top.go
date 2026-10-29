@@ -1541,6 +1541,9 @@ func topProcessGroupDetail(group topProcessGroup) string {
 
 // topProcessGroupLabel은 후보 목록의 묶음 이름 칸이다. 폭이 모자라면 I/O 대기 수를 빼고, 그래도 모자라면 이름을 줄인다.
 func topProcessGroupLabel(group topProcessGroup, width int) string {
+	if group.Place != "" {
+		group.Name += " · " + group.Place
+	}
 	name := topProcessName(group.Name, width)
 	count := fmt.Sprintf(" (%d procs)", group.Count)
 	for _, suffix := range []string{" (" + topProcessGroupDetail(group) + ")", count} {

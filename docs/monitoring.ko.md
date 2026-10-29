@@ -263,6 +263,7 @@ filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process�
 | `command`, `cpu_pct`, `rss_bytes` | 이름, 직전 refresh 이후 CPU, 상주 memory |
 | `memory_bytes` | process가 차지한 메모리. macOS는 physical footprint, Linux는 RSS와 `VmSwap`의 합. `process_total`에서는 하나라도 읽지 못하면 빠짐 |
 | `threads` | thread 수 (Linux·macOS) |
+| `ppid`, `cwd` | 부모 process 번호와 작업 디렉터리. root가 아니면 다른 계정 process의 `cwd`는 빠집니다. |
 | `fds` | 열린 file descriptor 수 (Linux) |
 | `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | 초당 disk I/O byte. Linux는 `/proc/<pid>/io`, macOS는 libproc 기준 |
 

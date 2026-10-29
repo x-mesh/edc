@@ -30,7 +30,7 @@ The load thresholds follow the core count of the host.
 
 `hot core` shows the usage of one core, so it gets a warning at 90 and no risk level. A host with many cores keeps room when one core is full.
 
-The process panel colors `READ` and `WRITE` with the thresholds above. It colors `iowait` in the `STATE` column yellow. It colors the CPU total of a process group red at 80%, the level of one busy core.
+The process panel colors `READ` and `WRITE` with the thresholds above. It colors `iowait` in the `STATE` column yellow. It colors the CPU total of a process group red at 80%, the level of one busy core. A process group holds the processes that have the same name and the same working directory. If one name runs in two or more directories, the group name adds the last part of the directory, for example `rustc · wt-a`. Thus two builds in different worktrees show as two groups.
 
 The dashboard gives no color to `iops`, `busy%`, `swap/s`, `steal%`, `blocked`, `queue`, the byte, packet, and TCP rates, and the `signal` column. These values have no threshold, or they show the level without a color. Aggregate `busy%` goes above 100 on a host with more than one busy disk, so a fixed threshold gives a wrong signal. The `cores` bar shows the level with `.`, `:`, `*`, and `#`.
 
@@ -306,6 +306,7 @@ With `--json`, a sample adds two fields. `processes` holds up to 50 matches, bus
 | Field | Meaning |
 |---|---|
 | `pid`, `started` | `started` is the start time in UTC. A PID can be reused, so `(pid, started)` names one process. |
+| `ppid`, `cwd` | parent process ID and working directory. Without root, the `cwd` of another user's process is absent. |
 | `command`, `cpu_pct`, `rss_bytes` | name, CPU since the last refresh, resident memory |
 | `memory_bytes` | the memory that the process holds: physical footprint on macOS, RSS plus `VmSwap` on Linux. In `process_total`, it is absent if one match has no value. |
 | `threads` | thread count (Linux and macOS) |

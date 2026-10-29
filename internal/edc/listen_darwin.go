@@ -252,13 +252,17 @@ func listenProcessCommand(pid string) ([]string, string) {
 	if raw, err := unix.SysctlRaw("kern.procargs2", number); err == nil {
 		args = parseDarwinProcArgs(raw)
 	}
+	return args, darwinProcessCWD(number)
+}
+
+// darwinProcessCWD는 PROC_PIDVNODEPATHINFO의 pvi_cdir 경로다. 다른 계정의 process는 root가 아니면 비어 있다.
+func darwinProcessCWD(pid int) string {
 	info := make([]byte, darwinVnodePathInfoSize)
-	read, _, _ := darwinSyscall6(procPIDInfoAddr, uintptr(number), darwinProcPIDVnodePathInfo, 0, uintptr(unsafe.Pointer(&info[0])), uintptr(len(info)), 0)
-	cwd := ""
-	if int32(read) == darwinVnodePathInfoSize {
-		cwd = darwinCString(info[darwinVnodeInfoSize : darwinVnodeInfoSize+darwinMaxPathLen])
+	read, _, _ := darwinSyscall6(procPIDInfoAddr, uintptr(pid), darwinProcPIDVnodePathInfo, 0, uintptr(unsafe.Pointer(&info[0])), uintptr(len(info)), 0)
+	if int32(read) != darwinVnodePathInfoSize {
+		return ""
 	}
-	return args, cwd
+	return darwinCString(info[darwinVnodeInfoSize : darwinVnodeInfoSize+darwinMaxPathLen])
 }
 
 // parseDarwinProcArgs는 kern.procargs2의 argv만 꺼낸다. 값은 argc, 실행 파일 경로, 정렬용 NUL, argv, 환경 변수 순이다.

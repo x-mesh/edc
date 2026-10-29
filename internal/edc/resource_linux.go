@@ -44,6 +44,8 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
+				// 다른 계정의 cwd는 root가 아니면 읽을 수 없다. 그 process는 작업 디렉터리를 모르는 채로 묶인다.
+				stat.CWD, _ = os.Readlink("/proc/" + entry.Name() + "/cwd")
 				if readSwap {
 					status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
 					// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.

@@ -62,7 +62,7 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
 | `network` | no default route, or 90% or more use of conntrack or TCP memory | no `/etc/resolv.conf`, no nameserver, or the same use at 80% |
-| `container` | a container with a restart policy stopped with a nonzero code or for memory | a container without a restart policy stopped with an error in the last 24 hours, or a container restarts, pauses, or is unhealthy |
+| `container` | a container with a restart policy stopped with a nonzero code or for memory, or an `always` or `unless-stopped` container stopped with code 0 | a container without a restart policy stopped with an error in the last 24 hours, or a container restarts, pauses, or is unhealthy |
 | `filehandles` | 90% or more of `fs.file-max` is in use | 80% or more of `fs.file-max` is in use |
 | `reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
 

@@ -442,3 +442,22 @@ func TestCheckContainersUseTheRestartPolicy(t *testing.T) {
 		t.Fatalf("an old stop without a restart policy = %+v", result)
 	}
 }
+
+func TestCheckContainersFailAStopWithCodeZeroUnderAnAlwaysPolicy(t *testing.T) {
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	facts := checkFacts{Now: now, Containers: []ctrListItem{
+		{Name: "web", Status: "exited", ExitCode: 0, State: "exited (0)", RestartPolicy: "always", FinishedAt: now.AddDate(0, 0, -3)},
+		{Name: "api", Status: "exited", ExitCode: 0, State: "exited (0)", RestartPolicy: "unless-stopped", FinishedAt: now.AddDate(0, 0, -3)},
+		{Name: "migrate", Status: "exited", ExitCode: 0, State: "exited (0)", RestartPolicy: "on-failure", FinishedAt: now.Add(-time.Hour)},
+	}}
+	result := checkContainers(facts, checkTestPolicy)
+	// on-failure는 코드 0이면 다시 띄우지 않으므로 끝난 작업이다.
+	if result.Status != StatusFail || !strings.Contains(result.Summary, "web") || !strings.Contains(result.Summary, "api") || strings.Contains(result.Summary, "migrate") {
+		t.Fatalf("result = %+v", result)
+	}
+	policy := checkTestPolicy
+	policy.acceptContainers = []string{"web", "api"}
+	if result := checkContainers(facts, policy); result.Status != StatusPass {
+		t.Fatalf("accepted containers = %+v", result)
+	}
+}

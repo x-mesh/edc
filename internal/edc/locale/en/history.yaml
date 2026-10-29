@@ -109,6 +109,7 @@ history:
     export_snapshot_only: "Export takes a snapshot run."
   recording:
     started: "Recording started: %s"
+    auto_started: "Auto recording started (%s): %s"
     stopped: "Recording stopped · %d samples saved"
     help: "Recording: w starts/stops DB recording · starts from the next full sample · p pauses recording too"
   top_browser:
@@ -151,6 +152,7 @@ history:
     wal: "Cannot enable SQLite WAL mode on this database"
     queue: "The recording queue is full; stopping observation"
     write: "Recording failed: %v"
+    retain: "Deleting old runs failed: %v"
     read: "Cannot read history: %v"
     time: "Use RFC3339 times from 1678 to 2261, with --from earlier than --to"
     metric: "Use --metric with a finite --min or --max (min <= max). Fields: %s"

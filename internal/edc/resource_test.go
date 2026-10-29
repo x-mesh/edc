@@ -306,6 +306,31 @@ func TestTopProcessCandidatesLimitUnreadableMemoryByRSS(t *testing.T) {
 	}
 }
 
+// --top N이 상위 N개를 정확히 내려면 후보가 CPU와 memory 순위에서 각각 N개를 담아야 한다.
+func TestTopProcessCandidatesUpToKeepsLimitPerRank(t *testing.T) {
+	var processes []topProcess
+	for index := range 15 {
+		processes = append(processes, topProcess{PID: index + 1, CPU: float64(100 - index), Memory: uint64(index+1) << 20, MemoryValid: true, Command: "worker"})
+	}
+	picked := map[int]bool{}
+	for _, process := range topProcessCandidatesUpTo(processes, 10) {
+		picked[process.PID] = true
+	}
+	for pid := 1; pid <= 10; pid++ {
+		if !picked[pid] {
+			t.Errorf("CPU rank %d is missing", pid)
+		}
+	}
+	for pid := 6; pid <= 15; pid++ {
+		if !picked[pid] {
+			t.Errorf("memory rank PID %d is missing", pid)
+		}
+	}
+	if got := len(topProcessCandidates(processes)); got != 2*topProcessLimit {
+		t.Errorf("default candidates = %d, want %d", got, 2*topProcessLimit)
+	}
+}
+
 func TestTopProcessSamplesReportMemoryOnlyWhenMeasured(t *testing.T) {
 	samples := *newTopProcessSamples([]topProcess{{PID: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, Command: "leak"}, {PID: 2, RSS: 200 << 20, Command: "root-owned"}})
 	if samples[0].MemoryBytes == nil || *samples[0].MemoryBytes != 3<<30 || samples[1].MemoryBytes != nil {
@@ -313,6 +338,17 @@ func TestTopProcessSamplesReportMemoryOnlyWhenMeasured(t *testing.T) {
 	}
 	if total := newTopProcessTotalSample(topProcessTotal{Count: 2, RSS: 249 << 20, Memory: 3<<30 + 200<<20, MemoryEstimated: true}); total.MemoryBytes != nil {
 		t.Fatalf("an estimated total must omit memory_bytes: %d", *total.MemoryBytes)
+	}
+}
+
+func TestTopProcessSamplesOmitRSSWhenMissing(t *testing.T) {
+	samples := *newTopProcessSamples([]topProcess{{PID: 0, Memory: 42 << 20, MemoryValid: true, RSSMissing: true, Command: "kernel_task"}, {PID: 1, Command: "idle"}})
+	if samples[0].RSSBytes != nil || samples[1].RSSBytes == nil || *samples[1].RSSBytes != 0 {
+		t.Fatalf("rss_bytes = %v, %v", samples[0].RSSBytes, samples[1].RSSBytes)
+	}
+	data, err := json.Marshal(samples[0])
+	if err != nil || strings.Contains(string(data), "rss_bytes") {
+		t.Fatalf("missing RSS must be omitted: %s %v", data, err)
 	}
 }
 
@@ -1021,6 +1057,30 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 	}
 }
 
+// 재지 못한 지표의 0은 '쟀더니 없었다'로 읽혀 macOS의 I/O 압박을 가린다. 키는 남기고 값만 null로 쓴다.
+func TestTopSampleWritesNullForUnmeasuredMetrics(t *testing.T) {
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cpu_iowait_pct", "disk_iops", "disk_await_ms", "disk_busy_pct", "network_errors_per_s", "network_drops_per_s",
+		"psi_cpu_some_avg10_pct", "psi_memory_some_avg10_pct", "psi_io_some_avg10_pct", "psi_memory_full_avg10_pct", "psi_io_full_avg10_pct"} {
+		if !strings.Contains(string(data), `"`+name+`":null`) {
+			t.Errorf("%s must be null when unmeasured: %s", name, data)
+		}
+	}
+	if !strings.Contains(string(data), `"cpu_iowait_supported":false`) {
+		t.Errorf("cpu_iowait_supported must be false: %s", data)
+	}
+	measured := resourceRate{CPUIOWaitValid: true, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true, PSIValid: true}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), measured))
+	for _, field := range []string{`"cpu_iowait_pct":0`, `"cpu_iowait_supported":true`, `"disk_busy_pct":0`, `"disk_await_ms":0`, `"network_drops_per_s":0`, `"psi_io_full_avg10_pct":0`} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("a measured 0 must stay 0, want %s: %s", field, data)
+		}
+	}
+}
+
 func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: topMemoryPressureWarn}))
 	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) || !strings.Contains(string(data), `"memory_pressure_supported":true`) {
@@ -1030,6 +1090,74 @@ func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
 	if strings.Contains(string(data), `"memory_pressure":`) || !strings.Contains(string(data), `"memory_pressure_supported":false`) {
 		t.Fatalf("an unread level must be left out: %s", data)
+	}
+}
+
+func TestTopSampleWritesSwapUsageAndCompressorOnlyWhenRead(t *testing.T) {
+	previous := resourceSnapshot{TakenAt: time.Unix(0, 0), CPUTotal: 100}
+	current := resourceSnapshot{TakenAt: time.Unix(1, 0), CPUTotal: 200, SwapUsed: 9 << 30, SwapTotal: 10 << 30, SwapUsageValid: true, Compressor: 21 << 30, CompressorValid: true}
+	rate := calculateRate(previous, current)
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), rate))
+	if err != nil || !strings.Contains(string(data), `"swap_used_bytes":9663676416`) || !strings.Contains(string(data), `"swap_total_bytes":10737418240`) || !strings.Contains(string(data), `"compressor_bytes":22548578304`) {
+		t.Fatalf("sample = %s, %v", data, err)
+	}
+	// swap이 없는 host의 0은 측정값이라 남긴다. 읽지 못한 값만 빠진다.
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{SwapUsageValid: true}))
+	if !strings.Contains(string(data), `"swap_used_bytes":0`) || strings.Contains(string(data), `"compressor_bytes"`) {
+		t.Fatalf("no-swap sample = %s", data)
+	}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
+	if strings.Contains(string(data), `"swap_used_bytes"`) || strings.Contains(string(data), `"swap_total_bytes"`) {
+		t.Fatalf("unread swap must be left out: %s", data)
+	}
+}
+
+func TestParseLinuxProcessesCreated(t *testing.T) {
+	if got, ok := parseLinuxProcessesCreated("cpu  1 2 3\nintr 9\nprocesses 118605922\nprocs_running 2\n"); !ok || got != 118605922 {
+		t.Fatalf("processes = %d, %v", got, ok)
+	}
+	if _, ok := parseLinuxProcessesCreated("cpu  1 2 3\n"); ok {
+		t.Fatal("a stat without processes must be unread")
+	}
+}
+
+// 생성 수는 누적 counter의 차이다. 한쪽을 읽지 못했거나 counter가 줄었으면 이 구간의 rate는 모른다.
+func TestCalculateRateCountsProcessesCreated(t *testing.T) {
+	previous := resourceSnapshot{TakenAt: time.Unix(0, 0), CPUTotal: 100, ProcsCreated: 1000, ProcsCreatedValid: true, ProcsCreatedSource: "kernel"}
+	current := resourceSnapshot{TakenAt: time.Unix(2, 0), CPUTotal: 200, ProcsCreated: 1300, ProcsCreatedValid: true, ProcsCreatedSource: "kernel"}
+	if rate := calculateRate(previous, current); !rate.ProcsCreatedValid || rate.ProcsCreated != 150 || rate.ProcsCreatedSource != "kernel" {
+		t.Fatalf("rate = %v %v %q", rate.ProcsCreated, rate.ProcsCreatedValid, rate.ProcsCreatedSource)
+	}
+	for _, broken := range []resourceSnapshot{{TakenAt: time.Unix(2, 0)}, {TakenAt: time.Unix(2, 0), ProcsCreated: 10, ProcsCreatedValid: true}} {
+		if rate := calculateRate(previous, broken); rate.ProcsCreatedValid {
+			t.Fatalf("%+v must leave the rate unknown", broken)
+		}
+	}
+	data, _ := json.Marshal(newTopSample(hostDetails{}, time.Unix(2, 0), calculateRate(previous, current)))
+	if !strings.Contains(string(data), `"procs_created_per_s":150`) || !strings.Contains(string(data), `"procs_created_source":"kernel"`) {
+		t.Fatalf("sample = %s", data)
+	}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(2, 0), resourceRate{}))
+	if !strings.Contains(string(data), `"procs_created_per_s":null`) || strings.Contains(string(data), `"procs_created_source"`) {
+		t.Fatalf("an unknown rate must be null: %s", data)
+	}
+}
+
+func TestLinuxSwapUsage(t *testing.T) {
+	tests := []struct {
+		memory      map[string]uint64
+		total, used uint64
+		ok          bool
+	}{
+		{map[string]uint64{"SwapTotal": 8 << 30, "SwapFree": 2 << 30}, 8 << 30, 6 << 30, true},
+		{map[string]uint64{"SwapTotal": 0, "SwapFree": 0}, 0, 0, true},
+		{map[string]uint64{"MemTotal": 1}, 0, 0, false},
+		{map[string]uint64{"SwapTotal": 1, "SwapFree": 2}, 0, 0, false},
+	}
+	for _, tt := range tests {
+		if total, used, ok := linuxSwapUsage(tt.memory); total != tt.total || used != tt.used || ok != tt.ok {
+			t.Errorf("%v: got %d, %d, %v", tt.memory, total, used, ok)
+		}
 	}
 }
 

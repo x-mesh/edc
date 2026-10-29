@@ -21,6 +21,8 @@ type historyOptions struct {
 	min, max *float64
 	limit    int
 	sampleID int64
+	// metricMissing은 읽기로 연 이전 DB에 metric의 column이 아직 없다는 뜻이다. 그 지표로 거르면 맞는 기록이 없다.
+	metricMissing bool
 }
 
 const historyDefaultLimit = 200
@@ -273,13 +275,17 @@ func historyQuery(command string, options historyOptions) (string, []any) {
 	if command == "process" {
 		metric = "p." + metric
 	}
-	if options.min != nil {
-		conditions = append(conditions, metric+">=?")
-		values = append(values, *options.min)
-	}
-	if options.max != nil {
-		conditions = append(conditions, metric+"<=?")
-		values = append(values, *options.max)
+	if options.metricMissing && (options.min != nil || options.max != nil) {
+		conditions = append(conditions, "0")
+	} else {
+		if options.min != nil {
+			conditions = append(conditions, metric+">=?")
+			values = append(values, *options.min)
+		}
+		if options.max != nil {
+			conditions = append(conditions, metric+"<=?")
+			values = append(values, *options.max)
+		}
 	}
 	query := "SELECT " + selection + " FROM " + table
 	if len(conditions) > 0 {
@@ -323,7 +329,11 @@ type historyColorTable struct {
 }
 
 func writeHistory(output io.Writer, db *sql.DB, command string, options historyOptions, jsonOutput bool, style textStyle) error {
+	options.metricMissing = command == "top" && historyTopColumnMissing(db, options.metric)
 	query, values := historyQuery(command, options)
+	if command == "top" && jsonOutput {
+		query = strings.Replace(query, "SELECT payload FROM top_samples", "SELECT payload, "+historyStoredProcessesColumn+" FROM top_samples", 1)
+	}
 	rows, err := db.Query(query, values...)
 	if err != nil {
 		return err
@@ -389,10 +399,18 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 			paints = []historyPaint{nil, nil, style.dim, style.dim, nil, historyStatusPaint(style, run.Status), nil, historyUnitPaint(style)}
 		case "top":
 			var sample historyTopSample
-			if err := rows.Scan(&payload); err != nil {
+			var stored sql.NullString
+			targets := []any{&payload}
+			if jsonOutput {
+				targets = append(targets, &stored)
+			}
+			if err := rows.Scan(targets...); err != nil {
 				return err
 			}
 			if err := json.Unmarshal([]byte(payload), &sample); err != nil {
+				return err
+			}
+			if err := sample.attachStoredProcesses(stored); err != nil {
 				return err
 			}
 			value = sample
@@ -423,7 +441,11 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 			if process.Started != nil {
 				started = process.Started.Format(time.RFC3339Nano)
 			}
-			line = fmt.Sprintf("%s\t%s\t%d\t%s\t%.2f\t%s\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), process.PID, started, process.CPU, formatBytes(process.RSSBytes), historyTerminalText(process.Command))
+			rss := "-"
+			if process.RSSBytes != nil {
+				rss = formatBytes(*process.RSSBytes)
+			}
+			line = fmt.Sprintf("%s\t%s\t%d\t%s\t%.2f\t%s\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), process.PID, started, process.CPU, rss, historyTerminalText(process.Command))
 			paints = []historyPaint{nil, style.dim, nil, style.dim, nil, historyUnitPaint(style)}
 		}
 		if jsonOutput {

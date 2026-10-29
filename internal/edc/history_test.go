@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -872,5 +873,214 @@ func TestHistoryDBArgumentUsesScopedNavigatorAndListFallback(t *testing.T) {
 	implicit.WriteString(output)
 	if direct.String() != implicit.String() {
 		t.Fatalf("list=%q implicit=%q", direct.String(), implicit.String())
+	}
+}
+
+// --process 없이 --json만 줘도 원인 process를 알 수 있게 상위 process를 sample마다 붙인다.
+func TestTopJSONAddsTopProcessesWithoutFilter(t *testing.T) {
+	read := func(t *testing.T, args ...string) []map[string]json.RawMessage {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "samples.jsonl")
+		if code := runTop(append([]string{"--interval", "200ms", "--count", "2", "--json", path}, args...), "test"); code != 0 {
+			t.Fatalf("top %v returned %d", args, code)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var samples []map[string]json.RawMessage
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var sample map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(line), &sample); err != nil {
+				t.Fatal(err)
+			}
+			samples = append(samples, sample)
+		}
+		return samples
+	}
+	processes := func(t *testing.T, sample map[string]json.RawMessage) []topProcessSample {
+		t.Helper()
+		var list []topProcessSample
+		if err := json.Unmarshal(sample["processes"], &list); err != nil {
+			t.Fatalf("processes = %s: %v", sample["processes"], err)
+		}
+		return list
+	}
+	for _, sample := range read(t) {
+		list := processes(t, sample)
+		if len(list) == 0 || len(list) > topJSONProcesses {
+			t.Fatalf("default list has %d processes", len(list))
+		}
+		for index := 1; index < len(list); index++ {
+			if list[index].CPU > list[index-1].CPU {
+				t.Fatalf("default list is not CPU ordered: %+v", list)
+			}
+		}
+		if sample["process_total"] != nil {
+			t.Fatal("an unfiltered list must not claim a filtered total")
+		}
+	}
+	memory := func(process topProcessSample) uint64 {
+		if process.MemoryBytes != nil {
+			return *process.MemoryBytes
+		}
+		if process.RSSBytes != nil {
+			return *process.RSSBytes
+		}
+		return 0
+	}
+	for _, sample := range read(t, "--top", "3", "--sort", "mem") {
+		list := processes(t, sample)
+		if len(list) == 0 || len(list) > 3 {
+			t.Fatalf("--top 3 list has %d processes", len(list))
+		}
+		for index := 1; index < len(list); index++ {
+			if memory(list[index]) > memory(list[index-1]) {
+				t.Fatalf("--sort mem list is not memory ordered: %+v", list)
+			}
+		}
+	}
+	for _, sample := range read(t, "--top", "0") {
+		if sample["processes"] != nil {
+			t.Fatalf("--top 0 must leave processes out: %s", sample["processes"])
+		}
+	}
+}
+
+func TestTopRejectsTopOutsideUnfilteredJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "samples.jsonl")
+	defer processSampler.setFilter(topProcessFilter{})
+	for _, args := range [][]string{
+		{"--count", "1", "--top", "3"},
+		{"--count", "1", "--json", path, "--process", strconv.Itoa(os.Getpid()), "--top", "3"},
+		{"--count", "1", "--json", path, "--sort", "io"},
+		{"--count", "1", "--json", path, "--top", "-1"},
+	} {
+		if code := runTop(args, "test"); code != 2 {
+			t.Errorf("top %v returned %d, want 2", args, code)
+		}
+	}
+}
+
+// 버전 1에 swap column이 없던 DB는 읽기로 열면 그 지표의 기록이 없는 것으로 보이고, 쓰기로 열면 버전을 그대로 둔 채 column을 더한다.
+func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := append([]string(nil), historyV1Statements()...)
+	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
+		if name, _, _ := strings.Cut(definition, " "); slices.Contains(historyAddedTopColumns, name) {
+			statements[1] = strings.Replace(statements[1], ", "+definition, "", 1)
+		}
+	}
+	for _, statement := range append(statements, "PRAGMA application_id="+strconv.Itoa(historyApplicationID), "PRAGMA user_version=1") {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	read, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !historyTopColumnMissing(read, "swap_used_bytes") {
+		t.Fatal("fixture must lack the swap column")
+	}
+	zero := 0.0
+	if rows := historyJSONRows(t, read, "top", historyOptions{metric: "swap_used_bytes", min: &zero}); len(rows) != 0 {
+		t.Fatalf("old DB rows = %v", rows)
+	}
+	if err := historyHostTrendBuckets(read, historyTrendOptions{metric: "swap_used_bytes", by: "day"}, time.UTC, func(historyTrendBucket) error { return nil }); err != nil {
+		t.Fatalf("old DB trend: %v", err)
+	}
+	read.Close()
+
+	recorder := topHistoryFixture(t, path)
+	previous := resourceSnapshot{TakenAt: time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)}
+	current := resourceSnapshot{TakenAt: previous.TakenAt.Add(time.Second)}
+	rate := resourceRate{SwapUsed: 9 << 30, SwapTotal: 10 << 30, SwapUsageValid: true, Compressor: 21 << 30, CompressorValid: true}
+	if err := recorder.Record(newHistoryTopSample(hostDetails{Hostname: "fixture", Cores: 8}, previous, current, rate, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	written, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer written.Close()
+	var version int
+	var used, total, compressor uint64
+	if err := written.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("user_version = %d, %v", version, err)
+	}
+	var kind string
+	if err := written.QueryRow("SELECT type FROM pragma_table_info('top_samples') WHERE name = 'procs_created_per_s'").Scan(&kind); err != nil || kind != "REAL" {
+		t.Fatalf("procs_created_per_s type = %q, %v", kind, err)
+	}
+	if err := written.QueryRow("SELECT swap_used_bytes, swap_total_bytes, compressor_bytes FROM top_samples").Scan(&used, &total, &compressor); err != nil || used != 9<<30 || total != 10<<30 || compressor != 21<<30 {
+		t.Fatalf("columns = %d %d %d, %v", used, total, compressor, err)
+	}
+	min := float64(8 << 30)
+	if rows := historyJSONRows(t, written, "top", historyOptions{metric: "swap_used_bytes", min: &min}); len(rows) != 1 {
+		t.Fatalf("filtered rows = %d", len(rows))
+	}
+}
+
+// 프로세스는 top_process_samples에 한 행씩 남으므로 top_samples payload에 다시 넣지 않는다. 수집하지 않은 limits의
+// 자리 표시 문구도 행마다 반복하지 않는다. 기록이 두 배 가까이 커지던 원인이다.
+func TestHistoryStoresProcessesOnceWithoutPlaceholderLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "samples.db")
+	recorder := topHistoryFixture(t, path)
+	collected := &topProcessLimits{FD: topFDLimit{topLimitStatus: topLimitStatus{Status: "available"}}}
+	sample := historyFixtureSample(1, 40, topProcess{PID: 7, CPU: 30, RSS: 1 << 20, Command: "nginx"})
+	second := historyFixtureSample(1, 40, topProcess{PID: 8, CPU: 20, RSS: 2 << 20, Command: "nginx", Limits: collected})
+	*sample.Processes = append(*sample.Processes, (*second.Processes)[0])
+	if err := recorder.Record(sample); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var payload string
+	if err := db.QueryRow("SELECT payload FROM top_samples").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payload, `"processes":`) || !strings.Contains(payload, `"processes_valid":true`) {
+		t.Fatalf("top_samples payload = %s", payload)
+	}
+	rows, err := db.Query("SELECT pid, payload FROM top_process_samples ORDER BY pid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	limits := map[int]bool{}
+	for rows.Next() {
+		var pid int
+		var data string
+		if err := rows.Scan(&pid, &data); err != nil {
+			t.Fatal(err)
+		}
+		limits[pid] = strings.Contains(data, `"limits":`)
+	}
+	if len(limits) != 2 || limits[7] || !limits[8] {
+		t.Fatalf("limits stored per PID = %v, want only the collected one", limits)
+	}
+	if processes := historyJSONRows(t, db, "process", historyOptions{}); len(processes) != 2 {
+		t.Fatalf("history process rows = %d", len(processes))
+	}
+	samples := historyJSONRows(t, db, "top", historyOptions{})
+	var attached []topProcessSample
+	if len(samples) != 1 || json.Unmarshal(samples[0]["processes"], &attached) != nil || len(attached) != 2 || attached[0].PID != 7 {
+		t.Fatalf("history top --json must still list the sample's processes: %s", mustHistoryJSON(t, samples))
 	}
 }

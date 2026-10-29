@@ -114,6 +114,21 @@ func TestDarwinMemoryFromStatistics(t *testing.T) {
 	if got := darwinMemoryFromStatistics(stats, 16384, 0); got.total != 0 || got.used != 0 {
 		t.Fatalf("unknown total must leave usage empty: %#v", got)
 	}
+	stats.CompressorPageCount = 3
+	if got := darwinMemoryFromStatistics(stats, 16384, 2000*16384); !got.compressorOK || got.compressor != 3*16384 {
+		t.Fatalf("compressor = %#v", got)
+	}
+}
+
+// TestReadDarwinSwapUsage는 xsw_usage의 offset을 잘못 잡으면 used가 total을 넘거나 page 크기가 0이 되는 점으로 확인한다.
+func TestReadDarwinSwapUsage(t *testing.T) {
+	usage, err := readDarwinSwapUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.PageSize == 0 || usage.Used > usage.Total || usage.Available > usage.Total || usage.Used+usage.Available != usage.Total {
+		t.Fatalf("swap usage = %+v", usage)
+	}
 }
 
 func TestInfoMemoryFromDarwinSeparatesPhysicalAndOriginalCompression(t *testing.T) {

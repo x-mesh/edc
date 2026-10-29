@@ -294,6 +294,8 @@ func historyHostTrendBuckets(db *sql.DB, options historyTrendOptions, location *
 		if err := historyTrendCheckProbe(db, options.probe, options.metric); err != nil {
 			return err
 		}
+	} else if historyTopColumnMissing(db, options.metric) {
+		return nil
 	}
 	query, values := historyTrendQuery(options)
 	rows, err := db.Query(query, values...)

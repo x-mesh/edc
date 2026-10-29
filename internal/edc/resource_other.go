@@ -20,6 +20,10 @@ type darwinDisk struct{ read, write, operations, waitNS uint64 }
 type darwinMemory struct {
 	total, used, swapOut uint64
 	swapOK               bool
+	swapUsed, swapTotal  uint64
+	swapUsageOK          bool
+	compressor           uint64
+	compressorOK         bool
 }
 
 // darwinProcessTimeout은 ps 한 번을 기다리는 한도다. refresh 간격보다 짧아 다음 갱신과 겹치지 않는다.
@@ -152,6 +156,8 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.DiskOps, snapshot.DiskWaitMS, snapshot.DiskHealthValid = disk.operations, disk.waitNS/uint64(time.Millisecond), diskOK
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
 	snapshot.SwapOutBytes, snapshot.SwapMissing = memory.swapOut, !memory.swapOK
+	snapshot.SwapUsed, snapshot.SwapTotal, snapshot.SwapUsageValid = memory.swapUsed, memory.swapTotal, memory.swapUsageOK
+	snapshot.Compressor, snapshot.CompressorValid = memory.compressor, memory.compressorOK
 	snapshot.Load1 = load
 	if pressureErr == nil {
 		snapshot.MemoryPressure = pressure
@@ -239,7 +245,11 @@ func readDarwinMemory() darwinMemory {
 	if err != nil {
 		return darwinMemory{}
 	}
-	return darwinMemoryFromStatistics(stats, pageSize, darwinMemoryTotal())
+	memory := darwinMemoryFromStatistics(stats, pageSize, darwinMemoryTotal())
+	if swap, err := readDarwinSwapUsage(); err == nil {
+		memory.swapUsed, memory.swapTotal, memory.swapUsageOK = swap.Used, swap.Total, true
+	}
+	return memory
 }
 
 // darwinMemoryTotal은 바뀌지 않는 값이라 한 번만 읽는다.
@@ -254,7 +264,7 @@ var darwinMemoryTotal = sync.OnceValue(func() uint64 {
 // darwinMemoryFromStatistics는 free와 inactive page를 즉시 회수 가능한 memory로 본다.
 // FreeCount에는 speculative page가 이미 들어 있어 vm_stat의 free, speculative, inactive 합과 같다.
 func darwinMemoryFromStatistics(stats darwinVMStatistics64, pageSize, total uint64) darwinMemory {
-	memory := darwinMemory{swapOut: stats.Swapouts * pageSize, swapOK: true}
+	memory := darwinMemory{swapOut: stats.Swapouts * pageSize, swapOK: true, compressor: uint64(stats.CompressorPageCount) * pageSize, compressorOK: true}
 	if available := (uint64(stats.FreeCount) + uint64(stats.InactiveCount)) * pageSize; total > 0 && available > 0 && available <= total {
 		memory.total, memory.used = total, total-available
 	}

@@ -413,15 +413,21 @@ func (model topModel) resourcePanelLines(panel topPanel) []string {
 			"  top " + topPanelProcesses(row, topViewCPU, func(process topProcess) string { return fmt.Sprintf("%.0f%%", process.CPU) })}
 	case topPanelMemory:
 		head := fmt.Sprintf("mem %s · %.1f%% of %s · swap out %s/s", at, rate.MemoryPercent, topMemorySize(model.details.MemoryTotal), formatRate(rate.SwapOut))
+		if percent, ok := topSwapPercent(rate); ok {
+			head += fmt.Sprintf(" · swap %s/%s %.0f%%", formatProcessRSS(rate.SwapUsed), formatProcessRSS(rate.SwapTotal), percent)
+		}
 		switch {
 		case rate.MemoryPressure.known():
 			head += " · lvl " + rate.MemoryPressure.String()
 		case rate.PSIValid:
 			head += fmt.Sprintf(" · psi mem %.1f", rate.PSIMemory)
 		}
-		return []string{head,
-			"  " + peak("peak 60s", func(rate resourceRate) (float64, bool) { return rate.MemoryPercent, true }, "%.1f%%") + " · " +
-				peak("swap out", func(rate resourceRate) (float64, bool) { return rate.SwapOut / (1 << 20), true }, "%.2fM/s"),
+		peaks := "  " + peak("peak 60s", func(rate resourceRate) (float64, bool) { return rate.MemoryPercent, true }, "%.1f%%") + " · " +
+			peak("swap out", func(rate resourceRate) (float64, bool) { return rate.SwapOut / (1 << 20), true }, "%.2fM/s")
+		if rate.CompressorValid {
+			peaks += " · compressed " + formatProcessRSS(rate.Compressor)
+		}
+		return []string{head, peaks,
 			"  top " + topPanelProcesses(row, topViewMemory, func(process topProcess) string { return formatProcessRSS(process.memory()) })}
 	case topPanelDisk:
 		head := fmt.Sprintf("disk %s · read %s/s write %s/s", at, formatRate(rate.DiskRead), formatRate(rate.DiskWrite))

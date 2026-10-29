@@ -57,6 +57,13 @@ type resourceSnapshot struct {
 	// SwapOutBytes는 부팅 뒤 memory가 모자라 kernel이 swap으로 내보낸 누적 byte다.
 	SwapOutBytes uint64
 	SwapMissing  bool
+	// SwapUsed와 SwapTotal은 지금 쓰는 swap과 swap 전체 크기다. 누적값이 아니라 현재 값이고, 읽지 못했으면 SwapUsageValid가 false다.
+	// kernel의 압박 단계가 normal이어도 swap이 거의 찰 수 있어 swap_out rate와 따로 본다.
+	SwapUsed, SwapTotal uint64
+	SwapUsageValid      bool
+	// Compressor는 macOS compressor가 압축한 page를 담는 데 쓰는 물리 memory다. Linux에는 같은 값이 없다.
+	Compressor      uint64
+	CompressorValid bool
 	// DiskQueueMS는 진행 중인 I/O 수에 시간을 곱해 쌓은 값이다. 구간 시간으로 나누면 평균 큐 길이다. busy와 같은 diskstats에서 읽는다.
 	DiskQueueMS uint64
 	// CPUSteal은 hypervisor가 다른 guest에 CPU를 내준 시간이다. macOS는 이 값을 주지 않는다.
@@ -919,6 +926,8 @@ type resourceRate struct {
 	CPUSteal, ProcsBlocked          float64
 	MemoryPercent, Load1            float64
 	SwapOut                         float64
+	SwapUsed, SwapTotal, Compressor uint64
+	SwapUsageValid, CompressorValid bool
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
@@ -1000,6 +1009,8 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	}
 	rate.ProcsBlocked, rate.ProcsBlockedSource = float64(current.ProcsBlocked), current.ProcsBlockedSource
 	rate.MemoryPressure = current.MemoryPressure
+	rate.SwapUsed, rate.SwapTotal, rate.SwapUsageValid = current.SwapUsed, current.SwapTotal, current.SwapUsageValid
+	rate.Compressor, rate.CompressorValid = current.Compressor, current.CompressorValid
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
@@ -1035,6 +1046,16 @@ func parseLinuxSwapOutPages(input string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// linuxSwapUsage는 /proc/meminfo의 SwapTotal과 SwapFree로 지금 쓰는 swap을 구한다. swap이 없는 host는 둘 다 0이고 유효하다.
+func linuxSwapUsage(memory map[string]uint64) (total, used uint64, ok bool) {
+	total, hasTotal := memory["SwapTotal"]
+	free, hasFree := memory["SwapFree"]
+	if !hasTotal || !hasFree || free > total {
+		return 0, 0, false
+	}
+	return total, total - free, true
 }
 
 // parsePressureAvg10은 /proc/pressure/*의 kind 행(some 또는 full)에서 최근 10초 stall 비율을 읽는다.

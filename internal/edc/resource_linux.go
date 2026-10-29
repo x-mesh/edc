@@ -152,6 +152,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	if memory, err := readMemInfo(); err == nil {
 		snapshot.MemoryTotal = memory["MemTotal"]
 		snapshot.MemoryUsed = snapshot.MemoryTotal - memory["MemAvailable"]
+		snapshot.SwapTotal, snapshot.SwapUsed, snapshot.SwapUsageValid = linuxSwapUsage(memory)
 	}
 	if vmstat, err := os.ReadFile("/proc/vmstat"); err == nil {
 		pages, ok := parseLinuxSwapOutPages(string(vmstat))

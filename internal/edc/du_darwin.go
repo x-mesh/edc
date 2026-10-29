@@ -217,8 +217,10 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 		var err error
 		parent, cached := parents[dir.node.parent]
 		flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		walker.scanning.Add(1)
+		duBeforeRead(dir.path)
 		if cached {
-			fd, err = walker.open(func() (int, error) { return unix.Openat(parent.fd, dir.node.name, flags, 0) })
+			fd, err = unix.Openat(parent.fd, dir.node.name, flags, 0)
 			parent.remaining--
 			if parent.remaining == 0 {
 				_ = unix.Close(parent.fd)
@@ -228,22 +230,16 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 				parents[dir.node.parent] = parent
 			}
 		} else {
-			fd, err = walker.open(func() (int, error) { return duOpen(dir.path, flags, 0) })
+			fd, err = unix.Open(dir.path, flags, 0)
 		}
 		walker.advance()
-		if !walker.enter() {
-			if err == nil {
-				_ = unix.Close(fd)
-			}
-			return
-		}
 		var children []duDir
 		if err != nil {
-			dir.node.unreadable = walker.unreadableDir(dir.path, err)
+			walker.apply(func() { dir.node.unreadable = walker.unreadableDir(dir.path, err) })
 		} else {
 			children = walker.scanDarwinFD(dir, buffer, fd)
 		}
-		walker.tree.RUnlock()
+		walker.scanning.Add(-1)
 		if err != nil {
 			continue
 		}
@@ -269,19 +265,13 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 }
 
 func (walker *duWalker) scan(dir duDir, buffer []byte) []duDir {
-	fd, err := walker.open(func() (int, error) {
-		return duOpen(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	})
+	walker.scanning.Add(1)
+	defer walker.scanning.Add(-1)
+	duBeforeRead(dir.path)
+	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	walker.advance()
-	if !walker.enter() {
-		if err == nil {
-			_ = unix.Close(fd)
-		}
-		return nil
-	}
-	defer walker.tree.RUnlock()
 	if err != nil {
-		dir.node.unreadable = walker.unreadableDir(dir.path, err)
+		walker.apply(func() { dir.node.unreadable = walker.unreadableDir(dir.path, err) })
 		return nil
 	}
 	defer unix.Close(fd)
@@ -291,94 +281,108 @@ func (walker *duWalker) scan(dir duDir, buffer []byte) []duDir {
 func (walker *duWalker) scanDarwinFD(dir duDir, buffer []byte, fd int) []duDir {
 	walker.directories.Add(1)
 	var subdirs []duDir
+	var entries []duEntry
 	for {
 		if walker.ctx.Err() != nil {
 			walker.stopped.Store(true)
 			break
 		}
+		duBeforeRead(dir.path)
 		n, err := duDarwinRead(fd, buffer)
 		walker.advance()
 		if err != nil {
-			if !dir.node.unreadable {
-				dir.node.unreadable = walker.unreadableDir(dir.path, err)
-			}
+			walker.apply(func() { walker.markUnreadable(dir, err) })
 			break
 		}
 		if n == 0 {
 			break
 		}
-		remaining := buffer
-		for range n {
-			if len(remaining) < 4 {
+		var batch duDarwinBatch
+		entries, batch = walker.readDarwinBatch(dir, buffer, n, fd, entries[:0])
+		applied := walker.apply(func() {
+			subdirs = walker.addEntries(dir, entries, subdirs)
+			if batch.broken {
 				dir.node.unreadable = walker.unreadableDir(dir.path, unix.EIO)
-				return subdirs
+			} else if batch.failed != nil {
+				walker.markUnreadable(dir, batch.failed)
 			}
-			length := int(binary.LittleEndian.Uint32(remaining))
-			if length < duDarwinRecordSize || length > len(remaining) {
-				dir.node.unreadable = walker.unreadableDir(dir.path, unix.EIO)
-				return subdirs
-			}
-			entry, err := duDarwinParse(remaining[:length])
-			remaining = remaining[length:]
-			if err != nil {
-				if !dir.node.unreadable {
-					dir.node.unreadable = walker.unreadableDir(dir.path, err)
-				}
-				continue
-			}
-			if entry.stat {
-				// bulk 조회는 firmlink 원본과 일부 파일의 불완전한 속성을 준다. fd 기준 stat으로 대상 값을 읽는다.
-				var stat unix.Stat_t
-				err := unix.Fstatat(fd, string(entry.name), &stat, unix.AT_SYMLINK_NOFOLLOW)
-				walker.advance()
-				if err != nil {
-					if !dir.node.unreadable {
-						dir.node.unreadable = walker.unreadableDir(dir.path, err)
-					}
-					continue
-				}
-				entry.dev, entry.ino, entry.bytes, entry.links = uint64(stat.Dev), stat.Ino, uint64(stat.Blocks)*512, uint32(stat.Nlink)
-				entry.dir = stat.Mode&unix.S_IFMT == unix.S_IFDIR
-			}
-			if entry.dir {
-				name := string(entry.name)
-				path := duJoin(dir.path, name)
-				if walker.boundary(path, entry.dev) {
-					continue
-				}
-				child := &duNode{name: name, parent: dir.node, dir: true, bytes: entry.bytes, own: entry.bytes, entries: 1}
-				dir.node.children = append(dir.node.children, child)
-				subdirs = append(subdirs, duDir{node: child, path: path})
-			} else {
-				if entry.links > 1 && walker.counted(entry.dev, entry.ino, dir.node) {
-					continue
-				}
-				dir.node.bytes += entry.bytes
-				dir.node.entries++
-				if entry.bytes > walker.files.floor.Load() {
-					walker.files.offer(dir.node, string(entry.name), entry.bytes)
-				}
-			}
+		})
+		if !applied || batch.broken {
+			break
 		}
 	}
 	return subdirs
 }
 
-func (walker *duWalker) boundary(path string, _ uint64) bool {
+// duDarwinBatch는 bulk 조회 한 번의 오류다. broken이면 남은 기록을 읽을 수 없고, failed는 항목 하나를 읽지 못한 첫 오류다.
+type duDarwinBatch struct {
+	broken bool
+	failed error
+}
+
+// readDarwinBatch는 bulk 조회 한 번에 받은 n개 기록을 entries에 모은다. 트리는 고치지 않는다.
+func (walker *duWalker) readDarwinBatch(dir duDir, buffer []byte, n, fd int, entries []duEntry) ([]duEntry, duDarwinBatch) {
+	var batch duDarwinBatch
+	remaining := buffer
+	for range n {
+		if len(remaining) < 4 {
+			batch.broken = true
+			return entries, batch
+		}
+		length := int(binary.LittleEndian.Uint32(remaining))
+		if length < duDarwinRecordSize || length > len(remaining) {
+			batch.broken = true
+			return entries, batch
+		}
+		entry, err := duDarwinParse(remaining[:length])
+		remaining = remaining[length:]
+		if err != nil {
+			if batch.failed == nil {
+				batch.failed = err
+			}
+			continue
+		}
+		if entry.stat {
+			// bulk 조회는 firmlink 원본과 일부 파일의 불완전한 속성을 준다. fd 기준 stat으로 대상 값을 읽는다.
+			var stat unix.Stat_t
+			err := unix.Fstatat(fd, string(entry.name), &stat, unix.AT_SYMLINK_NOFOLLOW)
+			walker.advance()
+			if err != nil {
+				if batch.failed == nil {
+					batch.failed = err
+				}
+				continue
+			}
+			entry.dev, entry.ino, entry.bytes, entry.links = uint64(stat.Dev), stat.Ino, uint64(stat.Blocks)*512, uint32(stat.Nlink)
+			entry.dir = stat.Mode&unix.S_IFMT == unix.S_IFDIR
+		}
+		item := duEntry{dev: entry.dev, ino: entry.ino, bytes: entry.bytes, links: uint64(entry.links), dir: entry.dir}
+		// name은 다음 bulk 조회가 덮어쓰는 buffer를 가리킨다. 쓰는 항목만 복사해 파일마다 할당하지 않는다.
+		switch {
+		case entry.dir:
+			item.name = string(entry.name)
+			item.skip = walker.mountSkip(duJoin(dir.path, item.name))
+		case entry.bytes > walker.files.floor.Load():
+			item.name = string(entry.name)
+		}
+		entries = append(entries, item)
+	}
+	return entries, batch
+}
+
+// mountSkip은 path가 건너뛸 마운트 지점이면 그 기록을 돌려준다. statfs가 막힐 수 있어 apply 밖에서 부른다.
+func (walker *duWalker) mountSkip(path string) *duMount {
 	if walker.options.crossMounts {
-		return false
+		return nil
 	}
 	mount, listed := walker.mountPoints[path]
 	if !listed {
-		return false
+		return nil
 	}
 	skipped := duMount{Path: path, FSType: mount.FSType, Shared: mount.FSType == "apfs"}
 	if !skipped.Shared {
 		usage, ok := walker.sources.statfs(path)
 		skipped.UsedBytes, skipped.Shared = usage.Used, !ok
 	}
-	walker.mu.Lock()
-	walker.skipped = append(walker.skipped, skipped)
-	walker.mu.Unlock()
-	return true
+	return &skipped
 }

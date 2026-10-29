@@ -139,14 +139,14 @@ func TestDuDarwinCancellationAndUnreadableDirectory(t *testing.T) {
 
 func TestDuDarwinMountBoundaryAllowsFirmlinkDevice(t *testing.T) {
 	walker := duWalker{rootDev: 1, mountPoints: map[string]diskMount{"/data/mounted": {FSType: "apfs"}}}
-	if walker.boundary("/data/firmlink", 2) {
+	if walker.mountSkip("/data/firmlink") != nil {
 		t.Fatal("device change alone must not skip a firmlink")
 	}
-	if !walker.boundary("/data/mounted", 2) || len(walker.skipped) != 1 || !walker.skipped[0].Shared {
-		t.Fatalf("mount=%+v", walker.skipped)
+	if skip := walker.mountSkip("/data/mounted"); skip == nil || !skip.Shared {
+		t.Fatalf("mount=%+v", skip)
 	}
 	walker.options.crossMounts = true
-	if walker.boundary("/data/mounted", 2) {
+	if walker.mountSkip("/data/mounted") != nil {
 		t.Fatal("cross mounts must include mounted directories")
 	}
 }

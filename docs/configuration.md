@@ -9,7 +9,7 @@
 Install the latest release with the script. It reads the operating system and the architecture, checks the SHA-256, and installs the binary.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | sh
 ```
 
 The script installs `edc` in `/usr/local/bin` on Linux and in `~/.local/bin` on macOS.
@@ -21,8 +21,8 @@ If a non-root user cannot write there, the script uses `sudo`. If root cannot wr
 Set `BINDIR` to use another directory. Set `EDC_VERSION` to install an earlier version.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR="$HOME/.local/bin" sh
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VERSION=0.1.0 sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | BINDIR="$HOME/.local/bin" sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | EDC_VERSION=0.1.0 sh
 ```
 
 Earlier versions of the script installed `edc` in `~/.local/bin` also on Linux. Ubuntu puts `~/.local/bin` before `/usr/local/bin` in `PATH`, so the shell runs that old copy. If the old copy is `edc`, the script removes it. The script checks the home of the user who runs it and, with `sudo`, the home of the user who ran `sudo`. Remove copies in other homes by hand, for example with `sudo rm /home/<user>/.local/bin/edc`.
@@ -30,7 +30,7 @@ Earlier versions of the script installed `edc` in `~/.local/bin` also on Linux. 
 If the install directory is not on `PATH`, the script finds your shell and prints the commands that add the directory. Set `EDC_MODIFY_PATH=1` to let the script add the line to the startup file of your shell, for example `~/.zshrc` or `~/.bashrc`. The script adds the line only once. The current shell does not get the new `PATH`. Open a new shell, or run the command that the script prints.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_MODIFY_PATH=1 sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | EDC_MODIFY_PATH=1 sh
 ```
 
 A release holds binaries for Linux and macOS on `amd64` and `arm64`.

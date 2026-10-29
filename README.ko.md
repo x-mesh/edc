@@ -36,7 +36,7 @@
 Linux와 macOS의 `amd64`·`arm64` 실행 파일을 제공합니다. 설치 script가 환경에 맞는 파일을 선택하고 SHA-256 checksum을 검증합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | sh
 ```
 
 [설치 경로·PATH 설정·업데이트·소스 빌드 자세히 보기 →](docs/configuration.ko.md#설치)

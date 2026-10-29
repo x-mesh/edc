@@ -53,4 +53,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "edc $GITHUB_REF_NAME" \
             --generate-notes \
-            dist/*.tar.gz dist/checksums.txt
+            dist/*.tar.gz dist/checksums.txt dist/install.sh

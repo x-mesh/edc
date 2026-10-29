@@ -253,7 +253,7 @@ command:
       - "Code search reads current files without a log index and prints line numbers."
       - "A directory is searched recursively. Binary files are skipped, and .gz files are read in order."
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
-      - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log."
+      - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log. edc checks the order at 16 points only, so lines in an out-of-order stretch between those points can be skipped. Leave out --ordered for a log that mixes sources or has clock jumps."
       - "--last reads the file from the end and stops after N matches."
       - "With --level, --status, --since, or --until, the pattern can be left out when the first argument is an existing file or directory."
       - "Lines of a stack trace carry the level and time of their ERROR line, so --level error returns the trace too."

@@ -21,7 +21,9 @@ type resourceSnapshot struct {
 	CPUUser       uint64
 	CPUSystem     uint64
 	CPUIOWait     uint64
-	CPUIdle       uint64
+	// CPUIOWaitValid는 iowait을 읽었는지다. macOS kernel은 iowait을 세지 않는다.
+	CPUIOWaitValid bool
+	CPUIdle        uint64
 	CPUTotal      uint64
 	NetInterfaces []netInterfaceCounters
 	// NetInterfacesAll은 --interface로 고르기 전의 interface다. 대시보드의 i 상자가 고르지 않은 interface의 traffic도
@@ -921,7 +923,7 @@ type resourceRate struct {
 	SwapOut                         float64
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
-	CPUStealValid                   bool
+	CPUStealValid, CPUIOWaitValid   bool
 	ProcsBlockedSource              topBlockedSource
 	MemoryPressure                  topMemoryPressure
 	CoreCPU                         []float64
@@ -994,6 +996,7 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		rate.DiskBusy = float64(delta(current.DiskBusyMS, previous.DiskBusyMS)) / seconds / 10
 		rate.DiskQueue = float64(delta(current.DiskQueueMS, previous.DiskQueueMS)) / seconds / 1000
 	}
+	rate.CPUIOWaitValid = current.CPUIOWaitValid && previous.CPUIOWaitValid
 	rate.CPUStealValid = current.CPUStealValid && previous.CPUStealValid
 	if rate.CPUStealValid {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)

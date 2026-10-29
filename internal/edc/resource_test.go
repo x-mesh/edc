@@ -1021,6 +1021,30 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 	}
 }
 
+// 재지 못한 지표의 0은 '쟀더니 없었다'로 읽혀 macOS의 I/O 압박을 가린다. 키는 남기고 값만 null로 쓴다.
+func TestTopSampleWritesNullForUnmeasuredMetrics(t *testing.T) {
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cpu_iowait_pct", "disk_iops", "disk_await_ms", "disk_busy_pct", "network_errors_per_s", "network_drops_per_s",
+		"psi_cpu_some_avg10_pct", "psi_memory_some_avg10_pct", "psi_io_some_avg10_pct", "psi_memory_full_avg10_pct", "psi_io_full_avg10_pct"} {
+		if !strings.Contains(string(data), `"`+name+`":null`) {
+			t.Errorf("%s must be null when unmeasured: %s", name, data)
+		}
+	}
+	if !strings.Contains(string(data), `"cpu_iowait_supported":false`) {
+		t.Errorf("cpu_iowait_supported must be false: %s", data)
+	}
+	measured := resourceRate{CPUIOWaitValid: true, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true, PSIValid: true}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), measured))
+	for _, field := range []string{`"cpu_iowait_pct":0`, `"cpu_iowait_supported":true`, `"disk_busy_pct":0`, `"disk_await_ms":0`, `"network_drops_per_s":0`, `"psi_io_full_avg10_pct":0`} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("a measured 0 must stay 0, want %s: %s", field, data)
+		}
+	}
+}
+
 func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: topMemoryPressureWarn}))
 	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) || !strings.Contains(string(data), `"memory_pressure_supported":true`) {

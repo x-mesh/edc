@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -284,11 +285,19 @@ func snapshotSections(since time.Duration, duPaths []string, timeout time.Durati
 		}, ids: func() []string { return snapshotProbeIDs(evaluateAudit(auditFacts{})) }},
 		{name: "events", run: func(ctx context.Context) []Result {
 			sources, ok := hostEventsSources()
+			if !ok && runtime.GOOS == "darwin" {
+				return evaluateMacEvents(collectMacEventsFacts(eventsReportDirs, time.Now(), since))
+			}
 			if !ok {
 				return []Result{unsupported("events", T("events.skip.linux_only"))}
 			}
 			return evaluateEvents(collectEventsFacts(ctx, sources, since))
-		}, ids: func() []string { return snapshotProbeIDs(evaluateEvents(eventsFacts{})) }},
+		}, ids: func() []string {
+			if runtime.GOOS == "darwin" {
+				return snapshotProbeIDs(evaluateMacEvents(macEventsFacts{}))
+			}
+			return snapshotProbeIDs(evaluateEvents(eventsFacts{}))
+		}},
 		{name: "changes", run: func(ctx context.Context) []Result {
 			sources, ok := hostChangesSources()
 			if !ok {

@@ -101,14 +101,14 @@ command:
       - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
       - "A routine adds unit rules, limits, and shell commands from config.toml. A command passes when it exits with 0."
   events:
-    summary: "Kernel and systemd failure signals in time order (Linux)"
+    summary: "Kernel, systemd, and macOS jetsam and panic signals in time order"
     option:
       since: "how far back to read, such as 30m or 48h"
     notes:
-      - "It reads the kernel log and the systemd journal only."
+      - "On Linux, it reads the kernel log and the systemd journal."
       - "Run it as root or as a member of adm or systemd-journal."
       - "Without that access, the checks show skip, not pass."
-      - "It works on Linux only."
+      - "On macOS, it reads jetsam and panic reports in /Library/Logs/DiagnosticReports."
   net:
     summary: "Interfaces, route, ping, and trace"
     sub:

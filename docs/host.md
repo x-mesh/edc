@@ -374,6 +374,18 @@ edc reads at most 20000 journal entries, 32 MiB of journal output, and 100000 `/
 `edc events` does not show the full log. It does not follow new entries, and it does not read application logs.
 
 
+### macOS
+
+On macOS, `edc events` reads the jetsam and panic reports in `/Library/Logs/DiagnosticReports` and its `Retired` folder. ReportCrash writes these reports. edc selects a report by the `bug_type` in its first line, not by its file name.
+
+| Result | Fail | Warn |
+|---|---|---|
+| `events.window` | | |
+| `events.panic` | the kernel panicked | |
+| `events.jetsam` | | jetsam killed a process. The evidence shows the reason, the resident memory, and the largest process |
+
+A jetsam kill with the reason `per-process-limit` means that one process went above its own memory limit. That is frequent on macOS, so this result warns. An admin account can read the reports. If edc cannot read the folder, `events.window` shows `skip`. The unified log does not keep the kernel `memorystatus` lines, so edc does not read it.
+
 ## Current scope
 
 `top`, `info`, `doctor`, and the single network probes support Linux and macOS.

@@ -874,3 +874,86 @@ func TestHistoryDBArgumentUsesScopedNavigatorAndListFallback(t *testing.T) {
 		t.Fatalf("list=%q implicit=%q", direct.String(), implicit.String())
 	}
 }
+
+// --process 없이 --json만 줘도 원인 process를 알 수 있게 상위 process를 sample마다 붙인다.
+func TestTopJSONAddsTopProcessesWithoutFilter(t *testing.T) {
+	read := func(t *testing.T, args ...string) []map[string]json.RawMessage {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "samples.jsonl")
+		if code := runTop(append([]string{"--interval", "200ms", "--count", "2", "--json", path}, args...), "test"); code != 0 {
+			t.Fatalf("top %v returned %d", args, code)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var samples []map[string]json.RawMessage
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var sample map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(line), &sample); err != nil {
+				t.Fatal(err)
+			}
+			samples = append(samples, sample)
+		}
+		return samples
+	}
+	processes := func(t *testing.T, sample map[string]json.RawMessage) []topProcessSample {
+		t.Helper()
+		var list []topProcessSample
+		if err := json.Unmarshal(sample["processes"], &list); err != nil {
+			t.Fatalf("processes = %s: %v", sample["processes"], err)
+		}
+		return list
+	}
+	for _, sample := range read(t) {
+		list := processes(t, sample)
+		if len(list) == 0 || len(list) > topJSONProcesses {
+			t.Fatalf("default list has %d processes", len(list))
+		}
+		for index := 1; index < len(list); index++ {
+			if list[index].CPU > list[index-1].CPU {
+				t.Fatalf("default list is not CPU ordered: %+v", list)
+			}
+		}
+		if sample["process_total"] != nil {
+			t.Fatal("an unfiltered list must not claim a filtered total")
+		}
+	}
+	memory := func(process topProcessSample) uint64 {
+		if process.MemoryBytes != nil {
+			return *process.MemoryBytes
+		}
+		return process.RSSBytes
+	}
+	for _, sample := range read(t, "--top", "3", "--sort", "mem") {
+		list := processes(t, sample)
+		if len(list) == 0 || len(list) > 3 {
+			t.Fatalf("--top 3 list has %d processes", len(list))
+		}
+		for index := 1; index < len(list); index++ {
+			if memory(list[index]) > memory(list[index-1]) {
+				t.Fatalf("--sort mem list is not memory ordered: %+v", list)
+			}
+		}
+	}
+	for _, sample := range read(t, "--top", "0") {
+		if sample["processes"] != nil {
+			t.Fatalf("--top 0 must leave processes out: %s", sample["processes"])
+		}
+	}
+}
+
+func TestTopRejectsTopOutsideUnfilteredJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "samples.jsonl")
+	defer processSampler.setFilter(topProcessFilter{})
+	for _, args := range [][]string{
+		{"--count", "1", "--top", "3"},
+		{"--count", "1", "--json", path, "--process", strconv.Itoa(os.Getpid()), "--top", "3"},
+		{"--count", "1", "--json", path, "--sort", "io"},
+		{"--count", "1", "--json", path, "--top", "-1"},
+	} {
+		if code := runTop(args, "test"); code != 2 {
+			t.Errorf("top %v returned %d, want 2", args, code)
+		}
+	}
+}

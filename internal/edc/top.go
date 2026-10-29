@@ -26,6 +26,8 @@ func runTop(args []string, version string) (code int) {
 	count := set.Int("count", configuredInt(config.Count, 0), T("command.top.option.count"))
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))
+	topValue := set.Int("top", topJSONProcesses, T("command.top.option.top"))
+	sortValue := set.String("sort", "cpu", T("command.top.option.sort"))
 	fullCommand := set.Bool("full", false, T("command.top.option.full"))
 	splitValue := set.String("split", "", T("command.top.option.split"))
 	viewValue := set.String("view", configuredString(config.View, ""), T("command.top.option.view"))
@@ -72,9 +74,11 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return 2
 	}
-	explicitSplit, explicitView, explicitPanels, explicitColumns := false, false, false, false
+	explicitSplit, explicitView, explicitPanels, explicitColumns, explicitTop := false, false, false, false, false
 	set.Visit(func(option *flag.Flag) {
 		switch option.Name {
+		case "top", "sort":
+			explicitTop = true
 		case "split":
 			explicitSplit = true
 		case "view":
@@ -198,6 +202,28 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("observe.top.full_needs_view"))
 		return 2
 	}
+	// 상위 N개는 JSON에만 붙는다. 표에는 process 열이 없고, --process는 고른 process를 모두 내므로 겹친다.
+	if explicitTop && (!jsonOutput || filter.active()) {
+		fmt.Fprintln(os.Stderr, T("observe.top.top_needs_json"))
+		return 2
+	}
+	if *topValue < 0 {
+		fmt.Fprintln(os.Stderr, T("observe.top.top_minimum"))
+		return 2
+	}
+	if *sortValue != "cpu" && *sortValue != "mem" {
+		fmt.Fprintln(os.Stderr, T("observe.top.sort_invalid"))
+		return 2
+	}
+	topProcesses, topRank := 0, topViewCPU
+	if *sortValue == "mem" {
+		topRank = topViewMemory
+	}
+	if jsonOutput && !filter.active() {
+		topProcesses = *topValue
+		processSampler.setCandidateLimit(topProcesses)
+		defer processSampler.setCandidateLimit(0)
+	}
 	// 표본을 읽기 전에 정해야 수집이 comm 대신 전체 명령줄을 담는다. 앞선 실행의 값이 남지 않게 매번 쓴다.
 	topFullCommand = *fullCommand
 	if *ebpf {
@@ -247,7 +273,8 @@ func runTop(args []string, version string) (code int) {
 	defer cancel()
 	return streamTop(ctx, writer, topOptions{
 		interval: *interval, count: *count, json: jsonOutput,
-		process:  filter.active(),
+		process: filter.active(),
+		top:     topProcesses, rank: topRank,
 		recorder: recorder, filter: filter.String(), interfaces: interfaces,
 		header: !*noHeader && !jsonOutput,
 		color:  !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
@@ -308,6 +335,10 @@ type topOptions struct {
 	color    bool
 	json     bool // sample당 한 줄 JSON을 쓰고 표와 중지 메시지는 생략한다
 	process  bool // sample에 필터에 맞는 process 목록을 더한다
+	// top은 필터가 없을 때 JSON sample에 더할 상위 process 수다. 0이면 더하지 않는다.
+	top int
+	// rank는 top의 순위 기준이다. 대시보드의 CPU와 memory 순위와 같다.
+	rank     topView
 	recorder *topRecorder
 	filter   string
 	// interfaces는 net 값에 더할 interface다. JSON에는 고른 interface마다의 값도 더한다.
@@ -408,6 +439,10 @@ type topProcessSample struct {
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
 	EBPF *topProbeSample `json:"ebpf,omitempty"`
 }
+
+// topJSONProcesses는 --process 없이 --json이 sample마다 더하는 상위 process 수의 기본값이다.
+// 스크립트와 agent가 대시보드 없이도 원인 process를 알 수 있게 한다.
+const topJSONProcesses = 10
 
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
@@ -570,7 +605,7 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 			}
 			current = options.interfaces.apply(current, topInterfacePhysical)
 			rate := calculateRate(previous, current)
-			if options.process {
+			if options.process || options.top > 0 {
 				current.Processes, current.ProcessTotal, current.ProcessesValid, current.ProcessesAt = processSampler.refreshNowAt()
 			} else if options.recorder != nil {
 				current.Processes, current.ProcessTotal, current.ProcessesValid, current.ProcessesAt = processSampler.latestWithTotalAt()
@@ -590,6 +625,9 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 						sample.Processes = newTopProcessSamples(current.Processes)
 						sample.ProcessTotal = newTopProcessTotalSample(current.ProcessTotal)
 					}
+				} else if options.top > 0 && current.ProcessesValid {
+					ranked := topRankedProcesses(current.Processes, options.rank)
+					sample.Processes = newTopProcessSamples(ranked[:min(options.top, len(ranked))])
 				}
 				if err := encoder.Encode(sample); err != nil {
 					fmt.Fprintln(os.Stderr, err)

@@ -182,6 +182,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	} else {
 		snapshot.DiskMissing = true
 	}
+	snapshot.ThrottleMS, snapshot.ThrottleValid = readLinuxPackageThrottle()
+	snapshot.TempC, snapshot.TempValid = readLinuxMaxValue("/sys/class/thermal/thermal_zone*/temp", 1000)
+	snapshot.GPUBusy, snapshot.GPUValid = readLinuxMaxValue("/sys/class/drm/card*/device/gpu_busy_percent", 1)
 	return snapshot, nil
 }
 
@@ -421,4 +424,46 @@ func parseKeyValues(input string) map[string]string {
 		}
 	}
 	return result
+}
+
+// readLinuxPackageThrottle은 x86 CPU package가 열 때문에 속도를 낮춘 누적 ms다. 같은 package의 CPU는 모두 같은 값을 보이므로
+// physical_package_id마다 한 번만 더한다. thermal_throttle이 없는 CPU(ARM, VM)는 값이 없다.
+func readLinuxPackageThrottle() (uint64, bool) {
+	paths, _ := filepath.Glob("/sys/devices/system/cpu/cpu[0-9]*/thermal_throttle/package_throttle_total_time_ms")
+	seen := map[string]bool{}
+	var total uint64
+	for _, path := range paths {
+		cpu := filepath.Dir(filepath.Dir(path))
+		id, err := os.ReadFile(filepath.Join(cpu, "topology", "physical_package_id"))
+		if err != nil || seen[strings.TrimSpace(string(id))] {
+			continue
+		}
+		value, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		seen[strings.TrimSpace(string(id))] = true
+		total += parseUint(strings.TrimSpace(string(value)))
+	}
+	return total, len(seen) > 0
+}
+
+// readLinuxMaxValue는 glob에 맞는 파일 중 가장 큰 정수 값을 scale로 나눈다. thermal zone은 milli-degree다.
+func readLinuxMaxValue(pattern string, scale float64) (float64, bool) {
+	paths, _ := filepath.Glob(pattern)
+	best, ok := 0.0, false
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		value, err := strconv.ParseFloat(strings.TrimSpace(string(data)), 64)
+		if err != nil {
+			continue
+		}
+		if !ok || value/scale > best {
+			best, ok = value/scale, true
+		}
+	}
+	return best, ok
 }

@@ -234,7 +234,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 edc top --count 5 --json -
 ```
 
-각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy, PSI `some avg10`, memory·I/O PSI `full avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `memory_pressure_supported`는 host가 memory 압박 단계를 알려 줬는지를 표시하고, 그때 macOS는 `memory_pressure`(`normal`, `warn`, `critical`)를 추가합니다. `--json`은 표와 헤더를 없앱니다.
+각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy, PSI `some avg10`, memory·I/O PSI `full avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `memory_pressure_supported`는 host가 memory 압박 단계를 알려 줬는지를 표시하고, 그때 macOS는 `memory_pressure`(`normal`, `warn`, `critical`)를 추가합니다. macOS는 열 압박 단계 `thermal`(`nominal`, `moderate`, `heavy`, `trapping`, `sleeping`)을, Linux는 CPU package가 열 때문에 속도를 낮춘 시간 비율 `cpu_throttle_pct`와 가장 높은 thermal zone 온도 `temp_c`를 추가합니다. `gpu_busy_pct`는 가장 바쁜 GPU의 사용률이며 macOS는 IOAccelerator에서, Linux는 amdgpu의 `gpu_busy_percent`에서 읽습니다. host가 주지 않는 값은 생략합니다. cpu 패널도 같은 값을 보이며, `thermal`이 `heavy` 이상이면 경고합니다. `--json`은 표와 헤더를 없앱니다.
 
 ## Top process 필터
 

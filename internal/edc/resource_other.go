@@ -137,8 +137,14 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		networkOK, diskOK bool
 		pressure          topMemoryPressure
 		pressureErr       error
+		thermal           int
+		thermalErr        error
+		gpu               float64
+		gpuOK             bool
 	)
-	group.Add(5)
+	group.Add(7)
+	go func() { defer group.Done(); thermal, thermalErr = readDarwinThermal() }()
+	go func() { defer group.Done(); gpu, gpuOK = readDarwinGPUBusy() }()
 	go func() { defer group.Done(); network, networkOK = readDarwinNetwork() }()
 	go func() { defer group.Done(); disk, diskOK = readDarwinDisk() }()
 	go func() { defer group.Done(); memory = readDarwinMemory() }()
@@ -156,7 +162,20 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	if pressureErr == nil {
 		snapshot.MemoryPressure = pressure
 	}
+	if thermalErr == nil && thermal >= 0 {
+		snapshot.Thermal = topThermal(min(thermal, int(topThermalSleeping)-1) + 1)
+	}
+	snapshot.GPUBusy, snapshot.GPUValid = gpu, gpuOK
 	return snapshot, nil
+}
+
+// readDarwinGPUBusy는 IOAccelerator의 PerformanceStatistics에 있는 Device Utilization %다. 권한 없이 읽히고 20ms 안에 끝난다.
+func readDarwinGPUBusy() (float64, bool) {
+	output, _, err := runDarwinCheckTool(context.Background(), "/usr/sbin/ioreg", "-r", "-c", "IOAccelerator", "-d", "1")
+	if err != nil {
+		return 0, false
+	}
+	return parseDarwinGPUBusy(output)
 }
 
 // addDarwinCoreTicks는 core별 tick을 /proc/stat과 같은 누적 tick으로 합친다. nice는 Linux처럼 user에 넣는다.

@@ -408,6 +408,9 @@ func (model topModel) resourcePanelLines(panel topPanel) []string {
 		if rate.ProcsBlockedSource.known() {
 			head += fmt.Sprintf(" · blocked %.0f", rate.ProcsBlocked)
 		}
+		if heat := topHeatText(rate); heat != "" {
+			head += " · " + heat
+		}
 		return []string{head,
 			"  cores " + topCoreBar(rate.CoreCPU) + " · " + peak("peak 60s usr+sys", func(rate resourceRate) (float64, bool) { return rate.CPUUser + rate.CPUSystem, true }, "%.1f%%"),
 			"  top " + topPanelProcesses(row, topViewCPU, func(process topProcess) string { return fmt.Sprintf("%.0f%%", process.CPU) })}
@@ -508,4 +511,22 @@ func topPanelDiskProcesses(row topDashboardRow) string {
 		return "— no process I/O measured"
 	}
 	return "— no process I/O measured · " + status
+}
+
+// topHeatText는 cpu 패널 머리줄에 붙는 열과 GPU 상태다. 빌드가 느린 이유가 CPU 경쟁인지 열 제한인지 가르려고 cpu 옆에 둔다.
+func topHeatText(rate resourceRate) string {
+	var parts []string
+	if rate.Thermal.known() {
+		parts = append(parts, "thermal "+rate.Thermal.String())
+	}
+	if rate.ThrottleValid {
+		parts = append(parts, fmt.Sprintf("throttle %.0f%%", rate.ThrottlePercent))
+	}
+	if rate.TempValid {
+		parts = append(parts, fmt.Sprintf("%.0f°C", rate.TempC))
+	}
+	if rate.GPUValid {
+		parts = append(parts, fmt.Sprintf("gpu %.0f%%", rate.GPUBusy))
+	}
+	return strings.Join(parts, " ")
 }

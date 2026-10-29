@@ -2581,6 +2581,14 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.CPUUser+rate.CPUSystem >= limits.cpu.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("cpu %.0f%%", rate.CPUUser+rate.CPUSystem), (rate.CPUUser + rate.CPUSystem) / limits.cpu.danger, topViewCPU, "cpu"})
 	}
+	// heavy는 warn이라 1보다 작게, trapping부터는 위험이라 1로 둔다. sleeping도 1을 넘기지 않아 다른 위험 경고보다 앞서지 않는다.
+	if rate.Thermal.level() != topLevelNormal {
+		score := 0.75
+		if rate.Thermal.level() == topLevelDanger {
+			score = 1
+		}
+		all = append(all, topSignalItem{"thermal " + rate.Thermal.String(), score, topViewCPU, "thermal"})
+	}
 	if rate.DiskHealthValid && rate.DiskAwait >= limits.await.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("await %.0fms", rate.DiskAwait), rate.DiskAwait / limits.await.danger, topViewDisk, "await"})
 	}

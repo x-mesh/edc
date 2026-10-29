@@ -821,13 +821,15 @@ func checkContainers(facts checkFacts, policy checkPolicy) Result {
 		now = time.Now()
 	}
 	for _, item := range facts.Containers {
-		if (item.failed() || item.attention()) && checkMatches(policy.acceptContainers, item.Name) {
+		// always와 unless-stopped는 코드 0으로 끝나도 다시 띄우는 정책이다. 멈춰 있다면 Docker가 다시 띄우지 못했거나 사람이 멈춘 것이다.
+		down := item.failed() || (item.Status == "exited" && (item.RestartPolicy == "always" || item.RestartPolicy == "unless-stopped"))
+		if (down || item.attention()) && checkMatches(policy.acceptContainers, item.Name) {
 			issues.accepted = append(issues.accepted, item.Name)
 			continue
 		}
 		// restart policy가 있는 container는 돌고 있어야 한다. 없는 container는 사람이 멈췄을 수 있어 최근에 멈춘 것만 경고한다.
 		switch {
-		case item.failed() && item.RestartPolicy != "" && item.RestartPolicy != "no":
+		case down && item.RestartPolicy != "" && item.RestartPolicy != "no":
 			failed = append(failed, item.Name+" ("+item.State+")")
 		case item.failed() && !item.FinishedAt.IsZero() && now.Sub(item.FinishedAt) < checkRecentStop:
 			recent = append(recent, item.Name+" ("+item.State+")")

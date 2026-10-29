@@ -52,7 +52,7 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
 | `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
-| `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
+| `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤, 또는 `always`나 `unless-stopped` container가 코드 0으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
 | `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
 | `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
 

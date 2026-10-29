@@ -1001,7 +1001,7 @@ func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
 	recorder := topHistoryFixture(t, path)
 	previous := resourceSnapshot{TakenAt: time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)}
 	current := resourceSnapshot{TakenAt: previous.TakenAt.Add(time.Second)}
-	rate := resourceRate{SwapUsed: 9 << 30, SwapTotal: 10 << 30, SwapUsageValid: true, Compressor: 21 << 30, CompressorValid: true}
+	rate := resourceRate{SwapUsed: 9 << 30, SwapTotal: 10 << 30, SwapUsageValid: true, Compressor: 21 << 30, CompressorValid: true, TempC: 71.5, TempValid: true, GPUBusy: 48, GPUValid: true}
 	if err := recorder.Record(newHistoryTopSample(hostDetails{Hostname: "fixture", Cores: 8}, previous, current, rate, "")); err != nil {
 		t.Fatal(err)
 	}
@@ -1028,6 +1028,16 @@ func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
 	min := float64(8 << 30)
 	if rows := historyJSONRows(t, written, "top", historyOptions{metric: "swap_used_bytes", min: &min}); len(rows) != 1 {
 		t.Fatalf("filtered rows = %d", len(rows))
+	}
+	// 읽지 못한 스로틀 값은 0이 아니라 NULL이다.
+	var throttle sql.NullFloat64
+	var temp, gpu float64
+	if err := written.QueryRow("SELECT cpu_throttle_pct, temp_c, gpu_busy_pct FROM top_samples").Scan(&throttle, &temp, &gpu); err != nil || throttle.Valid || temp != 71.5 || gpu != 48 {
+		t.Fatalf("heat columns = %v %v %v, %v", throttle, temp, gpu, err)
+	}
+	busy := 40.0
+	if rows := historyJSONRows(t, written, "top", historyOptions{metric: "gpu_busy_pct", min: &busy}); len(rows) != 1 {
+		t.Fatalf("gpu filtered rows = %d", len(rows))
 	}
 }
 

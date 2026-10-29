@@ -409,6 +409,9 @@ type topProcessSampler struct {
 	enrich func([]topProcess)
 	// fillIO는 필터가 없을 때 process의 I/O rate만 채운다. enrich보다 싸서 후보마다 매번 돌려도 된다.
 	fillIO func([]topProcess)
+	// countFDs는 필터가 없을 때 후보의 열린 fd 수를 센다. 디스크 보기는 모든 process의 I/O를 읽으므로 fd는 후보를 고른
+	// 뒤에만 센다. enrich는 필터로 고른 process에 fd를 따로 채운다.
+	countFDs func([]topProcess)
 	// scanIO는 후보를 고르기 전에 모든 process의 I/O를 읽을지다. 디스크 보기에서만 켠다.
 	scanIO bool
 	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
@@ -436,7 +439,7 @@ func linuxProcessCommandLine(data []byte) string {
 	return strings.Join(args, " ")
 }
 
-var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller(), growth: newTopMemoryGrowthTracker()}
+var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller(), countFDs: newTopProcessFDCounter(), growth: newTopMemoryGrowthTracker()}
 
 // topProcessIOTracker는 /proc/<pid>/io를 두 번 읽은 차이로 process의 I/O rate를 구한다.
 // root가 아니면 다른 사용자의 process를 읽지 못해 그 process는 DiskValid가 false로 남는다.
@@ -467,11 +470,6 @@ func (tracker *topProcessIOTracker) fill(processes []topProcess, now time.Time) 
 		process.DiskWrite = float64(counters.write-before.io.write) / seconds
 	}
 	tracker.previous = current
-}
-
-func newTopProcessIOFiller() func([]topProcess) {
-	tracker := &topProcessIOTracker{}
-	return func(processes []topProcess) { tracker.fill(processes, time.Now()) }
 }
 
 // topProcessIOTotal은 process가 storage에 읽고 쓴 byte rate의 합이다. 읽지 못했으면 -1이다.
@@ -598,11 +596,17 @@ func (sampler *topProcessSampler) refresh() {
 		sampler.fillIO(processes)
 		total.Groups = groupTopProcesses(processes)
 		processes = topProcessCandidatesByIO(processes)
+		if sampler.countFDs != nil {
+			sampler.countFDs(processes)
+		}
 	} else {
 		total.Groups = groupTopProcesses(processes)
 		processes = topProcessCandidates(processes)
 		if sampler.fillIO != nil {
 			sampler.fillIO(processes)
+		}
+		if sampler.countFDs != nil {
+			sampler.countFDs(processes)
 		}
 	}
 	for index := range processes {

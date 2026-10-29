@@ -316,6 +316,17 @@ func TestTopProcessSamplesReportMemoryOnlyWhenMeasured(t *testing.T) {
 	}
 }
 
+func TestTopProcessSamplesOmitRSSWhenMissing(t *testing.T) {
+	samples := *newTopProcessSamples([]topProcess{{PID: 0, Memory: 42 << 20, MemoryValid: true, RSSMissing: true, Command: "kernel_task"}, {PID: 1, Command: "idle"}})
+	if samples[0].RSSBytes != nil || samples[1].RSSBytes == nil || *samples[1].RSSBytes != 0 {
+		t.Fatalf("rss_bytes = %v, %v", samples[0].RSSBytes, samples[1].RSSBytes)
+	}
+	data, err := json.Marshal(samples[0])
+	if err != nil || strings.Contains(string(data), "rss_bytes") {
+		t.Fatalf("missing RSS must be omitted: %s %v", data, err)
+	}
+}
+
 func TestTopProcessSamplerDropsStaleListOnFailure(t *testing.T) {
 	succeed := true
 	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {

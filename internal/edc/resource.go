@@ -138,6 +138,8 @@ type topProcess struct {
 	PID int
 	CPU float64
 	RSS uint64
+	// RSSMissing은 OS가 RSS를 주지 않아 RSS의 0이 측정값이 아니라는 뜻이다. macOS kernel_task가 그렇다.
+	RSSMissing bool
 	// Memory는 process가 책임지는 memory다. macOS는 phys_footprint, Linux는 RSS에 swap으로 나간 양을 더한 값이다.
 	// RSS는 압축되거나 swap으로 나간 page를 세지 않아 누수로 커진 process를 작게 보인다. 읽지 못하면 MemoryValid가 false다.
 	Memory      uint64

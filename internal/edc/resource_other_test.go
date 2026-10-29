@@ -4,11 +4,13 @@ package edc
 
 import (
 	"encoding/binary"
+	"math"
 	"net"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -91,6 +93,63 @@ func TestDarwinReaderAndEnricherReuseRusageSample(t *testing.T) {
 	if calls != readerCalls || !processes[0].DiskValid || processes[0].DiskRead != 100 || processes[0].DiskWrite != 50 {
 		t.Fatalf("calls %d, process %+v", calls, processes[0])
 	}
+}
+
+func TestDarwinReaderAddsKernelTaskWithCPUFromRusageDelta(t *testing.T) {
+	timebase, err := darwinMachTimebase()
+	if err != nil || darwinTranslated() {
+		t.Skip("kernel_task CPU needs the native Mach timebase")
+	}
+	previousReader, previousTaskInfo, previousNow := darwinProcessRusageReader, darwinProcessTaskInfoReader, darwinProcessNow
+	t.Cleanup(func() {
+		darwinProcessRusageReader, darwinProcessTaskInfoReader, darwinProcessNow = previousReader, previousTaskInfo, previousNow
+	})
+	var ticks darwinMachTicks
+	readAt := time.Unix(100, 0)
+	darwinProcessRusageReader = func(pid int) (darwinProcessRusage, error) {
+		if pid != 0 {
+			return darwinProcessRusage{}, syscall.EPERM
+		}
+		return darwinProcessRusage{UserTime: ticks, SystemTime: ticks, ResidentSize: 4 << 20, Footprint: 42 << 20}, nil
+	}
+	darwinProcessTaskInfoReader = func(pid int) (darwinProcessTaskInfo, error) {
+		if pid != 0 {
+			return darwinProcessTaskInfo{}, syscall.EPERM
+		}
+		return darwinProcessTaskInfo{Threads: 968}, nil
+	}
+	darwinProcessNow = func() time.Time { return readAt }
+	read := newTopProcessReaderWithRusage(true)
+	first := darwinKernelTaskRow(t, read)
+	if first.Command != "kernel_task" || first.CPU != 0 || !first.MemoryValid || first.Memory != 42<<20 || !first.RSSMissing || first.Threads != 968 {
+		t.Fatalf("first kernel_task row = %+v", first)
+	}
+	// 1초 동안 user와 system에 0.25초씩 쓰면 core 하나의 50%다.
+	ticks = darwinMachTicks(uint64(250*time.Millisecond) * uint64(timebase.Denom) / uint64(timebase.Numer))
+	readAt = readAt.Add(time.Second)
+	if got := darwinKernelTaskRow(t, read).CPU; math.Abs(got-50) > 0.01 {
+		t.Fatalf("kernel_task CPU = %v, want 50", got)
+	}
+}
+
+func TestDarwinReaderOmitsKernelTaskWhenRusageIsDenied(t *testing.T) {
+	previousReader := darwinProcessRusageReader
+	t.Cleanup(func() { darwinProcessRusageReader = previousReader })
+	darwinProcessRusageReader = func(int) (darwinProcessRusage, error) { return darwinProcessRusage{}, syscall.EPERM }
+	processes, valid := newTopProcessReaderWithRusage(true)()
+	if !valid || slices.ContainsFunc(processes, func(process topProcess) bool { return process.PID == 0 }) {
+		t.Fatalf("valid %v, processes include PID 0 without rusage", valid)
+	}
+}
+
+func darwinKernelTaskRow(t *testing.T, read func() ([]topProcess, bool)) topProcess {
+	t.Helper()
+	processes, _ := read()
+	index := slices.IndexFunc(processes, func(process topProcess) bool { return process.PID == 0 })
+	if index < 0 {
+		t.Fatal("no kernel_task row")
+	}
+	return processes[index]
 }
 
 func TestDarwinProcessSampleTimeUsesRusageReadTime(t *testing.T) {

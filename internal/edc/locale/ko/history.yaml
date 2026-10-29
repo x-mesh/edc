@@ -109,6 +109,7 @@ history:
     export_snapshot_only: "Export는 snapshot 실행을 받습니다."
   recording:
     started: "기록 시작: %s"
+    auto_started: "자동 기록 시작 (%s): %s"
     stopped: "기록 중지 · %d개 관측값 저장"
     help: "기록: w로 DB 기록 시작/중지 · 다음 온전한 관측 구간부터 저장 · p 일시정지 시 기록도 멈춤"
   top_browser:

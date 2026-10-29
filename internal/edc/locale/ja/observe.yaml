@@ -44,6 +44,7 @@ observe:
     full_needs_view: "--full は dashboard、--json、--write のいずれかが必要です"
     split_invalid: "--split には all、none、または cpu, mem, disk, net, psi をカンマ区切りで 1 回ずつ指定してください"
     split_needs_view: "--split は dashboard でのみ使えます"
+    auto_record_needs_view: "--auto-record は dashboard でのみ使えます"
     split_with_process: "--split は --process と一緒に使えません"
     view_invalid: "--view には all、cpu、memory、disk、network、pressure、split のいずれかを指定してください"
     view_with_process: "--view は --process と一緒に使えません"

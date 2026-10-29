@@ -109,6 +109,7 @@ history:
     export_snapshot_only: "export は snapshot 実行を受け取ります。"
   recording:
     started: "記録開始: %s"
+    auto_started: "自動記録開始 (%s): %s"
     stopped: "記録停止 · %d件の観測値を保存"
     help: "記録: wでDB記録の開始/停止 · 次の完全な観測区間から保存 · pで記録も一時停止"
   top_browser:

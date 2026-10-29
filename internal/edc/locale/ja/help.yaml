@@ -163,6 +163,7 @@ command:
       detail: "CPU 待ち・I/O 遅延 (Linux eBPF, root)、macOS は CPU 待ち"
       ebpf: "--detail と同じ"
       write: "SQLite に追記、path 省略時は既定 DB"
+      auto_record: "高負荷・swap out・メモリ圧迫で5分前から自動記録"
       json: "sample ごとに 1 行の JSON、stdout は -"
     notes:
       - "wでDB記録を開始・停止します。再開すると新しい実行になり、pで記録も一時停止します。"

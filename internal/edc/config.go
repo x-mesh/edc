@@ -32,7 +32,7 @@ var configScalarTypes = map[string]string{
 	"defaults.log.max_size_mb": "!!int", "defaults.log.keep_files": "!!int", "defaults.log.max_restarts": "!!int",
 	"defaults.common.verbose": "!!bool", "defaults.common.redact": "!!bool",
 	"defaults.tls.min_days": "!!int", "defaults.http.expect_status": "!!int",
-	"defaults.top.count": "!!int", "defaults.top.no_header": "!!bool",
+	"defaults.top.count": "!!int", "defaults.top.no_header": "!!bool", "defaults.top.auto_record": "!!bool",
 	"defaults.info.public": "!!bool", "defaults.info.verbose": "!!bool",
 	"defaults.where.count": "!!int", "defaults.capture.count": "!!int",
 	"defaults.remote.output_limit": "!!int", "defaults.remote.parallel": "!!int",
@@ -176,6 +176,8 @@ type topConfig struct {
 	Panels      *string `yaml:"panels,omitempty" toml:"panels,omitempty"`
 	ProcessSort *string `yaml:"process_sort,omitempty" toml:"process_sort,omitempty"`
 	Columns     *string `yaml:"columns,omitempty" toml:"columns,omitempty"`
+	// AutoRecord는 대시보드가 이상 징후를 보면 스스로 기록을 시작하는지다. 기본은 꺼져 있다.
+	AutoRecord *bool `yaml:"auto_record,omitempty" toml:"auto_record,omitempty"`
 }
 type infoConfig struct {
 	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`

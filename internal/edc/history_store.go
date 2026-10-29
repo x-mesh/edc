@@ -497,6 +497,8 @@ type historyRun struct {
 	// Interfaces는 net 값에 더한 interface다. 비었으면 loopback을 뺀 모든 interface다.
 	Interfaces string `json:"interface_filter,omitempty"`
 	Detail     bool   `json:"detail"`
+	// Trigger는 edc top --auto-record가 연 run의 이유다. 사람이 w나 -w로 연 run은 비어 있다.
+	Trigger string `json:"trigger,omitempty"`
 	// Since, DuPaths, Report는 스냅샷 실행에만 있다. Report는 결과를 뺀 보고서이고 결과는 snapshot_results에 있다.
 	Since   string          `json:"since,omitempty"`
 	DuPaths []string        `json:"du_paths,omitempty"`
@@ -516,14 +518,35 @@ type topRecorder struct {
 }
 
 func newTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool) (*topRecorder, error) {
+	return newTriggeredTopRecorder(path, version, details, interval, filter, interfaces, detail, "", nil)
+}
+
+// newTriggeredTopRecorder는 trigger가 걸리기 전 backlog를 먼저 쓰는 run을 연다. backlog는 queue를 거치지 않는다.
+// queue는 historyQueueSize칸이라 몇 분치 sample을 한 번에 넣으면 넘쳐 기록이 실패한다.
+func newTriggeredTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool, trigger string, backlog []historyTopSample) (*topRecorder, error) {
 	db, err := openHistoryDB(path, true)
 	if err != nil {
 		return nil, err
 	}
 	started := time.Now().UTC()
+	if len(backlog) > 0 {
+		// 잠자기에서 깬 직후의 sample은 구간이 몇 시간일 수 있어 interval보다 길게 거슬러 올라가지 않는다.
+		first := backlog[0]
+		started = first.Time.Add(-min(time.Duration(first.WindowS*float64(time.Second)), interval)).UTC()
+	}
 	run := historyRun{ID: runID(started), Command: "top", Hostname: details.Hostname, StartedAt: started,
 		Status: "unfinished", Version: version, System: details.System, OS: details.OS,
-		Cores: details.Cores, MemoryTotal: details.MemoryTotal, IntervalS: interval.Seconds(), Process: filter, Interfaces: interfaces, Detail: detail}
+		Cores: details.Cores, MemoryTotal: details.MemoryTotal, IntervalS: interval.Seconds(), Process: filter, Interfaces: interfaces, Detail: detail, Trigger: trigger}
+	pending := make([][]byte, 0, len(backlog))
+	for _, sample := range backlog {
+		sample.RunID = run.ID
+		payload, err := json.Marshal(sample)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		pending = append(pending, payload)
+	}
 	payload, err := json.Marshal(run)
 	if err == nil {
 		_, err = db.Exec("INSERT INTO runs(id, command, hostname, started_ns, status, payload) VALUES (?, ?, ?, ?, ?, ?)", run.ID, run.Command, run.Hostname, started.UnixNano(), run.Status, string(payload))
@@ -533,7 +556,7 @@ func newTopRecorder(path, version string, details hostDetails, interval time.Dur
 		return nil, err
 	}
 	recorder := &topRecorder{db: db, runID: run.ID, queue: make(chan []byte, historyQueueSize), done: make(chan struct{}), failed: make(chan struct{})}
-	go recorder.writeLoop()
+	go recorder.writeLoop(pending)
 	return recorder, nil
 }
 
@@ -572,13 +595,17 @@ func (recorder *topRecorder) Record(sample historyTopSample) error {
 	}
 }
 
-func (recorder *topRecorder) writeLoop() {
+func (recorder *topRecorder) writeLoop(backlog [][]byte) {
 	defer close(recorder.done)
+	if err := recorder.writeSamples(backlog); err != nil {
+		recorder.fail(err)
+		return
+	}
 	for payload := range recorder.queue {
 		if err := recorder.Err(); err != nil {
 			return
 		}
-		if err := recorder.writeSample(payload); err != nil {
+		if err := recorder.writeSamples([][]byte{payload}); err != nil {
 			recorder.fail(err)
 			return
 		}
@@ -589,16 +616,30 @@ func historyInsert(table string, columns []string) string {
 	return "INSERT INTO " + table + "(" + strings.Join(columns, ", ") + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",") + ")"
 }
 
-func (recorder *topRecorder) writeSample(payload []byte) error {
-	var sample historyTopSample
-	if err := json.Unmarshal(payload, &sample); err != nil {
-		return err
+// writeSamples는 payload를 한 transaction으로 쓴다. backlog를 sample마다 commit하면 fsync가 수백 번 일어나고,
+// 그동안 queue가 넘친다.
+func (recorder *topRecorder) writeSamples(payloads [][]byte) error {
+	if len(payloads) == 0 {
+		return nil
 	}
 	tx, err := recorder.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	for _, payload := range payloads {
+		if err := recorder.writeSample(tx, payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (recorder *topRecorder) writeSample(tx *sql.Tx, payload []byte) error {
+	var sample historyTopSample
+	if err := json.Unmarshal(payload, &sample); err != nil {
+		return err
+	}
 	columns := append([]string{"run_id", "time_ns", "payload"}, historyMetricNames(historyHostMetrics)...)
 	values := append([]any{recorder.runID, sample.Time.UnixNano(), string(payload)}, historyMetricValues(sample.topSample, historyHostMetrics, sample.metricSupported)...)
 	result, err := tx.Exec(historyInsert("top_samples", columns), values...)
@@ -628,10 +669,8 @@ func (recorder *topRecorder) writeSample(payload []byte) error {
 			}
 		}
 	}
-	if _, err := tx.Exec("UPDATE runs SET sample_count=sample_count+1 WHERE id=?", recorder.runID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = tx.Exec("UPDATE runs SET sample_count=sample_count+1 WHERE id=?", recorder.runID)
+	return err
 }
 
 func (recorder *topRecorder) Close(status string) error {

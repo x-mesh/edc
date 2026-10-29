@@ -239,3 +239,35 @@ func TestTopAutoRecordStatusKeepsHelpAt80Columns(t *testing.T) {
 		t.Fatalf("status lines = %q", joined)
 	}
 }
+
+func TestTopDashboardTitleShowsRecordingBadge(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.details = hostDetails{Hostname: "host", Cores: 8}
+	model.width = 120
+	if title := ansi.Strip(model.dashboardTitle()); strings.Contains(title, "REC") {
+		t.Fatalf("idle title shows a recording badge: %q", title)
+	}
+	model.record = func(historyTopSample) error { return nil }
+	steps := []struct {
+		color, paused bool
+		want, badge   string
+	}{
+		{false, false, "view all · [● REC] · live 🐰", ""},
+		{false, true, "view all · [❚❚ REC] · live 🐰", ""},
+		{true, false, "view all ·  ● REC  · live 🐰", richBadge("● REC", richRed)},
+		{true, true, "view all ·  ❚❚ REC  · live 🐰", richBadge("❚❚ REC", richYellow)},
+	}
+	for _, step := range steps {
+		model.limits.color, model.paused = step.color, step.paused
+		raw := model.dashboardTitle()
+		title := ansi.Strip(raw)
+		if !strings.HasSuffix(title, step.want) || topDisplayWidth(title) != model.width || !strings.Contains(raw, step.badge) {
+			t.Fatalf("color=%v paused=%v title = %q", step.color, step.paused, raw)
+		}
+	}
+	model.width = 60
+	model.limits.color, model.paused = false, false
+	if title := ansi.Strip(model.dashboardTitle()); !strings.Contains(title, "[● REC] · live") {
+		t.Fatalf("narrow title = %q", title)
+	}
+}

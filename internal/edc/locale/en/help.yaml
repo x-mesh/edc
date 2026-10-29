@@ -152,6 +152,8 @@ command:
       count: "rows to print, 0 runs until you quit"
       no_header: "drop the host and column header"
       process: "match PIDs or command names, comma-separated"
+      top: "top processes in each JSON line without --process, 0 for none"
+      sort: "order of --top: cpu or mem"
       full: "match and show the full command line"
       split: "one box each for cpu, mem, disk, net, psi, default all"
       view: "first view, such as network or split"

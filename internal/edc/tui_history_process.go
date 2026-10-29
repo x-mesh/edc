@@ -66,7 +66,9 @@ func historyProcessCell(sample historyProcessSample, name string) string {
 	case "cpu":
 		return fmt.Sprintf("%.1f%%", sample.CPU)
 	case "rss":
-		return formatSizeShort(sample.RSSBytes)
+		if sample.RSSBytes != nil {
+			return formatSizeShort(*sample.RSSBytes)
+		}
 	case "memory":
 		if sample.MemoryBytes != nil {
 			return formatSizeShort(*sample.MemoryBytes)

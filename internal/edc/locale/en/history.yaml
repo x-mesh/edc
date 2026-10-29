@@ -89,6 +89,7 @@ history:
     interval: "interval  %s"
     process: "process filter  %s"
     interfaces: "interfaces  %s"
+    trigger: "trigger  %s"
     column:
       command: "Command"
       start: "Start"
@@ -125,6 +126,7 @@ history:
   database_path: "Default history DB: %s"
   usage: "Usage: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
+    auto: "list only runs that edc top --auto-record started"
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"
     to: "exclusive end time (RFC3339)"

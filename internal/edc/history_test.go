@@ -727,7 +727,7 @@ func TestHistoryListShowsTheInterfaceFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(text.String()), "\n")
-	last := func(line string) string { fields := strings.Fields(line); return fields[len(fields)-1] }
+	last := func(line string) string { fields := strings.Fields(line); return fields[len(fields)-2] }
 	if len(lines) != 3 || last(lines[0]) != "INTERFACES" || last(lines[1]) != "physical,wg0" || last(lines[2]) != "all" {
 		t.Fatalf("list:\n%s", text.String())
 	}
@@ -1082,5 +1082,39 @@ func TestHistoryStoresProcessesOnceWithoutPlaceholderLimits(t *testing.T) {
 	var attached []topProcessSample
 	if len(samples) != 1 || json.Unmarshal(samples[0]["processes"], &attached) != nil || len(attached) != 2 || attached[0].PID != 7 {
 		t.Fatalf("history top --json must still list the sample's processes: %s", mustHistoryJSON(t, samples))
+	}
+}
+
+func TestHistoryListShowsAndFiltersAutoRecordTriggers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.db")
+	details := hostDetails{Hostname: "fixture", Cores: 8}
+	for _, trigger := range []string{"", "load 20 > 2×8"} {
+		recorder, err := newTriggeredTopRecorder(path, "test", details, time.Second, "", "", false, trigger, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := recorder.Close("finished"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var text bytes.Buffer
+	if err := printHistory(&text, db, "list", historyOptions{}, false); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(text.String()), "\n")
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], "TRIGGER") || !strings.HasSuffix(lines[1], "load 20 > 2×8") || !strings.HasSuffix(lines[2], "-") {
+		t.Fatalf("list:\n%s", text.String())
+	}
+	runs := historyJSONRows(t, db, "list", historyOptions{triggered: true})
+	if len(runs) != 1 || string(runs[0]["trigger"]) != `"load 20 \u003e 2×8"` {
+		t.Fatalf("auto runs = %s", mustHistoryJSON(t, runs))
+	}
+	if description := historyRunDescription(historyRun{Command: "top", Trigger: "load 20 > 2×8"}); description != "top · auto load 20 > 2×8" {
+		t.Fatalf("description = %q", description)
 	}
 }

@@ -89,6 +89,7 @@ history:
     interval: "間隔  %s"
     process: "process フィルター  %s"
     interfaces: "インターフェース  %s"
+    trigger: "自動記録の理由  %s"
     column:
       command: "コマンド"
       start: "開始"
@@ -125,6 +126,7 @@ history:
   database_path: "既定のhistory DB: %s"
   usage: "使い方: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
+    auto: "edc top --auto-record が開始した実行だけを表示"
     run: "この実行 ID のみ"
     from: "開始時刻を含む (RFC3339)"
     to: "終了時刻を含まない (RFC3339)"

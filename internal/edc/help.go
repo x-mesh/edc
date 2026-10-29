@@ -280,6 +280,7 @@ var commandDocs = []commandDoc{
 			{"--min <number>", "history.option.min"},
 			{"--max <number>", "history.option.max"},
 			{"--limit 200", "history.option.limit"},
+			{"--auto", "history.option.auto"},
 			{"--json <path|->", "history.option.json"},
 			{"--output <file|->", "history.option.output"},
 			{"--older-than 30d", "history.option.older_than"},

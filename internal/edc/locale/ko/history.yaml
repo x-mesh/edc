@@ -89,6 +89,7 @@ history:
     interval: "간격  %s"
     process: "process 필터  %s"
     interfaces: "인터페이스  %s"
+    trigger: "자동 기록 이유  %s"
     column:
       command: "명령"
       start: "시작"
@@ -125,6 +126,7 @@ history:
   database_path: "기본 history DB: %s"
   usage: "사용법: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
+    auto: "edc top --auto-record가 시작한 실행만 표시"
     run: "이 실행 ID만 조회"
     from: "시작 시각 포함(RFC3339)"
     to: "종료 시각 제외(RFC3339)"

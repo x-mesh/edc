@@ -237,7 +237,7 @@ func runTop(args []string, version string) (code int) {
 		}
 		switch {
 		case retainPath != "":
-			stop, err := startHistoryRetention(retainPath, retain)
+			stop, err := startHistoryRetention(retainPath, retain, *interval)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, T("history.error.retain", err))
 				return 1

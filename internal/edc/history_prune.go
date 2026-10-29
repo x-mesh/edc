@@ -296,7 +296,8 @@ const historyRetentionInterval = time.Hour
 // startHistoryRetention은 path의 top 실행 중 retain보다 오래 활동이 없는 실행을 지금 한 번, 그 뒤 매시간 지운다.
 // 처음 지우기가 실패하면 기록을 시작하지 않도록 바로 오류를 준다. 대시보드는 화면을 깨지 않도록 배경 오류를 모아 두었다가
 // stop이 마지막 오류를 돌려준다. 기록 중인 실행은 활동 시각이 최근이라 지워지지 않는다.
-func startHistoryRetention(path string, retain time.Duration) (stop func() error, err error) {
+func startHistoryRetention(path string, retain, interval time.Duration) (stop func() error, err error) {
+	retain = historyRetentionAge(retain, interval)
 	if err := pruneHistoryRetention(path, retain, time.Now()); err != nil {
 		return nil, err
 	}
@@ -321,6 +322,20 @@ func startHistoryRetention(path string, retain time.Duration) (stop func() error
 		close(done)
 		return <-finished
 	}, nil
+}
+
+// historyRetentionAge는 실제로 쓰는 보존 기간이다. 실행의 활동 시각은 마지막 샘플이라, 샘플 간격이 보존 기간보다 길면
+// 기록 중인 실행도 지워진다. 그래서 샘플 두 번 사이보다 짧아지지 않게 한다. 대시보드는 실행 중에 간격을
+// topMaxInterval까지 늘릴 수 있다.
+func historyRetentionAge(retain, interval time.Duration) time.Duration {
+	floor := 2 * topMaxInterval
+	if interval > topMaxInterval {
+		floor = 2 * interval
+	}
+	if retain < floor {
+		return floor
+	}
+	return retain
 }
 
 // pruneHistoryRetention은 snapshot처럼 top이 아닌 실행은 건드리지 않는다. 대시보드에서 w로 기록하기 전처럼 DB가 아직

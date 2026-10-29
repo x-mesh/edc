@@ -226,3 +226,17 @@ func TestTopRetainRejectsBadAgeAndNoDatabase(t *testing.T) {
 		t.Fatalf("retention must not create a database: %v", err)
 	}
 }
+
+// 샘플 간격이 보존 기간보다 길면 기록 중인 실행의 마지막 샘플도 보존 기간보다 오래되어 지워질 수 있다. 실제 기준은
+// 샘플 두 번 사이보다 짧아지지 않는다. 대시보드는 실행 중에 간격을 topMaxInterval까지 늘릴 수 있다.
+func TestHistoryRetentionAgeOutlastsTwoSamples(t *testing.T) {
+	for _, tt := range []struct{ retain, interval, want time.Duration }{
+		{7 * 24 * time.Hour, time.Second, 7 * 24 * time.Hour},
+		{time.Minute, time.Second, 2 * topMaxInterval},
+		{time.Hour, 2 * time.Hour, 4 * time.Hour},
+	} {
+		if got := historyRetentionAge(tt.retain, tt.interval); got != tt.want {
+			t.Errorf("retain %s, interval %s: age %s, want %s", tt.retain, tt.interval, got, tt.want)
+		}
+	}
+}

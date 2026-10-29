@@ -423,7 +423,11 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 			if process.Started != nil {
 				started = process.Started.Format(time.RFC3339Nano)
 			}
-			line = fmt.Sprintf("%s\t%s\t%d\t%s\t%.2f\t%s\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), process.PID, started, process.CPU, formatBytes(process.RSSBytes), historyTerminalText(process.Command))
+			rss := "-"
+			if process.RSSBytes != nil {
+				rss = formatBytes(*process.RSSBytes)
+			}
+			line = fmt.Sprintf("%s\t%s\t%d\t%s\t%.2f\t%s\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), process.PID, started, process.CPU, rss, historyTerminalText(process.Command))
 			paints = []historyPaint{nil, style.dim, nil, style.dim, nil, historyUnitPaint(style)}
 		}
 		if jsonOutput {

@@ -26,10 +26,12 @@ type darwinMemory struct {
 const darwinProcessTimeout = 800 * time.Millisecond
 
 var darwinProcessRusageReader = readDarwinProcessRusage
+var darwinProcessTaskInfoReader = readDarwinProcessTaskInfo
 var darwinProcessNow = time.Now
 
 // newTopProcessReader는 macOS ps를 쓴다. macOS의 %cpu는 최근 사용률의 감쇠 평균이라 그대로 쓸 수 있다.
 func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) {
+	var kernel darwinKernelTaskCPU
 	return func() ([]topProcess, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), darwinProcessTimeout)
 		defer cancel()
@@ -61,8 +63,45 @@ func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) 
 				}
 			}
 		}
+		if readRusage {
+			if process, ok := kernel.read(); ok {
+				processes = sortTopProcessesByCPU(append(processes, process))
+			}
+		}
 		return processes, len(processes) > 0
 	}
+}
+
+// darwinKernelTaskCPU는 kernel_task(PID 0)의 직전 CPU 시간이다. ps는 PID 0을 출력하지 않지만 kernel_task의 CPU는
+// iowait와 disk busy가 없는 macOS에서 I/O와 발열 부하를 보는 주된 신호라 libproc으로 따로 읽는다.
+// root가 아니면 libproc이 EPERM으로 거부해 행이 생기지 않는다.
+type darwinKernelTaskCPU struct {
+	ticks darwinMachTicks
+	at    time.Time
+}
+
+// read는 첫 관측에서 CPU 0을 준다. ps의 %cpu와 달리 누적 시간만 있어 직전 기준이 있어야 rate를 구한다.
+// Rosetta에서는 rusage의 tick 단위가 번역된 timebase와 어긋나 CPU를 0으로 둔다.
+func (kernel *darwinKernelTaskCPU) read() (topProcess, bool) {
+	usage, err := darwinProcessRusageReader(0)
+	if err != nil {
+		return topProcess{}, false
+	}
+	now := darwinProcessNow()
+	// kernel_task의 resident 크기는 root여도 rusage_info와 proc_taskinfo 모두 0을 준다.
+	process := topProcess{PID: 0, Command: "kernel_task", RSSMissing: true, Memory: usage.Footprint, MemoryValid: true}
+	process.diskSampled, process.diskStarted, process.diskSampledAt = true, usage.Started, now
+	process.diskReadBytes, process.diskWriteBytes = usage.DiskRead, usage.DiskWrite
+	if task, err := darwinProcessTaskInfoReader(0); err == nil {
+		process.Threads = int(task.Threads)
+	}
+	ticks := usage.UserTime + usage.SystemTime
+	timebase, err := darwinMachTimebase()
+	if seconds := now.Sub(kernel.at).Seconds(); err == nil && !darwinTranslated() && !kernel.at.IsZero() && seconds > 0 && ticks >= kernel.ticks {
+		process.CPU = timebase.duration(ticks-kernel.ticks).Seconds() / seconds * 100
+	}
+	kernel.ticks, kernel.at = ticks, now
+	return process, true
 }
 
 func newTopProcessReader() func() ([]topProcess, bool) { return newTopProcessReaderWithRusage(true) }

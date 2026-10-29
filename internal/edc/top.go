@@ -393,11 +393,12 @@ type topProcessTotalSample struct {
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
 // Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
 type topProcessSample struct {
-	PID      int        `json:"pid"`
-	Started  *time.Time `json:"started,omitempty"`
-	Command  string     `json:"command"`
-	CPU      float64    `json:"cpu_pct"`
-	RSSBytes uint64     `json:"rss_bytes"`
+	PID     int        `json:"pid"`
+	Started *time.Time `json:"started,omitempty"`
+	Command string     `json:"command"`
+	CPU     float64    `json:"cpu_pct"`
+	// RSSBytes는 OS가 RSS를 주지 않는 process에서 빠진다. macOS kernel_task가 그렇다.
+	RSSBytes *uint64 `json:"rss_bytes,omitempty"`
 	// MemoryBytes는 macOS phys_footprint 또는 Linux RSS+VmSwap이다. 읽지 못한 process는 빠진다.
 	MemoryBytes *uint64           `json:"memory_bytes,omitempty"`
 	Threads     int               `json:"threads,omitempty"`
@@ -412,8 +413,12 @@ type topProcessSample struct {
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
-		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
+		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
 		sample.Limits = processLimitsOf(process)
+		if !process.RSSMissing {
+			rss := process.RSS
+			sample.RSSBytes = &rss
+		}
 		if process.MemoryValid {
 			memory := process.Memory
 			sample.MemoryBytes = &memory

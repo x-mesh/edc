@@ -121,6 +121,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		return snapshot, err
 	}
 	lines := strings.Split(string(stat), "\n")
+	if created, ok := parseLinuxProcessesCreated(string(stat)); ok {
+		snapshot.ProcsCreated, snapshot.ProcsCreatedValid, snapshot.ProcsCreatedSource = created, true, "kernel"
+	}
 	fields := strings.Fields(lines[0])
 	if len(fields) < 8 {
 		return snapshot, fmt.Errorf("invalid /proc/stat cpu line")
@@ -133,7 +136,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.CPUUser = values[0] + values[1]
 	snapshot.CPUSystem = values[2] + values[5] + values[6]
 	snapshot.CPUIdle = values[3]
-	snapshot.CPUIOWait = values[4]
+	snapshot.CPUIOWait, snapshot.CPUIOWaitValid = values[4], true
 	if len(values) > 7 {
 		snapshot.CPUSteal, snapshot.CPUStealValid = values[7], true
 	}
@@ -168,6 +171,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	if memory, err := readMemInfo(); err == nil {
 		snapshot.MemoryTotal = memory["MemTotal"]
 		snapshot.MemoryUsed = snapshot.MemoryTotal - memory["MemAvailable"]
+		snapshot.SwapTotal, snapshot.SwapUsed, snapshot.SwapUsageValid = linuxSwapUsage(memory)
 	}
 	if vmstat, err := os.ReadFile("/proc/vmstat"); err == nil {
 		pages, ok := parseLinuxSwapOutPages(string(vmstat))

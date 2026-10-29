@@ -106,6 +106,7 @@ func historyTopTableLine(columns []historyTopColumn, sample *historyTopSample, s
 }
 
 func loadHistoryTop(db *sql.DB, options historyOptions) ([]historyTopSample, error) {
+	options.metricMissing = historyTopColumnMissing(db, options.metric)
 	query, args := historyQuery("top", options)
 	query = strings.Replace(query, "SELECT payload", "SELECT id, payload", 1)
 	rows, err := db.Query(query, args...)

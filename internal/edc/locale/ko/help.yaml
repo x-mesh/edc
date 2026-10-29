@@ -152,6 +152,8 @@ command:
       count: "출력할 row 수, 0은 계속 실행"
       no_header: "host와 column header 생략"
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
+      top: "--process 없이 JSON 줄마다 넣을 상위 process 수, 0은 끔"
+      sort: "--top 순서: cpu 또는 mem"
       full: "전체 명령줄로 맞추고 보여 준다"
       split: "cpu, mem, disk, net, psi를 박스로 한 화면에, 생략하면 전부"
       view: "처음 보기, 예: network, split"

@@ -12,15 +12,22 @@ import (
 
 func historyProcessSamples(count int) []historyProcessSample {
 	started := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
-	memory, read, write := uint64(8192), 0.0, 2048.0
+	rss, memory, read, write := uint64(4096), uint64(8192), 0.0, 2048.0
 	samples := make([]historyProcessSample, count)
 	for i := range samples {
 		samples[i] = historyProcessSample{
-			topProcessSample: topProcessSample{PID: 100 + i%3, Started: &started, Command: "Chrome helper", CPU: 125, RSSBytes: 4096, MemoryBytes: &memory, Threads: 12, FDs: 42, DiskRead: &read, DiskWrite: &write},
+			topProcessSample: topProcessSample{PID: 100 + i%3, Started: &started, Command: "Chrome helper", CPU: 125, RSSBytes: &rss, MemoryBytes: &memory, Threads: 12, FDs: 42, DiskRead: &read, DiskWrite: &write},
 			RunID:            "run-1", Time: started.Add(time.Hour - time.Duration(i/3)*time.Second), Hostname: "fixture", WindowS: 1,
 		}
 	}
 	return samples
+}
+
+func TestHistoryProcessCellShowsMissingRSSAsUnknown(t *testing.T) {
+	sample := historyProcessSample{topProcessSample: topProcessSample{PID: 0, Command: "kernel_task"}}
+	if got := historyProcessCell(sample, "rss"); got != "—" {
+		t.Fatalf("rss cell = %q, want —", got)
+	}
 }
 
 func TestHistoryProcessBrowserSelectionIdentityAndFollowing(t *testing.T) {

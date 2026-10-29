@@ -223,6 +223,22 @@ func TestListenMaskArgs(t *testing.T) {
 	}
 }
 
+func TestListenMaskArgsProgramURLAndChainedSecrets(t *testing.T) {
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"https://user:hunter2@host/run", "--port", "80"}, []string{"https://user:***@host/run", "--port", "80"}},
+		{[]string{"app", "--password", "--token", "abc123"}, []string{"app", "--password", "***", "***"}},
+		{[]string{"app", "--password", "--token", "--api-key", "k", "--port", "80"}, []string{"app", "--password", "***", "***", "***", "--port", "80"}},
+	}
+	for _, tt := range tests {
+		if got := listenMaskArgs(tt.args); !slices.Equal(got, tt.want) {
+			t.Errorf("%q: got %q, want %q", tt.args, got, tt.want)
+		}
+	}
+}
+
 // --full은 행을 늘리지 않고 각 행 아래에 명령줄을 붙인다. 명령줄이 없는 행에는 붙이지 않는다.
 func TestFormatListenTableCommandLines(t *testing.T) {
 	sockets := []listenSocket{

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -82,6 +83,51 @@ type resourceSnapshot struct {
 	ProcsBlockedSource topBlockedSource
 	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 다른 host와 읽지 못한 sample은 zero value다.
 	MemoryPressure topMemoryPressure
+	// Thermal은 macOS의 열 압박 단계다. ThrottleMS는 Linux CPU package가 열 때문에 속도를 낮춘 누적 ms로, package마다 하나를 더한다.
+	Thermal       topThermal
+	ThrottleMS    uint64
+	ThrottleValid bool
+	// TempC는 Linux thermal zone 중 가장 높은 온도다. GPUBusy는 GPU가 일한 시간 비율이다. macOS는 IOAccelerator가, Linux는
+	// amdgpu의 gpu_busy_percent가 준다. 여러 GPU면 가장 바쁜 값이다.
+	TempC     float64
+	TempValid bool
+	GPUBusy   float64
+	GPUValid  bool
+}
+
+// topThermal은 macOS의 kOSThermalNotificationPressureLevelName 값에 1을 더한 것이다. nominal이 0이라 zero value를
+// 모르는 값으로 두려고 민다.
+type topThermal int32
+
+const (
+	topThermalUnknown topThermal = iota
+	topThermalNominal
+	topThermalModerate
+	topThermalHeavy
+	topThermalTrapping
+	topThermalSleeping
+)
+
+func (thermal topThermal) known() bool { return thermal > topThermalUnknown }
+
+// level은 check.thermal과 같은 기준이다. moderate는 부하가 걸리면 흔히 오는 단계라 경고하지 않고, heavy부터 CPU 속도를 크게
+// 낮추며 trapping부터는 장치를 보호하려고 일을 멈춘다.
+func (thermal topThermal) level() topLevel {
+	switch {
+	case thermal >= topThermalTrapping:
+		return topLevelDanger
+	case thermal >= topThermalHeavy:
+		return topLevelWarn
+	}
+	return topLevelNormal
+}
+
+func (thermal topThermal) String() string {
+	names := []string{"unknown", "nominal", "moderate", "heavy", "trapping", "sleeping"}
+	if thermal >= 0 && int(thermal) < len(names) {
+		return names[thermal]
+	}
+	return "sleeping"
 }
 
 // topBlockedSource는 ProcsBlocked를 센 곳이다. kernel의 procs_blocked는 thread를 세고, iowait이 없는 macOS는
@@ -963,6 +1009,10 @@ type resourceRate struct {
 	CPUStealValid, CPUIOWaitValid   bool
 	ProcsBlockedSource              topBlockedSource
 	MemoryPressure                  topMemoryPressure
+	Thermal                         topThermal
+	ThrottlePercent, TempC, GPUBusy float64
+	ThrottleValid, TempValid        bool
+	GPUValid                        bool
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
 	PSIMemoryFull, PSIIOFull        float64
@@ -1040,6 +1090,13 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	}
 	rate.ProcsBlocked, rate.ProcsBlockedSource = float64(current.ProcsBlocked), current.ProcsBlockedSource
 	rate.MemoryPressure = current.MemoryPressure
+	rate.Thermal = current.Thermal
+	rate.TempC, rate.TempValid = current.TempC, current.TempValid
+	rate.GPUBusy, rate.GPUValid = current.GPUBusy, current.GPUValid
+	rate.ThrottleValid = current.ThrottleValid && previous.ThrottleValid
+	if rate.ThrottleValid {
+		rate.ThrottlePercent = min(100, float64(delta(current.ThrottleMS, previous.ThrottleMS))/(seconds*1000)*100)
+	}
 	rate.SwapUsed, rate.SwapTotal, rate.SwapUsageValid = current.SwapUsed, current.SwapTotal, current.SwapUsageValid
 	rate.Compressor, rate.CompressorValid = current.Compressor, current.CompressorValid
 	if previous.ProcsCreatedValid && current.ProcsCreatedValid && current.ProcsCreated >= previous.ProcsCreated && seconds > 0 {
@@ -1260,4 +1317,19 @@ func parseDiskUsage(reader io.Reader) ([]diskDetails, error) {
 		disks = append(disks, diskDetails{Mount: strings.Join(fields[5:], " "), Device: fields[0], Total: totalKB * 1024, Used: usedKB * 1024, Percent: float64(usedKB) / float64(totalKB) * 100})
 	}
 	return disks, scanner.Err()
+}
+
+// darwinGPUBusy는 ioreg가 PerformanceStatistics 사전 안에 쓰는 GPU 사용률이다.
+var darwinGPUBusy = regexp.MustCompile(`"Device Utilization %"=(\d+)`)
+
+// parseDarwinGPUBusy는 ioreg -r -c IOAccelerator의 출력에서 가장 바쁜 GPU의 사용률을 고른다.
+func parseDarwinGPUBusy(output string) (float64, bool) {
+	busy, ok := 0.0, false
+	for _, match := range darwinGPUBusy.FindAllStringSubmatch(output, -1) {
+		value, err := strconv.ParseFloat(match[1], 64)
+		if err == nil && (!ok || value > busy) {
+			busy, ok = value, true
+		}
+	}
+	return busy, ok
 }

@@ -427,6 +427,12 @@ type topSample struct {
 	MemoryPressure          string  `json:"memory_pressure,omitempty"`
 	MemoryPressureSupported bool    `json:"memory_pressure_supported"`
 	SwapOut                 float64 `json:"swap_out_bytes_per_s"`
+	// Thermal은 macOS의 열 압박 단계(nominal, moderate, heavy, trapping, sleeping)다. 아래 셋은 Linux의 CPU package 스로틀
+	// 시간 비율과 가장 높은 thermal zone 온도, 그리고 가장 바쁜 GPU의 사용률이다. 읽지 못한 host에서는 빠진다.
+	Thermal        string   `json:"thermal,omitempty"`
+	CPUThrottlePct *float64 `json:"cpu_throttle_pct,omitempty"`
+	TempC          *float64 `json:"temp_c,omitempty"`
+	GPUBusyPct     *float64 `json:"gpu_busy_pct,omitempty"`
 	// SwapUsed와 SwapTotal은 지금 쓰는 swap과 swap 전체 크기다. 읽지 못하면 빠진다.
 	SwapUsed  *uint64 `json:"swap_used_bytes,omitempty"`
 	SwapTotal *uint64 `json:"swap_total_bytes,omitempty"`
@@ -626,6 +632,17 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 	if rate.MemoryPressure.known() {
 		sample.MemoryPressure, sample.MemoryPressureSupported = rate.MemoryPressure.String(), true
 	}
+	if rate.Thermal.known() {
+		sample.Thermal = rate.Thermal.String()
+	}
+	optional := func(value float64, valid bool) *float64 {
+		if !valid {
+			return nil
+		}
+		rounded := roundTopValue(value)
+		return &rounded
+	}
+	sample.CPUThrottlePct, sample.TempC, sample.GPUBusyPct = optional(rate.ThrottlePercent, rate.ThrottleValid), optional(rate.TempC, rate.TempValid), optional(rate.GPUBusy, rate.GPUValid)
 	if rate.SwapUsageValid {
 		used, total := rate.SwapUsed, rate.SwapTotal
 		sample.SwapUsed, sample.SwapTotal = &used, &total

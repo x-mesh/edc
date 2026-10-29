@@ -408,6 +408,9 @@ func (model topModel) resourcePanelLines(panel topPanel) []string {
 		if rate.ProcsBlockedSource.known() {
 			head += fmt.Sprintf(" · blocked %.0f", rate.ProcsBlocked)
 		}
+		if heat := topHeatText(rate); heat != "" {
+			head += " · " + heat
+		}
 		// 1초 sample 사이에 끝나는 build process는 top 목록에 보이지 않아 생성 rate로만 드러난다.
 		if rate.ProcsCreatedValid {
 			head += fmt.Sprintf(" · spawn %.0f/s", rate.ProcsCreated)
@@ -521,4 +524,22 @@ func topPanelDiskProcesses(row topDashboardRow) string {
 		return "— no process I/O measured"
 	}
 	return "— no process I/O measured · " + status
+}
+
+// topHeatText는 cpu 패널 머리줄에 붙는 열과 GPU 상태다. 빌드가 느린 이유가 CPU 경쟁인지 열 제한인지 가르려고 cpu 옆에 둔다.
+func topHeatText(rate resourceRate) string {
+	var parts []string
+	if rate.Thermal.known() {
+		parts = append(parts, "thermal "+rate.Thermal.String())
+	}
+	if rate.ThrottleValid {
+		parts = append(parts, fmt.Sprintf("throttle %.0f%%", rate.ThrottlePercent))
+	}
+	if rate.TempValid {
+		parts = append(parts, fmt.Sprintf("%.0f°C", rate.TempC))
+	}
+	if rate.GPUValid {
+		parts = append(parts, fmt.Sprintf("gpu %.0f%%", rate.GPUBusy))
+	}
+	return strings.Join(parts, " ")
 }

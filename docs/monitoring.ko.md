@@ -30,7 +30,7 @@ load 임계값은 host의 core 수를 따릅니다.
 
 `hot core`는 core 하나의 사용률이므로 90부터 경고만 주고 위험 단계가 없습니다. core가 여럿이면 하나가 포화해도 host 전체에는 여유가 있습니다.
 
-process 패널은 `READ`와 `WRITE`에 위 임계값으로 색을 넣고, `STATE` 열의 `iowait`는 노란색으로 표시합니다. process 묶음의 CPU 합은 core 하나가 바쁜 수준인 80%부터 빨간색입니다.
+process 패널은 `READ`와 `WRITE`에 위 임계값으로 색을 넣고, `STATE` 열의 `iowait`는 노란색으로 표시합니다. process 묶음의 CPU 합은 core 하나가 바쁜 수준인 80%부터 빨간색입니다. process 묶음은 이름과 작업 디렉터리가 같은 process를 모읍니다. 한 이름이 둘 이상의 디렉터리에서 돌면 `rustc · wt-a`처럼 묶음 이름에 디렉터리의 마지막 이름을 붙이므로, 서로 다른 worktree의 빌드 두 개가 두 묶음으로 보입니다.
 
 대시보드는 `iops`, `busy%`, `swap/s`, `steal%`, `blocked`, `queue`, 바이트·패킷·TCP 속도, `signal` 열에는 색을 넣지 않습니다. 임계값이 없거나 색 없이도 수준이 드러나는 값입니다. 집계 `busy%`는 바쁜 disk가 여럿이면 100을 넘으므로 고정 임계값이 잘못된 신호를 줍니다. `cores` 막대는 `.`, `:`, `*`, `#`로 수준을 보여 줍니다.
 
@@ -263,6 +263,7 @@ filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process�
 | `command`, `cpu_pct`, `rss_bytes` | 이름, 직전 refresh 이후 CPU, 상주 memory |
 | `memory_bytes` | process가 차지한 메모리. macOS는 physical footprint, Linux는 RSS와 `VmSwap`의 합. `process_total`에서는 하나라도 읽지 못하면 빠짐 |
 | `threads` | thread 수 (Linux·macOS) |
+| `ppid`, `cwd` | 부모 process 번호와 작업 디렉터리. root가 아니면 다른 계정 process의 `cwd`는 빠집니다. |
 | `fds` | 열린 file descriptor 수 (Linux) |
 | `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | 초당 disk I/O byte. Linux는 `/proc/<pid>/io`, macOS는 libproc 기준 |
 

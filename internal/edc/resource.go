@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -196,8 +197,11 @@ func (pressure topMemoryPressure) String() string {
 
 type topProcess struct {
 	PID int
-	CPU float64
-	RSS uint64
+	// PPID는 부모 process 번호다. CWD는 작업 디렉터리로, 다른 계정의 process는 root가 아니면 읽을 수 없어 비어 있다.
+	PPID int
+	CWD  string
+	CPU  float64
+	RSS  uint64
 	// RSSMissing은 OS가 RSS를 주지 않아 RSS의 0이 측정값이 아니라는 뜻이다. macOS kernel_task가 그렇다.
 	RSSMissing bool
 	// Memory는 process가 책임지는 memory다. macOS는 phys_footprint, Linux는 RSS에 swap으로 나간 양을 더한 값이다.
@@ -312,12 +316,14 @@ type topProcessTotal struct {
 
 // topProcessGroup은 같은 실행 파일 이름의 process를 묶은 합이다. 하나하나는 작아도 수가 많아 디스크를 채우는 경우를 보인다.
 type topProcessGroup struct {
-	Name    string
-	Count   int
-	Blocked int
-	CPU     float64
-	RSS     uint64
-	Memory  uint64
+	Name string
+	// CWD는 묶은 process의 작업 디렉터리다. Place는 같은 이름이 여러 디렉터리에서 돌 때만 채우는 구분 이름이다.
+	CWD, Place string
+	Count      int
+	Blocked    int
+	CPU        float64
+	RSS        uint64
+	Memory     uint64
 	// MemoryEstimated는 Memory를 읽지 못해 RSS로 대신 더한 process가 있는지다.
 	MemoryEstimated bool
 	// DiskValid는 I/O를 읽은 process가 하나라도 있는지다. DiskRead와 DiskWrite는 읽은 process만 더한 값이다.
@@ -354,16 +360,24 @@ func topProcessGroupName(command string) string {
 
 // groupTopProcesses는 process를 실행 파일 이름으로 묶고, I/O·CPU·RSS 기준으로 각각 앞선 묶음을 모은다.
 // 보기마다 다른 기준으로 고르므로 세 기준의 상위 묶음을 함께 넘기고, 행마다 남는 묶음 수를 작게 묶어 둔다.
+// groupTopProcesses는 이름과 작업 디렉터리가 같은 process를 묶는다. 서로 다른 worktree에서 같은 crate를 빌드하는 두
+// cargo의 rustc가 한 묶음으로 합쳐지면 빌드가 둘이라는 사실이 보이지 않는다.
 func groupTopProcesses(processes []topProcess) []topProcessGroup {
 	indexes := map[string]int{}
 	groups := []topProcessGroup{}
+	places := map[string]map[string]bool{}
 	for _, process := range processes {
 		name := topProcessGroupName(process.Command)
-		index, seen := indexes[name]
+		key := name + "\x00" + process.CWD
+		index, seen := indexes[key]
 		if !seen {
 			index = len(groups)
-			indexes[name] = index
-			groups = append(groups, topProcessGroup{Name: name})
+			indexes[key] = index
+			groups = append(groups, topProcessGroup{Name: name, CWD: process.CWD})
+			if places[name] == nil {
+				places[name] = map[string]bool{}
+			}
+			places[name][process.CWD] = true
 		}
 		group := &groups[index]
 		group.Count++
@@ -380,16 +394,30 @@ func groupTopProcesses(processes []topProcess) []topProcessGroup {
 			group.DiskWrite += process.DiskWrite
 		}
 	}
+	for index := range groups {
+		if group := &groups[index]; len(places[group.Name]) > 1 {
+			group.Place = topProcessPlace(group.CWD)
+		}
+	}
 	kept, seen := []topProcessGroup{}, map[string]bool{}
 	for _, ranked := range [][]topProcessGroup{topProcessGroupsByIO(groups), topProcessGroupsByCPU(groups), topProcessGroupsByMemory(groups)} {
 		for _, group := range ranked {
-			if !seen[group.Name] {
+			key := group.Name + "\x00" + group.CWD
+			if !seen[key] {
 				kept = append(kept, group)
-				seen[group.Name] = true
+				seen[key] = true
 			}
 		}
 	}
 	return kept
+}
+
+// topProcessPlace는 작업 디렉터리의 마지막 이름이다. worktree나 project 이름이 거기에 있다. 읽지 못한 디렉터리는 ?다.
+func topProcessPlace(cwd string) string {
+	if cwd == "" {
+		return "?"
+	}
+	return filepath.Base(cwd)
 }
 
 // topProcessGroupsBy는 둘 이상 모였고 keep을 만족하는 묶음을 before 순으로 topProcessGroupLimit개 고른다.
@@ -798,6 +826,8 @@ func countBlockedTopProcesses(processes []topProcess) (int, bool) {
 // linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.
 type linuxProcessStat struct {
 	PID        int
+	PPID       int
+	CWD        string
 	Command    string
 	Ticks      uint64
 	RSSPages   uint64
@@ -858,10 +888,11 @@ func parseLinuxProcessStat(pid int, data string) (linuxProcessStat, bool) {
 	rss, e3 := strconv.ParseUint(fields[rssField], 10, 64)
 	threads, e4 := strconv.Atoi(fields[threadsField])
 	start, e5 := strconv.ParseUint(fields[startField], 10, 64)
-	if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil {
+	ppid, e6 := strconv.Atoi(fields[1])
+	if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil || e6 != nil {
 		return linuxProcessStat{}, false
 	}
-	return linuxProcessStat{PID: pid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss, Threads: threads, StartTicks: start, State: fields[0]}, true
+	return linuxProcessStat{PID: pid, PPID: ppid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss, Threads: threads, StartTicks: start, State: fields[0]}, true
 }
 
 // linuxProcessIO는 /proc/<pid>/io에서 storage에 닿은 누적 byte다. rchar와 wchar는 page cache를 거친 byte까지 세므로 쓰지 않는다.
@@ -919,7 +950,7 @@ func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat)
 		}
 		cpu := float64(stat.Ticks-before) / tracker.clockTicks / seconds * 100
 		rss := stat.RSSPages * tracker.pageSize
-		process := topProcess{PID: stat.PID, CPU: cpu, RSS: rss, Memory: rss + stat.Swap, MemoryValid: stat.SwapValid, Command: stat.Command, Threads: stat.Threads, State: stat.State}
+		process := topProcess{PID: stat.PID, PPID: stat.PPID, CWD: stat.CWD, CPU: cpu, RSS: rss, Memory: rss + stat.Swap, MemoryValid: stat.SwapValid, Command: stat.Command, Threads: stat.Threads, State: stat.State}
 		if !tracker.boot.IsZero() {
 			process.Started = tracker.boot.Add(time.Duration(float64(stat.StartTicks) / tracker.clockTicks * float64(time.Second)))
 		}
@@ -942,19 +973,21 @@ const topProcessStartFields = 5
 // topDarwinStateBlocked는 macOS ps의 uninterruptible wait 상태다. Linux의 D와 같은 뜻이다.
 const topDarwinStateBlocked = "U"
 
-// parseTopProcesses는 "pid pcpu rss state lstart comm" 줄을 읽는다. state는 macOS ps의 첫 글자만 쓰고,
+// parseTopProcesses는 "pid ppid pcpu rss state lstart comm" 줄을 읽는다. state는 macOS ps의 첫 글자만 쓰고,
 // 뒤의 글자는 우선순위와 session 표시라 버린다.
 func parseTopProcesses(output string) []topProcess {
 	processes := []topProcess{}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 5+topProcessStartFields {
+		if len(fields) < 6+topProcessStartFields {
 			continue
 		}
 		pid, e1 := strconv.Atoi(fields[0])
+		ppid, e4 := strconv.Atoi(fields[1])
+		fields = fields[1:]
 		cpu, e2 := strconv.ParseFloat(strings.ReplaceAll(fields[1], ",", "."), 64)
 		rss, e3 := strconv.ParseUint(fields[2], 10, 64)
-		if e1 != nil || e2 != nil || e3 != nil {
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
 			continue
 		}
 		state := fields[3][:1]
@@ -963,7 +996,7 @@ func parseTopProcesses(output string) []topProcess {
 		}
 		// lstart를 읽지 못해도 process는 남긴다. 시작 시각만 비운다.
 		started, _ := time.ParseInLocation(topProcessStartLayout, strings.Join(fields[4:4+topProcessStartFields], " "), time.Local)
-		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, State: state, Command: strings.Join(fields[4+topProcessStartFields:], " "), Started: started})
+		processes = append(processes, topProcess{PID: pid, PPID: ppid, CPU: cpu, RSS: rss * 1024, State: state, Command: strings.Join(fields[4+topProcessStartFields:], " "), Started: started})
 	}
 	return sortTopProcessesByCPU(processes)
 }

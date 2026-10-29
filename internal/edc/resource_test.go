@@ -115,8 +115,8 @@ func TestParsePressureAvg10(t *testing.T) {
 }
 
 func TestParseTopProcesses(t *testing.T) {
-	processes := parseTopProcesses(" 9 12.5 2048 Ss+ Sat Oct  3 05:06:51 2026 node server.js\n 2 99.0 1024 U< Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1.0 10 R garbled start comm\n")
-	if len(processes) != 2 || processes[0].PID != 2 || processes[0].RSS != 1024*1024 || processes[1].Command != "node server.js" {
+	processes := parseTopProcesses(" 9 1 12.5 2048 Ss+ Sat Oct  3 05:06:51 2026 node server.js\n 2 9 99.0 1024 U< Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1 1.0 10 R garbled start comm\n")
+	if len(processes) != 2 || processes[0].PID != 2 || processes[0].PPID != 9 || processes[0].RSS != 1024*1024 || processes[1].Command != "node server.js" || processes[1].PPID != 1 {
 		t.Fatalf("processes = %#v", processes)
 	}
 	// macOS의 U는 Linux의 D처럼 I/O를 기다리며 멈춘 상태라 blocked 후보와 묶음 집계에 들어가야 한다.
@@ -131,7 +131,7 @@ func TestParseTopProcesses(t *testing.T) {
 func TestParseLinuxProcessStat(t *testing.T) {
 	data := "1234 (my (odd) proc) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 1 0 100 1000000 2048 18446744073709551615\n"
 	stat, ok := parseLinuxProcessStat(1234, data)
-	if !ok || stat.Command != "my (odd) proc" || stat.Ticks != 300 || stat.RSSPages != 2048 || stat.Threads != 1 || stat.StartTicks != 100 {
+	if !ok || stat.Command != "my (odd) proc" || stat.PPID != 1 || stat.Ticks != 300 || stat.RSSPages != 2048 || stat.Threads != 1 || stat.StartTicks != 100 {
 		t.Fatalf("stat = %#v, %v", stat, ok)
 	}
 	if stat.State != "S" {
@@ -1200,5 +1200,27 @@ func TestTopProcessSamplerLeavesBlockedUnknownWhenTheReadFails(t *testing.T) {
 	fillProcsBlocked(&snapshot)
 	if snapshot.ProcsBlockedSource.known() {
 		t.Fatal("an unknown count must not fill blocked")
+	}
+}
+
+func TestGroupTopProcessesSplitsTheSameCommandByWorkingDirectory(t *testing.T) {
+	processes := []topProcess{
+		{PID: 1, Command: "rustc", CPU: 90, CWD: "/work/wt-a"}, {PID: 2, Command: "rustc", CPU: 80, CWD: "/work/wt-a"},
+		{PID: 3, Command: "rustc", CPU: 70, CWD: "/work/wt-b"}, {PID: 4, Command: "rustc", CPU: 60, CWD: "/work/wt-b"},
+		{PID: 5, Command: "node", CPU: 50, CWD: "/srv"}, {PID: 6, Command: "node", CPU: 40, CWD: "/srv"},
+	}
+	groups := groupTopProcesses(processes)
+	labels := map[string]topProcessGroup{}
+	for _, group := range groups {
+		labels[topProcessGroupLabel(group, 40)] = group
+	}
+	for label, cpu := range map[string]float64{"rustc · wt-a (2 procs)": 170, "rustc · wt-b (2 procs)": 130} {
+		if group, ok := labels[label]; !ok || group.CPU != cpu {
+			t.Fatalf("groups = %+v, want %q with cpu %v", labels, label, cpu)
+		}
+	}
+	// 한 디렉터리에서만 도는 이름에는 디렉터리를 붙이지 않는다.
+	if groups := groupTopProcesses(processes[4:]); len(groups) != 1 || topProcessGroupLabel(groups[0], 40) != "node (2 procs)" {
+		t.Fatalf("node groups = %+v", groups)
 	}
 }

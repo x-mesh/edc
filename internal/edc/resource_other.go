@@ -40,10 +40,10 @@ func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) 
 	return func() ([]topProcess, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), darwinProcessTimeout)
 		defer cancel()
-		args := []string{"-Ao", "pid=,pcpu=,rss=,state=,lstart=,comm="}
+		args := []string{"-Ao", "pid=,ppid=,pcpu=,rss=,state=,lstart=,comm="}
 		if topFullCommand {
 			// -ww는 ps가 출력 폭에 맞춰 argv를 자르지 않게 한다.
-			args = []string{"-ww", "-Ao", "pid=,pcpu=,rss=,state=,lstart=,args="}
+			args = []string{"-ww", "-Ao", "pid=,ppid=,pcpu=,rss=,state=,lstart=,args="}
 		}
 		command := exec.CommandContext(ctx, "/bin/ps", args...)
 		// lstart의 요일과 달 이름이 지역 설정을 따르면 시작 시각을 읽을 수 없다.
@@ -54,6 +54,7 @@ func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) 
 		}
 		processes := parseTopProcesses(string(output))
 		for index := range processes {
+			processes[index].CWD = darwinProcessCWD(processes[index].PID)
 			threads, err := readDarwinProcessThreads(processes[index].PID)
 			if err == nil {
 				processes[index].Threads = threads

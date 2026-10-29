@@ -483,7 +483,10 @@ type topProcessTotalSample struct {
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
 // Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
 type topProcessSample struct {
-	PID     int        `json:"pid"`
+	PID int `json:"pid"`
+	// PPID는 부모 process 번호, CWD는 작업 디렉터리다. 읽지 못하면 빠진다.
+	PPID    int        `json:"ppid,omitempty"`
+	CWD     string     `json:"cwd,omitempty"`
 	Started *time.Time `json:"started,omitempty"`
 	Command string     `json:"command"`
 	CPU     float64    `json:"cpu_pct"`
@@ -508,7 +511,7 @@ const topJSONProcesses = 10
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
-		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
+		sample := topProcessSample{PID: process.PID, PPID: process.PPID, CWD: process.CWD, Command: process.Command, CPU: roundTopValue(process.CPU), Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
 		sample.Limits = processLimitsOf(process)
 		if !process.RSSMissing {
 			rss := process.RSS

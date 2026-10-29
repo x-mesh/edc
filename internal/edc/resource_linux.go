@@ -105,6 +105,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		return snapshot, err
 	}
 	lines := strings.Split(string(stat), "\n")
+	if created, ok := parseLinuxProcessesCreated(string(stat)); ok {
+		snapshot.ProcsCreated, snapshot.ProcsCreatedValid, snapshot.ProcsCreatedSource = created, true, "kernel"
+	}
 	fields := strings.Fields(lines[0])
 	if len(fields) < 8 {
 		return snapshot, fmt.Errorf("invalid /proc/stat cpu line")

@@ -1063,6 +1063,37 @@ func TestTopSampleWritesSwapUsageAndCompressorOnlyWhenRead(t *testing.T) {
 	}
 }
 
+func TestParseLinuxProcessesCreated(t *testing.T) {
+	if got, ok := parseLinuxProcessesCreated("cpu  1 2 3\nintr 9\nprocesses 118605922\nprocs_running 2\n"); !ok || got != 118605922 {
+		t.Fatalf("processes = %d, %v", got, ok)
+	}
+	if _, ok := parseLinuxProcessesCreated("cpu  1 2 3\n"); ok {
+		t.Fatal("a stat without processes must be unread")
+	}
+}
+
+// 생성 수는 누적 counter의 차이다. 한쪽을 읽지 못했거나 counter가 줄었으면 이 구간의 rate는 모른다.
+func TestCalculateRateCountsProcessesCreated(t *testing.T) {
+	previous := resourceSnapshot{TakenAt: time.Unix(0, 0), CPUTotal: 100, ProcsCreated: 1000, ProcsCreatedValid: true, ProcsCreatedSource: "kernel"}
+	current := resourceSnapshot{TakenAt: time.Unix(2, 0), CPUTotal: 200, ProcsCreated: 1300, ProcsCreatedValid: true, ProcsCreatedSource: "kernel"}
+	if rate := calculateRate(previous, current); !rate.ProcsCreatedValid || rate.ProcsCreated != 150 || rate.ProcsCreatedSource != "kernel" {
+		t.Fatalf("rate = %v %v %q", rate.ProcsCreated, rate.ProcsCreatedValid, rate.ProcsCreatedSource)
+	}
+	for _, broken := range []resourceSnapshot{{TakenAt: time.Unix(2, 0)}, {TakenAt: time.Unix(2, 0), ProcsCreated: 10, ProcsCreatedValid: true}} {
+		if rate := calculateRate(previous, broken); rate.ProcsCreatedValid {
+			t.Fatalf("%+v must leave the rate unknown", broken)
+		}
+	}
+	data, _ := json.Marshal(newTopSample(hostDetails{}, time.Unix(2, 0), calculateRate(previous, current)))
+	if !strings.Contains(string(data), `"procs_created_per_s":150`) || !strings.Contains(string(data), `"procs_created_source":"kernel"`) {
+		t.Fatalf("sample = %s", data)
+	}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(2, 0), resourceRate{}))
+	if !strings.Contains(string(data), `"procs_created_per_s":null`) || strings.Contains(string(data), `"procs_created_source"`) {
+		t.Fatalf("an unknown rate must be null: %s", data)
+	}
+}
+
 func TestLinuxSwapUsage(t *testing.T) {
 	tests := []struct {
 		memory      map[string]uint64

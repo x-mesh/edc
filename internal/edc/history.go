@@ -324,6 +324,9 @@ type historyColorTable struct {
 
 func writeHistory(output io.Writer, db *sql.DB, command string, options historyOptions, jsonOutput bool, style textStyle) error {
 	query, values := historyQuery(command, options)
+	if command == "top" && jsonOutput {
+		query = strings.Replace(query, "SELECT payload FROM top_samples", "SELECT payload, "+historyStoredProcessesColumn+" FROM top_samples", 1)
+	}
 	rows, err := db.Query(query, values...)
 	if err != nil {
 		return err
@@ -389,10 +392,18 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 			paints = []historyPaint{nil, nil, style.dim, style.dim, nil, historyStatusPaint(style, run.Status), nil, historyUnitPaint(style)}
 		case "top":
 			var sample historyTopSample
-			if err := rows.Scan(&payload); err != nil {
+			var stored sql.NullString
+			targets := []any{&payload}
+			if jsonOutput {
+				targets = append(targets, &stored)
+			}
+			if err := rows.Scan(targets...); err != nil {
 				return err
 			}
 			if err := json.Unmarshal([]byte(payload), &sample); err != nil {
+				return err
+			}
+			if err := sample.attachStoredProcesses(stored); err != nil {
 				return err
 			}
 			value = sample

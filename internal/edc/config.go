@@ -25,7 +25,7 @@ const legacyRecommendedLogOutput = "/var/log/job.log"
 var configScalarTypes = map[string]string{
 	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
 	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.top.interface": "!!str",
-	"defaults.top.view": "!!str", "defaults.top.panels": "!!str", "defaults.top.process_sort": "!!str", "defaults.top.columns": "!!str", "defaults.where.provider": "!!str",
+	"defaults.top.view": "!!str", "defaults.top.panels": "!!str", "defaults.top.process_sort": "!!str", "defaults.top.columns": "!!str", "defaults.top.retain": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
 	"defaults.remote.inventory": "!!str", "defaults.remote.recipe": "!!str",
 	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str", "defaults.log.restart": "!!str",
@@ -178,6 +178,8 @@ type topConfig struct {
 	Columns     *string `yaml:"columns,omitempty" toml:"columns,omitempty"`
 	// AutoRecord는 대시보드가 이상 징후를 보면 스스로 기록을 시작하는지다. 기본은 꺼져 있다.
 	AutoRecord *bool `yaml:"auto_record,omitempty" toml:"auto_record,omitempty"`
+	// Retain은 기록할 때 이보다 오래 활동이 없는 top 실행을 지우는 기간이다(30d, 2w). 기본은 지우지 않는다.
+	Retain *string `yaml:"retain,omitempty" toml:"retain,omitempty"`
 }
 type infoConfig struct {
 	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`
@@ -517,6 +519,11 @@ func validateConfig(config edcConfig) error {
 	if d.Top.ProcessSort != nil && *d.Top.ProcessSort != "" {
 		if _, err := parseTopProcessSort(*d.Top.ProcessSort); err != nil {
 			return invalidConfig("defaults.top.process_sort", "must be cpu, mem, or io")
+		}
+	}
+	if d.Top.Retain != nil && *d.Top.Retain != "" {
+		if _, err := parseLogAge(*d.Top.Retain); err != nil {
+			return invalidConfig("defaults.top.retain", "must be an age such as 30d, 2w, or 12h")
 		}
 	}
 	if d.Info.Timeout != nil && d.Info.Timeout.Duration <= 0 {

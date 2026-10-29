@@ -42,6 +42,8 @@ observe:
     split_invalid: "--split에는 all, none 또는 cpu, mem, disk, net, psi를 쉼표로 구분해 한 번씩만 쓸 수 있습니다"
     split_needs_view: "--split은 대시보드에서만 쓸 수 있습니다"
     auto_record_needs_view: "--auto-record는 대시보드에서만 쓸 수 있습니다"
+    retain_invalid: "--retain에는 30d, 2w, 12h 같은 기간을 줄 수 있습니다"
+    retain_needs_write: "--retain은 --write나 대시보드에서 쓸 수 있습니다"
     split_with_process: "--split은 --process와 함께 쓸 수 없습니다"
     view_invalid: "--view에는 all, cpu, memory, disk, network, pressure, split 중 하나를 쓸 수 있습니다"
     view_with_process: "--view는 --process와 함께 쓸 수 없습니다"

@@ -162,6 +162,7 @@ command:
       ebpf: "same as --detail"
       write: "append to SQLite; omit path for the default DB"
       auto_record: "record load, swap out, or memory pressure spikes"
+      retain: "while recording, delete top runs idle longer than this (30d, 2w)"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "Press w to start/stop DB recording. Each restart creates a new run; p pauses recording too."

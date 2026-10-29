@@ -40,6 +40,7 @@ func runTop(args []string, version string) (code int) {
 	writePath := set.String("write", "", T("command.top.option.write"))
 	set.StringVar(writePath, "w", "", T("command.top.option.write"))
 	autoRecord := set.Bool("auto-record", configuredBool(config.AutoRecord, false), T("command.top.option.auto_record"))
+	retainValue := set.String("retain", configuredString(config.Retain, ""), T("command.top.option.retain"))
 	args, defaultWrite := normalizeTopWriteArgs(args, set)
 	if err := set.Parse(args); err != nil {
 		return 2
@@ -73,7 +74,7 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return 2
 	}
-	explicitSplit, explicitView, explicitPanels, explicitColumns, explicitAutoRecord := false, false, false, false, false
+	explicitSplit, explicitView, explicitPanels, explicitColumns, explicitAutoRecord, explicitRetain := false, false, false, false, false, false
 	set.Visit(func(option *flag.Flag) {
 		switch option.Name {
 		case "split":
@@ -84,6 +85,8 @@ func runTop(args []string, version string) (code int) {
 			explicitPanels = true
 		case "columns":
 			explicitColumns = true
+		case "retain":
+			explicitRetain = true
 		case "auto-record":
 			explicitAutoRecord = true
 		}
@@ -218,6 +221,38 @@ func runTop(args []string, version string) (code int) {
 		defer processSampler.setObserver(nil)
 	}
 	processSampler.setFilter(filter)
+	if *retainValue != "" {
+		retain, err := parseLogAge(*retainValue)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.retain_invalid"))
+			return 2
+		}
+		// 대시보드는 -w가 없어도 w로 기본 DB에 기록한다. 표와 JSON은 -w를 줄 때만 기록한다.
+		retainPath := *writePath
+		if retainPath == "" && dashboard {
+			if retainPath, err = defaultHistoryPath(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		switch {
+		case retainPath != "":
+			stop, err := startHistoryRetention(retainPath, retain)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, T("history.error.retain", err))
+				return 1
+			}
+			defer func() {
+				if err := stop(); err != nil {
+					fmt.Fprintln(os.Stderr, T("history.error.retain", err))
+				}
+			}()
+		// 설정의 retain은 기록할 때만 쓰는 기본값이라 기록하지 않는 표 출력을 막지 않는다.
+		case explicitRetain:
+			fmt.Fprintln(os.Stderr, T("observe.top.retain_needs_write"))
+			return 2
+		}
+	}
 	var recorder *topRecorder
 	if *writePath != "" {
 		details, err := collectHostDetails()
@@ -406,12 +441,13 @@ type topProcessSample struct {
 	CPU      float64    `json:"cpu_pct"`
 	RSSBytes uint64     `json:"rss_bytes"`
 	// MemoryBytes는 macOS phys_footprint 또는 Linux RSS+VmSwap이다. 읽지 못한 process는 빠진다.
-	MemoryBytes *uint64           `json:"memory_bytes,omitempty"`
-	Threads     int               `json:"threads,omitempty"`
-	FDs         int               `json:"fds,omitempty"`
-	Limits      *topProcessLimits `json:"limits"`
-	DiskRead    *float64          `json:"disk_read_bytes_per_s,omitempty"`
-	DiskWrite   *float64          `json:"disk_write_bytes_per_s,omitempty"`
+	MemoryBytes *uint64 `json:"memory_bytes,omitempty"`
+	Threads     int     `json:"threads,omitempty"`
+	FDs         int     `json:"fds,omitempty"`
+	// Limits는 실시간 출력에서 늘 있다. history는 수집하지 않은 limits의 자리 표시 문구를 행마다 저장하지 않으려고 뺀다.
+	Limits    *topProcessLimits `json:"limits,omitempty"`
+	DiskRead  *float64          `json:"disk_read_bytes_per_s,omitempty"`
+	DiskWrite *float64          `json:"disk_write_bytes_per_s,omitempty"`
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
 	EBPF *topProbeSample `json:"ebpf,omitempty"`
 }

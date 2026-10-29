@@ -3,6 +3,7 @@ package edc
 import (
 	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -287,4 +288,57 @@ func historyFreeBytes(db *sql.DB) (uint64, error) {
 		return 0, err
 	}
 	return pages * size, nil
+}
+
+// historyRetentionInterval은 top --retain이 기록하는 동안 오래된 실행을 다시 지우는 간격이다.
+const historyRetentionInterval = time.Hour
+
+// startHistoryRetention은 path의 top 실행 중 retain보다 오래 활동이 없는 실행을 지금 한 번, 그 뒤 매시간 지운다.
+// 처음 지우기가 실패하면 기록을 시작하지 않도록 바로 오류를 준다. 대시보드는 화면을 깨지 않도록 배경 오류를 모아 두었다가
+// stop이 마지막 오류를 돌려준다. 기록 중인 실행은 활동 시각이 최근이라 지워지지 않는다.
+func startHistoryRetention(path string, retain time.Duration) (stop func() error, err error) {
+	if err := pruneHistoryRetention(path, retain, time.Now()); err != nil {
+		return nil, err
+	}
+	done, finished := make(chan struct{}), make(chan error, 1)
+	ticker := time.NewTicker(historyRetentionInterval)
+	go func() {
+		var last error
+		for {
+			select {
+			case <-done:
+				finished <- last
+				return
+			case now := <-ticker.C:
+				if err := pruneHistoryRetention(path, retain, now); err != nil {
+					last = err
+				}
+			}
+		}
+	}()
+	return func() error {
+		ticker.Stop()
+		close(done)
+		return <-finished
+	}, nil
+}
+
+// pruneHistoryRetention은 snapshot처럼 top이 아닌 실행은 건드리지 않는다. 대시보드에서 w로 기록하기 전처럼 DB가 아직
+// 없으면 빈 DB를 만들지 않는다.
+func pruneHistoryRetention(path string, retain time.Duration, now time.Time) error {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	options := historyPruneOptions{olderThan: retain, command: "top"}
+	plan, err := planHistoryPrune(db, options, now)
+	if err != nil || len(plan.runs) == 0 {
+		return err
+	}
+	_, err = deleteEligibleHistoryRuns(db, options, plan.runs, now)
+	return err
 }

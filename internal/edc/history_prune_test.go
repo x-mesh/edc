@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -179,5 +180,49 @@ func TestHistoryPruneCountsADatabaseWithoutSnapshotTables(t *testing.T) {
 	}
 	if code, _, stderr := runHistoryPruneTest("--older-than", "7d", "--yes", path); code != 0 || stderr != "" || len(historyRunIDs(t, path)) != 0 {
 		t.Fatalf("prune on an old database: %d %q", code, stderr)
+	}
+}
+
+// --retain은 기록하면서 오래 쉰 top 실행만 지운다. snapshot 실행과 최근에 기록한 실행은 남긴다.
+func TestTopRetainDeletesOnlyIdleTopRuns(t *testing.T) {
+	path, ids := historyPruneFixture(t)
+	if code := runTop([]string{"--interval", "200ms", "--count", "1", "--no-header", "-w", path, "--retain", "7d"}, "test"); code != 0 {
+		t.Fatalf("top --retain returned %d", code)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for name, kept := range map[string]bool{"old_top": false, "running_top": true, "old_snapshot": true, "new_snapshot": true} {
+		var count int
+		if err := db.QueryRow("SELECT count(*) FROM runs WHERE id = ?", ids[name]).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != kept {
+			t.Errorf("%s kept = %v, want %v", name, count == 1, kept)
+		}
+	}
+	var orphans int
+	if err := db.QueryRow("SELECT count(*) FROM top_process_samples WHERE run_id = ?", ids["old_top"]).Scan(&orphans); err != nil || orphans != 0 {
+		t.Fatalf("process rows of the deleted run = %d, %v", orphans, err)
+	}
+}
+
+func TestTopRetainRejectsBadAgeAndNoDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "h.db")
+	for _, args := range [][]string{
+		{"--count", "1", "--retain", "7d"},
+		{"--count", "1", "-w", path, "--retain", "soon"},
+	} {
+		if code := runTop(args, "test"); code != 2 {
+			t.Errorf("top %v returned %d, want 2", args, code)
+		}
+	}
+	if err := pruneHistoryRetention(path, 24*time.Hour, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retention must not create a database: %v", err)
 	}
 }

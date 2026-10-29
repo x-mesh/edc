@@ -42,6 +42,8 @@ observe:
     split_invalid: "--split needs all, none, or cpu, mem, disk, net, psi, comma-separated, each once"
     split_needs_view: "--split needs the dashboard"
     auto_record_needs_view: "--auto-record needs the dashboard"
+    retain_invalid: "--retain needs an age such as 30d, 2w, or 12h"
+    retain_needs_write: "--retain needs --write or the dashboard"
     split_with_process: "--split cannot be used with --process"
     view_invalid: "--view needs all, cpu, memory, disk, network, pressure, or split"
     view_with_process: "--view cannot be used with --process"

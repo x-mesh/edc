@@ -187,6 +187,10 @@ func newHistoryTopSample(details hostDetails, previous resourceSnapshot, snapsho
 				started := process.Started.UTC()
 				(*sample.Processes)[index].Started = &started
 			}
+			// 수집하지 않은 limits는 OS마다 같은 문구라 process 행 payload의 2/3를 차지했다.
+			if process.Limits == nil {
+				(*sample.Processes)[index].Limits = nil
+			}
 		}
 		if filter != "" {
 			sample.ProcessTotal = newTopProcessTotalSample(snapshot.ProcessTotal)
@@ -582,8 +586,15 @@ func (recorder *topRecorder) writeSample(tx *sql.Tx, payload []byte) error {
 	if err := json.Unmarshal(payload, &sample); err != nil {
 		return err
 	}
+	// process는 top_process_samples에 한 행씩 남는다. top_samples payload에 같은 목록을 다시 넣으면 기록이 두 배 가까이 된다.
+	stored := sample
+	stored.Processes = nil
+	samplePayload, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
 	columns := append([]string{"run_id", "time_ns", "payload"}, historyMetricNames(historyHostMetrics)...)
-	values := append([]any{recorder.runID, sample.Time.UnixNano(), string(payload)}, historyMetricValues(sample.topSample, historyHostMetrics, sample.metricSupported)...)
+	values := append([]any{recorder.runID, sample.Time.UnixNano(), string(samplePayload)}, historyMetricValues(sample.topSample, historyHostMetrics, sample.metricSupported)...)
 	result, err := tx.Exec(historyInsert("top_samples", columns), values...)
 	if err != nil {
 		return err
@@ -629,6 +640,25 @@ func (recorder *topRecorder) Close(status string) error {
 }
 
 func historyFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+// historyStoredProcessesColumn은 sample의 process 행을 기록 순서대로 JSON 배열 하나로 읽는다. top_samples payload에는
+// process 목록을 다시 넣지 않으므로 history top --json이 같은 목록을 내려면 여기서 붙인다. 한 query로 읽어야 연결이
+// 하나뿐인 DB에서 행을 읽는 도중에 다른 query를 기다리지 않는다.
+const historyStoredProcessesColumn = "(SELECT json_group_array(json(payload)) FROM (SELECT payload FROM top_process_samples WHERE sample_id = top_samples.id ORDER BY id))"
+
+// attachStoredProcesses는 process 목록을 읽은 sample에 행으로 남은 목록을 붙인다. 맞은 process가 없으면 빈 배열이고,
+// 목록을 읽지 못한 sample에는 붙이지 않는다. 이전 기록처럼 payload에 이미 목록이 있으면 그대로 둔다.
+func (sample *historyTopSample) attachStoredProcesses(stored sql.NullString) error {
+	if !stored.Valid || !sample.ProcessesValid || sample.Processes != nil {
+		return nil
+	}
+	processes := []topProcessSample{}
+	if err := json.Unmarshal([]byte(stored.String), &processes); err != nil {
+		return err
+	}
+	sample.Processes = &processes
+	return nil
+}
 
 func (sample historyTopSample) metricSupported(name string) bool {
 	switch name {

@@ -152,6 +152,7 @@ history:
     wal: "이 DB에서 SQLite WAL 모드를 사용할 수 없습니다"
     queue: "기록 큐가 가득 차 관측을 중단합니다"
     write: "기록 실패: %v"
+    retain: "오래된 실행을 지우지 못했습니다: %v"
     read: "이력을 읽을 수 없습니다: %v"
     time: "1678~2261년의 RFC3339 시각을 쓰세요. --from은 --to보다 빨라야 합니다"
     metric: "--metric과 유한한 --min 또는 --max를 함께 쓰세요(min <= max). 지표: %s"

@@ -247,6 +247,7 @@ var commandDocs = []commandDoc{
 			{"--interval 1s", "command.top.option.interval"},
 			{"-w, --write [path]", "command.top.option.write"},
 			{"--auto-record", "command.top.option.auto_record"},
+			{"--retain <age>", "command.top.option.retain"},
 			{"--count N", "command.top.option.count"},
 			{"--no-header", "command.top.option.no_header"},
 			{"--process <filter>", "command.top.option.process"},

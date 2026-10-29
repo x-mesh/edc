@@ -83,11 +83,12 @@ network_errors_per_s network_drops_per_s load1 cpu_user_pct cpu_system_pct cpu_i
 disk_read_bytes_per_s disk_write_bytes_per_s disk_iops disk_await_ms disk_busy_pct
 psi_cpu_some_avg10_pct psi_memory_some_avg10_pct psi_io_some_avg10_pct memory_pct swap_out_bytes_per_s
 swap_used_bytes swap_total_bytes compressor_bytes procs_created_per_s
+cpu_throttle_pct temp_c gpu_busy_pct
 `)), historyMetric{name: "cpu_pct", field: -1, kind: reflect.Float64})
 
 // historyAddedTopColumns는 버전 1의 top_samples 뒤에 더한 지표다. 버전을 올리면 이전 edc가 DB를 열지 못하므로
 // 쓰기로 열 때 column을 더하기만 한다. 읽기로 연 이전 DB에는 없을 수 있다.
-var historyAddedTopColumns = []string{"swap_used_bytes", "swap_total_bytes", "compressor_bytes", "procs_created_per_s"}
+var historyAddedTopColumns = []string{"swap_used_bytes", "swap_total_bytes", "compressor_bytes", "procs_created_per_s", "cpu_throttle_pct", "temp_c", "gpu_busy_pct"}
 var historyProcessMetrics = historyMetrics(topProcessSample{}, strings.Fields(`
 pid cpu_pct rss_bytes memory_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
 `))

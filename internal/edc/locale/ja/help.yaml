@@ -101,14 +101,14 @@ command:
       - "--group は SSH でホストごとに edc check を実行します。各ホストに check を含む edc が必要です。"
       - "ルーチンは config.toml の unit ルール、基準値、シェルコマンドを加えます。コマンドは 0 で終われば pass です。"
   events:
-    summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
+    summary: "カーネル、systemd、macOS の jetsam・パニックのシグナルを時系列で整理"
     option:
       since: "読む期間 (例: 30m、48h)"
     notes:
-      - "カーネルログと systemd journal だけを読みます。"
+      - "Linux ではカーネルログと systemd journal を読みます。"
       - "root か adm、systemd-journal グループで実行してください。"
       - "権限がなければ点検は pass ではなく skip です。"
-      - "Linux でのみ動作します。"
+      - "macOS では /Library/Logs/DiagnosticReports の jetsam・パニックレポートを読みます。"
   net:
     summary: "interface、route、ping、trace"
     sub:

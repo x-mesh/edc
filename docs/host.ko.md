@@ -375,6 +375,18 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 `edc events`는 로그 전체를 보여 주지 않습니다. 새 기록을 따라가지 않고, 애플리케이션 로그도 읽지 않습니다.
 
 
+### macOS
+
+macOS에서 `edc events`는 `/Library/Logs/DiagnosticReports`와 그 아래 `Retired` 폴더의 jetsam·패닉 보고서를 읽습니다. 이 보고서는 ReportCrash가 남깁니다. 보고서는 파일 이름이 아니라 첫 줄의 `bug_type`으로 고릅니다.
+
+| 결과 | Fail | Warn |
+|---|---|---|
+| `events.window` | | |
+| `events.panic` | 커널 패닉이 있었음 | |
+| `events.jetsam` | | jetsam이 process를 종료함. 근거에 이유, 상주 메모리, 가장 큰 process를 보입니다 |
+
+이유가 `per-process-limit`인 종료는 process 하나가 자기 메모리 한도를 넘은 것으로, macOS에서 흔하므로 warn으로 둡니다. 관리자 계정이면 보고서를 읽을 수 있고, 폴더를 읽지 못하면 `events.window`가 `skip`입니다. unified log에는 커널의 `memorystatus` 줄이 남지 않아 읽지 않습니다.
+
 ## 현재 범위
 
 `top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS에서 `networkQuality`를, Linux에서 내장 응답성 측정을 실행하며 둘 다 측정한 경우에 `download_bps`, `upload_bps`, `responsiveness_rpm`, `base_rtt_ms`를 남기고, 측정하지 못한 값은 뺍니다. config URL 기본값은 Apple의 `https://mensura.cdn-apple.com/api/v1/gm/config`이고, `--server`나 `defaults.quality.server`로 바꿉니다. `server`를 비우면 기본값을 씁니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 로그 파일, 회전 파일, 잠금 파일을 씁니다. `edc top --write`는 SQLite DB와 WAL 파일을 씁니다. `edc ai`는 `ai-resets.jsonl`과 `ai-claude.json`을 쓰고 Claude 사용량 API를 부릅니다.

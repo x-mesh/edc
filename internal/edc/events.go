@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -207,6 +208,9 @@ func runEvents(args []string, version string) int {
 	defer cancel()
 	defer deadline()
 	sources, supported := hostEventsSources()
+	if !supported && runtime.GOOS == "darwin" {
+		return emit(options, buildReport(version, started, nil, evaluateMacEvents(collectMacEventsFacts(eventsReportDirs, time.Now(), since)), options.redact))
+	}
 	if !supported {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("events", T("events.skip.linux_only"))}, options.redact))
 	}

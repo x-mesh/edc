@@ -23,9 +23,6 @@ const (
 	eventsPanic  = "panic"
 	// eventsReportLimit은 보고서 하나를 읽는 상한이다. JetsamEvent는 process 1000여 개를 담아 수백 KB다.
 	eventsReportLimit = 16 << 20
-	// ReportCrash 보고서 첫 줄의 bug_type이다. 298은 JetsamEvent, 210은 커널 패닉이다.
-	eventsJetsamBugType = "298"
-	eventsPanicBugType  = "210"
 )
 
 // eventsReportDirs는 시스템 진단 보고서 위치다. 오래된 보고서는 Retired로 옮겨진다.
@@ -103,7 +100,7 @@ func readEventsReport(path string) ([]byte, error) {
 	var header struct {
 		BugType string `json:"bug_type"`
 	}
-	if json.Unmarshal(head, &header) != nil || (header.BugType != eventsJetsamBugType && header.BugType != eventsPanicBugType) {
+	if json.Unmarshal(head, &header) != nil || (header.BugType != diagnosticJetsam && header.BugType != diagnosticPanic) {
 		return nil, errEventsOtherReport
 	}
 	// ReadSlice의 결과는 reader의 버퍼라 다음 읽기가 덮어쓴다. 나머지를 읽기 전에 복사한다.
@@ -132,9 +129,9 @@ func parseMacEventsReport(data []byte, location *time.Location) []eventsSignal {
 	}
 	at = at.In(location)
 	switch header.BugType {
-	case eventsJetsamBugType:
+	case diagnosticJetsam:
 		return parseJetsamReport(body, at)
-	case eventsPanicBugType:
+	case diagnosticPanic:
 		var report struct {
 			PanicString string `json:"panicString"`
 		}

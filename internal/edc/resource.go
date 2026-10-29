@@ -24,8 +24,8 @@ type resourceSnapshot struct {
 	// CPUIOWaitValid는 iowait을 읽었는지다. macOS kernel은 iowait을 세지 않는다.
 	CPUIOWaitValid bool
 	CPUIdle        uint64
-	CPUTotal      uint64
-	NetInterfaces []netInterfaceCounters
+	CPUTotal       uint64
+	NetInterfaces  []netInterfaceCounters
 	// NetInterfacesAll은 --interface로 고르기 전의 interface다. 대시보드의 i 상자가 고르지 않은 interface의 traffic도
 	// 보이도록 남긴다. 고르지 않았으면 비어 있고 NetInterfaces가 전부다.
 	NetInterfacesAll []netInterfaceCounters
@@ -434,6 +434,9 @@ type topProcessSampler struct {
 	filter    topProcessFilter
 	filterSeq int
 	total     topProcessTotal
+	// candidateLimit은 필터가 없을 때 CPU와 memory 순위에서 각각 남기는 process 수다. 0이면 topProcessLimit이다.
+	// --json의 --top N이 상위 N개를 정확히 내려면 후보에 N개가 들어 있어야 한다.
+	candidateLimit int
 }
 
 // topFullCommand는 process 목록의 Command에 실행 파일 이름 대신 전체 명령줄을 담을지다. runTop이 표본을
@@ -550,6 +553,13 @@ func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 	sampler.processes, sampler.total, sampler.valid, sampler.updated = nil, topProcessTotal{}, false, time.Time{}
 }
 
+// setCandidateLimit은 이후 refresh부터 필터가 없을 때 순위마다 limit개를 후보로 남긴다.
+func (sampler *topProcessSampler) setCandidateLimit(limit int) {
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	sampler.candidateLimit = limit
+}
+
 // setObserver는 이후 refresh부터 필터에 맞은 process를 -d observer로 감시하게 한다.
 func (sampler *topProcessSampler) setObserver(observe topProbeObserver) {
 	sampler.mutex.Lock()
@@ -561,7 +571,7 @@ func (sampler *topProcessSampler) refresh() {
 	sampler.refreshing.Lock()
 	defer sampler.refreshing.Unlock()
 	sampler.mutex.Lock()
-	filter, observe, filterSeq, scanIO := sampler.filter, sampler.observe, sampler.filterSeq, sampler.scanIO
+	filter, observe, filterSeq, scanIO, limit := sampler.filter, sampler.observe, sampler.filterSeq, sampler.scanIO, max(sampler.candidateLimit, topProcessLimit)
 	sampler.mutex.Unlock()
 	processes, valid := sampler.read()
 	// 필터와 후보로 자르기 전에 기록한다. 누수는 아직 작아 어느 순위에도 들지 못한 process에서 시작된다.
@@ -616,7 +626,7 @@ func (sampler *topProcessSampler) refresh() {
 		processes = topProcessCandidatesByIO(processes)
 	} else {
 		total.Groups = groupTopProcesses(processes)
-		processes = topProcessCandidates(processes)
+		processes = topProcessCandidatesUpTo(processes, limit)
 		if sampler.fillIO != nil {
 			sampler.fillIO(processes)
 		}
@@ -646,14 +656,18 @@ func sortTopProcessesByCPU(processes []topProcess) []topProcess {
 }
 
 func topProcessCandidates(processes []topProcess) []topProcess {
-	candidates := append([]topProcess(nil), processes[:min(topProcessLimit, len(processes))]...)
+	return topProcessCandidatesUpTo(processes, topProcessLimit)
+}
+
+func topProcessCandidatesUpTo(processes []topProcess, limit int) []topProcess {
+	candidates := append([]topProcess(nil), processes[:min(limit, len(processes))]...)
 	byMemory := append([]topProcess(nil), processes...)
 	sort.SliceStable(byMemory, func(i, j int) bool { return byMemory[i].memory() > byMemory[j].memory() })
 	seen := make(map[int]bool, len(candidates))
 	for _, process := range candidates {
 		seen[process.PID] = true
 	}
-	for _, process := range byMemory[:min(topProcessLimit, len(byMemory))] {
+	for _, process := range byMemory[:min(limit, len(byMemory))] {
 		if !seen[process.PID] {
 			candidates = append(candidates, process)
 			seen[process.PID] = true

@@ -306,6 +306,31 @@ func TestTopProcessCandidatesLimitUnreadableMemoryByRSS(t *testing.T) {
 	}
 }
 
+// --top N이 상위 N개를 정확히 내려면 후보가 CPU와 memory 순위에서 각각 N개를 담아야 한다.
+func TestTopProcessCandidatesUpToKeepsLimitPerRank(t *testing.T) {
+	var processes []topProcess
+	for index := range 15 {
+		processes = append(processes, topProcess{PID: index + 1, CPU: float64(100 - index), Memory: uint64(index+1) << 20, MemoryValid: true, Command: "worker"})
+	}
+	picked := map[int]bool{}
+	for _, process := range topProcessCandidatesUpTo(processes, 10) {
+		picked[process.PID] = true
+	}
+	for pid := 1; pid <= 10; pid++ {
+		if !picked[pid] {
+			t.Errorf("CPU rank %d is missing", pid)
+		}
+	}
+	for pid := 6; pid <= 15; pid++ {
+		if !picked[pid] {
+			t.Errorf("memory rank PID %d is missing", pid)
+		}
+	}
+	if got := len(topProcessCandidates(processes)); got != 2*topProcessLimit {
+		t.Errorf("default candidates = %d, want %d", got, 2*topProcessLimit)
+	}
+}
+
 func TestTopProcessSamplesReportMemoryOnlyWhenMeasured(t *testing.T) {
 	samples := *newTopProcessSamples([]topProcess{{PID: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, Command: "leak"}, {PID: 2, RSS: 200 << 20, Command: "root-owned"}})
 	if samples[0].MemoryBytes == nil || *samples[0].MemoryBytes != 3<<30 || samples[1].MemoryBytes != nil {

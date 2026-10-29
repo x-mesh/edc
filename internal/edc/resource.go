@@ -64,6 +64,11 @@ type resourceSnapshot struct {
 	// Compressor는 macOS compressor가 압축한 page를 담는 데 쓰는 물리 memory다. Linux에는 같은 값이 없다.
 	Compressor      uint64
 	CompressorValid bool
+	// ProcsCreated는 부팅 뒤 만들어진 process 수의 누적값이다. 1초 sample 사이에 생겼다 끝나는 build의 process는 목록에
+	// 보이지 않으므로 생성 rate로만 드러난다. ProcsCreatedSource는 kernel(Linux)이나 pid_delta(macOS 근사)다.
+	ProcsCreated       uint64
+	ProcsCreatedValid  bool
+	ProcsCreatedSource string
 	// DiskQueueMS는 진행 중인 I/O 수에 시간을 곱해 쌓은 값이다. 구간 시간으로 나누면 평균 큐 길이다. busy와 같은 diskstats에서 읽는다.
 	DiskQueueMS uint64
 	// CPUSteal은 hypervisor가 다른 guest에 CPU를 내준 시간이다. macOS는 이 값을 주지 않는다.
@@ -928,6 +933,9 @@ type resourceRate struct {
 	SwapOut                         float64
 	SwapUsed, SwapTotal, Compressor uint64
 	SwapUsageValid, CompressorValid bool
+	ProcsCreated                    float64
+	ProcsCreatedValid               bool
+	ProcsCreatedSource              string
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
@@ -1011,6 +1019,10 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	rate.MemoryPressure = current.MemoryPressure
 	rate.SwapUsed, rate.SwapTotal, rate.SwapUsageValid = current.SwapUsed, current.SwapTotal, current.SwapUsageValid
 	rate.Compressor, rate.CompressorValid = current.Compressor, current.CompressorValid
+	if previous.ProcsCreatedValid && current.ProcsCreatedValid && current.ProcsCreated >= previous.ProcsCreated && seconds > 0 {
+		rate.ProcsCreated = float64(current.ProcsCreated-previous.ProcsCreated) / seconds
+		rate.ProcsCreatedValid, rate.ProcsCreatedSource = true, current.ProcsCreatedSource
+	}
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
@@ -1043,6 +1055,17 @@ func parseLinuxSwapOutPages(input string) (uint64, bool) {
 		if found && name == "pswpout" {
 			pages, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
 			return pages, err == nil
+		}
+	}
+	return 0, false
+}
+
+// parseLinuxProcessesCreated는 /proc/stat의 processes, 곧 부팅 뒤 fork한 수를 읽는다.
+func parseLinuxProcessesCreated(input string) (uint64, bool) {
+	for _, line := range strings.Split(input, "\n") {
+		if value, found := strings.CutPrefix(line, "processes "); found {
+			created, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+			return created, err == nil
 		}
 	}
 	return 0, false

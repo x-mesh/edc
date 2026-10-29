@@ -357,6 +357,10 @@ type topSample struct {
 	SwapTotal *uint64 `json:"swap_total_bytes,omitempty"`
 	// Compressor는 macOS compressor가 쓰는 물리 memory다. Linux에서는 빠진다.
 	Compressor *uint64 `json:"compressor_bytes,omitempty"`
+	// ProcsCreated는 초당 만들어진 process 수다. 1초 sample 사이에 끝나는 build process는 목록에 없어 이 값으로만 보인다.
+	// 첫 sample처럼 모르면 null이다. ProcsCreatedSource는 kernel(Linux)이나 pid_delta(macOS 근사)다.
+	ProcsCreated       *float64 `json:"procs_created_per_s"`
+	ProcsCreatedSource string   `json:"procs_created_source,omitempty"`
 	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
 	Processes *[]topProcessSample `json:"processes,omitempty"`
 	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
@@ -531,6 +535,10 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 	if rate.CompressorValid {
 		compressor := rate.Compressor
 		sample.Compressor = &compressor
+	}
+	if rate.ProcsCreatedValid {
+		created := roundTopValue(rate.ProcsCreated)
+		sample.ProcsCreated, sample.ProcsCreatedSource = &created, rate.ProcsCreatedSource
 	}
 	return sample
 }

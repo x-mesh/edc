@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -883,8 +884,10 @@ func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements := append([]string(nil), historyV1Statements()...)
-	for _, column := range historyAddedTopColumns {
-		statements[1] = strings.Replace(statements[1], ", "+column+" INTEGER", "", 1)
+	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
+		if name, _, _ := strings.Cut(definition, " "); slices.Contains(historyAddedTopColumns, name) {
+			statements[1] = strings.Replace(statements[1], ", "+definition, "", 1)
+		}
 	}
 	for _, statement := range append(statements, "PRAGMA application_id="+strconv.Itoa(historyApplicationID), "PRAGMA user_version=1") {
 		if _, err := db.Exec(statement); err != nil {
@@ -928,6 +931,10 @@ func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
 	var used, total, compressor uint64
 	if err := written.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
 		t.Fatalf("user_version = %d, %v", version, err)
+	}
+	var kind string
+	if err := written.QueryRow("SELECT type FROM pragma_table_info('top_samples') WHERE name = 'procs_created_per_s'").Scan(&kind); err != nil || kind != "REAL" {
+		t.Fatalf("procs_created_per_s type = %q, %v", kind, err)
 	}
 	if err := written.QueryRow("SELECT swap_used_bytes, swap_total_bytes, compressor_bytes FROM top_samples").Scan(&used, &total, &compressor); err != nil || used != 9<<30 || total != 10<<30 || compressor != 21<<30 {
 		t.Fatalf("columns = %d %d %d, %v", used, total, compressor, err)

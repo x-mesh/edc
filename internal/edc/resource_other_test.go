@@ -315,3 +315,41 @@ func TestCollectDisksFillsTheFilesystemTypeOnDarwin(t *testing.T) {
 	}
 	t.Skip("no root mount in the df output")
 }
+
+// macOS에는 생성된 process 수를 세는 kernel counter가 없다. 직전 sample에 없던 PID 가운데 직전 최신 PID에서 가장 먼
+// 것까지의 거리를 생성 수로 센다. PID는 fork할 때만 배정되므로 새 PID는 그 사이에 만들어진 것이다.
+func TestDarwinSpawnTrackerCountsNewPIDsAcrossWrap(t *testing.T) {
+	var tracker darwinSpawnTracker
+	steps := []struct {
+		pids  []int32
+		total uint64
+		ready bool
+	}{
+		// 첫 sample의 가장 큰 PID는 최신이 아닐 수 있다. 99000은 PID가 한 바퀴 돌기 전에 생긴 오래된 process다.
+		{[]int32{1, 335, 99000, 2000}, 0, false},
+		// 새로 보인 2010, 2030이 기준을 정한다. 여기서부터 센다. rate는 기준이 선 두 sample 사이에서 나온다.
+		{[]int32{1, 335, 99000, 2000, 2010, 2030}, 0, true},
+		{[]int32{1, 335, 99000, 2030, 2050, 2090}, 60, true},
+		// 오래 산 1, 335, 99000은 새 PID가 아니다.
+		{[]int32{1, 335, 99000, 2090}, 60, true},
+	}
+	for index, step := range steps {
+		if total, ready := tracker.observe(step.pids); total != step.total || ready != step.ready {
+			t.Fatalf("step %d: total %d ready %v, want %d %v", index, total, ready, step.total, step.ready)
+		}
+	}
+	// 99999 다음은 100이므로 99970→150은 99971~99999의 29개와 100~150의 51개다.
+	var wrap darwinSpawnTracker
+	wrap.observe([]int32{1, 99950})
+	wrap.observe([]int32{1, 99950, 99960, 99970})
+	if total, ready := wrap.observe([]int32{1, 99970, 120, 150}); !ready || total != 29+51 {
+		t.Fatalf("wrap total %d ready %v, want 80 true", total, ready)
+	}
+}
+
+func TestDarwinListAllPIDsIncludesThisProcess(t *testing.T) {
+	pids, err := darwinListAllPIDs()
+	if err != nil || !slices.Contains(pids, int32(os.Getpid())) {
+		t.Fatalf("pids %d, err %v", len(pids), err)
+	}
+}

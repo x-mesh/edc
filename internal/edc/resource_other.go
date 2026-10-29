@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,6 +123,79 @@ func newTopProcessEnricher() func([]topProcess) {
 	}
 }
 
+// darwinPIDFirst와 darwinPIDLast는 macOS kernel이 배정하는 PID의 범위다. 99999를 넘으면 100부터 다시 배정한다.
+const (
+	darwinPIDFirst = 100
+	darwinPIDLast  = 99999
+)
+
+// darwinSpawnTracker는 macOS에 없는 process 생성 counter를 PID로 근사한다. 직전 sample에 없던 PID는 그 사이 fork로
+// 배정된 것이므로, 그 가운데 직전 최신 PID에서 가장 먼 거리가 그동안 배정된 PID 수다. 그 사이 만들어졌다 끝난 process만
+// 있으면 다음에 살아남은 process가 보일 때 한꺼번에 센다. 첫 sample의 가장 큰 PID는 PID가 한 바퀴 돈 뒤라면 오래된
+// process라서, 두 번째 sample에 새로 보인 PID로 최신 PID를 정한 뒤부터 센다.
+type darwinSpawnTracker struct {
+	mutex    sync.Mutex
+	previous map[int32]bool
+	newest   int32
+	ready    bool
+	total    uint64
+}
+
+func (tracker *darwinSpawnTracker) observe(pids []int32) (total uint64, ready bool) {
+	tracker.mutex.Lock()
+	defer tracker.mutex.Unlock()
+	current := make(map[int32]bool, len(pids))
+	var fresh []int32
+	for _, pid := range pids {
+		current[pid] = true
+		if tracker.previous != nil && !tracker.previous[pid] && pid >= darwinPIDFirst && pid <= darwinPIDLast {
+			fresh = append(fresh, pid)
+		}
+	}
+	switch {
+	case tracker.previous == nil:
+	case !tracker.ready:
+		if newest, ok := darwinNewestPID(fresh); ok {
+			tracker.newest, tracker.ready = newest, true
+		}
+	default:
+		farthest, newest := 0, tracker.newest
+		for _, pid := range fresh {
+			if distance := darwinPIDDistance(tracker.newest, pid); distance > farthest {
+				farthest, newest = distance, pid
+			}
+		}
+		tracker.newest, tracker.total = newest, tracker.total+uint64(farthest)
+	}
+	tracker.previous = current
+	return tracker.total, tracker.ready
+}
+
+// darwinPIDDistance는 from 다음부터 to까지 배정된 PID 수다. 99999 다음은 100이다.
+func darwinPIDDistance(from, to int32) int {
+	const cycle = darwinPIDLast - darwinPIDFirst + 1
+	return ((int(to)-int(from))%cycle + cycle) % cycle
+}
+
+// darwinNewestPID는 한 구간에 새로 보인 PID 가운데 가장 늦게 배정된 것이다. 새 PID는 원 위의 한 구간에 몰리므로 가장 큰
+// 빈틈 바로 앞이 끝이다. PID가 99999에서 100으로 돌아간 구간도 같다.
+func darwinNewestPID(fresh []int32) (int32, bool) {
+	if len(fresh) == 0 {
+		return 0, false
+	}
+	sorted := slices.Clone(fresh)
+	slices.Sort(sorted)
+	newest, widest := sorted[len(sorted)-1], darwinPIDDistance(sorted[len(sorted)-1], sorted[0])
+	for index := 0; index+1 < len(sorted); index++ {
+		if gap := darwinPIDDistance(sorted[index], sorted[index+1]); gap > widest {
+			newest, widest = sorted[index], gap
+		}
+	}
+	return newest, true
+}
+
+var darwinSpawns darwinSpawnTracker
+
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now()}
 	cores, err := readDarwinCoreTicks()
@@ -158,6 +232,10 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.SwapOutBytes, snapshot.SwapMissing = memory.swapOut, !memory.swapOK
 	snapshot.SwapUsed, snapshot.SwapTotal, snapshot.SwapUsageValid = memory.swapUsed, memory.swapTotal, memory.swapUsageOK
 	snapshot.Compressor, snapshot.CompressorValid = memory.compressor, memory.compressorOK
+	if pids, err := darwinListAllPIDs(); err == nil {
+		total, ready := darwinSpawns.observe(pids)
+		snapshot.ProcsCreated, snapshot.ProcsCreatedValid, snapshot.ProcsCreatedSource = total, ready, "pid_delta"
+	}
 	snapshot.Load1 = load
 	if pressureErr == nil {
 		snapshot.MemoryPressure = pressure

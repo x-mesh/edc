@@ -83,6 +83,35 @@ observe:
       changed: "statusLine.command: %s → %s"
       backup: "backup: %s"
       none: "(none)"
+    hook:
+      usage: "usage: edc ai hook claude|codex (Claude Code and Codex run this; it reads the event on stdin)"
+      write: "edc did not record the AI hook event: %v"
+    hooks:
+      usage: "usage: edc ai hooks install|uninstall"
+      added: "%s: added edc ai hook to %s"
+      removed: "%s: removed edc ai hook from %s"
+      unchanged: "%s: no change"
+    sessions:
+      usage: "usage: edc ai sessions [--needs] [--all] [--bell] [--count N] [--json <path|->]"
+      no_events: "No AI hook events in %s yet. Run edc ai hooks install, then start a new session."
+      none: "No session matches."
+      state:
+        needs: "needs you"
+        failed: "failed"
+        working: "working"
+        waiting: "waiting"
+        ended: "ended"
+      reason:
+        permission: "permission"
+        input: "input"
+        question: "question"
+        ask: "question"
+        error: "error"
+        started: "started"
+        done: "done"
+        idle: "idle"
+        exited: "exited"
+        stale: "stale"
 
   watch:
     no_samples_duration: "No sample completed before the duration ended; target health is unknown."

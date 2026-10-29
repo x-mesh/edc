@@ -548,8 +548,13 @@ command:
     option:
       poll: "time between limit calls, 30s or more, 5m or more for Claude"
       count: "samples to print, 0 runs until you quit"
+      needs: "only sessions that need you or failed"
+      all: "include ended sessions"
+      bell: "ring the terminal bell when a session starts to need you"
+      sessions_count: "snapshots to print every 2s; 0 opens the live screen in a terminal"
     notes:
       - "In a terminal, edc opens a table of tokens per interval on this host."
+      - "In a terminal 131 columns or wider, the right side lists the sessions of edc ai sessions."
       - "The ▸ row is still open. ↑↓ moves back, +/- changes rows, End goes live."
       - "Σ rows sum the last 10 minutes, hour, and 24 hours at any row size."
       - "The boxes show Claude and Codex limits, reset times, and time left."
@@ -561,6 +566,11 @@ command:
       - "Codex answers through codex app-server."
       - "Each detected reset goes to ai-resets.jsonl next to the history DB."
       - "The last Claude values stay in ai-claude.json in the same directory."
+      - "edc ai hooks install adds edc ai hook to Claude Code settings.json and Codex hooks.json."
+      - "Each hook appends one line to ai-events.jsonl next to the history DB. uninstall removes only edc entries."
+      - "edc ai sessions shows each session: needs you, failed, working, waiting. --needs lists only the first two."
+      - "In a terminal, edc ai sessions stays open and reads new events every 2 seconds. n needs only, a ended, q quit."
+      - "Codex runs hooks only when config.toml sets hooks = true. Sessions started before install have no start event."
   snapshot:
     summary: "Save host state as one report for report diff"
     option:

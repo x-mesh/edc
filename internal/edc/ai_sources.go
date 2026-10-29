@@ -730,8 +730,16 @@ func (scanner *aiTokenScanner) add(provider string, at, oldest time.Time, usage 
 
 // claudeLine은 cache 생성을 새 입력으로, cache 읽기를 cache로 센다.
 func (scanner *aiTokenScanner) claudeLine(_ *aiScanFile, line []byte, oldest time.Time) {
+	if at, usage, ok := aiClaudeUsageDelta(line, scanner.seen); ok {
+		scanner.add("claude", at, oldest, usage)
+	}
+}
+
+// aiClaudeUsageDelta는 줄 하나가 더한 token과 그 token을 넣을 시각을 돌려준다. edc ai의 구간 합계와
+// 세션별 합계가 같은 규칙으로 센다. 같은 응답의 앞선 줄은 output이 덜 찬 값이므로, 늘어난 만큼만 처음 기록한 시각에 더한다.
+func aiClaudeUsageDelta(line []byte, seen map[string]aiSeenMessage) (time.Time, aiUsage, bool) {
 	if !bytes.Contains(line, []byte(`"usage"`)) {
-		return
+		return time.Time{}, aiUsage{}, false
 	}
 	var record struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -747,32 +755,30 @@ func (scanner *aiTokenScanner) claudeLine(_ *aiScanFile, line []byte, oldest tim
 		} `json:"message"`
 	}
 	if json.Unmarshal(line, &record) != nil || record.Message.Usage == nil || record.Timestamp.IsZero() {
-		return
+		return time.Time{}, aiUsage{}, false
 	}
 	raw := record.Message.Usage
 	usage := aiUsage{Requests: 1, Input: raw.Input + raw.CacheCreation, Output: raw.Output, Cache: raw.CacheRead}
 	if record.Message.ID == "" {
-		scanner.add("claude", record.Timestamp, oldest, usage)
-		return
+		return record.Timestamp, usage, true
 	}
-	// 같은 응답의 앞선 줄은 output이 덜 찬 값이다. 늘어난 만큼만 처음 기록한 구간에 더한다.
 	key := record.Message.ID + ":" + record.RequestID
-	seen, ok := scanner.seen[key]
+	previous, ok := seen[key]
 	if !ok {
-		scanner.seen[key] = aiSeenMessage{at: record.Timestamp, usage: usage}
-		scanner.add("claude", record.Timestamp, oldest, usage)
-		return
+		seen[key] = aiSeenMessage{at: record.Timestamp, usage: usage}
+		return record.Timestamp, usage, true
 	}
 	growth := aiUsage{
-		Input:  aiGrowth(seen.usage.Input, usage.Input),
-		Output: aiGrowth(seen.usage.Output, usage.Output),
-		Cache:  aiGrowth(seen.usage.Cache, usage.Cache),
+		Input:  aiGrowth(previous.usage.Input, usage.Input),
+		Output: aiGrowth(previous.usage.Output, usage.Output),
+		Cache:  aiGrowth(previous.usage.Cache, usage.Cache),
 	}
-	if !growth.empty() {
-		scanner.add("claude", seen.at, oldest, growth)
-		seen.usage.Input, seen.usage.Output, seen.usage.Cache = seen.usage.Input+growth.Input, seen.usage.Output+growth.Output, seen.usage.Cache+growth.Cache
-		scanner.seen[key] = seen
+	if growth.empty() {
+		return time.Time{}, aiUsage{}, false
 	}
+	previous.usage.Input, previous.usage.Output, previous.usage.Cache = previous.usage.Input+growth.Input, previous.usage.Output+growth.Output, previous.usage.Cache+growth.Cache
+	seen[key] = previous
+	return previous.at, growth, true
 }
 
 // codexLine은 누적값의 증가분을 더한다. token_count 이벤트는 같은 누적값을 여러 번 기록한다.

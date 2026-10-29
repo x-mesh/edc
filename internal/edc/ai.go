@@ -34,8 +34,17 @@ const (
 )
 
 func runAI(args []string, version string) int {
-	if len(args) > 0 && args[0] == "statusline" {
-		return runAIStatusline(args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case "statusline":
+			return runAIStatusline(args[1:])
+		case "hook":
+			return runAIHook(args[1:])
+		case "hooks":
+			return runAIHooksSetup(args[1:])
+		case "sessions":
+			return runAISessions(args[1:])
+		}
 	}
 	set := newFlagSet("ai")
 	set.SetOutput(os.Stderr)

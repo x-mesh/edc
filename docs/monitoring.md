@@ -401,7 +401,7 @@ edc ai --count 3            # three samples as a table
 edc ai --count 1 --json -   # one JSON line
 ```
 
-In a terminal, `edc ai` opens a dashboard. Each row of the table is one interval: 10s, 1m, 5m, or 1h. To change the interval, press `+` or `-`. The `▸` row is still open. To move through 24 hours of history, use `↑`, `↓`, PgUp, PgDn, and End. The `Σ` rows sum the last 10 minutes, the last hour, and the last 24 hours.
+In a terminal, `edc ai` opens a dashboard. Each row of the table is one interval: 10s, 1m, 5m, or 1h. To change the interval, press `+` or `-`. The `▸` row is still open. To move through 24 hours of history, use `↑`, `↓`, PgUp, PgDn, and End. The `Σ` rows sum the last 10 minutes, the last hour, and the last 24 hours. If the terminal is 131 columns or wider, the right side shows the sessions of `edc ai sessions`. If the terminal is narrower, the title shows the number of sessions that need you. See [AI sessions](#ai-sessions).
 
 edc counts the tokens from the local logs. Every 2 seconds, it reads only the new lines.
 
@@ -437,6 +437,45 @@ edc ai statusline install
 The command changes only `statusLine.command` in `~/.claude/settings.json`. It keeps the old command, so `cship` becomes `edc ai statusline -- cship`. The old file stays in `settings.json.edc-backup`. To restore the old command, run `edc ai statusline uninstall`.
 
 The values come from the last Claude Code request. The box shows their age. The text output adds an `updated` line when the values are 1 minute old or more. The macOS box does not show the plan name. The status line input does not include it.
+
+## AI sessions
+
+`edc ai sessions` shows each Claude Code and Codex session on this host. It shows the sessions that need you first.
+
+```sh
+edc ai hooks install            # add the edc hook to Claude Code and Codex
+edc ai sessions                 # live screen in a terminal (press q to quit)
+edc ai sessions --count 1       # one snapshot
+edc ai sessions --needs         # only the sessions that need you or failed
+edc ai sessions --json -        # JSON for a script or a status line
+```
+
+In a terminal, `edc ai sessions` stays open. It reads the new events every 2 seconds. Use `↑` and `↓` to select a session. The lines under the list show its directory, terminal, process ID, and full detail. Press `n` to show only the sessions that need you. Press `a` to show the ended sessions. If you add `--bell`, edc rings the terminal bell when a session starts to need you. Outside a terminal, or with `--json`, edc prints one snapshot. `--count N` prints N snapshots, one every 2 seconds.
+
+The data comes from hooks. `edc ai hooks install` adds `edc ai hook claude` to `~/.claude/settings.json` and `edc ai hook codex` to `~/.codex/hooks.json`. The command keeps the other hooks. The old files stay in `settings.json.edc-hooks-backup` and `hooks.json.edc-hooks-backup`. To remove only the edc entries, run `edc ai hooks uninstall`.
+
+Install edc in its permanent location before you install the hooks. The settings keep the full path of the edc executable.
+
+Each hook appends one line to `ai-events.jsonl` next to the history DB. The line keeps the event, the session ID, the directory, and a short detail of 160 characters or less. The detail can be the start of a prompt, the end of a response, or the command of a permission request. The hook does not keep the full prompt, the full response, or the tool input. If the file grows past 8 MiB, the hook moves it to `ai-events.jsonl.1`. The hook always exits with status 0, so an error does not stop the agent.
+
+| State | Cause |
+| --- | --- |
+| `! needs you · permission` | The agent asks for permission to use a tool. The detail shows the tool and the command. |
+| `! needs you · question` | The last response ends with a question, or Claude Code shows a choice (`AskUserQuestion`). The detail shows the question. |
+| `! needs you · input` | An MCP server asks for input. |
+| `× failed · error` | The turn stopped because of an API error. |
+| `▸ working` | The agent works on a prompt. The detail shows the current tool and its run time, or the last response text. |
+| `· waiting` | The turn ended, or the agent waits for a prompt. |
+
+The last column shows the context of the last request and its percentage of the context window. In `edc ai sessions`, a bar of 5 cells comes before it. At 80% or more, the column is yellow. At 90% or more, the column is red, because the tool will compact the context soon. Codex records the context window. Claude Code does not record it, so edc uses 1M when the context is more than 200K. For a smaller Claude context, edc shows only the size. The right side of `edc ai` shows only the percentage.
+
+The token column shows the input and output tokens of the session. It does not include the tokens that the tool read from the prompt cache, as `total` in `edc ai`. For Codex, edc reads the total from the last `token_count` event. For Claude Code, edc reads the full transcript once and then only the new lines. If `↑` follows the tokens, the session used more tokens per minute in the last 5 minutes than 1.5 times its average. If a tool call failed in the current turn, `✗` and the count of failures come before the detail of a working session. The selected session also shows these lines: `model` (the model, the effort, the branch, the permission mode, and the sandbox), `context`, `turn` (the turn time, the tool calls, and the failures), `tokens` (the totals, the last request, and the tokens per minute), and `error` (the start of the last failed tool result). If the start of the turn is not in the last 256 KiB, the tool count starts with `≥`.
+
+For a working session, edc reads the last 256 KiB of the transcript. It finds the last tool call, response text, or thinking step. If edc finds none, the detail shows the start of the prompt. The selected session also shows the prompt in the `task` line.
+
+After you approve a request, no hook event comes until the turn ends. Thus edc shows `working` when the transcript changes after the request. When the agent process stops without a `SessionEnd` event, edc shows the session as ended. edc knows the process only from the `SessionStart` event. A session that started before the install shows `-` in the terminal column. edc hides it after 12 hours without events.
+
+Codex runs hooks only when `config.toml` sets `hooks = true` in `[features]`. Codex also asks you to trust each new hook. edc does not install a Codex permission hook, so a Codex session shows `needs you` only for a question.
 
 ## Read logs
 

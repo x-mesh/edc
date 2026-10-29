@@ -849,7 +849,7 @@ func TestWriteAIClaudeSettingsKeepsASymbolicLink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	backup, err := writeAIClaudeSettings(link, []byte(`{"a":1}`), []byte(`{"a":2}`))
+	backup, err := writeAIClaudeSettings(link, []byte(`{"a":1}`), []byte(`{"a":2}`), aiStatuslineBackupSuffix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -868,7 +868,7 @@ func TestWriteAIClaudeSettingsKeepsASymbolicLink(t *testing.T) {
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeAIClaudeSettings(link, nil, []byte(`{"a":3}`)); err == nil {
+	if _, err := writeAIClaudeSettings(link, nil, []byte(`{"a":3}`), aiStatuslineBackupSuffix); err == nil {
 		t.Error("a link to a missing file must fail")
 	}
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {

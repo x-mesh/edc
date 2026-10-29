@@ -83,6 +83,35 @@ observe:
       changed: "statusLine.command: %s → %s"
       backup: "백업: %s"
       none: "(없음)"
+    hook:
+      usage: "사용법: edc ai hook claude|codex (Claude Code와 Codex가 실행하며 stdin으로 이벤트를 받습니다)"
+      write: "AI hook 이벤트를 기록하지 못했습니다: %v"
+    hooks:
+      usage: "사용법: edc ai hooks install|uninstall"
+      added: "%s: edc ai hook 추가 · %s"
+      removed: "%s: edc ai hook 제거 · %s"
+      unchanged: "%s: 바뀐 것 없음"
+    sessions:
+      usage: "사용법: edc ai sessions [--needs] [--all] [--bell] [--count N] [--json <path|->]"
+      no_events: "%s에 AI hook 이벤트가 아직 없습니다. edc ai hooks install을 실행한 뒤 새 세션을 시작하세요."
+      none: "해당하는 세션이 없습니다."
+      state:
+        needs: "입력 필요"
+        failed: "실패"
+        working: "작업 중"
+        waiting: "대기"
+        ended: "종료"
+      reason:
+        permission: "승인"
+        input: "입력"
+        question: "질문"
+        ask: "질문"
+        error: "오류"
+        started: "시작"
+        done: "완료"
+        idle: "유휴"
+        exited: "프로세스 종료"
+        stale: "오래됨"
 
   watch:
     no_samples_duration: "관측 시간이 끝날 때까지 완료한 표본이 없어 대상의 상태를 판단할 수 없습니다."

@@ -107,7 +107,7 @@ By default, `edc ctr` uses Docker Engine API data only. See the [container guide
 
 ## Live monitoring
 
-Follow host resources and the busiest processes in `top`. Switch views to inspect CPU, memory, disk, or network activity; use process filters to focus on a service. `ai` shows local Claude Code and Codex token usage and account limits.
+Follow host resources and the busiest processes in `top`. Switch views to inspect CPU, memory, disk, or network activity; use process filters to focus on a service. `ai` shows local Claude Code and Codex token usage and account limits. `ai sessions` shows which sessions need you.
 
 ```bash
 edc top --process postgres

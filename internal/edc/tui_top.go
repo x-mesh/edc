@@ -1050,8 +1050,13 @@ func (model topModel) dashboardTitle() string {
 		state += " · sample error"
 	}
 	color := model.limits.color
+	badge := model.recordingBadge()
 	if model.displayWidth() < topTableWidth {
-		return topDashboardFitWidth(topHeading("edc top · "+string(model.view)+" · "+state, color), model.displayWidth())
+		head := "edc top · " + string(model.view) + " · "
+		if badge != "" {
+			head += strings.TrimSpace(badge) + " · "
+		}
+		return topDashboardFitWidth(topHeading(head+state, color), model.displayWidth())
 	}
 	// 왼쪽은 host 정보, 오른쪽은 보기와 상태다. priority 0은 항상 보이고, 나머지는 폭이 허락하는 만큼
 	// OS, memory, edc 버전, CPU 모델 순서로 더한다. 자리는 slice 순서를 따르므로 상태가 바뀌어도 host 정보가 움직이지 않는다.
@@ -1078,7 +1083,7 @@ func (model topModel) dashboardTitle() string {
 		{topMemorySize(model.details.MemoryTotal), 2, nil},
 	}
 	// "all latest"를 버전으로 읽는 일이 없게 보기 이름 앞에 view를 붙인다. 필터는 바로 아래 배너가 보인다.
-	rightParts := []titlePart{{"view " + string(model.view), 0, view}, {state, 0, model.titleState}, {version, 3, nil}}
+	rightParts := []titlePart{{"view " + string(model.view), 0, view}, {badge, 0, model.paintRecordingBadge}, {state, 0, model.titleState}, {version, 3, nil}}
 	// join은 폭을 재는 평문을, paintJoin은 같은 조각을 색으로 그린다. 폭은 언제나 평문으로 잰다.
 	join := func(parts []titlePart, priority int) string {
 		texts := []string{}
@@ -1138,6 +1143,31 @@ func (model topModel) dashboardTitle() string {
 		title = "🐰 " + paintJoin(leftParts, 0) + separator + paintJoin(rightParts, 0) + " 🐰"
 	}
 	return title
+}
+
+// recordingBadge는 기록 중일 때 제목 오른쪽에 두는 배지의 평문이다. 아래 줄의 w rec chip만으로는 기록 중인지
+// 한눈에 보이지 않았다. 색을 쓰면 richBadge가 앞뒤에 한 칸씩 붙이므로 폭을 맞추려고 평문에도 넣는다.
+func (model topModel) recordingBadge() string {
+	if model.record == nil {
+		return ""
+	}
+	text := "● REC"
+	if model.paused {
+		text = "❚❚ REC"
+	}
+	if !model.limits.color {
+		return "[" + text + "]"
+	}
+	return " " + text + " "
+}
+
+// paintRecordingBadge는 기록 중이면 빨강, 일시 정지면 노랑 바탕으로 그린다.
+func (model topModel) paintRecordingBadge(text string) string {
+	color := richRed
+	if model.paused {
+		color = richYellow
+	}
+	return richBadge(strings.TrimSpace(text), color)
 }
 
 // titleState는 제목의 live, history 상태다. live는 초록, history는 노랑, 수집 실패는 빨강이다.

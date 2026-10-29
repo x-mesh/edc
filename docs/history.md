@@ -134,6 +134,8 @@ The demo opens the viewer, changes the filter, shows the details, and then compa
 
 `--write [path]` (`-w [path]`) appends observations to a local SQLite database. The dashboard stays open; `--count`, pipes, and `--json` retain their output behavior. Recording also allows `--process` in table mode. With no path, `-w` uses `~/.local/state/edc/history.db` on Linux or `~/Library/Application Support/edc/history.db` on macOS. An absolute `XDG_STATE_HOME` overrides the default on both platforms: `$XDG_STATE_HOME/edc/history.db`. The default directory is created with mode 0700. Without `-w` or `--write`, top starts without recording. In the dashboard, press `w` to start or stop recording. It records only full sample windows after recording starts. Each restart creates a new run in the same database; `p` pauses recording along with collection. `REC` and the saved sample count show recording status.
 
+`--auto-record` (or `defaults.top.auto_record = true`) starts a recording when the dashboard sees load1 above two times the core count, swap out, or memory pressure `warn` or `critical`. The dashboard keeps the last 5 minutes of samples in memory. The new run starts with these samples, so the run shows how the problem started. The run stops when all conditions stay clear for 1 minute. The run payload keeps the reason in `trigger`. The option is off by default. It does nothing while `w` or `-w` records.
+
 ```bash
 edc top -w
 edc history list

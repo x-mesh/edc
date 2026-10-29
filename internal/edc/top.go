@@ -39,6 +39,7 @@ func runTop(args []string, version string) (code int) {
 	jsonPath := set.String("json", configuredStringFallback(config.JSON, activeConfig.Defaults.Common.JSON, ""), T("command.top.option.json"))
 	writePath := set.String("write", "", T("command.top.option.write"))
 	set.StringVar(writePath, "w", "", T("command.top.option.write"))
+	autoRecord := set.Bool("auto-record", configuredBool(config.AutoRecord, false), T("command.top.option.auto_record"))
 	args, defaultWrite := normalizeTopWriteArgs(args, set)
 	if err := set.Parse(args); err != nil {
 		return 2
@@ -241,7 +242,7 @@ func runTop(args []string, version string) (code int) {
 		}()
 	}
 	if dashboard {
-		return runTopDashboard(*interval, version, filter, interfaces, *writePath, recorder, split, layout)
+		return runTopDashboard(*interval, version, filter, interfaces, *writePath, recorder, split, layout, *autoRecord)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

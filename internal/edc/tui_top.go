@@ -17,7 +17,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recordPath string, recorder *topRecorder, split []topView, layout topLayout) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recordPath string, recorder *topRecorder, split []topView, layout topLayout, autoRecord bool) int {
 	model, err := newTopDashboardModel(interval, version, filter, interfaces)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -25,6 +25,9 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	}
 	model = model.withProcessFilter(filter).withSplit(split).withLayout(layout)
 	model.recordPath = recordPath
+	if autoRecord {
+		model.autoRecord = &topAutoRecord{}
+	}
 	if recorder != nil {
 		model.attachRecorder(recorder)
 	}
@@ -267,6 +270,8 @@ type topModel struct {
 	recordFrom    time.Time
 	recordCount   int
 	recordNotice  bool
+	// autoRecord는 --auto-record를 켰을 때만 있다.
+	autoRecord *topAutoRecord
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
 	split []topView
 	boxed bool
@@ -375,8 +380,12 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if seconds := value.snapshot.TakenAt.Sub(model.previous.TakenAt).Seconds(); seconds > 0 {
 			model.interfaceRates = calculateNetInterfaceRates(model.previous.allNetInterfaces(), value.snapshot.allNetInterfaces(), seconds)
 		}
+		var sample historyTopSample
+		if model.record != nil || model.autoRecord != nil {
+			sample = newHistoryTopSample(model.details, model.previous, value.snapshot, rate, model.processFilter.String())
+		}
 		if model.record != nil && !model.previous.TakenAt.Before(model.recordFrom) {
-			if err := model.record(newHistoryTopSample(model.details, model.previous, value.snapshot, rate, model.processFilter.String())); err != nil {
+			if err := model.record(sample); err != nil {
 				model.recordingErr = err
 				return model, tea.Quit
 			}
@@ -384,6 +393,11 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if model.recordNotice {
 				model.notice, model.recordNotice = "", false
 			}
+		}
+		var autoCmd tea.Cmd
+		model, autoCmd = model.observeAutoRecord(sample, rate)
+		if model.recordingErr != nil {
+			return model, tea.Quit
 		}
 		before := len(model.rows) + 1
 		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
@@ -396,9 +410,9 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.selected = max(0, model.selected-(before-len(model.rows)))
 		}
 		if model.paused {
-			return model, nil
+			return model, autoCmd
 		}
-		return model, model.tick()
+		return model, tea.Batch(model.tick(), autoCmd)
 	case topAIStartMsg:
 		if model.aiOn || model.aiTokens {
 			return model.startAI()
@@ -1264,6 +1278,9 @@ func (model topModel) renderStatusLines() []string {
 	}
 	if model.record != nil {
 		state = fmt.Sprintf("REC · %d samples · %s", model.recordCount, state)
+		if model.autoRecord != nil && model.autoRecord.trigger != "" {
+			state = "auto " + model.autoRecord.trigger + " · " + state
+		}
 	}
 	if hidden := model.hiddenText(); hidden != "" {
 		state = hidden + " · " + state

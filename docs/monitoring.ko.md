@@ -335,7 +335,7 @@ edc ai --count 3            # sample 3개를 표로 출력
 edc ai --count 1 --json -   # 한 줄 JSON
 ```
 
-터미널에서는 대시보드를 엽니다. 표의 한 행은 한 구간이고, 구간은 10s, 1m, 5m, 1h 중 하나입니다. `+`와 `-`로 구간을 바꿉니다. `▸` 행은 아직 끝나지 않은 구간입니다. `↑`, `↓`, PgUp, PgDn, End로 24시간 기록을 오갑니다. `Σ` 행은 최근 10분, 1시간, 24시간의 합계입니다.
+터미널에서는 대시보드를 엽니다. 표의 한 행은 한 구간이고, 구간은 10s, 1m, 5m, 1h 중 하나입니다. `+`와 `-`로 구간을 바꿉니다. `▸` 행은 아직 끝나지 않은 구간입니다. `↑`, `↓`, PgUp, PgDn, End로 24시간 기록을 오갑니다. terminal 폭이 131열 이상이면 오른쪽에 `edc ai sessions`의 세션 목록이 나오고, 그보다 좁으면 제목에 입력이 필요한 세션 수가 나옵니다. [AI 세션](#ai-세션)을 참고합니다. `Σ` 행은 최근 10분, 1시간, 24시간의 합계입니다.
 
 token은 이 host의 로그에서 셉니다. 2초마다 새로 붙은 줄만 읽습니다.
 
@@ -371,6 +371,45 @@ edc ai statusline install
 이 명령은 `~/.claude/settings.json`의 `statusLine.command`만 바꿉니다. 원래 명령은 그대로 실행되므로, `cship`은 `edc ai statusline -- cship`이 됩니다. 원래 파일은 `settings.json.edc-backup`에 남습니다. 되돌리려면 `edc ai statusline uninstall`을 실행합니다.
 
 값은 Claude Code가 마지막으로 요청했을 때의 값입니다. 상자에는 경과 시간을 늘 보여 주고, 텍스트 출력은 1분 이상 지난 값에만 `updated` 줄을 더합니다. 상태 줄 입력에 요금제가 없으므로 macOS의 상자에는 요금제 이름이 나오지 않습니다.
+
+## AI 세션
+
+`edc ai sessions`는 이 host의 Claude Code와 Codex 세션을 한 줄씩 보여 줍니다. 사용자를 기다리는 세션을 먼저 보입니다.
+
+```sh
+edc ai hooks install            # Claude Code와 Codex에 edc hook 추가
+edc ai sessions                 # terminal에서는 실시간 화면 (q로 종료)
+edc ai sessions --count 1       # 한 번만 출력
+edc ai sessions --needs         # 입력이 필요하거나 실패한 세션만
+edc ai sessions --json -        # script나 상태 줄에 쓸 JSON
+```
+
+terminal에서 `edc ai sessions`는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. `↑`와 `↓`로 세션을 고르면 목록 아래에 디렉터리, terminal, process ID와 설명 전체가 나옵니다. `n`은 입력이 필요한 세션만, `a`는 종료한 세션까지 보입니다. `--bell`을 주면 세션이 입력을 요청할 때 터미널 벨을 울립니다. terminal이 아니거나 `--json`을 주면 한 번만 출력하고, `--count N`은 2초마다 N번 출력합니다.
+
+값은 hook에서 옵니다. `edc ai hooks install`은 `~/.claude/settings.json`에 `edc ai hook claude`를, `~/.codex/hooks.json`에 `edc ai hook codex`를 추가합니다. 다른 hook은 그대로 둡니다. 원래 파일은 `settings.json.edc-hooks-backup`과 `hooks.json.edc-hooks-backup`에 남습니다. edc 항목만 빼려면 `edc ai hooks uninstall`을 실행합니다.
+
+설정에는 edc 실행 파일의 전체 경로가 들어가므로, edc를 계속 둘 위치에 설치한 뒤 hook을 설치합니다.
+
+hook은 기록 DB 옆 `ai-events.jsonl`에 한 줄씩 남깁니다. 이벤트, 세션 ID, 디렉터리와 160자 이하의 짧은 설명(프롬프트 앞부분, 응답 끝부분, 승인 요청의 명령)만 남기고, 프롬프트와 응답 원문, 도구 입력 전체는 남기지 않습니다. 파일이 8 MiB를 넘으면 `ai-events.jsonl.1`로 넘깁니다. hook은 항상 종료 코드 0으로 끝나므로 기록에 실패해도 에이전트는 멈추지 않습니다.
+
+| 상태 | 이유 |
+| --- | --- |
+| `! 입력 필요 · 승인` | 에이전트가 도구 사용 승인을 기다립니다. 설명에 도구와 명령이 나옵니다. |
+| `! 입력 필요 · 질문` | 마지막 응답이 질문으로 끝났거나, Claude Code가 선택지(`AskUserQuestion`)를 보였습니다. 설명에 질문이 나옵니다. |
+| `! 입력 필요 · 입력` | MCP server가 입력을 요청했습니다. |
+| `× 실패 · 오류` | API 오류로 턴이 멈췄습니다. |
+| `▸ 작업 중` | 에이전트가 프롬프트를 처리하고 있습니다. 설명에 지금 실행 중인 도구와 걸린 시간, 또는 마지막 응답이 나옵니다. |
+| `· 대기` | 턴이 끝났거나 프롬프트를 기다립니다. |
+
+마지막 열은 마지막 요청의 컨텍스트 크기와 컨텍스트 창 대비 비율입니다. `edc ai sessions`에서는 앞에 5칸 막대가 붙습니다. 80% 이상은 노란색, 90% 이상은 곧 컨텍스트 압축이 일어날 수 있어 빨간색으로 보입니다. Codex는 창 크기를 기록하지만 Claude Code는 기록하지 않으므로, Claude는 200K를 넘으면 1M 창으로 추정하고 그 이하는 크기만 보입니다. `edc ai` 오른쪽 영역에는 비율만 나옵니다.
+
+token 열은 세션이 쓴 입력과 출력 token입니다. `edc ai`의 `total`처럼 prompt cache에서 읽은 token은 넣지 않습니다. Codex는 마지막 `token_count` 이벤트의 누적값을 읽고, Claude Code는 대화 기록 전체를 한 번 읽은 뒤 새로 붙은 줄만 읽습니다. token 뒤의 `↑`는 최근 5분 동안 분당 token이 세션 평균의 1.5배를 넘었다는 뜻입니다. 작업 중인 세션의 이번 턴에 실패한 도구가 있으면 설명 앞에 `✗`와 실패 수가 붙습니다. 고른 세션에는 `model`(모델, effort, 브랜치, 권한 모드, sandbox), `context`, `turn`(턴 경과 시간, 도구 호출 수, 실패 수), `tokens`(누적, 마지막 요청, 분당 token), `error`(마지막으로 실패한 도구 결과의 앞부분) 줄이 나옵니다. 턴 시작이 마지막 256 KiB 밖에 있으면 도구 호출 수 앞에 `≥`가 붙습니다.
+
+작업 중인 세션은 대화 기록의 마지막 256 KiB를 읽어 마지막 도구 호출, 응답, 생각 단계를 찾습니다. 찾지 못하면 프롬프트 앞부분을 보이고, 고른 세션에는 `task` 줄로 프롬프트를 보입니다.
+
+승인한 뒤에는 턴이 끝날 때까지 hook 이벤트가 오지 않으므로, 요청 뒤에 대화 기록이 늘었으면 `작업 중`으로 보입니다. `SessionEnd` 없이 에이전트 process가 끝나면 종료한 세션으로 봅니다. process는 `SessionStart` 이벤트로만 알 수 있으므로, hook을 설치하기 전에 시작한 세션은 terminal 열에 `-`가 나오고 이벤트 없이 12시간이 지나면 숨깁니다.
+
+Codex는 `config.toml`의 `[features]`에 `hooks = true`가 있어야 hook을 실행하고, 새 hook마다 신뢰할지 묻습니다. edc는 Codex에 승인 요청 hook을 설치하지 않으므로 Codex 세션은 질문으로 끝날 때만 `입력 필요`로 보입니다.
 
 ## 로그 읽기
 

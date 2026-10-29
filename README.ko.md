@@ -107,7 +107,7 @@ edc changes --since 2h
 
 ## 실시간 관측
 
-`top`에서 호스트 자원과 바쁜 프로세스를 관측합니다. CPU·메모리·디스크·네트워크 보기로 전환하고, process 필터로 서비스 하나에 집중합니다. `ai`에서는 로컬 Claude Code·Codex의 token 사용량과 계정 한도를 확인합니다.
+`top`에서 호스트 자원과 바쁜 프로세스를 관측합니다. CPU·메모리·디스크·네트워크 보기로 전환하고, process 필터로 서비스 하나에 집중합니다. `ai`에서는 로컬 Claude Code·Codex의 token 사용량과 계정 한도를 확인합니다. `ai sessions`는 입력이 필요한 세션을 보여 줍니다.
 
 ```bash
 edc top --process postgres

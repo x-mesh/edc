@@ -83,6 +83,35 @@ observe:
       changed: "statusLine.command: %s → %s"
       backup: "バックアップ: %s"
       none: "(なし)"
+    hook:
+      usage: "使い方: edc ai hook claude|codex (Claude Code と Codex が実行し、stdin でイベントを受け取ります)"
+      write: "AI hook イベントを記録できませんでした: %v"
+    hooks:
+      usage: "使い方: edc ai hooks install|uninstall"
+      added: "%s: edc ai hook を追加 · %s"
+      removed: "%s: edc ai hook を削除 · %s"
+      unchanged: "%s: 変更なし"
+    sessions:
+      usage: "使い方: edc ai sessions [--needs] [--all] [--bell] [--count N] [--json <path|->]"
+      no_events: "%s に AI hook イベントがまだありません。edc ai hooks install を実行してから新しいセッションを始めてください。"
+      none: "該当するセッションはありません。"
+      state:
+        needs: "入力待ち"
+        failed: "失敗"
+        working: "作業中"
+        waiting: "待機"
+        ended: "終了"
+      reason:
+        permission: "承認"
+        input: "入力"
+        question: "質問"
+        ask: "質問"
+        error: "エラー"
+        started: "開始"
+        done: "完了"
+        idle: "アイドル"
+        exited: "プロセス終了"
+        stale: "古い"
 
   watch:
     no_samples_duration: "観測時間が終了するまでに完了したサンプルがないため、対象の状態は不明です。"

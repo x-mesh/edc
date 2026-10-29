@@ -548,8 +548,13 @@ command:
     option:
       poll: "制限の照会間隔、30s 以上。Claude は 5m 以上"
       count: "表示するサンプル数、0 は継続実行"
+      needs: "入力待ちか失敗したセッションのみ"
+      all: "終了したセッションも含める"
+      bell: "セッションが入力を求めたら端末のベルを鳴らす"
+      sessions_count: "2 秒ごとに表示するスナップショット数。0 は端末でライブ画面を開く"
     notes:
       - "terminal ではこの host の区間別 token 表をダッシュボードで開きます。"
+      - "端末の幅が 131 列以上なら、右側に edc ai sessions のセッション一覧を表示します。"
       - "▸ 行は進行中の区間です。↑↓ 過去の行、+/- 行の区間、End で実時間。"
       - "Σ 行は直近 10 分、1 時間、24 時間の合計です。行の区間に関係しません。"
       - "下の枠は Claude と Codex の制限、リセット時刻、残り時間です。"
@@ -561,6 +566,11 @@ command:
       - "Codex は codex app-server で照会します。"
       - "リセットを検出すると history DB の隣の ai-resets.jsonl に記録します。"
       - "最後に受け取った Claude の値は同じ場所の ai-claude.json に残します。"
+      - "edc ai hooks install は Claude Code の settings.json と Codex の hooks.json に edc ai hook を追加します。"
+      - "hook は履歴 DB の隣の ai-events.jsonl に 1 行ずつ記録します。uninstall は edc の項目だけを外します。"
+      - "edc ai sessions はセッションごとに入力待ち、失敗、作業中、待機を表示します。--needs は前の二つだけです。"
+      - "端末では画面を開いたまま 2 秒ごとに新しいイベントを読みます。n 入力待ちのみ、a 終了を含む、q 終了。"
+      - "Codex は config.toml に hooks = true があるときだけ hook を実行します。install 前に始めたセッションには開始イベントがありません。"
   snapshot:
     summary: "report diff で比べる host の状態を 1 つの report に保存"
     option:

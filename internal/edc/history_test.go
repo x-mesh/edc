@@ -1030,3 +1030,57 @@ func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
 		t.Fatalf("filtered rows = %d", len(rows))
 	}
 }
+
+// 프로세스는 top_process_samples에 한 행씩 남으므로 top_samples payload에 다시 넣지 않는다. 수집하지 않은 limits의
+// 자리 표시 문구도 행마다 반복하지 않는다. 기록이 두 배 가까이 커지던 원인이다.
+func TestHistoryStoresProcessesOnceWithoutPlaceholderLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "samples.db")
+	recorder := topHistoryFixture(t, path)
+	collected := &topProcessLimits{FD: topFDLimit{topLimitStatus: topLimitStatus{Status: "available"}}}
+	sample := historyFixtureSample(1, 40, topProcess{PID: 7, CPU: 30, RSS: 1 << 20, Command: "nginx"})
+	second := historyFixtureSample(1, 40, topProcess{PID: 8, CPU: 20, RSS: 2 << 20, Command: "nginx", Limits: collected})
+	*sample.Processes = append(*sample.Processes, (*second.Processes)[0])
+	if err := recorder.Record(sample); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var payload string
+	if err := db.QueryRow("SELECT payload FROM top_samples").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payload, `"processes":`) || !strings.Contains(payload, `"processes_valid":true`) {
+		t.Fatalf("top_samples payload = %s", payload)
+	}
+	rows, err := db.Query("SELECT pid, payload FROM top_process_samples ORDER BY pid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	limits := map[int]bool{}
+	for rows.Next() {
+		var pid int
+		var data string
+		if err := rows.Scan(&pid, &data); err != nil {
+			t.Fatal(err)
+		}
+		limits[pid] = strings.Contains(data, `"limits":`)
+	}
+	if len(limits) != 2 || limits[7] || !limits[8] {
+		t.Fatalf("limits stored per PID = %v, want only the collected one", limits)
+	}
+	if processes := historyJSONRows(t, db, "process", historyOptions{}); len(processes) != 2 {
+		t.Fatalf("history process rows = %d", len(processes))
+	}
+	samples := historyJSONRows(t, db, "top", historyOptions{})
+	var attached []topProcessSample
+	if len(samples) != 1 || json.Unmarshal(samples[0]["processes"], &attached) != nil || len(attached) != 2 || attached[0].PID != 7 {
+		t.Fatalf("history top --json must still list the sample's processes: %s", mustHistoryJSON(t, samples))
+	}
+}

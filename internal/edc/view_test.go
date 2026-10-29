@@ -3,12 +3,16 @@ package edc
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/x-mesh/fastgzip"
 )
 
 func readViewFixture(t *testing.T, name string) []string {
@@ -639,5 +643,83 @@ func TestViewReadLineAddsOneNewlineToACutLine(t *testing.T) {
 	}
 	if line, cut, err = viewReadLine(reader, 16); err != nil || cut || string(line) != "next\n" {
 		t.Fatalf("next line %q cut %v err %v", line, cut, err)
+	}
+}
+
+func gzipViewBytes(t *testing.T, content string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	if _, err := writer.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+// viewReceiveGzip은 .gz 본문을 화면과 같은 방식으로 풀어 마지막 keep줄을 모델에 넣는다.
+func viewReceiveGzip(t *testing.T, data []byte, keep int) (viewScreenModel, error) {
+	t.Helper()
+	reader, err := fastgzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	model := newViewScreenModel("app.log.gz", keep)
+	raw, err := viewReadGzipTail(reader, keep)
+	model.ingest(raw, time.Now(), false)
+	return model, err
+}
+
+func TestViewReadGzipTailKeepsLastLines(t *testing.T) {
+	var content strings.Builder
+	for index := range 200000 {
+		content.WriteString("2026-10-26 10:00:00 INFO line " + strconv.Itoa(index) + "\n")
+	}
+	content.WriteString("2026-10-26 10:00:01 ERROR last without newline")
+	model, err := viewReceiveGzip(t, gzipViewBytes(t, content.String()), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, line := range model.lines {
+		texts = append(texts, line.text)
+	}
+	want := []string{"2026-10-26 10:00:00 INFO line 199998", "2026-10-26 10:00:00 INFO line 199999", "2026-10-26 10:00:01 ERROR last without newline"}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines %q", texts)
+	}
+}
+
+// 잘린 .gz는 읽은 줄까지 보여 주되 오류를 남긴다. 그렇지 않으면 잘린 로그를 온전한 로그로 믿게 된다.
+func TestViewReadGzipTailReportsTruncatedGzip(t *testing.T) {
+	var content strings.Builder
+	for index := range 50000 {
+		content.WriteString("line " + strconv.Itoa(index) + "\n")
+	}
+	data := gzipViewBytes(t, content.String())
+	model, err := viewReceiveGzip(t, data[:len(data)/2], viewKeepLines)
+	if err == nil {
+		t.Fatal("no error for a truncated gzip")
+	}
+	if len(model.lines) == 0 {
+		t.Fatal("no lines before the cut")
+	}
+}
+
+func TestViewPassthroughKeepsGzipBytes(t *testing.T) {
+	data := gzipViewBytes(t, "plain\nlog\n")
+	path := filepath.Join(t.TempDir(), "app.log.gz")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := viewPassthrough(&stdout, &stderr, path, -1, false); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stdout.Bytes(), data) {
+		t.Fatalf("got %d bytes, want the %d compressed bytes", stdout.Len(), len(data))
 	}
 }

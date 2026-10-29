@@ -52,7 +52,7 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
 | `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
-| `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
+| `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤, 또는 `always`나 `unless-stopped` container가 코드 0으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
 | `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
 | `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
 
@@ -374,6 +374,18 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 `edc events`는 로그 전체를 보여 주지 않습니다. 새 기록을 따라가지 않고, 애플리케이션 로그도 읽지 않습니다.
 
+
+### macOS
+
+macOS에서 `edc events`는 `/Library/Logs/DiagnosticReports`와 그 아래 `Retired` 폴더의 jetsam·패닉 보고서를 읽습니다. 이 보고서는 ReportCrash가 남깁니다. 보고서는 파일 이름이 아니라 첫 줄의 `bug_type`으로 고릅니다.
+
+| 결과 | Fail | Warn |
+|---|---|---|
+| `events.window` | | |
+| `events.panic` | 커널 패닉이 있었음 | |
+| `events.jetsam` | | jetsam이 process를 종료함. 근거에 이유, 상주 메모리, 가장 큰 process를 보입니다 |
+
+이유가 `per-process-limit`인 종료는 process 하나가 자기 메모리 한도를 넘은 것으로, macOS에서 흔하므로 warn으로 둡니다. 관리자 계정이면 보고서를 읽을 수 있고, 폴더를 읽지 못하면 `events.window`가 `skip`입니다. unified log에는 커널의 `memorystatus` 줄이 남지 않아 읽지 않습니다.
 
 ## 현재 범위
 

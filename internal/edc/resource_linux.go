@@ -44,6 +44,8 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
+				// 다른 계정의 cwd는 root가 아니면 읽을 수 없다. 그 process는 작업 디렉터리를 모르는 채로 묶인다.
+				stat.CWD, _ = os.Readlink("/proc/" + entry.Name() + "/cwd")
 				if readSwap {
 					status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
 					// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.
@@ -98,6 +100,22 @@ func newTopProcessEnricher() func([]topProcess) {
 	}
 }
 
+func newTopProcessIOFiller() func([]topProcess) {
+	tracker := &topProcessIOTracker{}
+	return func(processes []topProcess) { tracker.fill(processes, time.Now()) }
+}
+
+// newTopProcessFDCounter는 /proc/<pid>/fd의 항목 수를 센다. root가 아니면 다른 사용자의 process는 읽지 못해 0으로 남는다.
+func newTopProcessFDCounter() func([]topProcess) {
+	return func(processes []topProcess) {
+		for index := range processes {
+			if entries, err := os.ReadDir("/proc/" + strconv.Itoa(processes[index].PID) + "/fd"); err == nil {
+				processes[index].FDs = len(entries)
+			}
+		}
+	}
+}
+
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now(), NetworkHealth: collectNetworkHealth()}
 	stat, err := os.ReadFile("/proc/stat")
@@ -105,6 +123,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		return snapshot, err
 	}
 	lines := strings.Split(string(stat), "\n")
+	if created, ok := parseLinuxProcessesCreated(string(stat)); ok {
+		snapshot.ProcsCreated, snapshot.ProcsCreatedValid, snapshot.ProcsCreatedSource = created, true, "kernel"
+	}
 	fields := strings.Fields(lines[0])
 	if len(fields) < 8 {
 		return snapshot, fmt.Errorf("invalid /proc/stat cpu line")
@@ -117,7 +138,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.CPUUser = values[0] + values[1]
 	snapshot.CPUSystem = values[2] + values[5] + values[6]
 	snapshot.CPUIdle = values[3]
-	snapshot.CPUIOWait = values[4]
+	snapshot.CPUIOWait, snapshot.CPUIOWaitValid = values[4], true
 	if len(values) > 7 {
 		snapshot.CPUSteal, snapshot.CPUStealValid = values[7], true
 	}
@@ -152,6 +173,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	if memory, err := readMemInfo(); err == nil {
 		snapshot.MemoryTotal = memory["MemTotal"]
 		snapshot.MemoryUsed = snapshot.MemoryTotal - memory["MemAvailable"]
+		snapshot.SwapTotal, snapshot.SwapUsed, snapshot.SwapUsageValid = linuxSwapUsage(memory)
 	}
 	if vmstat, err := os.ReadFile("/proc/vmstat"); err == nil {
 		pages, ok := parseLinuxSwapOutPages(string(vmstat))
@@ -182,6 +204,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	} else {
 		snapshot.DiskMissing = true
 	}
+	snapshot.ThrottleMS, snapshot.ThrottleValid = readLinuxPackageThrottle()
+	snapshot.TempC, snapshot.TempValid = readLinuxMaxValue("/sys/class/thermal/thermal_zone*/temp", 1000)
+	snapshot.GPUBusy, snapshot.GPUValid = readLinuxMaxValue("/sys/class/drm/card*/device/gpu_busy_percent", 1)
 	return snapshot, nil
 }
 
@@ -421,4 +446,46 @@ func parseKeyValues(input string) map[string]string {
 		}
 	}
 	return result
+}
+
+// readLinuxPackageThrottle은 x86 CPU package가 열 때문에 속도를 낮춘 누적 ms다. 같은 package의 CPU는 모두 같은 값을 보이므로
+// physical_package_id마다 한 번만 더한다. thermal_throttle이 없는 CPU(ARM, VM)는 값이 없다.
+func readLinuxPackageThrottle() (uint64, bool) {
+	paths, _ := filepath.Glob("/sys/devices/system/cpu/cpu[0-9]*/thermal_throttle/package_throttle_total_time_ms")
+	seen := map[string]bool{}
+	var total uint64
+	for _, path := range paths {
+		cpu := filepath.Dir(filepath.Dir(path))
+		id, err := os.ReadFile(filepath.Join(cpu, "topology", "physical_package_id"))
+		if err != nil || seen[strings.TrimSpace(string(id))] {
+			continue
+		}
+		value, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		seen[strings.TrimSpace(string(id))] = true
+		total += parseUint(strings.TrimSpace(string(value)))
+	}
+	return total, len(seen) > 0
+}
+
+// readLinuxMaxValue는 glob에 맞는 파일 중 가장 큰 정수 값을 scale로 나눈다. thermal zone은 milli-degree다.
+func readLinuxMaxValue(pattern string, scale float64) (float64, bool) {
+	paths, _ := filepath.Glob(pattern)
+	best, ok := 0.0, false
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		value, err := strconv.ParseFloat(strings.TrimSpace(string(data)), 64)
+		if err != nil {
+			continue
+		}
+		if !ok || value/scale > best {
+			best, ok = value/scale, true
+		}
+	}
+	return best, ok
 }

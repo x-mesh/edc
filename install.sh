@@ -1,7 +1,7 @@
 #!/bin/sh
 # edc installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+#   curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | sh
 #
 # Environment:
 #   EDC_VERSION      version to install, without the leading v (default: latest)

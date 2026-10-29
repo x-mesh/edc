@@ -4,11 +4,13 @@ package edc
 
 import (
 	"encoding/binary"
+	"math"
 	"net"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -93,6 +95,63 @@ func TestDarwinReaderAndEnricherReuseRusageSample(t *testing.T) {
 	}
 }
 
+func TestDarwinReaderAddsKernelTaskWithCPUFromRusageDelta(t *testing.T) {
+	timebase, err := darwinMachTimebase()
+	if err != nil || darwinTranslated() {
+		t.Skip("kernel_task CPU needs the native Mach timebase")
+	}
+	previousReader, previousTaskInfo, previousNow := darwinProcessRusageReader, darwinProcessTaskInfoReader, darwinProcessNow
+	t.Cleanup(func() {
+		darwinProcessRusageReader, darwinProcessTaskInfoReader, darwinProcessNow = previousReader, previousTaskInfo, previousNow
+	})
+	var ticks darwinMachTicks
+	readAt := time.Unix(100, 0)
+	darwinProcessRusageReader = func(pid int) (darwinProcessRusage, error) {
+		if pid != 0 {
+			return darwinProcessRusage{}, syscall.EPERM
+		}
+		return darwinProcessRusage{UserTime: ticks, SystemTime: ticks, ResidentSize: 4 << 20, Footprint: 42 << 20}, nil
+	}
+	darwinProcessTaskInfoReader = func(pid int) (darwinProcessTaskInfo, error) {
+		if pid != 0 {
+			return darwinProcessTaskInfo{}, syscall.EPERM
+		}
+		return darwinProcessTaskInfo{Threads: 968}, nil
+	}
+	darwinProcessNow = func() time.Time { return readAt }
+	read := newTopProcessReaderWithRusage(true)
+	first := darwinKernelTaskRow(t, read)
+	if first.Command != "kernel_task" || first.CPU != 0 || !first.MemoryValid || first.Memory != 42<<20 || !first.RSSMissing || first.Threads != 968 {
+		t.Fatalf("first kernel_task row = %+v", first)
+	}
+	// 1초 동안 user와 system에 0.25초씩 쓰면 core 하나의 50%다.
+	ticks = darwinMachTicks(uint64(250*time.Millisecond) * uint64(timebase.Denom) / uint64(timebase.Numer))
+	readAt = readAt.Add(time.Second)
+	if got := darwinKernelTaskRow(t, read).CPU; math.Abs(got-50) > 0.01 {
+		t.Fatalf("kernel_task CPU = %v, want 50", got)
+	}
+}
+
+func TestDarwinReaderOmitsKernelTaskWhenRusageIsDenied(t *testing.T) {
+	previousReader := darwinProcessRusageReader
+	t.Cleanup(func() { darwinProcessRusageReader = previousReader })
+	darwinProcessRusageReader = func(int) (darwinProcessRusage, error) { return darwinProcessRusage{}, syscall.EPERM }
+	processes, valid := newTopProcessReaderWithRusage(true)()
+	if !valid || slices.ContainsFunc(processes, func(process topProcess) bool { return process.PID == 0 }) {
+		t.Fatalf("valid %v, processes include PID 0 without rusage", valid)
+	}
+}
+
+func darwinKernelTaskRow(t *testing.T, read func() ([]topProcess, bool)) topProcess {
+	t.Helper()
+	processes, _ := read()
+	index := slices.IndexFunc(processes, func(process topProcess) bool { return process.PID == 0 })
+	if index < 0 {
+		t.Fatal("no kernel_task row")
+	}
+	return processes[index]
+}
+
 func TestDarwinProcessSampleTimeUsesRusageReadTime(t *testing.T) {
 	readAt, enrichedAt := time.Unix(100, 0), time.Unix(101, 0)
 	process := topProcess{diskSampled: true, diskSampledAt: readAt}
@@ -113,6 +172,21 @@ func TestDarwinMemoryFromStatistics(t *testing.T) {
 	}
 	if got := darwinMemoryFromStatistics(stats, 16384, 0); got.total != 0 || got.used != 0 {
 		t.Fatalf("unknown total must leave usage empty: %#v", got)
+	}
+	stats.CompressorPageCount = 3
+	if got := darwinMemoryFromStatistics(stats, 16384, 2000*16384); !got.compressorOK || got.compressor != 3*16384 {
+		t.Fatalf("compressor = %#v", got)
+	}
+}
+
+// TestReadDarwinSwapUsage는 xsw_usage의 offset을 잘못 잡으면 used가 total을 넘거나 page 크기가 0이 되는 점으로 확인한다.
+func TestReadDarwinSwapUsage(t *testing.T) {
+	usage, err := readDarwinSwapUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.PageSize == 0 || usage.Used > usage.Total || usage.Available > usage.Total || usage.Used+usage.Available != usage.Total {
+		t.Fatalf("swap usage = %+v", usage)
 	}
 }
 
@@ -299,4 +373,69 @@ func TestCollectDisksFillsTheFilesystemTypeOnDarwin(t *testing.T) {
 		}
 	}
 	t.Skip("no root mount in the df output")
+}
+
+// 필터가 없을 때도 후보의 디스크 I/O와 fd 수를 채운다. 이전에는 /proc/<pid>/io만 읽어 macOS에서 history의 디스크와
+// fd 칸이 늘 비었다. 수집기가 읽어 둔 rusage counter를 다시 쓰므로 rusage를 다시 부르지 않는다.
+func TestDarwinIOFillerUsesReaderRusageAndCountsFDs(t *testing.T) {
+	previousReader, previousNow := darwinProcessRusageReader, darwinProcessNow
+	t.Cleanup(func() { darwinProcessRusageReader, darwinProcessNow = previousReader, previousNow })
+	darwinProcessRusageReader = func(int) (darwinProcessRusage, error) {
+		t.Fatal("the filler must reuse the reader's rusage sample")
+		return darwinProcessRusage{}, nil
+	}
+	readAt := time.Unix(100, 0)
+	darwinProcessNow = func() time.Time { return readAt }
+	fill, count := newTopProcessIOFiller(), newTopProcessFDCounter()
+	process := topProcess{PID: os.Getpid(), diskSampled: true, diskStarted: 7, diskReadBytes: 100, diskWriteBytes: 50, diskSampledAt: readAt}
+	processes := []topProcess{process}
+	fill(processes)
+	count(processes)
+	if processes[0].DiskValid || processes[0].FDs == 0 {
+		t.Fatalf("first fill = %+v, want no rate yet and an fd count", processes[0])
+	}
+	process.diskReadBytes, process.diskWriteBytes, process.diskSampledAt = 1100, 250, readAt.Add(2*time.Second)
+	processes = []topProcess{process}
+	fill(processes)
+	if !processes[0].DiskValid || processes[0].DiskRead != 500 || processes[0].DiskWrite != 100 {
+		t.Fatalf("second fill = %+v, want 500 B/s read and 100 B/s write", processes[0])
+	}
+}
+
+// macOS에는 생성된 process 수를 세는 kernel counter가 없다. 직전 sample에 없던 PID 가운데 직전 최신 PID에서 가장 먼
+// 것까지의 거리를 생성 수로 센다. PID는 fork할 때만 배정되므로 새 PID는 그 사이에 만들어진 것이다.
+func TestDarwinSpawnTrackerCountsNewPIDsAcrossWrap(t *testing.T) {
+	var tracker darwinSpawnTracker
+	steps := []struct {
+		pids  []int32
+		total uint64
+		ready bool
+	}{
+		// 첫 sample의 가장 큰 PID는 최신이 아닐 수 있다. 99000은 PID가 한 바퀴 돌기 전에 생긴 오래된 process다.
+		{[]int32{1, 335, 99000, 2000}, 0, false},
+		// 새로 보인 2010, 2030이 기준을 정한다. 여기서부터 센다. rate는 기준이 선 두 sample 사이에서 나온다.
+		{[]int32{1, 335, 99000, 2000, 2010, 2030}, 0, true},
+		{[]int32{1, 335, 99000, 2030, 2050, 2090}, 60, true},
+		// 오래 산 1, 335, 99000은 새 PID가 아니다.
+		{[]int32{1, 335, 99000, 2090}, 60, true},
+	}
+	for index, step := range steps {
+		if total, ready := tracker.observe(step.pids); total != step.total || ready != step.ready {
+			t.Fatalf("step %d: total %d ready %v, want %d %v", index, total, ready, step.total, step.ready)
+		}
+	}
+	// 99999 다음은 100이므로 99970→150은 99971~99999의 29개와 100~150의 51개다.
+	var wrap darwinSpawnTracker
+	wrap.observe([]int32{1, 99950})
+	wrap.observe([]int32{1, 99950, 99960, 99970})
+	if total, ready := wrap.observe([]int32{1, 99970, 120, 150}); !ready || total != 29+51 {
+		t.Fatalf("wrap total %d ready %v, want 80 true", total, ready)
+	}
+}
+
+func TestDarwinListAllPIDsIncludesThisProcess(t *testing.T) {
+	pids, err := darwinListAllPIDs()
+	if err != nil || !slices.Contains(pids, int32(os.Getpid())) {
+		t.Fatalf("pids %d, err %v", len(pids), err)
+	}
 }

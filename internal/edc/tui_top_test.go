@@ -1905,6 +1905,33 @@ func TestTopMemoryPressureColumnFollowsTheHost(t *testing.T) {
 	}
 }
 
+// kernel이 압박을 normal로 보고 memory%도 낮아도 swap이 거의 찼으면 경고한다.
+func TestTopSignalsWarnWhenSwapIsNearlyFull(t *testing.T) {
+	limits := newTopLimits(4, false)
+	swap := func(used, total uint64, valid bool) (string, topLevel) {
+		for _, item := range topSignals(resourceRate{MemoryPercent: 73, MemoryPressure: topMemoryPressureNormal, SwapUsed: used, SwapTotal: total, SwapUsageValid: valid}, limits) {
+			if item.kind == "swap" {
+				return item.text, item.level()
+			}
+		}
+		return "", topLevelNormal
+	}
+	if text, level := swap(87, 100, true); text != "swap 87%" || level != topLevelWarn {
+		t.Errorf("87%%: %q %v", text, level)
+	}
+	if text, level := swap(96, 100, true); text != "swap 96%" || level != topLevelDanger {
+		t.Errorf("96%%: %q %v", text, level)
+	}
+	for _, tt := range []struct {
+		used, total uint64
+		valid       bool
+	}{{79, 100, true}, {0, 0, true}, {90, 100, false}} {
+		if text, _ := swap(tt.used, tt.total, tt.valid); text != "" {
+			t.Errorf("%+v must not warn: %q", tt, text)
+		}
+	}
+}
+
 func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 	limits := newTopLimits(4, false)
 	for level, want := range map[topMemoryPressure]string{topMemoryPressureNormal: "", topMemoryPressureWarn: "mem pressure warn", 3: "mem pressure warn", topMemoryPressureCritical: "mem pressure critical"} {

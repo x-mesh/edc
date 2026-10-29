@@ -175,6 +175,20 @@ func readDarwinMemoryPressure() (topMemoryPressure, error) {
 	return level, nil
 }
 
+// darwinSwapUsage는 vm.swapusage가 주는 xsw_usage와 크기와 순서가 같아야 한다.
+type darwinSwapUsage struct {
+	Total, Available, Used uint64
+	PageSize               uint32
+	Encrypted              int32
+}
+
+// readDarwinSwapUsage는 vm.swapusage를 sysctl 명령 없이 읽는다. top sample마다 부르므로 process를 띄우지 않는다.
+func readDarwinSwapUsage() (darwinSwapUsage, error) {
+	var usage darwinSwapUsage
+	err := darwinSysctl("vm.swapusage", unsafe.Pointer(&usage), unsafe.Sizeof(usage))
+	return usage, err
+}
+
 // readDarwinMemorySize는 hw.memsize, 곧 물리 memory byte 수를 읽는다.
 func readDarwinMemorySize() (uint64, error) {
 	var total uint64

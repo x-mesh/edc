@@ -66,7 +66,7 @@ func TestHistoryOverviewNearestRankP95(t *testing.T) {
 					t.Fatal(err)
 				}
 				// Record queues only historyQueueSize samples; write directly so a slow CI writer cannot overflow it.
-				if err := recorder.writeSample(payload); err != nil {
+				if err := recorder.writeSamples([][]byte{payload}); err != nil {
 					t.Fatal(err)
 				}
 			}

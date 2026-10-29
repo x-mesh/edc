@@ -9,14 +9,14 @@
 script로 최신 release를 설치합니다. script는 운영체제와 architecture를 읽고, SHA-256을 확인한 다음 실행 파일을 설치합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | sh
 ```
 
 script는 Linux에서는 `edc`를 `/usr/local/bin`에, macOS에서는 `~/.local/bin`에 설치합니다. Linux의 패킷 캡처와 일부 trace는 root 또는 해당 capability가 필요하고, `sudo`의 `PATH`에는 보통 `/usr/local/bin`만 있기 때문입니다. 일반 사용자가 설치 디렉터리에 쓸 수 없으면 script는 복사할 때만 `sudo`를 씁니다. root가 `/usr/local/bin`에 쓸 수 없으면 `~/.local/bin`으로 전환합니다. 다른 디렉터리를 반드시 사용하려면 `BINDIR`을 지정합니다. 이전 버전을 받으려면 `EDC_VERSION`을 지정합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR="$HOME/.local/bin" sh
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VERSION=0.1.0 sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | BINDIR="$HOME/.local/bin" sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | EDC_VERSION=0.1.0 sh
 ```
 
 이전 script는 Linux에서도 `edc`를 `~/.local/bin`에 설치했습니다. Ubuntu는 `PATH`에서 `~/.local/bin`을 `/usr/local/bin`보다 앞에 두므로, 이 옛 파일이 남아 있으면 계속 옛 버전이 실행됩니다. 그래서 script는 옛 파일이 `edc`이면 지웁니다. script를 실행한 사용자의 home과, `sudo`로 실행했다면 `sudo`를 실행한 사용자의 home을 확인합니다. 다른 사용자의 home에 있는 파일은 `sudo rm /home/<user>/.local/bin/edc`처럼 직접 지웁니다.
@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VE
 설치 디렉터리가 `PATH`에 없으면 script가 사용 중인 shell을 판단해 그 디렉터리를 추가하는 명령을 출력합니다. `EDC_MODIFY_PATH=1`을 지정하면 script가 `~/.zshrc`, `~/.bashrc` 같은 shell 시작 파일에 직접 한 줄을 추가하며, 이미 있으면 다시 넣지 않습니다. 지금 열려 있는 shell에는 새 `PATH`가 반영되지 않으므로, 새 shell을 열거나 script가 출력한 명령을 실행합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_MODIFY_PATH=1 sh
+curl -fsSL https://github.com/x-mesh/edc/releases/latest/download/install.sh | EDC_MODIFY_PATH=1 sh
 ```
 
 release에는 Linux와 macOS의 `amd64`, `arm64` 실행 파일이 들어 있습니다.

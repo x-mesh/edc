@@ -128,6 +128,8 @@ stdin과 stdout이 모두 terminal이면 `edc report show`와 `edc report diff`�
 
 `--write [path]` 또는 `-w [path]`로 관측값을 로컬 SQLite DB에 누적합니다. 대시보드는 유지하며, `--count`, 파이프, `--json`의 출력 방식은 그대로입니다. `--write`와 함께 쓰면 표에서도 `--process`를 사용할 수 있습니다. `-w`만 주면 Linux는 `~/.local/state/edc/history.db`, macOS는 `~/Library/Application Support/edc/history.db`를 사용합니다. 두 플랫폼 모두 절대 경로인 `XDG_STATE_HOME`이 있으면 `$XDG_STATE_HOME/edc/history.db`를 사용합니다. 기본 디렉터리는 권한 `0700`으로 자동 생성합니다. `-w`나 `--write`를 생략하면 기록을 끈 상태로 시작합니다. 대시보드에서 `w`로 기록을 시작·중지할 수 있습니다. 시작 시점 이후의 온전한 관측 구간만 저장하며, 다시 시작하면 같은 DB에 새 실행을 만듭니다. `p`로 일시정지하면 기록도 멈춥니다. 기록 중에는 `REC`와 저장한 관측값 개수가 표시됩니다.
 
+`--auto-record`(또는 `defaults.top.auto_record = true`)를 주면 대시보드가 load1이 코어 수의 2배를 넘거나, swap out이 생기거나, 메모리 압박이 `warn` 이상일 때 스스로 기록을 시작합니다. 대시보드는 최근 5분의 관측값을 메모리에 두었다가 새 실행의 앞부분으로 저장하므로, 문제가 시작된 때부터 남습니다. 조건이 모두 1분 동안 풀려 있으면 기록을 멈춥니다. 실행 payload의 `trigger`에 이유가 남습니다. `edc history list`는 이 이유를 `TRIGGER` 열에 보이고, `edc history list --auto`는 자동 기록 실행만 보입니다. 기본으로 꺼져 있으며, `w`나 `-w`로 기록하는 동안에는 동작하지 않습니다.
+
 
 터미널에서 `edc history top`과 `edc history process`는 인터랙티브 탐색 화면을 엽니다. ↑↓ 선택, Enter 전체 상세, Home 최신 관측 추적, `p` 자동 갱신 일시정지를 지원합니다. top 표는 너비에 따라 디스크·네트워크·swap 등 지원되는 지표의 컬럼을 추가하고, 넓은 화면에서는 선택한 관측값의 상세 패널을 표시합니다. top의 파이프 출력은 디스크·네트워크·swap 컬럼을 포함하는 표이며, `--json`은 기존 JSONL 출력입니다. process 탐색 화면은 PID·CPU·RSS·명령어를 기본으로 표시하고 공간과 기록된 데이터에 따라 MEM·디스크 I/O·thread·FD 컬럼을 추가합니다. 상세에는 process 시작 시각과 수집된 한도도 표시합니다. 기존 `--process`, `--run`, 시간 범위와 지표 필터를 그대로 사용할 수 있습니다.
 

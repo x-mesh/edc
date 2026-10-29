@@ -82,7 +82,13 @@ cores net_in_bytes_per_s net_out_bytes_per_s packets_in_per_s packets_out_per_s
 network_errors_per_s network_drops_per_s load1 cpu_user_pct cpu_system_pct cpu_iowait_pct
 disk_read_bytes_per_s disk_write_bytes_per_s disk_iops disk_await_ms disk_busy_pct
 psi_cpu_some_avg10_pct psi_memory_some_avg10_pct psi_io_some_avg10_pct memory_pct swap_out_bytes_per_s
+swap_used_bytes swap_total_bytes compressor_bytes procs_created_per_s
+cpu_throttle_pct temp_c gpu_busy_pct
 `)), historyMetric{name: "cpu_pct", field: -1, kind: reflect.Float64})
+
+// historyAddedTopColumns는 버전 1의 top_samples 뒤에 더한 지표다. 버전을 올리면 이전 edc가 DB를 열지 못하므로
+// 쓰기로 열 때 column을 더하기만 한다. 읽기로 연 이전 DB에는 없을 수 있다.
+var historyAddedTopColumns = []string{"swap_used_bytes", "swap_total_bytes", "compressor_bytes", "procs_created_per_s", "cpu_throttle_pct", "temp_c", "gpu_busy_pct"}
 var historyProcessMetrics = historyMetrics(topProcessSample{}, strings.Fields(`
 pid cpu_pct rss_bytes memory_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
 `))
@@ -187,6 +193,10 @@ func newHistoryTopSample(details hostDetails, previous resourceSnapshot, snapsho
 				started := process.Started.UTC()
 				(*sample.Processes)[index].Started = &started
 			}
+			// 수집하지 않은 limits는 OS마다 같은 문구라 process 행 payload의 2/3를 차지했다.
+			if process.Limits == nil {
+				(*sample.Processes)[index].Limits = nil
+			}
 		}
 		if filter != "" {
 			sample.ProcessTotal = newTopProcessTotalSample(snapshot.ProcessTotal)
@@ -280,6 +290,9 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 			}
 		}
 		if err := historyAddProcessMemoryColumn(db); err != nil {
+			return err
+		}
+		if err := historyAddTopColumns(db); err != nil {
 			return err
 		}
 		return historyEnableWAL(db)
@@ -385,6 +398,56 @@ func historyHasProcessMemoryColumn(db *sql.DB) bool {
 	return false
 }
 
+func historyAddTopColumns(db *sql.DB) error {
+	columns, err := historyTableColumns(db, "top_samples")
+	if err != nil {
+		return err
+	}
+	types := map[string]string{}
+	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
+		name, kind, _ := strings.Cut(definition, " ")
+		types[name] = kind
+	}
+	for _, column := range historyAddedTopColumns {
+		if columns[column] {
+			continue
+		}
+		// 두 writer가 동시에 처음 열면 늦은 쪽의 ALTER가 duplicate column name으로 실패한다. 이미 더해진 것이므로 넘어간다.
+		if _, err := db.Exec("ALTER TABLE top_samples ADD COLUMN " + column + " " + types[column]); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
+
+// historyTopColumnMissing은 읽기로 연 이전 DB에 이 지표의 column이 아직 없는지다. 없으면 그 지표의 기록도 없다.
+func historyTopColumnMissing(db *sql.DB, metric string) bool {
+	if !slices.Contains(historyAddedTopColumns, metric) {
+		return false
+	}
+	columns, err := historyTableColumns(db, "top_samples")
+	return err == nil && !columns[metric]
+}
+
+func historyTableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primary int
+		var name, kind string
+		var value any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &value, &primary); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
+}
+
 func historyHasOverviewIndexes(db *sql.DB) (bool, error) {
 	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
 		var found int
@@ -439,6 +502,8 @@ type historyRun struct {
 	// Interfaces는 net 값에 더한 interface다. 비었으면 loopback을 뺀 모든 interface다.
 	Interfaces string `json:"interface_filter,omitempty"`
 	Detail     bool   `json:"detail"`
+	// Trigger는 edc top --auto-record가 연 run의 이유다. 사람이 w나 -w로 연 run은 비어 있다.
+	Trigger string `json:"trigger,omitempty"`
 	// Since, DuPaths, Report는 스냅샷 실행에만 있다. Report는 결과를 뺀 보고서이고 결과는 snapshot_results에 있다.
 	Since   string          `json:"since,omitempty"`
 	DuPaths []string        `json:"du_paths,omitempty"`
@@ -458,14 +523,35 @@ type topRecorder struct {
 }
 
 func newTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool) (*topRecorder, error) {
+	return newTriggeredTopRecorder(path, version, details, interval, filter, interfaces, detail, "", nil)
+}
+
+// newTriggeredTopRecorder는 trigger가 걸리기 전 backlog를 먼저 쓰는 run을 연다. backlog는 queue를 거치지 않는다.
+// queue는 historyQueueSize칸이라 몇 분치 sample을 한 번에 넣으면 넘쳐 기록이 실패한다.
+func newTriggeredTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool, trigger string, backlog []historyTopSample) (*topRecorder, error) {
 	db, err := openHistoryDB(path, true)
 	if err != nil {
 		return nil, err
 	}
 	started := time.Now().UTC()
+	if len(backlog) > 0 {
+		// 잠자기에서 깬 직후의 sample은 구간이 몇 시간일 수 있어 interval보다 길게 거슬러 올라가지 않는다.
+		first := backlog[0]
+		started = first.Time.Add(-min(time.Duration(first.WindowS*float64(time.Second)), interval)).UTC()
+	}
 	run := historyRun{ID: runID(started), Command: "top", Hostname: details.Hostname, StartedAt: started,
 		Status: "unfinished", Version: version, System: details.System, OS: details.OS,
-		Cores: details.Cores, MemoryTotal: details.MemoryTotal, IntervalS: interval.Seconds(), Process: filter, Interfaces: interfaces, Detail: detail}
+		Cores: details.Cores, MemoryTotal: details.MemoryTotal, IntervalS: interval.Seconds(), Process: filter, Interfaces: interfaces, Detail: detail, Trigger: trigger}
+	pending := make([][]byte, 0, len(backlog))
+	for _, sample := range backlog {
+		sample.RunID = run.ID
+		payload, err := json.Marshal(sample)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		pending = append(pending, payload)
+	}
 	payload, err := json.Marshal(run)
 	if err == nil {
 		_, err = db.Exec("INSERT INTO runs(id, command, hostname, started_ns, status, payload) VALUES (?, ?, ?, ?, ?, ?)", run.ID, run.Command, run.Hostname, started.UnixNano(), run.Status, string(payload))
@@ -475,7 +561,7 @@ func newTopRecorder(path, version string, details hostDetails, interval time.Dur
 		return nil, err
 	}
 	recorder := &topRecorder{db: db, runID: run.ID, queue: make(chan []byte, historyQueueSize), done: make(chan struct{}), failed: make(chan struct{})}
-	go recorder.writeLoop()
+	go recorder.writeLoop(pending)
 	return recorder, nil
 }
 
@@ -514,13 +600,17 @@ func (recorder *topRecorder) Record(sample historyTopSample) error {
 	}
 }
 
-func (recorder *topRecorder) writeLoop() {
+func (recorder *topRecorder) writeLoop(backlog [][]byte) {
 	defer close(recorder.done)
+	if err := recorder.writeSamples(backlog); err != nil {
+		recorder.fail(err)
+		return
+	}
 	for payload := range recorder.queue {
 		if err := recorder.Err(); err != nil {
 			return
 		}
-		if err := recorder.writeSample(payload); err != nil {
+		if err := recorder.writeSamples([][]byte{payload}); err != nil {
 			recorder.fail(err)
 			return
 		}
@@ -531,18 +621,39 @@ func historyInsert(table string, columns []string) string {
 	return "INSERT INTO " + table + "(" + strings.Join(columns, ", ") + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",") + ")"
 }
 
-func (recorder *topRecorder) writeSample(payload []byte) error {
-	var sample historyTopSample
-	if err := json.Unmarshal(payload, &sample); err != nil {
-		return err
+// writeSamples는 payload를 한 transaction으로 쓴다. backlog를 sample마다 commit하면 fsync가 수백 번 일어나고,
+// 그동안 queue가 넘친다.
+func (recorder *topRecorder) writeSamples(payloads [][]byte) error {
+	if len(payloads) == 0 {
+		return nil
 	}
 	tx, err := recorder.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	for _, payload := range payloads {
+		if err := recorder.writeSample(tx, payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (recorder *topRecorder) writeSample(tx *sql.Tx, payload []byte) error {
+	var sample historyTopSample
+	if err := json.Unmarshal(payload, &sample); err != nil {
+		return err
+	}
+	// process는 top_process_samples에 한 행씩 남는다. top_samples payload에 같은 목록을 다시 넣으면 기록이 두 배 가까이 된다.
+	stored := sample
+	stored.Processes = nil
+	samplePayload, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
 	columns := append([]string{"run_id", "time_ns", "payload"}, historyMetricNames(historyHostMetrics)...)
-	values := append([]any{recorder.runID, sample.Time.UnixNano(), string(payload)}, historyMetricValues(sample.topSample, historyHostMetrics, sample.metricSupported)...)
+	values := append([]any{recorder.runID, sample.Time.UnixNano(), string(samplePayload)}, historyMetricValues(sample.topSample, historyHostMetrics, sample.metricSupported)...)
 	result, err := tx.Exec(historyInsert("top_samples", columns), values...)
 	if err != nil {
 		return err
@@ -570,10 +681,8 @@ func (recorder *topRecorder) writeSample(payload []byte) error {
 			}
 		}
 	}
-	if _, err := tx.Exec("UPDATE runs SET sample_count=sample_count+1 WHERE id=?", recorder.runID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = tx.Exec("UPDATE runs SET sample_count=sample_count+1 WHERE id=?", recorder.runID)
+	return err
 }
 
 func (recorder *topRecorder) Close(status string) error {
@@ -590,6 +699,25 @@ func (recorder *topRecorder) Close(status string) error {
 }
 
 func historyFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+// historyStoredProcessesColumn은 sample의 process 행을 기록 순서대로 JSON 배열 하나로 읽는다. top_samples payload에는
+// process 목록을 다시 넣지 않으므로 history top --json이 같은 목록을 내려면 여기서 붙인다. 한 query로 읽어야 연결이
+// 하나뿐인 DB에서 행을 읽는 도중에 다른 query를 기다리지 않는다.
+const historyStoredProcessesColumn = "(SELECT json_group_array(json(payload)) FROM (SELECT payload FROM top_process_samples WHERE sample_id = top_samples.id ORDER BY id))"
+
+// attachStoredProcesses는 process 목록을 읽은 sample에 행으로 남은 목록을 붙인다. 맞은 process가 없으면 빈 배열이고,
+// 목록을 읽지 못한 sample에는 붙이지 않는다. 이전 기록처럼 payload에 이미 목록이 있으면 그대로 둔다.
+func (sample *historyTopSample) attachStoredProcesses(stored sql.NullString) error {
+	if !stored.Valid || !sample.ProcessesValid || sample.Processes != nil {
+		return nil
+	}
+	processes := []topProcessSample{}
+	if err := json.Unmarshal([]byte(stored.String), &processes); err != nil {
+		return err
+	}
+	sample.Processes = &processes
+	return nil
+}
 
 func (sample historyTopSample) metricSupported(name string) bool {
 	switch name {

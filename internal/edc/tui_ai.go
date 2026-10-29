@@ -32,7 +32,7 @@ var aiColumns = []struct {
 }{{"req", 4}, {"in", 6}, {"out", 6}, {"cache", 6}, {"hit", 4}, {"total", 7}}
 
 func runAIDashboard(collector *aiCollector, poll time.Duration, version string) int {
-	model := aiModel{collector: collector, poll: poll, version: version, now: time.Now(), rowSize: time.Minute}
+	model := aiModel{collector: collector, poll: poll, version: version, now: time.Now(), rowSize: time.Minute, sessionFeed: newAISessionFeed()}
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -57,6 +57,12 @@ type aiModel struct {
 	scanned        bool
 	logErr         error
 	stateErr       error
+	// sessionFeed가 nil이면 세션 영역을 그리지 않는다. 기록 DB 경로를 정하지 못한 경우다.
+	sessionFeed        *aiSessionFeed
+	sessions           []aiSession
+	sessionsRead       bool
+	sessionsHaveEvents bool
+	sessionsErr        error
 }
 
 type aiClockMsg time.Time
@@ -66,7 +72,18 @@ type aiPollMsg aiPollResult
 type aiScanMsg aiUsageSnapshot
 
 func (model aiModel) Init() tea.Cmd {
-	return tea.Batch(aiClock(), model.pollCmd(0), model.scanCmd(0))
+	return tea.Batch(aiClock(), model.pollCmd(0), model.scanCmd(0), model.sessionsCmd(0))
+}
+
+func (model aiModel) sessionsCmd(delay time.Duration) tea.Cmd {
+	feed := model.sessionFeed
+	if feed == nil {
+		return nil
+	}
+	if delay == 0 {
+		return func() tea.Msg { return feed.read(time.Now()) }
+	}
+	return tea.Tick(delay, func(at time.Time) tea.Msg { return feed.read(at) })
 }
 
 // aiClock은 system 시계의 초 경계에 맞춰 깨운다. 카운트다운이 초가 바뀌는 순간에 함께 바뀐다.
@@ -105,6 +122,9 @@ func (model aiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case aiScanMsg:
 		model.usage, model.scanned = aiUsageSnapshot(value), true
 		return model, model.scanCmd(aiScanInterval)
+	case aiSessionFeedMsg:
+		model.sessions, model.sessionsHaveEvents, model.sessionsErr, model.sessionsRead = value.sessions, value.hasEvents, value.err, true
+		return model, model.sessionsCmd(aiScanInterval)
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
 		model.back = min(model.back, model.maxBack())
@@ -196,6 +216,7 @@ func (model aiModel) View() tea.View {
 	}
 	lines = append(lines, model.boxLines(width)...)
 	lines = append(lines, model.statusLine(width))
+	lines = model.withSessionPane(lines, width)
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], width, "")
 	}
@@ -211,6 +232,10 @@ func (model aiModel) title(width int) string {
 	if model.claudeInterval > model.poll {
 		// 429로 늘어난 Claude 간격이다. 숫자가 바뀌지 않는 이유를 여기서 알 수 있다.
 		state += " · claude " + aiDuration(model.claudeInterval)
+	}
+	// 세션 영역이 보이지 않는 좁은 화면에서도 기다리는 세션이 있다는 것은 알린다.
+	if needs := aiSessionCounts(model.sessions)[aiStateNeeds]; needs > 0 && width-aiBoxWidth-aiPaneGap < aiPaneMinWidth {
+		state += fmt.Sprintf(" · ! %d needs", needs)
 	}
 	if model.back > 0 {
 		state += fmt.Sprintf(" · history -%d", model.back)

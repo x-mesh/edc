@@ -167,7 +167,7 @@ func runAIStatuslineSetup(install bool) int {
 		}
 		return 0
 	}
-	backup, err := writeAIClaudeSettings(path, data, edit.settings)
+	backup, err := writeAIClaudeSettings(path, data, edit.settings, aiStatuslineBackupSuffix)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.ai.statusline.settings", path, err))
 		return 1
@@ -187,7 +187,8 @@ func aiStatuslineShown(command string) string {
 }
 
 // writeAIClaudeSettings는 원래 파일을 백업한 뒤 임시 파일을 바꿔 넣는다. Claude Code가 반쯤 쓴 설정을 읽지 않게 한다.
-func writeAIClaudeSettings(path string, original, settings []byte) (string, error) {
+// 백업 이름은 기능마다 다르다. 같은 이름을 쓰면 나중 설치가 앞선 설치 전의 원본을 덮어쓴다.
+func writeAIClaudeSettings(path string, original, settings []byte, backupSuffix string) (string, error) {
 	// dotfile 관리 도구는 settings.json을 심볼릭 링크로 둔다. 링크 자리에 rename하면 링크가 일반 파일로 바뀌므로 링크가 가리키는 파일을 고친다.
 	target := path
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
@@ -201,7 +202,7 @@ func writeAIClaudeSettings(path string, original, settings []byte) (string, erro
 	backup := ""
 	if info, err := os.Stat(target); err == nil {
 		mode = info.Mode().Perm()
-		backup = path + aiStatuslineBackupSuffix
+		backup = path + backupSuffix
 		if err := os.WriteFile(backup, original, mode); err != nil {
 			return "", err
 		}

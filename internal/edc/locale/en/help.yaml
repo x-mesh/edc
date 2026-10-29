@@ -101,14 +101,14 @@ command:
       - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
       - "A routine adds unit rules, limits, and shell commands from config.toml. A command passes when it exits with 0."
   events:
-    summary: "Kernel and systemd failure signals in time order (Linux)"
+    summary: "Kernel, systemd, and macOS jetsam and panic signals in time order"
     option:
       since: "how far back to read, such as 30m or 48h"
     notes:
-      - "It reads the kernel log and the systemd journal only."
+      - "On Linux, it reads the kernel log and the systemd journal."
       - "Run it as root or as a member of adm or systemd-journal."
       - "Without that access, the checks show skip, not pass."
-      - "It works on Linux only."
+      - "On macOS, it reads jetsam and panic reports in /Library/Logs/DiagnosticReports."
   net:
     summary: "Interfaces, route, ping, and trace"
     sub:
@@ -152,6 +152,8 @@ command:
       count: "rows to print, 0 runs until you quit"
       no_header: "drop the host and column header"
       process: "match PIDs or command names, comma-separated"
+      top: "top processes in each JSON line without --process, 0 for none"
+      sort: "order of --top: cpu or mem"
       full: "match and show the full command line"
       split: "one box each for cpu, mem, disk, net, psi, default all"
       view: "first view, such as network or split"
@@ -161,6 +163,8 @@ command:
       detail: "CPU wait, I/O latency (Linux eBPF, root); macOS CPU wait"
       ebpf: "same as --detail"
       write: "append to SQLite; omit path for the default DB"
+      auto_record: "record load, swap out, or memory pressure spikes"
+      retain: "while recording, delete top runs idle longer than this (30d, 2w)"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "Press w to start/stop DB recording. Each restart creates a new run; p pauses recording too."
@@ -249,7 +253,7 @@ command:
       - "Code search reads current files without a log index and prints line numbers."
       - "A directory is searched recursively. Binary files are skipped, and .gz files are read in order."
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
-      - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log."
+      - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log. edc checks the order at 16 points only, so lines in an out-of-order stretch between those points can be skipped. Leave out --ordered for a log that mixes sources or has clock jumps."
       - "--last reads the file from the end and stops after N matches."
       - "With --level, --status, --since, or --until, the pattern can be left out when the first argument is an existing file or directory."
       - "Lines of a stack trace carry the level and time of their ERROR line, so --level error returns the trace too."
@@ -544,8 +548,13 @@ command:
     option:
       poll: "time between limit calls, 30s or more, 5m or more for Claude"
       count: "samples to print, 0 runs until you quit"
+      needs: "only sessions that need you or failed"
+      all: "include ended sessions"
+      bell: "ring the terminal bell when a session starts to need you"
+      sessions_count: "snapshots to print every 2s; 0 opens the live screen in a terminal"
     notes:
       - "In a terminal, edc opens a table of tokens per interval on this host."
+      - "In a terminal 131 columns or wider, the right side lists the sessions of edc ai sessions."
       - "The ▸ row is still open. ↑↓ moves back, +/- changes rows, End goes live."
       - "Σ rows sum the last 10 minutes, hour, and 24 hours at any row size."
       - "The boxes show Claude and Codex limits, reset times, and time left."
@@ -557,6 +566,11 @@ command:
       - "Codex answers through codex app-server."
       - "Each detected reset goes to ai-resets.jsonl next to the history DB."
       - "The last Claude values stay in ai-claude.json in the same directory."
+      - "edc ai hooks install adds edc ai hook to Claude Code settings.json and Codex hooks.json."
+      - "Each hook appends one line to ai-events.jsonl next to the history DB. uninstall removes only edc entries."
+      - "edc ai sessions shows each session: needs you, failed, working, waiting. --needs lists only the first two."
+      - "In a terminal, edc ai sessions stays open and reads new events every 2 seconds. n needs only, a ended, q quit."
+      - "Codex runs hooks only when config.toml sets hooks = true. Sessions started before install have no start event."
   snapshot:
     summary: "Save host state as one report for report diff"
     option:

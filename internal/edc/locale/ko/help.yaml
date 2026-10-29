@@ -101,14 +101,14 @@ command:
       - "--group은 SSH로 호스트마다 edc check를 실행합니다. 각 호스트에 check가 있는 edc가 필요합니다."
       - "루틴은 config.toml의 unit 규칙, 기준값, 셸 명령을 더합니다. 명령은 0으로 끝나면 통과입니다."
   events:
-    summary: "커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)"
+    summary: "커널, systemd, macOS jetsam·패닉 신호를 시간 순서로 정리"
     option:
       since: "읽을 기간 (예: 30m, 48h)"
     notes:
-      - "커널 로그와 systemd journal만 읽습니다."
+      - "Linux에서는 커널 로그와 systemd journal을 읽습니다."
       - "root나 adm, systemd-journal 그룹으로 실행하세요."
       - "권한이 없으면 점검은 통과가 아니라 skip입니다."
-      - "Linux에서만 동작합니다."
+      - "macOS에서는 /Library/Logs/DiagnosticReports의 jetsam·패닉 보고서를 읽습니다."
   net:
     summary: "interface, route, ping, trace"
     sub:
@@ -152,6 +152,8 @@ command:
       count: "출력할 row 수, 0은 계속 실행"
       no_header: "host와 column header 생략"
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
+      top: "--process 없이 JSON 줄마다 넣을 상위 process 수, 0은 끔"
+      sort: "--top 순서: cpu 또는 mem"
       full: "전체 명령줄로 맞추고 보여 준다"
       split: "cpu, mem, disk, net, psi를 박스로 한 화면에, 생략하면 전부"
       view: "처음 보기, 예: network, split"
@@ -161,6 +163,8 @@ command:
       detail: "CPU 대기·I/O 지연(Linux eBPF, root), macOS는 CPU 대기"
       ebpf: "--detail과 같음"
       write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"
+      auto_record: "부하·swap out·메모리 압박이 생기면 5분 전부터 자동 기록"
+      retain: "기록하는 동안 이 기간보다 오래 쉰 top 실행 삭제(30d, 2w)"
       json: "sample당 한 줄 JSON, stdout은 -"
     notes:
       - "w로 DB 기록을 시작·중지합니다. 다시 시작하면 새 실행으로 기록하며 p 일시정지 시 기록도 멈춥니다."
@@ -249,7 +253,7 @@ command:
       - "코드 검색은 로그 index 없이 현재 파일을 읽고 줄 번호를 출력합니다."
       - "디렉터리는 안의 파일을 모두 찾습니다. binary 파일은 건너뛰고, .gz는 풀면서 차례로 읽습니다."
       - "출력은 grep과 같습니다. 파일이 여럿이면 경로를, -n이면 줄 번호를 붙이고, -C는 앞뒤 줄을 더합니다."
-      - "--since와 --until은 시각으로 줄을 거릅니다. --ordered를 주면 --since가 시간 순서인 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뛰어, 수 GB 로그의 최근 구간도 수 MB만 읽습니다."
+      - "--since와 --until은 시각으로 줄을 거릅니다. --ordered를 주면 --since가 시간 순서인 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뛰어, 수 GB 로그의 최근 구간도 수 MB만 읽습니다. edc는 16개 지점에서만 순서를 확인하므로, 그 사이에 순서가 어긋난 구간이 있으면 그 구간의 줄을 놓칠 수 있습니다. 여러 출처가 섞이거나 시각이 뒤로 뛰는 로그에는 --ordered를 쓰지 마세요."
       - "--last는 파일 끝에서 거꾸로 읽어 N건을 찾으면 멈춥니다."
       - "--level, --status, --since, --until이 있으면 첫 인자가 실제 파일이나 디렉터리일 때 패턴을 생략할 수 있습니다."
       - "stack trace 줄은 그 ERROR 줄의 level과 시각을 물려받으므로, --level error는 trace도 함께 냅니다."
@@ -544,8 +548,13 @@ command:
     option:
       poll: "한도 조회 간격, 30s 이상. Claude는 5m 이상"
       count: "출력할 표본 수, 0은 계속 실행"
+      needs: "입력이 필요하거나 실패한 세션만"
+      all: "종료한 세션도 포함"
+      bell: "세션이 입력을 요청하면 터미널 벨을 울림"
+      sessions_count: "2초마다 출력할 표본 수. 0이면 terminal에서 실시간 화면을 엶"
     notes:
       - "terminal에서는 이 host의 구간별 token 표를 대시보드로 엽니다."
+      - "terminal 폭이 131열 이상이면 오른쪽에 edc ai sessions의 세션 목록을 보입니다."
       - "▸ 행은 진행 중인 구간입니다. ↑↓ 지난 행, +/- 행 구간, End 실시간."
       - "Σ 행은 지금까지 최근 10분, 1시간, 24시간 합계입니다. 행 구간과 무관합니다."
       - "아래 상자는 Claude와 Codex의 한도, 리셋 시각, 남은 시간입니다."
@@ -557,6 +566,11 @@ command:
       - "Codex는 codex app-server로 조회합니다."
       - "리셋을 감지하면 history DB 옆 ai-resets.jsonl에 기록합니다."
       - "마지막으로 받은 Claude 값은 같은 곳의 ai-claude.json에 남깁니다."
+      - "edc ai hooks install은 Claude Code settings.json과 Codex hooks.json에 edc ai hook을 추가합니다."
+      - "hook은 기록 DB 옆 ai-events.jsonl에 한 줄씩 남깁니다. uninstall은 edc 항목만 뺍니다."
+      - "edc ai sessions는 세션마다 입력 필요, 실패, 작업 중, 대기를 보입니다. --needs는 앞의 둘만 보입니다."
+      - "terminal에서는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. n 입력 필요만, a 종료 포함, q 종료."
+      - "Codex는 config.toml에 hooks = true가 있어야 hook을 실행합니다. 설치 전에 시작한 세션은 시작 이벤트가 없습니다."
   snapshot:
     summary: "report diff로 비교할 host 상태를 report 하나로 저장"
     option:

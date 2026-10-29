@@ -9,6 +9,8 @@ events:
     no_journal: "journalctl이 설치되어 있지 않습니다"
     no_systemd: "이 호스트에서 systemd가 실행 중이지 않습니다"
     unreadable: "%s를 읽지 못했습니다: %s"
+    reports: "%s를 읽을 수 없습니다: %s"
+    reports_admin: "%s를 읽으려면 관리자 계정(_analyticsusers 그룹)이나 root가 필요합니다"
   window:
     summary: "신호 %d개, 최근 %s (%s부터)"
     none: "최근 %s 동안의 로그 원천을 하나도 읽지 못했습니다"
@@ -68,3 +70,9 @@ events:
     tainted: "tainted"
     failed_units: "failed unit (load/active/sub)"
     error_sources: "unit별 오류 줄 (개수, unit, 최근, 메시지)"
+  panic:
+    none: "%s 이후 커널 패닉 없음"
+    found: "커널 패닉 %d건, 최근 %s"
+  jetsam:
+    none: "%s 이후 jetsam이 종료한 process 없음"
+    found: "jetsam이 종료한 process %d개, 최근 %s"

@@ -82,7 +82,12 @@ cores net_in_bytes_per_s net_out_bytes_per_s packets_in_per_s packets_out_per_s
 network_errors_per_s network_drops_per_s load1 cpu_user_pct cpu_system_pct cpu_iowait_pct
 disk_read_bytes_per_s disk_write_bytes_per_s disk_iops disk_await_ms disk_busy_pct
 psi_cpu_some_avg10_pct psi_memory_some_avg10_pct psi_io_some_avg10_pct memory_pct swap_out_bytes_per_s
+swap_used_bytes swap_total_bytes compressor_bytes procs_created_per_s
 `)), historyMetric{name: "cpu_pct", field: -1, kind: reflect.Float64})
+
+// historyAddedTopColumns는 버전 1의 top_samples 뒤에 더한 지표다. 버전을 올리면 이전 edc가 DB를 열지 못하므로
+// 쓰기로 열 때 column을 더하기만 한다. 읽기로 연 이전 DB에는 없을 수 있다.
+var historyAddedTopColumns = []string{"swap_used_bytes", "swap_total_bytes", "compressor_bytes", "procs_created_per_s"}
 var historyProcessMetrics = historyMetrics(topProcessSample{}, strings.Fields(`
 pid cpu_pct rss_bytes memory_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
 `))
@@ -282,6 +287,9 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 		if err := historyAddProcessMemoryColumn(db); err != nil {
 			return err
 		}
+		if err := historyAddTopColumns(db); err != nil {
+			return err
+		}
 		return historyEnableWAL(db)
 	}
 	if application != 0 || version != 0 || !write {
@@ -383,6 +391,56 @@ func historyHasProcessMemoryColumn(db *sql.DB) bool {
 		}
 	}
 	return false
+}
+
+func historyAddTopColumns(db *sql.DB) error {
+	columns, err := historyTableColumns(db, "top_samples")
+	if err != nil {
+		return err
+	}
+	types := map[string]string{}
+	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
+		name, kind, _ := strings.Cut(definition, " ")
+		types[name] = kind
+	}
+	for _, column := range historyAddedTopColumns {
+		if columns[column] {
+			continue
+		}
+		// 두 writer가 동시에 처음 열면 늦은 쪽의 ALTER가 duplicate column name으로 실패한다. 이미 더해진 것이므로 넘어간다.
+		if _, err := db.Exec("ALTER TABLE top_samples ADD COLUMN " + column + " " + types[column]); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
+
+// historyTopColumnMissing은 읽기로 연 이전 DB에 이 지표의 column이 아직 없는지다. 없으면 그 지표의 기록도 없다.
+func historyTopColumnMissing(db *sql.DB, metric string) bool {
+	if !slices.Contains(historyAddedTopColumns, metric) {
+		return false
+	}
+	columns, err := historyTableColumns(db, "top_samples")
+	return err == nil && !columns[metric]
+}
+
+func historyTableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primary int
+		var name, kind string
+		var value any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &value, &primary); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 func historyHasOverviewIndexes(db *sql.DB) (bool, error) {

@@ -296,26 +296,40 @@ var (
 // --redact를 주지 않아도 가린다. 이름에 비밀을 뜻하는 낱말이 든 옵션의 값과 URL의 암호가 대상이다.
 func listenMaskArgs(args []string) []string {
 	masked := slices.Clone(args)
+	for index := range masked {
+		masked[index] = listenURLCredential.ReplaceAllString(masked[index], "${1}***@")
+	}
 	for index := 1; index < len(masked); index++ {
-		arg := listenURLCredential.ReplaceAllString(masked[index], "${1}***@")
-		masked[index] = arg
-		if !strings.HasPrefix(arg, "-") {
-			continue
-		}
-		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
-		if !listenSecretFlag.MatchString(name) {
+		arg := masked[index]
+		hasValue, secret := listenSecretOption(arg)
+		if !secret {
 			continue
 		}
 		if hasValue {
 			masked[index] = arg[:strings.IndexByte(arg, '=')+1] + "***"
-		} else if index+1 < len(masked) {
-			// 값이 -로 시작할 수 있어서(base64url 토큰) 다음 인자가 옵션처럼 보여도 가린다. 불리언 옵션 뒤의 옵션을
-			// 가리는 쪽이 비밀을 내보내는 쪽보다 낫다.
+			continue
+		}
+		// 값이 -로 시작할 수 있어서(base64url 토큰) 다음 인자가 옵션처럼 보여도 가린다. 불리언 옵션 뒤의 옵션을
+		// 가리는 쪽이 비밀을 내보내는 쪽보다 낫다. 가린 인자가 값 없는 비밀 옵션이면 --password --token abc123의
+		// abc123처럼 그 값이 남으므로 이어서 가린다.
+		for index+1 < len(masked) {
 			index++
+			next := masked[index]
 			masked[index] = "***"
+			if hasValue, secret := listenSecretOption(next); !secret || hasValue {
+				break
+			}
 		}
 	}
 	return masked
+}
+
+func listenSecretOption(arg string) (hasValue, secret bool) {
+	if !strings.HasPrefix(arg, "-") {
+		return false, false
+	}
+	name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+	return hasValue, listenSecretFlag.MatchString(name)
 }
 
 // attachListenCommands는 소켓마다 주인 process의 명령줄과 작업 디렉터리를 채운다. 한 process가 소켓 여럿을

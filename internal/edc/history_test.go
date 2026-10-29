@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -923,7 +924,10 @@ func TestTopJSONAddsTopProcessesWithoutFilter(t *testing.T) {
 		if process.MemoryBytes != nil {
 			return *process.MemoryBytes
 		}
-		return process.RSSBytes
+		if process.RSSBytes != nil {
+			return *process.RSSBytes
+		}
+		return 0
 	}
 	for _, sample := range read(t, "--top", "3", "--sort", "mem") {
 		list := processes(t, sample)
@@ -955,5 +959,74 @@ func TestTopRejectsTopOutsideUnfilteredJSON(t *testing.T) {
 		if code := runTop(args, "test"); code != 2 {
 			t.Errorf("top %v returned %d, want 2", args, code)
 		}
+	}
+}
+
+// 버전 1에 swap column이 없던 DB는 읽기로 열면 그 지표의 기록이 없는 것으로 보이고, 쓰기로 열면 버전을 그대로 둔 채 column을 더한다.
+func TestHistoryAddsSwapColumnsWithoutChangingSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := append([]string(nil), historyV1Statements()...)
+	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
+		if name, _, _ := strings.Cut(definition, " "); slices.Contains(historyAddedTopColumns, name) {
+			statements[1] = strings.Replace(statements[1], ", "+definition, "", 1)
+		}
+	}
+	for _, statement := range append(statements, "PRAGMA application_id="+strconv.Itoa(historyApplicationID), "PRAGMA user_version=1") {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	read, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !historyTopColumnMissing(read, "swap_used_bytes") {
+		t.Fatal("fixture must lack the swap column")
+	}
+	zero := 0.0
+	if rows := historyJSONRows(t, read, "top", historyOptions{metric: "swap_used_bytes", min: &zero}); len(rows) != 0 {
+		t.Fatalf("old DB rows = %v", rows)
+	}
+	if err := historyHostTrendBuckets(read, historyTrendOptions{metric: "swap_used_bytes", by: "day"}, time.UTC, func(historyTrendBucket) error { return nil }); err != nil {
+		t.Fatalf("old DB trend: %v", err)
+	}
+	read.Close()
+
+	recorder := topHistoryFixture(t, path)
+	previous := resourceSnapshot{TakenAt: time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)}
+	current := resourceSnapshot{TakenAt: previous.TakenAt.Add(time.Second)}
+	rate := resourceRate{SwapUsed: 9 << 30, SwapTotal: 10 << 30, SwapUsageValid: true, Compressor: 21 << 30, CompressorValid: true}
+	if err := recorder.Record(newHistoryTopSample(hostDetails{Hostname: "fixture", Cores: 8}, previous, current, rate, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	written, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer written.Close()
+	var version int
+	var used, total, compressor uint64
+	if err := written.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("user_version = %d, %v", version, err)
+	}
+	var kind string
+	if err := written.QueryRow("SELECT type FROM pragma_table_info('top_samples') WHERE name = 'procs_created_per_s'").Scan(&kind); err != nil || kind != "REAL" {
+		t.Fatalf("procs_created_per_s type = %q, %v", kind, err)
+	}
+	if err := written.QueryRow("SELECT swap_used_bytes, swap_total_bytes, compressor_bytes FROM top_samples").Scan(&used, &total, &compressor); err != nil || used != 9<<30 || total != 10<<30 || compressor != 21<<30 {
+		t.Fatalf("columns = %d %d %d, %v", used, total, compressor, err)
+	}
+	min := float64(8 << 30)
+	if rows := historyJSONRows(t, written, "top", historyOptions{metric: "swap_used_bytes", min: &min}); len(rows) != 1 {
+		t.Fatalf("filtered rows = %d", len(rows))
 	}
 }

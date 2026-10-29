@@ -355,8 +355,8 @@ type topSample struct {
 	NetOut        float64            `json:"net_out_bytes_per_s"`
 	PacketsIn     float64            `json:"packets_in_per_s"`
 	PacketsOut    float64            `json:"packets_out_per_s"`
-	NetErrors     float64            `json:"network_errors_per_s"`
-	NetDrops      float64            `json:"network_drops_per_s"`
+	NetErrors     *float64           `json:"network_errors_per_s"`
+	NetDrops      *float64           `json:"network_drops_per_s"`
 	NetHealth     bool               `json:"network_health_supported"`
 	// InterfaceFilter와 Interfaces는 --interface를 쓸 때만 나온다. Interfaces는 고른 interface 중 이 구간에 값이 있는 것이다.
 	InterfaceFilter string                `json:"interface_filter,omitempty"`
@@ -364,25 +364,36 @@ type topSample struct {
 	Load1           float64               `json:"load1"`
 	CPUUser         float64               `json:"cpu_user_pct"`
 	CPUSystem       float64               `json:"cpu_system_pct"`
-	CPUIOWait       float64               `json:"cpu_iowait_pct"`
-	DiskRead        float64               `json:"disk_read_bytes_per_s"`
-	DiskWrite       float64               `json:"disk_write_bytes_per_s"`
-	DiskIOPS        float64               `json:"disk_iops"`
-	DiskAwait       float64               `json:"disk_await_ms"`
-	DiskBusy        float64               `json:"disk_busy_pct"`
-	DiskHealth      bool                  `json:"disk_health_supported"`
-	DiskBusyOK      bool                  `json:"disk_busy_supported"`
-	PSICPU          float64               `json:"psi_cpu_some_avg10_pct"`
-	PSIMemory       float64               `json:"psi_memory_some_avg10_pct"`
-	PSIIO           float64               `json:"psi_io_some_avg10_pct"`
-	PSIMemoryFull   float64               `json:"psi_memory_full_avg10_pct"`
-	PSIIOFull       float64               `json:"psi_io_full_avg10_pct"`
-	PSIValid        bool                  `json:"psi_supported"`
-	MemoryPct       float64               `json:"memory_pct"`
+	CPUIOWait       *float64              `json:"cpu_iowait_pct"`
+	// CPUIOWaitOK는 iowait을 쟀는지다. 재지 못한 지표는 0 대신 null로 써서 '쟀더니 없었다'와 구분한다.
+	CPUIOWaitOK   bool     `json:"cpu_iowait_supported"`
+	DiskRead      float64  `json:"disk_read_bytes_per_s"`
+	DiskWrite     float64  `json:"disk_write_bytes_per_s"`
+	DiskIOPS      *float64 `json:"disk_iops"`
+	DiskAwait     *float64 `json:"disk_await_ms"`
+	DiskBusy      *float64 `json:"disk_busy_pct"`
+	DiskHealth    bool     `json:"disk_health_supported"`
+	DiskBusyOK    bool     `json:"disk_busy_supported"`
+	PSICPU        *float64 `json:"psi_cpu_some_avg10_pct"`
+	PSIMemory     *float64 `json:"psi_memory_some_avg10_pct"`
+	PSIIO         *float64 `json:"psi_io_some_avg10_pct"`
+	PSIMemoryFull *float64 `json:"psi_memory_full_avg10_pct"`
+	PSIIOFull     *float64 `json:"psi_io_full_avg10_pct"`
+	PSIValid      bool     `json:"psi_supported"`
+	MemoryPct     float64  `json:"memory_pct"`
 	// MemoryPressure는 macOS kernel의 memory 압박 단계(normal, warn, critical)다. 다른 host에서는 빠진다.
 	MemoryPressure          string  `json:"memory_pressure,omitempty"`
 	MemoryPressureSupported bool    `json:"memory_pressure_supported"`
 	SwapOut                 float64 `json:"swap_out_bytes_per_s"`
+	// SwapUsed와 SwapTotal은 지금 쓰는 swap과 swap 전체 크기다. 읽지 못하면 빠진다.
+	SwapUsed  *uint64 `json:"swap_used_bytes,omitempty"`
+	SwapTotal *uint64 `json:"swap_total_bytes,omitempty"`
+	// Compressor는 macOS compressor가 쓰는 물리 memory다. Linux에서는 빠진다.
+	Compressor *uint64 `json:"compressor_bytes,omitempty"`
+	// ProcsCreated는 초당 만들어진 process 수다. 1초 sample 사이에 끝나는 build process는 목록에 없어 이 값으로만 보인다.
+	// 첫 sample처럼 모르면 null이다. ProcsCreatedSource는 kernel(Linux)이나 pid_delta(macOS 근사)다.
+	ProcsCreated       *float64 `json:"procs_created_per_s"`
+	ProcsCreatedSource string   `json:"procs_created_source,omitempty"`
 	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
 	Processes *[]topProcessSample `json:"processes,omitempty"`
 	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
@@ -424,11 +435,12 @@ type topProcessTotalSample struct {
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
 // Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
 type topProcessSample struct {
-	PID      int        `json:"pid"`
-	Started  *time.Time `json:"started,omitempty"`
-	Command  string     `json:"command"`
-	CPU      float64    `json:"cpu_pct"`
-	RSSBytes uint64     `json:"rss_bytes"`
+	PID     int        `json:"pid"`
+	Started *time.Time `json:"started,omitempty"`
+	Command string     `json:"command"`
+	CPU     float64    `json:"cpu_pct"`
+	// RSSBytes는 OS가 RSS를 주지 않는 process에서 빠진다. macOS kernel_task가 그렇다.
+	RSSBytes *uint64 `json:"rss_bytes,omitempty"`
 	// MemoryBytes는 macOS phys_footprint 또는 Linux RSS+VmSwap이다. 읽지 못한 process는 빠진다.
 	MemoryBytes *uint64           `json:"memory_bytes,omitempty"`
 	Threads     int               `json:"threads,omitempty"`
@@ -447,8 +459,12 @@ const topJSONProcesses = 10
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
-		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
+		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
 		sample.Limits = processLimitsOf(process)
+		if !process.RSSMissing {
+			rss := process.RSS
+			sample.RSSBytes = &rss
+		}
 		if process.MemoryValid {
 			memory := process.Memory
 			sample.MemoryBytes = &memory
@@ -547,12 +563,37 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 	sample := topSample{
 		Time: at.UTC(), Hostname: details.Hostname, Cores: details.Cores, NetworkLimits: rate.NetworkHealth,
 		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
-		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetErrors: roundTopValue(rate.NetErrors), NetDrops: roundTopValue(rate.NetDrops), NetHealth: rate.NetHealthValid,
-		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
-		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIMemoryFull: roundTopValue(rate.PSIMemoryFull), PSIIOFull: roundTopValue(rate.PSIIOFull), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
+		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetHealth: rate.NetHealthValid,
+		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWaitOK: rate.CPUIOWaitValid,
+		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
 	}
+	measured := func(ok bool, value float64) *float64 {
+		if !ok {
+			return nil
+		}
+		rounded := roundTopValue(value)
+		return &rounded
+	}
+	sample.NetErrors, sample.NetDrops = measured(rate.NetHealthValid, rate.NetErrors), measured(rate.NetHealthValid, rate.NetDrops)
+	sample.CPUIOWait = measured(rate.CPUIOWaitValid, rate.CPUIOWait)
+	sample.DiskIOPS, sample.DiskAwait = measured(rate.DiskHealthValid, rate.DiskIOPS), measured(rate.DiskHealthValid, rate.DiskAwait)
+	sample.DiskBusy = measured(rate.DiskBusyValid, rate.DiskBusy)
+	sample.PSICPU, sample.PSIMemory, sample.PSIIO = measured(rate.PSIValid, rate.PSICPU), measured(rate.PSIValid, rate.PSIMemory), measured(rate.PSIValid, rate.PSIIO)
+	sample.PSIMemoryFull, sample.PSIIOFull = measured(rate.PSIValid, rate.PSIMemoryFull), measured(rate.PSIValid, rate.PSIIOFull)
 	if rate.MemoryPressure.known() {
 		sample.MemoryPressure, sample.MemoryPressureSupported = rate.MemoryPressure.String(), true
+	}
+	if rate.SwapUsageValid {
+		used, total := rate.SwapUsed, rate.SwapTotal
+		sample.SwapUsed, sample.SwapTotal = &used, &total
+	}
+	if rate.CompressorValid {
+		compressor := rate.Compressor
+		sample.Compressor = &compressor
+	}
+	if rate.ProcsCreatedValid {
+		created := roundTopValue(rate.ProcsCreated)
+		sample.ProcsCreated, sample.ProcsCreatedSource = &created, rate.ProcsCreatedSource
 	}
 	return sample
 }
@@ -708,7 +749,9 @@ func (threshold topThreshold) level(value float64) topLevel {
 // network는 초당 error·drop 수이며 나머지는 백분율이다.
 type topLimits struct {
 	load, cpu, io, memory, await, psi, network topThreshold
-	color                                      bool
+	// swap은 swap 사용률이다. kernel의 압박 단계가 normal이어도 swap이 거의 찰 수 있어 따로 경고한다.
+	swap  topThreshold
+	color bool
 	// memoryTotal은 host memory 크기(byte)다. memory 증가 경고가 남은 양을 다 쓰는 시간을 구할 때 쓴다. 모르면 0이다.
 	memoryTotal uint64
 }
@@ -722,6 +765,7 @@ func newTopLimits(cores int, color bool) topLimits {
 		cpu:    topThreshold{warn: 70, danger: 90},
 		io:     topThreshold{warn: 10, danger: 25},
 		memory: topThreshold{warn: 90, danger: 95},
+		swap:   topThreshold{warn: 80, danger: 95},
 		await:  topThreshold{warn: 20, danger: 50},
 		psi:    topThreshold{warn: 10, danger: 25},
 		// 가상 interface는 drop이 조금씩 꾸준히 난다. 1/s 미만은 잡음으로 보고, 50/s에서 memory 위험과 같은 무게가 된다.

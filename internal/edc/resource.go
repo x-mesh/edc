@@ -21,9 +21,11 @@ type resourceSnapshot struct {
 	CPUUser       uint64
 	CPUSystem     uint64
 	CPUIOWait     uint64
-	CPUIdle       uint64
-	CPUTotal      uint64
-	NetInterfaces []netInterfaceCounters
+	// CPUIOWaitValid는 iowait을 읽었는지다. macOS kernel은 iowait을 세지 않는다.
+	CPUIOWaitValid bool
+	CPUIdle        uint64
+	CPUTotal       uint64
+	NetInterfaces  []netInterfaceCounters
 	// NetInterfacesAll은 --interface로 고르기 전의 interface다. 대시보드의 i 상자가 고르지 않은 interface의 traffic도
 	// 보이도록 남긴다. 고르지 않았으면 비어 있고 NetInterfaces가 전부다.
 	NetInterfacesAll []netInterfaceCounters
@@ -57,6 +59,18 @@ type resourceSnapshot struct {
 	// SwapOutBytes는 부팅 뒤 memory가 모자라 kernel이 swap으로 내보낸 누적 byte다.
 	SwapOutBytes uint64
 	SwapMissing  bool
+	// SwapUsed와 SwapTotal은 지금 쓰는 swap과 swap 전체 크기다. 누적값이 아니라 현재 값이고, 읽지 못했으면 SwapUsageValid가 false다.
+	// kernel의 압박 단계가 normal이어도 swap이 거의 찰 수 있어 swap_out rate와 따로 본다.
+	SwapUsed, SwapTotal uint64
+	SwapUsageValid      bool
+	// Compressor는 macOS compressor가 압축한 page를 담는 데 쓰는 물리 memory다. Linux에는 같은 값이 없다.
+	Compressor      uint64
+	CompressorValid bool
+	// ProcsCreated는 부팅 뒤 만들어진 process 수의 누적값이다. 1초 sample 사이에 생겼다 끝나는 build의 process는 목록에
+	// 보이지 않으므로 생성 rate로만 드러난다. ProcsCreatedSource는 kernel(Linux)이나 pid_delta(macOS 근사)다.
+	ProcsCreated       uint64
+	ProcsCreatedValid  bool
+	ProcsCreatedSource string
 	// DiskQueueMS는 진행 중인 I/O 수에 시간을 곱해 쌓은 값이다. 구간 시간으로 나누면 평균 큐 길이다. busy와 같은 diskstats에서 읽는다.
 	DiskQueueMS uint64
 	// CPUSteal은 hypervisor가 다른 guest에 CPU를 내준 시간이다. macOS는 이 값을 주지 않는다.
@@ -138,6 +152,8 @@ type topProcess struct {
 	PID int
 	CPU float64
 	RSS uint64
+	// RSSMissing은 OS가 RSS를 주지 않아 RSS의 0이 측정값이 아니라는 뜻이다. macOS kernel_task가 그렇다.
+	RSSMissing bool
 	// Memory는 process가 책임지는 memory다. macOS는 phys_footprint, Linux는 RSS에 swap으로 나간 양을 더한 값이다.
 	// RSS는 압축되거나 swap으로 나간 page를 세지 않아 누수로 커진 process를 작게 보인다. 읽지 못하면 MemoryValid가 false다.
 	Memory      uint64
@@ -933,9 +949,14 @@ type resourceRate struct {
 	CPUSteal, ProcsBlocked          float64
 	MemoryPercent, Load1            float64
 	SwapOut                         float64
+	SwapUsed, SwapTotal, Compressor uint64
+	SwapUsageValid, CompressorValid bool
+	ProcsCreated                    float64
+	ProcsCreatedValid               bool
+	ProcsCreatedSource              string
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
-	CPUStealValid                   bool
+	CPUStealValid, CPUIOWaitValid   bool
 	ProcsBlockedSource              topBlockedSource
 	MemoryPressure                  topMemoryPressure
 	CoreCPU                         []float64
@@ -1008,12 +1029,19 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		rate.DiskBusy = float64(delta(current.DiskBusyMS, previous.DiskBusyMS)) / seconds / 10
 		rate.DiskQueue = float64(delta(current.DiskQueueMS, previous.DiskQueueMS)) / seconds / 1000
 	}
+	rate.CPUIOWaitValid = current.CPUIOWaitValid && previous.CPUIOWaitValid
 	rate.CPUStealValid = current.CPUStealValid && previous.CPUStealValid
 	if rate.CPUStealValid {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
 	}
 	rate.ProcsBlocked, rate.ProcsBlockedSource = float64(current.ProcsBlocked), current.ProcsBlockedSource
 	rate.MemoryPressure = current.MemoryPressure
+	rate.SwapUsed, rate.SwapTotal, rate.SwapUsageValid = current.SwapUsed, current.SwapTotal, current.SwapUsageValid
+	rate.Compressor, rate.CompressorValid = current.Compressor, current.CompressorValid
+	if previous.ProcsCreatedValid && current.ProcsCreatedValid && current.ProcsCreated >= previous.ProcsCreated && seconds > 0 {
+		rate.ProcsCreated = float64(current.ProcsCreated-previous.ProcsCreated) / seconds
+		rate.ProcsCreatedValid, rate.ProcsCreatedSource = true, current.ProcsCreatedSource
+	}
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
@@ -1049,6 +1077,27 @@ func parseLinuxSwapOutPages(input string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// parseLinuxProcessesCreated는 /proc/stat의 processes, 곧 부팅 뒤 fork한 수를 읽는다.
+func parseLinuxProcessesCreated(input string) (uint64, bool) {
+	for _, line := range strings.Split(input, "\n") {
+		if value, found := strings.CutPrefix(line, "processes "); found {
+			created, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+			return created, err == nil
+		}
+	}
+	return 0, false
+}
+
+// linuxSwapUsage는 /proc/meminfo의 SwapTotal과 SwapFree로 지금 쓰는 swap을 구한다. swap이 없는 host는 둘 다 0이고 유효하다.
+func linuxSwapUsage(memory map[string]uint64) (total, used uint64, ok bool) {
+	total, hasTotal := memory["SwapTotal"]
+	free, hasFree := memory["SwapFree"]
+	if !hasTotal || !hasFree || free > total {
+		return 0, 0, false
+	}
+	return total, total - free, true
 }
 
 // parsePressureAvg10은 /proc/pressure/*의 kind 행(some 또는 full)에서 최근 10초 stall 비율을 읽는다.

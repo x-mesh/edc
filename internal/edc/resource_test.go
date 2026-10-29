@@ -1044,6 +1044,43 @@ func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	}
 }
 
+func TestTopSampleWritesSwapUsageAndCompressorOnlyWhenRead(t *testing.T) {
+	previous := resourceSnapshot{TakenAt: time.Unix(0, 0), CPUTotal: 100}
+	current := resourceSnapshot{TakenAt: time.Unix(1, 0), CPUTotal: 200, SwapUsed: 9 << 30, SwapTotal: 10 << 30, SwapUsageValid: true, Compressor: 21 << 30, CompressorValid: true}
+	rate := calculateRate(previous, current)
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), rate))
+	if err != nil || !strings.Contains(string(data), `"swap_used_bytes":9663676416`) || !strings.Contains(string(data), `"swap_total_bytes":10737418240`) || !strings.Contains(string(data), `"compressor_bytes":22548578304`) {
+		t.Fatalf("sample = %s, %v", data, err)
+	}
+	// swap이 없는 host의 0은 측정값이라 남긴다. 읽지 못한 값만 빠진다.
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{SwapUsageValid: true}))
+	if !strings.Contains(string(data), `"swap_used_bytes":0`) || strings.Contains(string(data), `"compressor_bytes"`) {
+		t.Fatalf("no-swap sample = %s", data)
+	}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
+	if strings.Contains(string(data), `"swap_used_bytes"`) || strings.Contains(string(data), `"swap_total_bytes"`) {
+		t.Fatalf("unread swap must be left out: %s", data)
+	}
+}
+
+func TestLinuxSwapUsage(t *testing.T) {
+	tests := []struct {
+		memory      map[string]uint64
+		total, used uint64
+		ok          bool
+	}{
+		{map[string]uint64{"SwapTotal": 8 << 30, "SwapFree": 2 << 30}, 8 << 30, 6 << 30, true},
+		{map[string]uint64{"SwapTotal": 0, "SwapFree": 0}, 0, 0, true},
+		{map[string]uint64{"MemTotal": 1}, 0, 0, false},
+		{map[string]uint64{"SwapTotal": 1, "SwapFree": 2}, 0, 0, false},
+	}
+	for _, tt := range tests {
+		if total, used, ok := linuxSwapUsage(tt.memory); total != tt.total || used != tt.used || ok != tt.ok {
+			t.Errorf("%v: got %d, %d, %v", tt.memory, total, used, ok)
+		}
+	}
+}
+
 // 압박 단계와 blocked의 출처는 누적값이 아니라 현재 sample의 값이다.
 func TestCalculateRateCarriesBlockedOriginAndMemoryPressure(t *testing.T) {
 	start := time.Unix(0, 0)

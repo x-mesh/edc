@@ -352,6 +352,11 @@ type topSample struct {
 	MemoryPressure          string  `json:"memory_pressure,omitempty"`
 	MemoryPressureSupported bool    `json:"memory_pressure_supported"`
 	SwapOut                 float64 `json:"swap_out_bytes_per_s"`
+	// SwapUsed와 SwapTotal은 지금 쓰는 swap과 swap 전체 크기다. 읽지 못하면 빠진다.
+	SwapUsed  *uint64 `json:"swap_used_bytes,omitempty"`
+	SwapTotal *uint64 `json:"swap_total_bytes,omitempty"`
+	// Compressor는 macOS compressor가 쓰는 물리 memory다. Linux에서는 빠진다.
+	Compressor *uint64 `json:"compressor_bytes,omitempty"`
 	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
 	Processes *[]topProcessSample `json:"processes,omitempty"`
 	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
@@ -524,6 +529,14 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 	if rate.MemoryPressure.known() {
 		sample.MemoryPressure, sample.MemoryPressureSupported = rate.MemoryPressure.String(), true
 	}
+	if rate.SwapUsageValid {
+		used, total := rate.SwapUsed, rate.SwapTotal
+		sample.SwapUsed, sample.SwapTotal = &used, &total
+	}
+	if rate.CompressorValid {
+		compressor := rate.Compressor
+		sample.Compressor = &compressor
+	}
 	return sample
 }
 
@@ -675,7 +688,9 @@ func (threshold topThreshold) level(value float64) topLevel {
 // network는 초당 error·drop 수이며 나머지는 백분율이다.
 type topLimits struct {
 	load, cpu, io, memory, await, psi, network topThreshold
-	color                                      bool
+	// swap은 swap 사용률이다. kernel의 압박 단계가 normal이어도 swap이 거의 찰 수 있어 따로 경고한다.
+	swap  topThreshold
+	color bool
 	// memoryTotal은 host memory 크기(byte)다. memory 증가 경고가 남은 양을 다 쓰는 시간을 구할 때 쓴다. 모르면 0이다.
 	memoryTotal uint64
 }
@@ -689,6 +704,7 @@ func newTopLimits(cores int, color bool) topLimits {
 		cpu:    topThreshold{warn: 70, danger: 90},
 		io:     topThreshold{warn: 10, danger: 25},
 		memory: topThreshold{warn: 90, danger: 95},
+		swap:   topThreshold{warn: 80, danger: 95},
 		await:  topThreshold{warn: 20, danger: 50},
 		psi:    topThreshold{warn: 10, danger: 25},
 		// 가상 interface는 drop이 조금씩 꾸준히 난다. 1/s 미만은 잡음으로 보고, 50/s에서 memory 위험과 같은 무게가 된다.

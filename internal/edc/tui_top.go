@@ -2623,11 +2623,22 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.MemoryPressure.level() != topLevelNormal {
 		all = append(all, topSignalItem{"mem pressure " + rate.MemoryPressure.String(), rate.MemoryPressure.score(), topViewMemory, "mem pressure"})
 	}
+	if percent, ok := topSwapPercent(rate); ok && percent >= limits.swap.warn {
+		all = append(all, topSignalItem{fmt.Sprintf("swap %.0f%%", percent), percent / limits.swap.danger, topViewMemory, "swap"})
+	}
 	if rate.PSIValid && rate.PSIIO >= limits.psi.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("psi io %.0f%%", rate.PSIIO), rate.PSIIO / limits.psi.danger, topViewPressure, "psi io"})
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].score > all[j].score })
 	return all
+}
+
+// topSwapPercent는 swap 사용률이다. swap을 읽지 못했거나 swap이 없는 host는 false다.
+func topSwapPercent(rate resourceRate) (float64, bool) {
+	if !rate.SwapUsageValid || rate.SwapTotal == 0 {
+		return 0, false
+	}
+	return float64(rate.SwapUsed) / float64(rate.SwapTotal) * 100, true
 }
 
 // topBlockedEvidence는 멈춘 작업 수 외의 두 번째 근거다. Linux는 iowait이다. iowait이 없는 macOS의 U 상태는 디스크

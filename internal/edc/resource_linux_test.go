@@ -53,3 +53,12 @@ func TestCollectResourceSnapshotReadsKernelBlockedOnLinux(t *testing.T) {
 		t.Fatal("the kernel count must stay the kernel count")
 	}
 }
+
+// 필터가 없을 때도 후보의 fd 수를 센다. limits 전체를 읽는 enrich는 필터로 고른 process에만 돈다.
+func TestLinuxIOFillerCountsFDs(t *testing.T) {
+	processes := []topProcess{{PID: os.Getpid()}}
+	newTopProcessFDCounter()(processes)
+	if processes[0].FDs == 0 {
+		t.Fatalf("fd count = %d, want the open files of this test", processes[0].FDs)
+	}
+}

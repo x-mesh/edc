@@ -101,14 +101,14 @@ command:
       - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
       - "A routine adds unit rules, limits, and shell commands from config.toml. A command passes when it exits with 0."
   events:
-    summary: "Kernel and systemd failure signals in time order (Linux)"
+    summary: "Kernel, systemd, and macOS jetsam and panic signals in time order"
     option:
       since: "how far back to read, such as 30m or 48h"
     notes:
-      - "It reads the kernel log and the systemd journal only."
+      - "On Linux, it reads the kernel log and the systemd journal."
       - "Run it as root or as a member of adm or systemd-journal."
       - "Without that access, the checks show skip, not pass."
-      - "It works on Linux only."
+      - "On macOS, it reads jetsam and panic reports in /Library/Logs/DiagnosticReports."
   net:
     summary: "Interfaces, route, ping, and trace"
     sub:
@@ -152,6 +152,8 @@ command:
       count: "rows to print, 0 runs until you quit"
       no_header: "drop the host and column header"
       process: "match PIDs or command names, comma-separated"
+      top: "top processes in each JSON line without --process, 0 for none"
+      sort: "order of --top: cpu or mem"
       full: "match and show the full command line"
       split: "one box each for cpu, mem, disk, net, psi, default all"
       view: "first view, such as network or split"
@@ -161,6 +163,8 @@ command:
       detail: "CPU wait, I/O latency (Linux eBPF, root); macOS CPU wait"
       ebpf: "same as --detail"
       write: "append to SQLite; omit path for the default DB"
+      auto_record: "record load, swap out, or memory pressure spikes"
+      retain: "while recording, delete top runs idle longer than this (30d, 2w)"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "Press w to start/stop DB recording. Each restart creates a new run; p pauses recording too."

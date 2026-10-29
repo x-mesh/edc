@@ -101,14 +101,14 @@ command:
       - "--group은 SSH로 호스트마다 edc check를 실행합니다. 각 호스트에 check가 있는 edc가 필요합니다."
       - "루틴은 config.toml의 unit 규칙, 기준값, 셸 명령을 더합니다. 명령은 0으로 끝나면 통과입니다."
   events:
-    summary: "커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)"
+    summary: "커널, systemd, macOS jetsam·패닉 신호를 시간 순서로 정리"
     option:
       since: "읽을 기간 (예: 30m, 48h)"
     notes:
-      - "커널 로그와 systemd journal만 읽습니다."
+      - "Linux에서는 커널 로그와 systemd journal을 읽습니다."
       - "root나 adm, systemd-journal 그룹으로 실행하세요."
       - "권한이 없으면 점검은 통과가 아니라 skip입니다."
-      - "Linux에서만 동작합니다."
+      - "macOS에서는 /Library/Logs/DiagnosticReports의 jetsam·패닉 보고서를 읽습니다."
   net:
     summary: "interface, route, ping, trace"
     sub:
@@ -152,6 +152,8 @@ command:
       count: "출력할 row 수, 0은 계속 실행"
       no_header: "host와 column header 생략"
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
+      top: "--process 없이 JSON 줄마다 넣을 상위 process 수, 0은 끔"
+      sort: "--top 순서: cpu 또는 mem"
       full: "전체 명령줄로 맞추고 보여 준다"
       split: "cpu, mem, disk, net, psi를 박스로 한 화면에, 생략하면 전부"
       view: "처음 보기, 예: network, split"
@@ -161,6 +163,8 @@ command:
       detail: "CPU 대기·I/O 지연(Linux eBPF, root), macOS는 CPU 대기"
       ebpf: "--detail과 같음"
       write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"
+      auto_record: "부하·swap out·메모리 압박이 생기면 5분 전부터 자동 기록"
+      retain: "기록하는 동안 이 기간보다 오래 쉰 top 실행 삭제(30d, 2w)"
       json: "sample당 한 줄 JSON, stdout은 -"
     notes:
       - "w로 DB 기록을 시작·중지합니다. 다시 시작하면 새 실행으로 기록하며 p 일시정지 시 기록도 멈춥니다."

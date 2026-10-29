@@ -9,6 +9,8 @@ events:
     no_journal: "journalctl がインストールされていません"
     no_systemd: "このホストでは systemd が動いていません"
     unreadable: "%s を読めませんでした: %s"
+    reports: "%s を読めません: %s"
+    reports_admin: "%s を読むには管理者アカウント (_analyticsusers グループ) か root が必要です"
   window:
     summary: "シグナル %d 件、直近 %s (%s 以降)"
     none: "直近 %s のログ元を一つも読めませんでした"
@@ -68,3 +70,9 @@ events:
     tainted: "tainted"
     failed_units: "failed の unit (load/active/sub)"
     error_sources: "unit ごとのエラー行 (件数、unit、最新、メッセージ)"
+  panic:
+    none: "%s 以降カーネルパニックなし"
+    found: "カーネルパニック %d 件、最新 %s"
+  jetsam:
+    none: "%s 以降 jetsam が終了した process なし"
+    found: "jetsam が終了した process %d 個、最新 %s"

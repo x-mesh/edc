@@ -246,9 +246,13 @@ var commandDocs = []commandDoc{
 		options: []optionDoc{
 			{"--interval 1s", "command.top.option.interval"},
 			{"-w, --write [path]", "command.top.option.write"},
+			{"--auto-record", "command.top.option.auto_record"},
+			{"--retain <age>", "command.top.option.retain"},
 			{"--count N", "command.top.option.count"},
 			{"--no-header", "command.top.option.no_header"},
 			{"--process <filter>", "command.top.option.process"},
+			{"--top 10", "command.top.option.top"},
+			{"--sort cpu", "command.top.option.sort"},
 			{"--full", "command.top.option.full"},
 			{"--split [list]", "command.top.option.split"},
 			{"--view <name>", "command.top.option.view"},

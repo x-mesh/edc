@@ -9,6 +9,8 @@ events:
     no_journal: "journalctl is not installed"
     no_systemd: "systemd is not running on this host"
     unreadable: "cannot read %s: %s"
+    reports: "cannot read %s: %s"
+    reports_admin: "needs an admin account (the _analyticsusers group) or root to read %s"
   window:
     summary: "%d signals in the last %s (since %s)"
     none: "no log source was readable for the last %s"
@@ -68,3 +70,9 @@ events:
     tainted: "tainted"
     failed_units: "failed units (load/active/sub)"
     error_sources: "error lines by unit (count, unit, latest, message)"
+  panic:
+    none: "no kernel panic since %s"
+    found: "%d kernel panics, latest %s"
+  jetsam:
+    none: "no process killed by jetsam since %s"
+    found: "%d processes killed by jetsam, latest %s"

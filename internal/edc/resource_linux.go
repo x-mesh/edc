@@ -98,6 +98,22 @@ func newTopProcessEnricher() func([]topProcess) {
 	}
 }
 
+func newTopProcessIOFiller() func([]topProcess) {
+	tracker := &topProcessIOTracker{}
+	return func(processes []topProcess) { tracker.fill(processes, time.Now()) }
+}
+
+// newTopProcessFDCounter는 /proc/<pid>/fd의 항목 수를 센다. root가 아니면 다른 사용자의 process는 읽지 못해 0으로 남는다.
+func newTopProcessFDCounter() func([]topProcess) {
+	return func(processes []topProcess) {
+		for index := range processes {
+			if entries, err := os.ReadDir("/proc/" + strconv.Itoa(processes[index].PID) + "/fd"); err == nil {
+				processes[index].FDs = len(entries)
+			}
+		}
+	}
+}
+
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now(), NetworkHealth: collectNetworkHealth()}
 	stat, err := os.ReadFile("/proc/stat")
@@ -105,6 +121,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		return snapshot, err
 	}
 	lines := strings.Split(string(stat), "\n")
+	if created, ok := parseLinuxProcessesCreated(string(stat)); ok {
+		snapshot.ProcsCreated, snapshot.ProcsCreatedValid, snapshot.ProcsCreatedSource = created, true, "kernel"
+	}
 	fields := strings.Fields(lines[0])
 	if len(fields) < 8 {
 		return snapshot, fmt.Errorf("invalid /proc/stat cpu line")
@@ -117,7 +136,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.CPUUser = values[0] + values[1]
 	snapshot.CPUSystem = values[2] + values[5] + values[6]
 	snapshot.CPUIdle = values[3]
-	snapshot.CPUIOWait = values[4]
+	snapshot.CPUIOWait, snapshot.CPUIOWaitValid = values[4], true
 	if len(values) > 7 {
 		snapshot.CPUSteal, snapshot.CPUStealValid = values[7], true
 	}
@@ -152,6 +171,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	if memory, err := readMemInfo(); err == nil {
 		snapshot.MemoryTotal = memory["MemTotal"]
 		snapshot.MemoryUsed = snapshot.MemoryTotal - memory["MemAvailable"]
+		snapshot.SwapTotal, snapshot.SwapUsed, snapshot.SwapUsageValid = linuxSwapUsage(memory)
 	}
 	if vmstat, err := os.ReadFile("/proc/vmstat"); err == nil {
 		pages, ok := parseLinuxSwapOutPages(string(vmstat))

@@ -718,15 +718,15 @@ const cleanXcodeInfoLimit = 64 << 10
 // cleanXcodeWorkspaceInfo는 XML plist에 WorkspacePath 키가 있는지 본다. 앱 소스의 Info.plist와 빌드 폴더를 가른다.
 // Xcode가 쓰는 파일은 XML이라 바이너리 plist는 빌드 폴더로 보지 않는다.
 func cleanXcodeWorkspaceInfo(path string) bool {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
-	}
-	file, err := os.Open(path)
+	// /tmp는 다른 사용자도 쓴다. 확인한 뒤 여는 사이에 FIFO로 바뀌면 open이 막히므로, 막히지 않게 열고 연 파일을 본다.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return false
 	}
 	defer file.Close()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
 	decoder := xml.NewDecoder(io.LimitReader(file, cleanXcodeInfoLimit))
 	key := false
 	for {

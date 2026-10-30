@@ -909,6 +909,35 @@ func TestCleanTempXcodeBuildsMeasuresOnlyBuildFolders(t *testing.T) {
 	}
 }
 
+func TestCleanXcodeWorkspaceInfoDoesNotWaitOnAFIFOOrFollowALink(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.plist")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target.plist")
+	if err := os.WriteFile(target, []byte("<plist><dict><key>WorkspacePath</key><string>/a</string></dict></plist>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.plist")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if !cleanXcodeWorkspaceInfo(target) {
+		t.Fatal("the regular file was not read")
+	}
+	done := make(chan bool, 1)
+	go func() { done <- cleanXcodeWorkspaceInfo(fifo) || cleanXcodeWorkspaceInfo(link) }()
+	select {
+	case matched := <-done:
+		if matched {
+			t.Fatal("a FIFO or a symlink counted as an Xcode info.plist")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a FIFO did not return")
+	}
+}
+
 func TestCleanBoundaryUserDataIsNeverACache(t *testing.T) {
 	home := cleanTestHome(t)
 	library := filepath.Join(home, "Library")

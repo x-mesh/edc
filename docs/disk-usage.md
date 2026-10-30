@@ -122,7 +122,7 @@ Each candidate has a priority. P1 holds the tool caches. P2 holds downloaded bro
 
 edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows its folders grouped by app name. `rustup-toolchains` and `app-logs` show their folders by name.
 
-Five candidates measure the first-level items of a folder one by one: `xcode-device-support`, `app-updates`, `temp-xcode-builds`, `app-caches`, and `dot-cache`. The first two measure only the items whose name ends with `DeviceSupport` or `.ShipIt`. `temp-xcode-builds` measures only the folders that `xcodebuild -derivedDataPath` makes. Such a folder holds `info.plist` and a `Build` or `ModuleCache.noindex` folder. If no item matches, the status is `absent`.
+Five candidates measure the first-level items of a folder one by one: `xcode-device-support`, `app-updates`, `temp-xcode-builds`, `app-caches`, and `dot-cache`. The first two measure only the items whose name ends with `DeviceSupport` or `.ShipIt`. `temp-xcode-builds` measures only the folders that `xcodebuild -derivedDataPath` makes. Such a folder holds an XML `info.plist` with the `WorkspacePath` key, and a `Build` or `ModuleCache.noindex` folder. If no item matches, the status is `absent`.
 
 `app-caches` and `dot-cache` measure all other items. They skip every path that an earlier candidate measures. If an item holds such a path, edc measures only the rest of that item. `excludes` lists the skipped candidates. The result shows one group for each item name.
 

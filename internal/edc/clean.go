@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -697,10 +698,10 @@ func (scanner *cleanScanner) measureChildren(ctx context.Context, spec cleanSpec
 	}
 }
 
-// cleanXcodeBuildFolder는 xcodebuild -derivedDataPath가 만든 폴더인지 본다. 그 폴더에는 info.plist와 함께 Build나
-// ModuleCache.noindex가 있다.
+// cleanXcodeBuildFolder는 xcodebuild -derivedDataPath가 만든 폴더인지 본다. 그 폴더에는 WorkspacePath를 담은
+// info.plist와 함께 Build나 ModuleCache.noindex가 있다.
 func cleanXcodeBuildFolder(path string) bool {
-	if info, err := os.Lstat(filepath.Join(path, "info.plist")); err != nil || !info.Mode().IsRegular() {
+	if !cleanXcodeWorkspaceInfo(filepath.Join(path, "info.plist")) {
 		return false
 	}
 	for _, name := range []string{"Build", "ModuleCache.noindex"} {
@@ -709,6 +710,41 @@ func cleanXcodeBuildFolder(path string) bool {
 		}
 	}
 	return false
+}
+
+// cleanXcodeInfoLimit는 info.plist를 읽는 상한이다. Xcode가 쓰는 파일은 400 B 안팎이다.
+const cleanXcodeInfoLimit = 64 << 10
+
+// cleanXcodeWorkspaceInfo는 XML plist에 WorkspacePath 키가 있는지 본다. 앱 소스의 Info.plist와 빌드 폴더를 가른다.
+// Xcode가 쓰는 파일은 XML이라 바이너리 plist는 빌드 폴더로 보지 않는다.
+func cleanXcodeWorkspaceInfo(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	decoder := xml.NewDecoder(io.LimitReader(file, cleanXcodeInfoLimit))
+	key := false
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		switch token := token.(type) {
+		case xml.StartElement:
+			key = token.Name.Local == "key"
+		case xml.CharData:
+			if key && strings.TrimSpace(string(token)) == "WorkspacePath" {
+				return true
+			}
+		case xml.EndElement:
+			key = false
+		}
+	}
 }
 
 // cleanChildWalk는 묶음 후보 하나를 재는 동안의 상태다.

@@ -849,8 +849,35 @@ func TestCleanTempXcodeBuildsMeasuresOnlyBuildFolders(t *testing.T) {
 	previous := cleanTempDir
 	cleanTempDir = temp
 	defer func() { cleanTempDir = previous }()
-	for _, name := range []string{"app-a/info.plist", "app-b/info.plist", "notes/Build/f", "plist-only/info.plist", "build.log"} {
+	// Xcode가 빌드 폴더에 쓰는 info.plist다. 앱 소스의 Info.plist는 같은 이름이지만 WorkspacePath가 없다.
+	workspace := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LastAccessedDate</key>
+	<date>2026-10-29T05:52:13Z</date>
+	<key>WorkspacePath</key>
+	<string>/Users/me/App/App.xcodeproj</string>
+</dict>
+</plist>
+`
+	app := strings.Replace(workspace, "WorkspacePath", "CFBundleName", 1)
+	plists := map[string]string{"app-a": workspace, "app-b": workspace, "plist-only": workspace, "app-source": app,
+		"binary": "bplist00WorkspacePath"}
+	for dir, text := range plists {
+		cleanWriteFile(t, filepath.Join(temp, dir, "Build/f"), 0)
+		if err := os.WriteFile(filepath.Join(temp, dir, "info.plist"), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(temp, "plist-only/Build")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"notes/Build/f", "build.log"} {
 		cleanWriteFile(t, filepath.Join(temp, name), 4<<10)
+	}
+	if err := os.RemoveAll(filepath.Join(temp, "app-b/Build")); err != nil {
+		t.Fatal(err)
 	}
 	cleanWriteFile(t, filepath.Join(temp, "app-a/Build/Products/f"), 64<<10)
 	cleanWriteFile(t, filepath.Join(temp, "app-b/ModuleCache.noindex/m"), 32<<10)

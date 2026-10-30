@@ -117,7 +117,7 @@ Linux에서는 표에 macOS라고 적지 않은 후보만 잽니다. Linux의 `~
 
 크기는 `edc du`의 측정 코드를 재사용해 후보를 하나씩 잽니다. 경로 아래의 마운트에는 들어가지 않습니다. symlink 경로는 보고된 경로와 실제 경로를 함께 보여 주고 실제 경로를 잽니다. DerivedData는 폴더를 앱 이름별로, `rustup-toolchains`와 `app-logs`는 폴더 이름별로 묶어 보여 줍니다.
 
-`xcode-device-support`, `app-updates`, `temp-xcode-builds`, `app-caches`, `dot-cache` 다섯 후보는 폴더의 1단계 항목을 하나씩 잽니다. 앞의 둘은 이름이 `DeviceSupport` 또는 `.ShipIt`으로 끝나는 항목만 잽니다. `temp-xcode-builds`는 `xcodebuild -derivedDataPath`가 만든 폴더만 잽니다. 그런 폴더에는 `info.plist`와 함께 `Build`나 `ModuleCache.noindex` 폴더가 있습니다. 맞는 항목이 없으면 상태는 `absent`입니다.
+`xcode-device-support`, `app-updates`, `temp-xcode-builds`, `app-caches`, `dot-cache` 다섯 후보는 폴더의 1단계 항목을 하나씩 잽니다. 앞의 둘은 이름이 `DeviceSupport` 또는 `.ShipIt`으로 끝나는 항목만 잽니다. `temp-xcode-builds`는 `xcodebuild -derivedDataPath`가 만든 폴더만 잽니다. 그런 폴더에는 `WorkspacePath` 키가 있는 XML `info.plist`와 함께 `Build`나 `ModuleCache.noindex` 폴더가 있습니다. 맞는 항목이 없으면 상태는 `absent`입니다.
 
 `app-caches`와 `dot-cache`는 나머지 항목을 모두 잽니다. 앞선 후보가 잰 경로는 건너뛰고, 그 경로를 품은 항목은 품지 않은 부분만 잽니다. 건너뛴 후보는 `excludes`에 나옵니다. 결과는 항목 이름별 묶음입니다.
 

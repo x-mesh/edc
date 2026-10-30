@@ -74,6 +74,8 @@ func TestDuWalkReturnsAtDeadlineWhenACallHangs(t *testing.T) {
 		{"child read sequential", true, read, 1, 1, 0},
 		{"root open parallel", false, open, 4, 0, 0},
 		{"root open sequential", false, open, 1, 0, 0},
+		{"root read parallel", false, read, 4, 0, 0},
+		{"root read sequential", false, read, 1, 0, 0},
 	}
 	sources, _ := hostDuSources()
 	const timeout = 100 * time.Millisecond

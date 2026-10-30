@@ -53,6 +53,13 @@ type duWalker struct {
 
 // sequential은 worker가 하나일 때 goroutine 없이 탐색한다. 디렉터리마다 다른 thread로 차례를 넘기면
 // futex 호출이 디렉터리 수만큼 늘어 du보다 느려졌다.
+// duBuffer는 worker 하나가 디렉터리 사이에서 다시 쓰는 버퍼다. 항목 목록을 디렉터리마다 새로 만들면 탐색 한 번의
+// 할당이 세 배로 늘었다.
+type duBuffer struct {
+	read    []byte
+	entries []duEntry
+}
+
 func (walker *duWalker) sequential(start duDir) {
 	buffer := duReadBuffer()
 	stack := []duDir{start}
@@ -149,9 +156,10 @@ func (walker *duWalker) apply(change func()) bool {
 }
 
 // duEntry는 디렉터리에서 읽은 항목 하나다. 시스템 호출로 모은 뒤 apply 안에서 트리에 넣는다. name은 디렉터리와
-// 큰 파일 후보에만 채운다. skip은 건너뛸 마운트 지점이다.
+// 큰 파일 후보에만 채우고, path는 디렉터리에만 채운다. skip은 건너뛸 마운트 지점이다.
 type duEntry struct {
 	name     string
+	path     string
 	dev, ino uint64
 	bytes    uint64
 	links    uint64
@@ -171,7 +179,7 @@ func (walker *duWalker) addEntries(dir duDir, entries []duEntry, subdirs []duDir
 			}
 			child := &duNode{name: entry.name, parent: dir.node, dir: true, bytes: entry.bytes, own: entry.bytes, entries: 1}
 			dir.node.children = append(dir.node.children, child)
-			subdirs = append(subdirs, duDir{node: child, path: duJoin(dir.path, entry.name)})
+			subdirs = append(subdirs, duDir{node: child, path: entry.path})
 			continue
 		}
 		if entry.links > 1 && walker.counted(entry.dev, entry.ino, dir.node) {

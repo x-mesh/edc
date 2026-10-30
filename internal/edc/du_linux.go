@@ -249,7 +249,7 @@ func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts
 
 // scan은 디렉터리 하나를 읽고 그 안의 하위 디렉터리를 돌려준다. 이름은 디렉터리 fd를 기준으로 stat한다.
 // 항목마다 전체 경로를 다시 해석하면 CPU 시간이 약 25% 늘었다.
-func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
+func (walker *duWalker) scan(dir duDir, buffer *duBuffer) []duDir {
 	walker.scanning.Add(1)
 	defer walker.scanning.Add(-1)
 	duBeforeRead(dir.path)
@@ -277,7 +277,7 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 		}
 	}
 	walker.directories.Add(1)
-	entries := make([]duEntry, 0, len(names))
+	entries := buffer.entries[:0]
 	for _, name := range names {
 		var stat unix.Stat_t
 		// 항목마다 센다. 지연이 큰 네트워크 파일 시스템에서는 호출 수백 개가 10초를 넘길 수 있다.
@@ -294,7 +294,8 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 		entry := duEntry{name: name, dev: stat.Dev, ino: stat.Ino, bytes: uint64(stat.Blocks) * 512, links: uint64(stat.Nlink),
 			dir: stat.Mode&unix.S_IFMT == unix.S_IFDIR}
 		if entry.dir {
-			entry.skip = walker.mountSkip(duJoin(dir.path, name), stat.Dev)
+			entry.path = duJoin(dir.path, name)
+			entry.skip = walker.mountSkip(entry.path, stat.Dev)
 		}
 		entries = append(entries, entry)
 	}
@@ -305,6 +306,7 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 			dir.node.unreadable = walker.unreadableDir(dir.path, readErr)
 		}
 	})
+	buffer.entries = entries
 	return subdirs
 }
 
@@ -348,4 +350,4 @@ func (walker *duWalker) mountSkip(path string, dev uint64) *duMount {
 	return &skipped
 }
 
-func duReadBuffer() []byte { return nil }
+func duReadBuffer() *duBuffer { return &duBuffer{} }

@@ -216,7 +216,7 @@ func duDarwinDeepTestTree(t *testing.T) string {
 		t.Fatal(err)
 	}
 	path := root
-	buffer := duReadBuffer()
+	buffer := duReadBuffer().read
 	for range duDarwinParentFDLimit + 12 {
 		for _, name := range []string{"a", "z"} {
 			if err := os.Mkdir(filepath.Join(path, name), 0o755); err != nil {

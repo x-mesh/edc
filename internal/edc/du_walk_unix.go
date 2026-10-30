@@ -60,6 +60,16 @@ type duBuffer struct {
 	entries []duEntry
 }
 
+// keep은 entries를 다음 디렉터리에 다시 쓰도록 남긴다. 항목이 가리키는 이름과 마운트 기록은 비우고, limit보다 커진
+// 배열은 버린다. 넓은 디렉터리 하나 때문에 커진 배열을 탐색이 끝날 때까지 들고 있지 않게 한다.
+func (buffer *duBuffer) keep(entries []duEntry, limit int) {
+	clear(entries)
+	if cap(entries) > limit {
+		entries = nil
+	}
+	buffer.entries = entries[:0]
+}
+
 func (walker *duWalker) sequential(start duDir) {
 	buffer := duReadBuffer()
 	stack := []duDir{start}

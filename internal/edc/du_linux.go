@@ -278,6 +278,10 @@ func (walker *duWalker) scan(dir duDir, buffer *duBuffer) []duDir {
 	}
 	walker.directories.Add(1)
 	entries := buffer.entries[:0]
+	// 이름 수를 알고 있으므로 한 번에 만든다. append로 키우면 넓은 디렉터리마다 배열을 여러 번 복사한다.
+	if cap(entries) < len(names) {
+		entries = make([]duEntry, 0, len(names))
+	}
 	for _, name := range names {
 		var stat unix.Stat_t
 		// 항목마다 센다. 지연이 큰 네트워크 파일 시스템에서는 호출 수백 개가 10초를 넘길 수 있다.
@@ -306,7 +310,7 @@ func (walker *duWalker) scan(dir duDir, buffer *duBuffer) []duDir {
 			dir.node.unreadable = walker.unreadableDir(dir.path, readErr)
 		}
 	})
-	buffer.entries = entries
+	buffer.keep(entries, duNamesBatch)
 	return subdirs
 }
 

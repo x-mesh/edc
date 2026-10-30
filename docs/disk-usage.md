@@ -96,6 +96,7 @@ edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and 
 | `pip` | `pip3 cache dir` |
 | `xcode-derived-data` (macOS) | `~/Library/Developer/Xcode/DerivedData` |
 | `swiftpm` (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `temp-xcode-builds` (macOS) | The Xcode build folders in `/tmp` |
 | `cargo-registry`, `cargo-git` | `$CARGO_HOME/registry`, `$CARGO_HOME/git`, then `~/.cargo/registry`, `~/.cargo/git` |
 | `zig` | `$ZIG_GLOBAL_CACHE_DIR`, `$XDG_CACHE_HOME/zig`, then `~/.cache/zig` |
 | `bun` | `$BUN_INSTALL_CACHE_DIR`, `$BUN_INSTALL/install/cache`, `$XDG_CACHE_HOME/.bun/install/cache`, then `~/.bun/install/cache` |
@@ -121,11 +122,11 @@ Each candidate has a priority. P1 holds the tool caches. P2 holds downloaded bro
 
 edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows its folders grouped by app name. `rustup-toolchains` and `app-logs` show their folders by name.
 
-Four candidates measure the first-level items of a folder one by one: `xcode-device-support`, `app-updates`, `app-caches`, and `dot-cache`. The first two measure only the items whose name ends with `DeviceSupport` or `.ShipIt`. If no item has such a name, the status is `absent`.
+Five candidates measure the first-level items of a folder one by one: `xcode-device-support`, `app-updates`, `temp-xcode-builds`, `app-caches`, and `dot-cache`. The first two measure only the items whose name ends with `DeviceSupport` or `.ShipIt`. `temp-xcode-builds` measures only the folders that `xcodebuild -derivedDataPath` makes. Such a folder holds an XML `info.plist` with the `WorkspacePath` key, and a `Build` or `ModuleCache.noindex` folder. If no item matches, the status is `absent`.
 
 `app-caches` and `dot-cache` measure all other items. They skip every path that an earlier candidate measures. If an item holds such a path, edc measures only the rest of that item. `excludes` lists the skipped candidates. The result shows one group for each item name.
 
-For these four candidates, edc does not follow a symlink. It skips an item on another device and marks the result `partial`. A hard link counts once for each item that edc measures.
+For these five candidates, edc does not follow a symlink. It skips an item on another device and marks the result `partial`. A hard link counts once for each item that edc measures.
 
 edc does not know what an app keeps in its folders. The candidates `app-caches`, `dot-cache`, `app-updates`, and `app-logs` have `regenerable` set to `false`. Their cost to recreate is `unknown` or `lost`.
 

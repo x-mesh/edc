@@ -68,6 +68,7 @@ clean:
     homebrew: "Homebrew 캐시"
     xcode-derived-data: "Xcode DerivedData"
     swiftpm: "SwiftPM 캐시"
+    temp-xcode-builds: "/tmp의 Xcode 빌드 폴더"
     cargo-registry: "Cargo registry 캐시"
     cargo-git: "Cargo git 캐시"
     zig: "Zig 캐시"

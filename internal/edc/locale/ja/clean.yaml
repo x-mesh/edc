@@ -68,6 +68,7 @@ clean:
     homebrew: "Homebrew キャッシュ"
     xcode-derived-data: "Xcode DerivedData"
     swiftpm: "SwiftPM キャッシュ"
+    temp-xcode-builds: "/tmp の Xcode ビルドフォルダ"
     cargo-registry: "Cargo registry キャッシュ"
     cargo-git: "Cargo git キャッシュ"
     zig: "Zig キャッシュ"

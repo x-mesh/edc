@@ -121,3 +121,20 @@ func TestDuWalkReturnsAtDeadlineWhenACallHangs(t *testing.T) {
 		cancel()
 	}
 }
+
+func TestDuBufferKeepReleasesWideDirectories(t *testing.T) {
+	var buffer duBuffer
+	small := make([]duEntry, 3, 8)
+	small[0] = duEntry{name: "a", path: "/a", skip: &duMount{Path: "/a"}}
+	buffer.keep(small, 8)
+	if cap(buffer.entries) != 8 || len(buffer.entries) != 0 {
+		t.Fatalf("small array: len=%d cap=%d", len(buffer.entries), cap(buffer.entries))
+	}
+	if kept := buffer.entries[:1][0]; kept.name != "" || kept.path != "" || kept.skip != nil {
+		t.Fatalf("the kept array still refers to %+v", kept)
+	}
+	buffer.keep(make([]duEntry, 9), 8)
+	if buffer.entries != nil {
+		t.Fatalf("wide array kept: cap=%d", cap(buffer.entries))
+	}
+}

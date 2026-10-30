@@ -136,7 +136,7 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	return scan, nil
 }
 
-func duReadBuffer() []byte { return make([]byte, duDarwinBufferSize) }
+func duReadBuffer() *duBuffer { return &duBuffer{read: make([]byte, duDarwinBufferSize)} }
 
 func duDarwinRead(fd int, buffer []byte) (int, error) {
 	// x/sys에는 getattrlistbulk wrapper가 없다. 두 포인터는 syscall 동안만 사용하며 buffer는 비어 있지 않다.
@@ -264,7 +264,7 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 	}
 }
 
-func (walker *duWalker) scan(dir duDir, buffer []byte) []duDir {
+func (walker *duWalker) scan(dir duDir, buffer *duBuffer) []duDir {
 	walker.scanning.Add(1)
 	defer walker.scanning.Add(-1)
 	duBeforeRead(dir.path)
@@ -278,17 +278,16 @@ func (walker *duWalker) scan(dir duDir, buffer []byte) []duDir {
 	return walker.scanDarwinFD(dir, buffer, fd)
 }
 
-func (walker *duWalker) scanDarwinFD(dir duDir, buffer []byte, fd int) []duDir {
+func (walker *duWalker) scanDarwinFD(dir duDir, buffer *duBuffer, fd int) []duDir {
 	walker.directories.Add(1)
 	var subdirs []duDir
-	var entries []duEntry
 	for {
 		if walker.ctx.Err() != nil {
 			walker.stopped.Store(true)
 			break
 		}
 		duBeforeRead(dir.path)
-		n, err := duDarwinRead(fd, buffer)
+		n, err := duDarwinRead(fd, buffer.read)
 		walker.advance()
 		if err != nil {
 			walker.apply(func() { walker.markUnreadable(dir, err) })
@@ -298,9 +297,9 @@ func (walker *duWalker) scanDarwinFD(dir duDir, buffer []byte, fd int) []duDir {
 			break
 		}
 		var batch duDarwinBatch
-		entries, batch = walker.readDarwinBatch(dir, buffer, n, fd, entries[:0])
+		buffer.entries, batch = walker.readDarwinBatch(dir, buffer.read, n, fd, buffer.entries[:0])
 		applied := walker.apply(func() {
-			subdirs = walker.addEntries(dir, entries, subdirs)
+			subdirs = walker.addEntries(dir, buffer.entries, subdirs)
 			if batch.broken {
 				dir.node.unreadable = walker.unreadableDir(dir.path, unix.EIO)
 			} else if batch.failed != nil {
@@ -361,7 +360,8 @@ func (walker *duWalker) readDarwinBatch(dir duDir, buffer []byte, n, fd int, ent
 		switch {
 		case entry.dir:
 			item.name = string(entry.name)
-			item.skip = walker.mountSkip(duJoin(dir.path, item.name))
+			item.path = duJoin(dir.path, item.name)
+			item.skip = walker.mountSkip(item.path)
 		case entry.bytes > walker.files.floor.Load():
 			item.name = string(entry.name)
 		}

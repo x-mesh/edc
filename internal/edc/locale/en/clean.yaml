@@ -68,6 +68,7 @@ clean:
     homebrew: "Homebrew cache"
     xcode-derived-data: "Xcode DerivedData"
     swiftpm: "SwiftPM cache"
+    temp-xcode-builds: "Xcode builds in /tmp"
     cargo-registry: "Cargo registry cache"
     cargo-git: "Cargo git cache"
     zig: "Zig cache"

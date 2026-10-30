@@ -30,6 +30,9 @@ import (
 // 도구 하나의 위치 조회 제한이다. 시험이 줄여 쓴다.
 var cleanLookupTimeout = 5 * time.Second
 
+// cleanTempDir는 Xcode 빌드 폴더를 찾는 임시 디렉터리다. 시험이 host의 /tmp를 읽지 않도록 바꿔 쓴다.
+var cleanTempDir = "/tmp"
+
 const (
 	cleanProbeID     = "clean.scan"
 	cleanOutputLimit = 64 << 10
@@ -87,7 +90,7 @@ var (
 	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
 	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
-		"cargo-registry", "cargo-git", "zig", "bun", "pip", "playwright", "puppeteer", "node-gyp", "electron",
+		"temp-xcode-builds", "cargo-registry", "cargo-git", "zig", "bun", "pip", "playwright", "puppeteer", "node-gyp", "electron",
 		"xcode-device-support", "coresimulator-caches", "app-updates", "app-logs", "huggingface", "rustup-toolchains", "ollama",
 		"app-caches", "dot-cache", "journald", "apt-archives"}
 	cleanNotMeasured = []cleanNotMeasuredItem{
@@ -138,9 +141,11 @@ type cleanSpec struct {
 }
 
 // cleanChildren은 fixed 폴더의 1단계 항목을 따로 재는 묶음 후보다. suffix가 있으면 이름 끝이 맞는 항목만 재고,
-// 없으면 앞선 후보를 뺀 나머지 항목을 모두 잰다.
+// xcodeBuild면 Xcode 빌드 폴더만 잰다. 둘 다 없으면 앞선 후보를 뺀 나머지 항목을 모두 잰다.
 type cleanChildren struct {
 	suffix string
+	// 임시 디렉터리에는 다른 프로그램의 파일도 있고 빌드 폴더 이름은 정해져 있지 않아서, 이름이 아니라 내용으로 고른다.
+	xcodeBuild bool
 }
 
 // cleanCatalog는 OS별 후보 목록이다. Linux 기본 경로는 소스, man page, 문서로 확인한 것만 둔다.
@@ -168,6 +173,9 @@ func cleanCatalog(goos, home string) []cleanSpec {
 				regenerable: true, cost: "medium", groupApps: true},
 			cleanSpec{id: "swiftpm", category: "package_cache", priority: "P1", fixed: at("Library/Caches/org.swift.swiftpm"),
 				regenerable: true, cost: "medium", cleanup: "swift package purge-cache"},
+			// xcodebuild -derivedDataPath로 /tmp에 만든 빌드 폴더는 DerivedData 밖이라 위 후보가 세지 않는다.
+			cleanSpec{id: "temp-xcode-builds", category: "build_cache", priority: "P1", fixed: cleanTempDir,
+				children: &cleanChildren{xcodeBuild: true}, regenerable: true, cost: "medium"},
 		)
 	}
 	// 도구 설정 파일(bunfig.toml, .npmrc, .puppeteerrc)은 읽지 않는다. 기본 경로로 잰 값과 보고 경로로 차이를 볼 수 있다.
@@ -414,6 +422,8 @@ type cleanItem struct {
 	// roots는 실제로 잰 경로다. 단일 경로 후보는 하나이고 묶음 후보는 잰 항목마다 하나다. 포함 판정이 이것을 쓴다.
 	roots   []string
 	grouped bool
+	// remainder는 묶음 후보가 앞선 후보를 뺀 나머지 항목을 모두 잰다는 뜻이다. 위치 칸에 제외 표시를 붙인다.
+	remainder bool
 }
 
 func (item cleanItem) counted() bool {
@@ -597,6 +607,7 @@ func (measurement cleanMeasurement) applyTo(item *cleanItem) {
 // 그 경로를 품은 폴더는 자신의 block만 더하고 하위로 내려가 품지 않은 부분만 잰다.
 func (scanner *cleanScanner) measureChildren(ctx context.Context, spec cleanSpec, item *cleanItem, parent string) {
 	item.grouped = true
+	item.remainder = spec.children.suffix == "" && !spec.children.xcodeBuild
 	for _, root := range scanner.roots {
 		if pathUnder(parent, root.path) {
 			item.Status, item.Reasons, item.SameAs = cleanDuplicate, []string{cleanReasonSameAs}, root.id
@@ -613,11 +624,20 @@ func (scanner *cleanScanner) measureChildren(ctx context.Context, spec cleanSpec
 		cleanPathFailure(item, err)
 		return
 	}
-	if spec.children.suffix != "" {
+	var keep func(os.DirEntry) bool
+	switch {
+	case spec.children.suffix != "":
 		item.Match = "*" + spec.children.suffix
+		keep = func(entry os.DirEntry) bool { return strings.HasSuffix(entry.Name(), spec.children.suffix) }
+	case spec.children.xcodeBuild:
+		keep = func(entry os.DirEntry) bool {
+			return entry.IsDir() && cleanXcodeBuildFolder(filepath.Join(parent, entry.Name()))
+		}
+	}
+	if keep != nil {
 		matched := entries[:0:0]
 		for _, entry := range entries {
-			if strings.HasSuffix(entry.Name(), spec.children.suffix) {
+			if keep(entry) {
 				matched = append(matched, entry)
 			}
 		}
@@ -675,6 +695,20 @@ func (scanner *cleanScanner) measureChildren(ctx context.Context, spec cleanSpec
 	if len(item.Reasons) > 0 {
 		item.Status, item.LowerBound = cleanPartial, true
 	}
+}
+
+// cleanXcodeBuildFolder는 xcodebuild -derivedDataPath가 만든 폴더인지 본다. 그 폴더에는 info.plist와 함께 Build나
+// ModuleCache.noindex가 있다.
+func cleanXcodeBuildFolder(path string) bool {
+	if info, err := os.Lstat(filepath.Join(path, "info.plist")); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	for _, name := range []string{"Build", "ModuleCache.noindex"} {
+		if info, err := os.Lstat(filepath.Join(path, name)); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanChildWalk는 묶음 후보 하나를 재는 동안의 상태다.
@@ -1583,7 +1617,7 @@ func cleanLocation(item cleanItem, home string) string {
 	switch {
 	case item.Match != "":
 		return location + "/" + item.Match
-	case item.grouped:
+	case item.remainder:
 		return T("clean.remainder", location)
 	}
 	return location

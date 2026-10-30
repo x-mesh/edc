@@ -8,9 +8,13 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// duBeforeRead는 디렉터리를 열거나 목록을 읽기 직전에 부른다. test가 돌아오지 않는 시스템 호출을 이 자리에서 흉내 낸다.
+var duBeforeRead = func(string) {}
 
 type duInode struct{ dev, ino uint64 }
 
@@ -30,6 +34,13 @@ type duWalker struct {
 	directories *atomic.Int64
 	activity    *atomic.Int64
 	stopped     atomic.Bool
+	// tree는 탐색 goroutine이 트리를 고치는 구간이다. 시스템 호출은 이 밖에서 부르므로, 시간이 다 되면 walk가 Lock으로
+	// 고치는 중인 goroutine만 기다리고 막힌 호출은 기다리지 않는다.
+	tree sync.RWMutex
+	// abandoned는 시간이 다 된 뒤에도 끝나지 않은 탐색 goroutine을 남겨 두고 돌아왔다는 뜻이다.
+	abandoned bool
+	// scanning은 읽는 중인 디렉터리 수다. 남겨 둔 goroutine이 몇 디렉터리에서 막혔는지 경고로 알린다.
+	scanning atomic.Int64
 
 	mu sync.Mutex
 	// seen은 hard link가 여럿인 파일을 어느 디렉터리가 셌는지다. 화면이 디렉터리 하나를 다시 읽을 때 그 디렉터리가 센
@@ -42,6 +53,23 @@ type duWalker struct {
 
 // sequential은 worker가 하나일 때 goroutine 없이 탐색한다. 디렉터리마다 다른 thread로 차례를 넘기면
 // futex 호출이 디렉터리 수만큼 늘어 du보다 느려졌다.
+// duBuffer는 worker 하나가 디렉터리 사이에서 다시 쓰는 버퍼다. 항목 목록을 디렉터리마다 새로 만들면 탐색 한 번의
+// 할당이 세 배로 늘었다.
+type duBuffer struct {
+	read    []byte
+	entries []duEntry
+}
+
+// keep은 entries를 다음 디렉터리에 다시 쓰도록 남긴다. 항목이 가리키는 이름과 마운트 기록은 비우고, limit보다 커진
+// 배열은 버린다. 넓은 디렉터리 하나 때문에 커진 배열을 탐색이 끝날 때까지 들고 있지 않게 한다.
+func (buffer *duBuffer) keep(entries []duEntry, limit int) {
+	clear(entries)
+	if cap(entries) > limit {
+		entries = nil
+	}
+	buffer.entries = entries[:0]
+}
+
 func (walker *duWalker) sequential(start duDir) {
 	buffer := duReadBuffer()
 	stack := []duDir{start}
@@ -83,6 +111,105 @@ func (walker *duWalker) parallel(start duDir, workers int) {
 }
 
 func (walker *duWalker) advance() { walker.activity.Add(1) }
+
+// abandonWarning은 남겨 둔 goroutine이 있을 때의 경고다.
+func (walker *duWalker) abandonWarning() []string {
+	if !walker.abandoned {
+		return nil
+	}
+	return []string{T("du.warning.abandoned", walker.scanning.Load())}
+}
+
+// duAbandonGrace는 시간이 다 된 뒤 탐색 goroutine이 fd를 닫고 끝나기를 기다리는 시간이다. 이 안에 끝나지 않으면 돌아오지
+// 않는 시스템 호출에 막힌 것으로 본다.
+const duAbandonGrace = time.Second
+
+// walk는 search를 goroutine에서 돌리고, 끝나거나 시간이 다 될 때까지 기다린다. macOS의 TCC 보호 경로는 open이 돌아오지
+// 않아서, 끝까지 기다리면 --timeout이 지나도 센 결과를 보여 주지 못한다.
+func (walker *duWalker) walk(search func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		search()
+	}()
+	select {
+	case <-done:
+		return
+	case <-walker.ctx.Done():
+	}
+	select {
+	case <-done:
+		return
+	case <-time.After(duAbandonGrace):
+	}
+	// Lock은 트리를 고치는 중인 goroutine만 기다린다. 그 뒤에 깨어난 goroutine은 apply에서 취소된 ctx를 보고 트리를 고치지 않는다.
+	walker.tree.Lock()
+	select {
+	case <-done:
+	default:
+		walker.stopped.Store(true)
+		walker.abandoned = true
+	}
+	walker.tree.Unlock()
+}
+
+// apply는 트리를 고치는 change를 tree.RLock 안에서 부른다. 시간이 다 됐으면 부르지 않고 false를 돌려준다.
+func (walker *duWalker) apply(change func()) bool {
+	walker.tree.RLock()
+	defer walker.tree.RUnlock()
+	if walker.ctx.Err() != nil {
+		walker.stopped.Store(true)
+		return false
+	}
+	change()
+	return true
+}
+
+// duEntry는 디렉터리에서 읽은 항목 하나다. 시스템 호출로 모은 뒤 apply 안에서 트리에 넣는다. name은 디렉터리와
+// 큰 파일 후보에만 채우고, path는 디렉터리에만 채운다. skip은 건너뛸 마운트 지점이다.
+type duEntry struct {
+	name     string
+	path     string
+	dev, ino uint64
+	bytes    uint64
+	links    uint64
+	dir      bool
+	skip     *duMount
+}
+
+// addEntries는 apply 안에서 부른다. 새 하위 디렉터리를 subdirs에 붙여 돌려준다.
+func (walker *duWalker) addEntries(dir duDir, entries []duEntry, subdirs []duDir) []duDir {
+	for _, entry := range entries {
+		if entry.dir {
+			if entry.skip != nil {
+				walker.mu.Lock()
+				walker.skipped = append(walker.skipped, *entry.skip)
+				walker.mu.Unlock()
+				continue
+			}
+			child := &duNode{name: entry.name, parent: dir.node, dir: true, bytes: entry.bytes, own: entry.bytes, entries: 1}
+			dir.node.children = append(dir.node.children, child)
+			subdirs = append(subdirs, duDir{node: child, path: entry.path})
+			continue
+		}
+		if entry.links > 1 && walker.counted(entry.dev, entry.ino, dir.node) {
+			continue
+		}
+		dir.node.bytes += entry.bytes
+		dir.node.entries++
+		if entry.name != "" {
+			walker.files.offer(dir.node, entry.name, entry.bytes)
+		}
+	}
+	return subdirs
+}
+
+// markUnreadable은 apply 안에서 부른다. 디렉터리 하나는 한 번만 읽지 못한 것으로 센다.
+func (walker *duWalker) markUnreadable(dir duDir, err error) {
+	if !dir.node.unreadable {
+		dir.node.unreadable = walker.unreadableDir(dir.path, err)
+	}
+}
 
 func duJoin(dir, name string) string {
 	if dir == "/" {

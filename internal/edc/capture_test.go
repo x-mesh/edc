@@ -98,6 +98,8 @@ func TestMain(m *testing.M) {
 	// host의 ephemeral port 범위도 떼어 놓는다. macOS 기본값은 49152-65535라서, 범위를 직접 고정하지 않은
 	// 테스트의 서버 판정이 Linux와 갈린다.
 	traceEphemeralPortRange = func() (int, int) { return 32768, 60999 }
+	// clean 시험이 host의 /tmp에 있는 Xcode 빌드 폴더를 재지 않게 한다.
+	cleanTempDir = filepath.Join(os.TempDir(), "edc-test-no-temp-dir")
 	os.Exit(m.Run())
 }
 

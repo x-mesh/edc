@@ -93,7 +93,7 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 	if got := ids("linux"); !reflect.DeepEqual(got, linux) {
 		t.Fatalf("linux = %v", got)
 	}
-	darwin := append(append([]string{}, common...), "xcode-derived-data", "swiftpm")
+	darwin := append(append([]string{}, common...), "xcode-derived-data", "swiftpm", "temp-xcode-builds")
 	darwin = append(append(darwin, shared...), "electron", "xcode-device-support", "coresimulator-caches", "app-updates", "app-logs",
 		"huggingface", "rustup-toolchains", "ollama", "app-caches", "dot-cache")
 	if got := ids("darwin"); !reflect.DeepEqual(got, darwin) {
@@ -115,6 +115,10 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 				if goos != "linux" || !strings.HasPrefix(spec.fixed, "/var/") {
 					t.Fatalf("%s on %s default path = %q", spec.id, goos, spec.fixed)
 				}
+			} else if spec.id == "temp-xcode-builds" {
+				if goos != "darwin" || spec.fixed != cleanTempDir {
+					t.Fatalf("%s on %s default path = %q", spec.id, goos, spec.fixed)
+				}
 			} else if spec.fixed != "" {
 				if !strings.HasPrefix(spec.fixed, "/Users/me/") {
 					t.Fatalf("%s default path = %q", spec.id, spec.fixed)
@@ -131,7 +135,7 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 	want := map[string]string{
 		"go-build": "go clean -cache", "go-mod": "go clean -modcache", "npm": "npm cache clean --force",
 		"pnpm": "pnpm store prune", "uv": "uv cache clean", "homebrew": "brew cleanup -s",
-		"xcode-derived-data": "", "swiftpm": "swift package purge-cache",
+		"xcode-derived-data": "", "swiftpm": "swift package purge-cache", "temp-xcode-builds": "",
 		"cargo-registry": "", "cargo-git": "", "zig": "", "bun": "bun pm cache rm", "pip": "pip3 cache purge",
 		"playwright": "", "puppeteer": "", "node-gyp": "", "electron": "", "coresimulator-caches": "",
 		"huggingface": "hf cache delete", "rustup-toolchains": "rustup toolchain uninstall <toolchain>", "ollama": "",
@@ -837,6 +841,101 @@ func cleanGroupNames(item cleanItem) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func TestCleanTempXcodeBuildsMeasuresOnlyBuildFolders(t *testing.T) {
+	home := cleanTestHome(t)
+	temp := t.TempDir()
+	previous := cleanTempDir
+	cleanTempDir = temp
+	defer func() { cleanTempDir = previous }()
+	// Xcode가 빌드 폴더에 쓰는 info.plist다. 앱 소스의 Info.plist는 같은 이름이지만 WorkspacePath가 없다.
+	workspace := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LastAccessedDate</key>
+	<date>2026-10-29T05:52:13Z</date>
+	<key>WorkspacePath</key>
+	<string>/Users/me/App/App.xcodeproj</string>
+</dict>
+</plist>
+`
+	app := strings.Replace(workspace, "WorkspacePath", "CFBundleName", 1)
+	plists := map[string]string{"app-a": workspace, "app-b": workspace, "plist-only": workspace, "app-source": app,
+		"binary": "bplist00WorkspacePath"}
+	for dir, text := range plists {
+		cleanWriteFile(t, filepath.Join(temp, dir, "Build/f"), 0)
+		if err := os.WriteFile(filepath.Join(temp, dir, "info.plist"), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(temp, "plist-only/Build")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"notes/Build/f", "build.log"} {
+		cleanWriteFile(t, filepath.Join(temp, name), 4<<10)
+	}
+	if err := os.RemoveAll(filepath.Join(temp, "app-b/Build")); err != nil {
+		t.Fatal(err)
+	}
+	cleanWriteFile(t, filepath.Join(temp, "app-a/Build/Products/f"), 64<<10)
+	cleanWriteFile(t, filepath.Join(temp, "app-b/ModuleCache.noindex/m"), 32<<10)
+	if err := os.Symlink(filepath.Join(temp, "app-a"), filepath.Join(temp, "link")); err != nil {
+		t.Fatal(err)
+	}
+	deps := cleanTestDeps(home, cleanAbsentTools(home))
+	items := cleanScan(context.Background(), deps, cleanCatalog("darwin", home))
+	item := cleanItemByID(t, items, "temp-xcode-builds")
+	if item.Status != cleanMeasured || !item.Regenerable || item.Priority != "P1" {
+		t.Fatalf("item = %+v", item)
+	}
+	if got := cleanGroupNames(item); !reflect.DeepEqual(got, []string{"app-a", "app-b"}) {
+		t.Fatalf("groups = %v", got)
+	}
+	if location, remainder := cleanLocation(item, home), T("clean.remainder", ""); strings.HasSuffix(location, remainder) {
+		t.Fatalf("location = %q, the candidate does not take the remaining folders", location)
+	}
+	if item.UsageBytes == nil || *item.UsageBytes < 96<<10 {
+		t.Fatalf("usage = %v", item.UsageBytes)
+	}
+
+	empty := t.TempDir()
+	cleanTempDir = empty
+	cleanWriteFile(t, filepath.Join(empty, "notes/Build/f"), 4<<10)
+	items = cleanScan(context.Background(), deps, cleanCatalog("darwin", home))
+	if item := cleanItemByID(t, items, "temp-xcode-builds"); item.Status != cleanAbsent {
+		t.Fatalf("without a build folder: %+v", item)
+	}
+}
+
+func TestCleanXcodeWorkspaceInfoDoesNotWaitOnAFIFOOrFollowALink(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.plist")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target.plist")
+	if err := os.WriteFile(target, []byte("<plist><dict><key>WorkspacePath</key><string>/a</string></dict></plist>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.plist")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if !cleanXcodeWorkspaceInfo(target) {
+		t.Fatal("the regular file was not read")
+	}
+	done := make(chan bool, 1)
+	go func() { done <- cleanXcodeWorkspaceInfo(fifo) || cleanXcodeWorkspaceInfo(link) }()
+	select {
+	case matched := <-done:
+		if matched {
+			t.Fatal("a FIFO or a symlink counted as an Xcode info.plist")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a FIFO did not return")
+	}
 }
 
 func TestCleanBoundaryUserDataIsNeverACache(t *testing.T) {

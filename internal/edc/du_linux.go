@@ -187,9 +187,9 @@ func duWalkTree(ctx context.Context, options duOptions, sources duSources, root 
 	}
 	start := duDir{node: root, path: options.root}
 	if options.workers <= 1 {
-		walker.sequential(start)
+		walker.walk(func() { walker.sequential(start) })
 	} else {
-		walker.parallel(start, options.workers)
+		walker.walk(func() { walker.parallel(start, options.workers) })
 	}
 	duFinish(root, walker.files.heap)
 	sort.Slice(walker.skipped, func(i, j int) bool { return walker.skipped[i].Path < walker.skipped[j].Path })
@@ -197,6 +197,11 @@ func duWalkTree(ctx context.Context, options duOptions, sources duSources, root 
 	scan := duScan{
 		root: root, directories: walker.directories.Load(), mounts: walker.skipped, unreadable: walker.unreadable,
 		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings, walker: walker,
+	}
+	// 남겨 둔 goroutine이 walker를 읽으므로 화면 갱신에 다시 쓰지 않는다.
+	if walker.abandoned {
+		scan.walker = nil
+		scan.warnings = append(scan.warnings, walker.abandonWarning()...)
 	}
 	return scan, walker.mounts
 }
@@ -244,11 +249,14 @@ func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts
 
 // scan은 디렉터리 하나를 읽고 그 안의 하위 디렉터리를 돌려준다. 이름은 디렉터리 fd를 기준으로 stat한다.
 // 항목마다 전체 경로를 다시 해석하면 CPU 시간이 약 25% 늘었다.
-func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
+func (walker *duWalker) scan(dir duDir, buffer *duBuffer) []duDir {
+	walker.scanning.Add(1)
+	defer walker.scanning.Add(-1)
+	duBeforeRead(dir.path)
 	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	walker.advance()
 	if err != nil {
-		dir.node.unreadable = walker.unreadableDir(dir.path, err)
+		walker.apply(func() { dir.node.unreadable = walker.unreadableDir(dir.path, err) })
 		return nil
 	}
 	file := os.NewFile(uintptr(fd), dir.path)
@@ -257,6 +265,7 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	var names []string
 	var readErr error
 	for {
+		duBeforeRead(dir.path)
 		batch, err := file.Readdirnames(duNamesBatch)
 		walker.advance()
 		names = append(names, batch...)
@@ -268,7 +277,11 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 		}
 	}
 	walker.directories.Add(1)
-	var subdirs []duDir
+	entries := buffer.entries[:0]
+	// 이름 수를 알고 있으므로 한 번에 만든다. append로 키우면 넓은 디렉터리마다 배열을 여러 번 복사한다.
+	if cap(entries) < len(names) {
+		entries = make([]duEntry, 0, len(names))
+	}
 	for _, name := range names {
 		var stat unix.Stat_t
 		// 항목마다 센다. 지연이 큰 네트워크 파일 시스템에서는 호출 수백 개가 10초를 넘길 수 있다.
@@ -281,27 +294,23 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 			}
 			continue
 		}
-		bytes := uint64(stat.Blocks) * 512
-		if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
-			path := duJoin(dir.path, name)
-			if walker.boundary(path, stat.Dev) {
-				continue
-			}
-			child := &duNode{name: name, parent: dir.node, dir: true, bytes: bytes, own: bytes, entries: 1}
-			dir.node.children = append(dir.node.children, child)
-			subdirs = append(subdirs, duDir{node: child, path: path})
-			continue
+		// Nlink는 amd64에서 uint64, arm64에서 uint32다.
+		entry := duEntry{name: name, dev: stat.Dev, ino: stat.Ino, bytes: uint64(stat.Blocks) * 512, links: uint64(stat.Nlink),
+			dir: stat.Mode&unix.S_IFMT == unix.S_IFDIR}
+		if entry.dir {
+			entry.path = duJoin(dir.path, name)
+			entry.skip = walker.mountSkip(entry.path, stat.Dev)
 		}
-		if stat.Nlink > 1 && walker.counted(stat.Dev, stat.Ino, dir.node) {
-			continue
+		entries = append(entries, entry)
+	}
+	var subdirs []duDir
+	walker.apply(func() {
+		subdirs = walker.addEntries(dir, entries, nil)
+		if readErr != nil {
+			dir.node.unreadable = walker.unreadableDir(dir.path, readErr)
 		}
-		dir.node.bytes += bytes
-		dir.node.entries++
-		walker.files.offer(dir.node, name, bytes)
-	}
-	if readErr != nil {
-		dir.node.unreadable = walker.unreadableDir(dir.path, readErr)
-	}
+	})
+	buffer.keep(entries, duNamesBatch)
 	return subdirs
 }
 
@@ -318,13 +327,14 @@ func duSelfBind(mounts []diskMount, mount diskMount) bool {
 }
 
 // boundary는 path가 다른 마운트라 세지 않을 디렉터리인지 본다. 건너뛴 지점은 따로 모은다.
-func (walker *duWalker) boundary(path string, dev uint64) bool {
+// mountSkip은 path가 건너뛸 마운트 지점이면 그 기록을 돌려준다. statfs가 막힐 수 있어 apply 밖에서 부른다.
+func (walker *duWalker) mountSkip(path string, dev uint64) *duMount {
 	if walker.options.crossMounts {
-		return false
+		return nil
 	}
 	mount, listed := walker.mountPoints[path]
 	if !listed && dev == walker.rootDev {
-		return false
+		return nil
 	}
 	if !listed {
 		mount, _ = findDiskMount(walker.mounts, path)
@@ -341,10 +351,7 @@ func (walker *duWalker) boundary(path string, dev uint64) bool {
 	if skipped.FSType == "" {
 		skipped.FSType = "-"
 	}
-	walker.mu.Lock()
-	walker.skipped = append(walker.skipped, skipped)
-	walker.mu.Unlock()
-	return true
+	return &skipped
 }
 
-func duReadBuffer() []byte { return nil }
+func duReadBuffer() *duBuffer { return &duBuffer{} }

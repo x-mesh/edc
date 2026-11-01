@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/x-mesh/fastgzip"
 )
 
 // changes는 장애 직전에 호스트에서 무엇이 바뀌었는지를 읽기만 해서 보인다. 패키지 로그, /etc의 mtime,
@@ -166,7 +168,7 @@ func changesEventsOf(results []Result) []changeEvent {
 	return events
 }
 
-// changesPackageLog는 패키지 관리자가 남기는 로그 하나다. 압축된 회전 로그는 풀지 않는다.
+// changesPackageLog는 패키지 관리자가 남기는 로그 하나다. 회전 로그 중 .gz만 풀어 읽는다.
 type changesPackageLog struct {
 	base   string
 	source string
@@ -228,7 +230,16 @@ func readPackageLog(sources changesSources, log changesPackageLog, path string, 
 		return nil, err
 	}
 	defer file.Close()
-	events, err := log.parse(file, sources, cutoff)
+	var reader io.Reader = file
+	if strings.HasSuffix(path, ".gz") {
+		gz, err := fastgzip.NewReader(file)
+		if err != nil {
+			return nil, err
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	events, err := log.parse(reader, sources, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -238,9 +249,9 @@ func readPackageLog(sources changesSources, log changesPackageLog, path string, 
 	return events, nil
 }
 
-// packageLogFiles는 읽을 로그를 고른다. 본 로그와, mtime이 창 안에 있는 압축되지 않은 회전 로그다.
+// packageLogFiles는 읽을 로그를 고른다. 본 로그와, mtime이 창 안에 있는 압축되지 않았거나 .gz인 회전 로그다.
 // 회전 로그의 mtime은 마지막으로 쓴 때이므로 그보다 오래된 파일에는 창 안의 기록이 없다.
-// 압축된 회전 로그는 풀지 않고, mtime이 창 안이면 놓친 기록이 있을 수 있어 따로 돌려준다.
+// .gz가 아닌 압축 회전 로그는 풀지 않고, mtime이 창 안이면 놓친 기록이 있을 수 있어 따로 돌려준다.
 // 본 로그가 없으면 files에 넣지 않는다. 본 로그를 stat하지 못하면 err를 돌려준다.
 func packageLogFiles(root, base string, cutoff time.Time) (files, compressed []string, err error) {
 	if _, statErr := os.Stat(filepath.Join(root, base)); statErr == nil {
@@ -274,7 +285,7 @@ func packageLogFiles(root, base string, cutoff time.Time) (files, compressed []s
 }
 
 func isCompressedLog(name string) bool {
-	for _, suffix := range []string{".gz", ".xz", ".bz2", ".zst", ".lz4", ".Z"} {
+	for _, suffix := range []string{".xz", ".bz2", ".zst", ".lz4", ".Z"} {
 		if strings.HasSuffix(name, suffix) {
 			return true
 		}

@@ -464,54 +464,288 @@ func grepSemanticRank(paths []string, options grepOptions, chunks []grepAskChunk
 	return grepSemanticScore(root, options, chunks, index, query), nil
 }
 
+func grepSemanticRankAuto(root string, options grepOptions, chunks []grepAskChunk, stderr io.Writer) ([]grepAskResult, error) {
+	candidates, err := grepSemanticPrepareAuto(root, options, chunks, stderr)
+	if err != nil {
+		return nil, err
+	}
+	return grepSemanticScoreCandidates(options, candidates), nil
+}
+
+type grepSemanticCandidate struct {
+	root        string
+	chunk       grepAskChunk
+	index       *grepSemanticIndex
+	query       []float32
+	displayPath string
+}
+
+func grepSemanticFileIdentity(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return filepath.Clean(absolute)
+	}
+	return filepath.Clean(canonical)
+}
+
+func grepSemanticPrepareAuto(root string, options grepOptions, chunks []grepAskChunk, stderr io.Writer) ([]grepSemanticCandidate, error) {
+	path, err := grepSemanticPath(root)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := grepSemanticLock(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	index, err := grepSemanticRead(path, root)
+	if err != nil {
+		index = &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Vectors: map[string][]float32{}}
+	}
+	fmt.Fprintln(stderr, T("grep.semantic.loading"))
+	query, embedded, changed, err := grepSemanticSync(root, chunks, index, options.pattern, stderr)
+	if err != nil {
+		return nil, err
+	}
+	if embedded > 0 {
+		if err := grepSemanticVerify(root, chunks, options); err != nil {
+			return nil, err
+		}
+	}
+	if changed {
+		if err := grepSemanticSave(path, index); err != nil {
+			return nil, err
+		}
+	}
+	candidates := make([]grepSemanticCandidate, 0, len(chunks))
+	for _, chunk := range chunks {
+		candidates = append(candidates, grepSemanticCandidate{root: root, chunk: chunk, index: index, query: query})
+	}
+	return candidates, nil
+}
+
 func grepSemanticScore(root string, options grepOptions, chunks []grepAskChunk, index *grepSemanticIndex, query []float32) []grepAskResult {
+	candidates := make([]grepSemanticCandidate, 0, len(chunks))
+	for _, chunk := range chunks {
+		candidates = append(candidates, grepSemanticCandidate{root: root, chunk: chunk, index: index, query: query})
+	}
+	return grepSemanticScoreCandidates(options, candidates)
+}
+
+func grepSemanticSourceClass(query, path string) int {
+	queryTerms := make(map[string]bool)
+	for _, term := range grepAskTokens(query) {
+		queryTerms[term] = true
+	}
+	path = filepath.ToSlash(strings.ToLower(path))
+	special := false
+	for term := range queryTerms {
+		if term == "test" || term == "tests" || term == "testing" || term == "docs" || term == "doc" || term == "documentation" || term == "readme" || term == "locale" || term == "i18n" || term == "linux" || term == "darwin" || term == "windows" || term == "platform" || term == "testdata" {
+			special = true
+			break
+		}
+	}
+	if special {
+		if strings.HasSuffix(path, "_test.go") || strings.Contains(path, "/testdata/") || strings.Contains(path, "/locale/") || strings.Contains(path, "/docs/") || strings.Contains(path, "/doc/") || filepath.Base(path) == "readme.md" || strings.HasSuffix(path, "_linux.go") || strings.HasSuffix(path, "_darwin.go") || strings.HasSuffix(path, "_windows.go") {
+			return 2
+		}
+		return 1
+	}
+	if strings.HasSuffix(path, "_test.go") || strings.Contains(path, "/testdata/") || strings.Contains(path, "/locale/") || strings.Contains(path, "/docs/") || strings.Contains(path, "/doc/") || filepath.Base(path) == "readme.md" || strings.HasSuffix(path, "_linux.go") || strings.HasSuffix(path, "_darwin.go") || strings.HasSuffix(path, "_windows.go") {
+		return 0
+	}
+	return 1
+}
+
+func grepSemanticSourceBias(query, path string) float64 {
+	class := grepSemanticSourceClass(query, path)
+	if class == 0 {
+		return -1
+	}
+	if class == 2 {
+		return 1
+	}
+	return 0
+}
+
+func grepSemanticPathCoverage(query, path string) float64 {
+	queryTerms := grepAskTokens(query)
+	pathTerms := grepAskTokens(path)
+	baseTerms := grepAskTokens(filepath.Base(path))
+	if len(queryTerms) == 0 || len(pathTerms) == 0 {
+		return 0
+	}
+	match := func(queryTerm, pathTerm string) bool {
+		return queryTerm == pathTerm || (len(queryTerm) >= 3 && strings.HasPrefix(pathTerm, queryTerm)) || (len(pathTerm) >= 3 && strings.HasPrefix(queryTerm, pathTerm))
+	}
+	covered := 0.0
+	for _, queryTerm := range queryTerms {
+		baseMatch, pathMatch := false, false
+		for _, pathTerm := range baseTerms {
+			if match(queryTerm, pathTerm) {
+				baseMatch = true
+				break
+			}
+		}
+		for _, pathTerm := range pathTerms {
+			if match(queryTerm, pathTerm) {
+				pathMatch = true
+				break
+			}
+		}
+		if baseMatch {
+			covered += 1
+		} else if pathMatch {
+			covered += 0.5
+		}
+	}
+	return covered / float64(len(queryTerms))
+}
+
+func grepSemanticChunkCoverage(query string, chunk grepAskChunk) float64 {
+	queryTerms := grepAskTokens(query)
+	if len(queryTerms) == 0 {
+		return 0
+	}
+	covered := 0.0
+	for _, queryTerm := range queryTerms {
+		if chunk.terms[queryTerm] > 0 {
+			covered++
+		}
+	}
+	return covered / float64(len(queryTerms))
+}
+
+func grepSemanticScoreCandidates(options grepOptions, candidates []grepSemanticCandidate) []grepAskResult {
 	type chunkID struct {
 		path       string
 		start, end int
 	}
+	chunks := make([]grepAskChunk, 0, len(candidates))
+	for _, candidate := range candidates {
+		chunks = append(chunks, candidate.chunk)
+	}
 	keywordResults := grepAskScore(options.pattern, chunks)
-	keywordScores := make(map[chunkID]float64, len(keywordResults))
+	keywordScore := make(map[chunkID]float64, len(keywordResults))
 	maxKeyword := 0.0
 	for _, result := range keywordResults {
-		keywordScores[chunkID{result.Path, result.Start, result.End}] = result.Score
+		id := chunkID{result.Path, result.Start, result.End}
+		keywordScore[id] = result.Score
 		if result.Score > maxKeyword {
 			maxKeyword = result.Score
 		}
 	}
 	type scoredChunk struct {
 		grepAskResult
-		lines []string
+		lines    []string
+		fileID   string
+		rankID   chunkID
+		semantic float64
+		exact    float64
 	}
-	results := make([]scoredChunk, 0, len(chunks))
-	for _, chunk := range chunks {
-		vector := index.Vectors[grepSemanticKey(root, chunk)]
-		score := 0.0
-		for i, x := range query {
-			score += float64(x) * float64(vector[i])
+	results := make([]scoredChunk, 0, len(candidates))
+	displayPaths := make(map[chunkID]string, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.displayPath == "" {
+			continue
 		}
+		chunk := candidate.chunk.result
+		displayPaths[chunkID{path: chunk.Path, start: chunk.Start, end: chunk.End}] = candidate.displayPath
+	}
+	for _, candidate := range candidates {
+		chunk := candidate.chunk
+		vector := candidate.index.Vectors[grepSemanticKey(candidate.root, chunk)]
+		semantic := 0.0
+		for i, x := range candidate.query {
+			if i < len(vector) {
+				semantic += float64(x) * float64(vector[i])
+			}
+		}
+		exact := 0.0
+		for _, term := range grepAskTokens(options.pattern) {
+			if chunk.terms[term] > 0 {
+				exact += 1
+			}
+			for _, pathTerm := range grepAskTokens(chunk.rankPath) {
+				if term == pathTerm {
+					exact += 0.5
+				}
+			}
+		}
+		rankID := chunkID{path: chunk.result.Path, start: chunk.result.Start, end: chunk.result.End}
 		result := chunk.result
-		result.Score = 0.95 * score
-		if maxKeyword > 0 {
-			result.Score += 0.05 * keywordScores[chunkID{result.Path, result.Start, result.End}] / maxKeyword
+		if displayPath := displayPaths[rankID]; displayPath != "" {
+			result.Path = displayPath
 		}
-		results = append(results, scoredChunk{result, chunk.lines})
+		results = append(results, scoredChunk{grepAskResult: result, lines: chunk.lines, fileID: grepSemanticFileIdentity(chunk.result.Path), rankID: rankID, semantic: semantic, exact: exact})
+	}
+	maxExact := 0.0
+	for _, result := range results {
+		if result.exact > maxExact {
+			maxExact = result.exact
+		}
+	}
+	for i := range results {
+		id := results[i].rankID
+		score := results[i].semantic
+		if maxKeyword > 0 {
+			score += 0.25 * keywordScore[id] / maxKeyword
+		}
+		if results[i].exact > 0 {
+			if maxExact > 0 {
+				score += 0.10 * results[i].exact / maxExact
+			}
+		}
+		score += 0.25 * grepSemanticSourceBias(options.pattern, results[i].rankID.path)
+		score += 0.20 * grepSemanticPathCoverage(options.pattern, results[i].rankID.path)
+		score += 0.08 * grepSemanticChunkCoverage(options.pattern, candidates[i].chunk)
+		results[i].Score = score
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score != results[j].Score {
 			return results[i].Score > results[j].Score
 		}
-		if results[i].Path != results[j].Path {
-			return results[i].Path < results[j].Path
+		if results[i].rankID.path != results[j].rankID.path {
+			return results[i].rankID.path < results[j].rankID.path
 		}
-		return results[i].Start < results[j].Start
+		if results[i].rankID.start != results[j].rankID.start {
+			return results[i].rankID.start < results[j].rankID.start
+		}
+		return results[i].rankID.end < results[j].rankID.end
 	})
 	selected := make([]grepAskResult, 0, min(options.askLimit, len(results)))
-	counts := map[string]int{}
-	for _, r := range results {
-		if counts[r.Path] >= 2 {
-			continue
+	type interval struct{ start, end int }
+	selectedIntervals := map[string][]interval{}
+	selectResult := func(r scoredChunk) bool {
+		overlaps := false
+		for _, selectedInterval := range selectedIntervals[r.fileID] {
+			if r.Start <= selectedInterval.end && selectedInterval.start <= r.End {
+				overlaps = true
+				break
+			}
 		}
-		lines := append([]string(nil), r.lines[:min(3, len(r.lines))]...)
+		if overlaps {
+			return false
+		}
+		terms := make(map[string]bool)
+		for _, term := range grepAskTokens(options.pattern) {
+			terms[term] = true
+		}
+		anchor := 0
+		for i, line := range r.lines {
+			for _, term := range grepAskTokens(line) {
+				if terms[term] {
+					anchor = i
+					break
+				}
+			}
+		}
+		start := max(0, anchor-1)
+		lines := append([]string(nil), r.lines[start:min(len(r.lines), start+3)]...)
 		for i, line := range lines {
 			runes := []rune(line)
 			if len(runes) > 300 {
@@ -520,10 +754,23 @@ func grepSemanticScore(root string, options grepOptions, chunks []grepAskChunk, 
 		}
 		r.Snippet = strings.Join(lines, "\n")
 		selected = append(selected, r.grepAskResult)
-		counts[r.Path]++
+		selectedIntervals[r.fileID] = append(selectedIntervals[r.fileID], interval{start: r.Start, end: r.End})
+		return true
+	}
+	seenFiles := map[string]bool{}
+	for _, r := range results {
+		if seenFiles[r.fileID] || len(selected) == options.askLimit {
+			continue
+		}
+		if selectResult(r) {
+			seenFiles[r.fileID] = true
+		}
+	}
+	for _, r := range results {
 		if len(selected) == options.askLimit {
 			break
 		}
+		selectResult(r)
 	}
 	return selected
 }
@@ -640,7 +887,8 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 		fmt.Fprintln(stdout, T("grep.semantic.cleared"))
 		return 0
 	}
-	chunks, skipped, problems := grepAskCollect([]string{root}, grepOptions{})
+	semanticOptions := grepOptions{semantic: true}
+	chunks, skipped, problems := grepAskCollect([]string{root}, semanticOptions)
 	if len(problems) > 0 {
 		for _, problem := range problems {
 			fmt.Fprintln(stderr, T("grep.failed", problem))
@@ -671,7 +919,7 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if err = grepSemanticVerify(root, chunks, grepOptions{}); err != nil {
+	if err = grepSemanticVerify(root, chunks, semanticOptions); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
@@ -694,7 +942,7 @@ func grepSemanticFiles(root, path string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	chunks, _, problems := grepAskCollect([]string{root}, grepOptions{})
+	chunks, _, problems := grepAskCollect([]string{root}, grepOptions{semantic: true})
 	for _, problem := range problems {
 		fmt.Fprintln(stderr, T("grep.failed", problem))
 	}

@@ -313,11 +313,11 @@ In a terminal, `edc grep ValidateToken` searches code in the current directory w
 
 With piped or redirected stdin, a bare pattern reads stdin; an explicit path retains the existing log search. Log-specific flags also retain log search behavior.
 
-### Rank code by keywords
+### Search code by meaning
 
-`edc grep --ask --keyword 'remote inventory config'` ranks local code chunks using the words in the query. This is keyword ranking, not semantic search or answer generation: queries that use different words from the code, including Korean queries against English identifiers, can miss relevant results. Go declarations are split into chunks of at most 32 lines; other text uses 32-line chunks. The result prints the path, chunk line range, and up to three relevant lines.
+`edc search 'remote inventory config'` ranks local code chunks by semantic similarity and keyword relevance. Go declarations are split into chunks of at most 32 lines; other text uses 32-line chunks. The result prints the path, chunk line range, and up to three relevant lines.
 
-The search respects the same `.gitignore`, hidden-file, and explicit-path rules as `--code`. It performs no network requests and creates no index or cache. `--limit N` selects up to 100 results (default 10), and `--json` emits an object with `method`, `results` (including scores), and `skipped_files`. Binary files, invalid UTF-8, and files over 2 MiB are skipped. At 32 MiB of input or 50,000 chunks it stops, reports incomplete results on stderr, and returns exit code 2. A query with no keyword matches returns 1.
+The search respects the same `.gitignore`, hidden-file, and explicit-path rules as `--code`. Once its local model is installed, it builds and incrementally updates a per-project index without calling a cloud service. `--limit N` selects up to 100 results (default 10), and `--json` emits a versioned object with `method`, `results` (including scores), `scopes`, `complete`, and `skipped_files`. Binary files, invalid UTF-8, and files over 2 MiB are skipped. At 32 MiB of input or 66,666 semantic chunks it stops, reports incomplete results on stderr, and returns exit code 2.
 
 To run the repository retrieval evaluation: `EDC_EVAL_GREP=1 go test ./internal/edc -run '^TestGrepAskEvaluation$' -count=1 -v`. The query set is in `internal/edc/testdata/grep-ask/queries.json`.
 
@@ -325,10 +325,10 @@ For an offline development benchmark only (not edc runtime), install `sentence-t
 
 ```sh
 EDC_EVAL_GREP=1 EDC_EVAL_DUMP=/tmp/edc-grep-corpus.json EDC_EVAL_SCORES=/tmp/edc-grep-scores.json go test ./internal/edc -run '^TestGrepAskEvaluation$' -count=1 -v
-python3 scripts/eval-grep-embedding.py /tmp/edc-grep-corpus.json internal/edc/testdata/grep-ask/queries.json --keyword-scores /tmp/edc-grep-scores.json
+python3 scripts/eval-grep-embedding.py /tmp/edc-grep-corpus.json internal/edc/testdata/grep-ask/queries.json
 ```
 
-The export contains local source text; remove it when finished. The evaluation script uses only cached models. `--ask` accepts at most 32 query words.
+The export contains local source text; remove it when finished. The evaluation script uses only cached models. `edc search` accepts at most 32 query words.
 
 ### Local semantic search
 
@@ -337,19 +337,18 @@ The pinned sources are [the MiniLM model](https://huggingface.co/sentence-transf
 Semantic search uses the English `all-MiniLM-L6-v2` model and a native ONNX Runtime. Python is not needed for edc. The first initialization shows the download size and destination, then asks before downloading the pinned model and runtime from Hugging Face and Microsoft. The download is approximately 94–128 MiB depending on the platform; extracted files and the index need additional disk space. edc verifies the pinned SHA-256 values before installing anything.
 
 ```sh
-edc grep --semantic-init
-edc grep --ask 'where is the auth configuration loaded?'
-edc grep --semantic 'where is the auth configuration loaded?'
-edc grep --semantic-status
-edc grep --semantic-files
-edc grep --semantic-clear
-edc grep --model-clear
+edc search index init --yes
+edc search 'where is the auth configuration loaded?'
+edc search index status
+edc search index files
+edc search index clear
+edc search model clear
 ```
 
-`--semantic` does the same as `--ask`. `--ask` uses semantic search by default. `--semantic-init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created only by initialization. Another project reuses the model but needs its own index. `--semantic-clear` removes only the current project index. `--model-clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `--semantic-status` reports the model and stored index, not whether source files have changed. `--semantic-files` reads the current files again and prints `indexed/total chunks` and the path for each file. If a path contains a tab, a line break, another control character, or a double quote, edc prints it as a quoted Go string. A file with fewer indexed chunks than total chunks gets new embeddings on the next search.
+`edc search` owns semantic queries and lifecycle operations. `edc search index init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created by `init` or by the first semantic query after the model is installed. Another project reuses the model but needs its own index. `edc search index clear` removes only the current project index. `edc search model clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `edc search index status` reports the model and stored index, not whether source files have changed. `edc search index files` reads the current files again and prints `indexed/total chunks` and the path for each file. Paths containing tabs, newlines, or quotes are rendered as quoted Go strings, and a file with fewer indexed than total chunks is re-embedded on the next search. Words such as `status` remain ordinary queries.
 
 If a directory search finds generated files, lock files, or test fixtures, it does not index or rank them. Generated files start with a comment that contains `Code generated ... DO NOT EDIT` or `auto-generated`. Lock files include `go.sum`, `package-lock.json`, `yarn.lock`, and `Cargo.lock`. Test fixtures are files under `testdata/`, except `.md` and `.txt` files. If you name such a file as the path, edc searches it.
 
-Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `--semantic-init` rebuilds the current project's index, including indexes made by the earlier multilingual model or stored in the earlier format. The index stores vectors as 16-bit floats. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
+Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `edc search index init` rebuilds the current project's index, including indexes made by the earlier multilingual model or stored in the earlier format. The index stores vectors as 16-bit floats. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
 
 Scores combine cosine similarity (95%) and normalized keyword relevance (5%); they are not probabilities. Each embedding uses at most 3,000 characters and 128 model tokens per chunk. File-size and search limits are shared with keyword search. The model and native runtime support Linux and macOS on amd64 and arm64. The official Linux runtime requires glibc and libstdc++; a musl-only environment such as Alpine is not supported by this runtime without compatible libraries.

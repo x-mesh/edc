@@ -115,12 +115,12 @@ func TestGrepNativeModelInstallAndSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := grepSemanticLifecycleWithInput([]string{"--semantic-init", root}, strings.NewReader(""), false, &stdout, &stderr); code != 2 || requests.Load() != 0 {
+	if code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &stdout, &stderr); code != 2 || requests.Load() != 0 {
 		t.Fatalf("unexpected download without confirmation: %d calls=%d %s", code, requests.Load(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := grepSemanticLifecycleWithInput([]string{"--semantic-init", "--yes", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 || requests.Load() != 3 {
+	if code := runSearchWithInput([]string{"index", "init", "--yes", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 || requests.Load() != 3 {
 		t.Fatalf("init=%d calls=%d out=%s err=%s", code, requests.Load(), stdout.String(), stderr.String())
 	}
 	encoded, err := grepSemanticNative([]string{"hello world", "a considerably longer sentence to test reordered batches and padding", "hello world"}, io.Discard)
@@ -132,29 +132,25 @@ func TestGrepNativeModelInstallAndSearch(t *testing.T) {
 			t.Fatalf("batch order/reference mismatch at %d", i)
 		}
 	}
-	code, out, stderrText := grepCommand(t, "", "--ask", "authentication token verification", "--json", root)
+	code, out, stderrText := searchCommand(t, "", "--json", "authentication token verification", root)
 	if code != 0 || !strings.Contains(out, `"method":"semantic+keyword"`) || !strings.Contains(out, "auth.go") || requests.Load() != 3 {
 		t.Fatalf("search=%d out=%s err=%s calls=%d", code, out, stderrText, requests.Load())
 	}
 	if err := os.WriteFile(path, []byte("package auth\n// RenewToken refreshes login credentials.\nfunc RenewToken() bool { return true }\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	code, out, stderrText = grepCommand(t, "", "--ask", "refresh login credentials", "--json", root)
+	code, out, stderrText = searchCommand(t, "", "--json", "refresh login credentials", root)
 	if code != 0 || !strings.Contains(out, "RenewToken") || requests.Load() != 3 {
 		t.Fatalf("updated search=%d out=%s err=%s calls=%d", code, out, stderrText, requests.Load())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := grepSemanticLifecycleWithInput([]string{"--model-clear"}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"model", "clear"}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
 		t.Fatalf("clear model=%d %s", code, stderr.String())
 	}
-	code, _, stderrText = grepCommand(t, "", "--ask", "login", root)
-	if code != 2 || !strings.Contains(stderrText, "--semantic-init") || requests.Load() != 3 {
+	code, _, stderrText = searchCommand(t, "", "login", root)
+	if code != 2 || !strings.Contains(stderrText, "edc search index init") || requests.Load() != 3 {
 		t.Fatalf("missing model search=%d err=%s calls=%d", code, stderrText, requests.Load())
-	}
-	code, out, stderrText = grepCommand(t, "", "--ask", "--keyword", "login", "--json", root)
-	if code != 0 || !strings.Contains(out, `"method":"keyword"`) || requests.Load() != 3 {
-		t.Fatalf("keyword after model clear=%d out=%s err=%s calls=%d", code, out, stderrText, requests.Load())
 	}
 }
 
@@ -171,7 +167,7 @@ func TestGrepNativeOfficialDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output, stderr bytes.Buffer
-	code := grepSemanticLifecycleWithInput([]string{"--semantic-init", "--yes", root}, strings.NewReader(""), false, &output, &stderr)
+	code := runSearchWithInput([]string{"index", "init", "--yes", root}, strings.NewReader(""), false, &output, &stderr)
 	if code != 0 {
 		t.Fatalf("official init=%d output=%s stderr=%s", code, output.String(), stderr.String())
 	}
@@ -182,7 +178,7 @@ func TestGrepNativeOfficialDownload(t *testing.T) {
 	if err := grepModelCheck(dir); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errout := grepCommand(t, "", "--ask", "login authentication", "--json", root)
+	code, out, errout := searchCommand(t, "", "--json", "login authentication", root)
 	if code != 0 || !strings.Contains(out, `"method":"semantic+keyword"`) || !strings.Contains(out, "auth.go") {
 		t.Fatalf("official search=%d output=%s stderr=%s", code, out, errout)
 	}

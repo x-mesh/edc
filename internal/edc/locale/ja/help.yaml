@@ -215,17 +215,6 @@ command:
   grep:
     summary: "ログ、コード、ファイルパスを検索"
     option:
-      model_clear: "共有モデルと runtime を削除"
-      semantic_yes: "モデルのダウンロード確認を省略"
-      ask_keyword: "--ask をモデルなしのキーワード順位付けで実行"
-      semantic_init: "ローカル semantic index の作成・再作成"
-      semantic_status: "semantic index の情報を表示"
-      semantic_files: "ファイルごとに index 済みのチャンク数と全チャンク数"
-      semantic_clear: "semantic index を削除"
-      semantic: "初期化済みのローカル embedding index でコードを検索 (--ask を含む)"
-      ask: "ローカル embedding index で関連コードを検索"
-      ask_json: "--ask の結果を JSON で出力"
-      ask_limit: "--ask の最大件数 (既定 10、最大 100)"
       code: ".gitignore を適用してコードの内容を検索"
       paths: "内容ではなくファイルのパスを検索"
       hidden: "コード・パス検索に隠しファイルを含める"
@@ -245,9 +234,9 @@ command:
       verify: "index の結果を全体読みと比較し、誤った index を削除"
       last: "最新の N 件、ファイル末尾から読む"
     notes:
-      - "semantic 検索はローカルで実行します。--semantic-init は確認後に英語 MiniLM モデルと runtime をダウンロードします。"
+      - "semantic 検索は edc search でローカルに実行します。edc search index init --yes は確認後に英語 MiniLM モデルと runtime をダウンロードします。"
       - "index はプロジェクト外のユーザー cache に保存します。変更したファイルは次の semantic 検索時に再ベクトル化します。"
-      - "--ask --keyword はローカルのキーワード順位付けで、意味の理解や回答の生成はしません。両モードとも binary、不正な UTF-8、2 MiB 超のファイルを除外します。"
+      - "edc grep は literal、regex、log、code、file path を検索します。semantic の質問は edc search だけで受け付けます。"
       - "端末でパターンだけを指定すると現在のディレクトリのコードを検索します。パイプは stdin を読み、パス指定時は従来のログ検索を使います。"
       - "コード・パス検索は現在のディレクトリから隠しファイルと .git を除いて探します。--hidden と --no-ignore で対象を広げます。"
       - "コード検索はログ index を使わず現在のファイルを読み、行番号を出力します。"
@@ -261,6 +250,17 @@ command:
       - "stderr が端末なら、検索ごとに index を使ったか、作ったか、なぜ使わなかったかを知らせます。"
       - "pipe や NO_COLOR では行のバイトをそのまま出力します。終了コードは見つかれば 0、なければ 1、エラーなら 2 です。"
       - "edc alias は eg、egs、ege のような短い alias を出力します。"
+  search:
+    summary: "ローカル semantic エンジンでコードを意味検索"
+    option:
+      limit: "結果の最大数 (1〜100)"
+      json: "versioned JSON 文書を一つ出力"
+      yes: "初回モデルのダウンロードを確認なしで許可"
+    notes:
+      - "edc search は自然言語の質問の後にファイルまたはディレクトリを 0 個以上受け取ります。"
+      - "最初の positional 引数が引用した質問全体で、その後の positional 引数はすべて path です。ダッシュで始まる質問や path には -- を使います。"
+      - "edc search はローカル MiniLM index を共有し、モデルの導入後は cloud service を呼びません。"
+      - "edc search index status、files、clear は directory を省略できます。共有 model と runtime は edc search model clear で削除します。status、files、clear も通常の query として検索できます。"
   du:
     summary: "ディレクトリ以下のディスク使用量、大きい順 (Linux と macOS)"
     option:

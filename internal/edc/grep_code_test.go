@@ -200,19 +200,25 @@ func TestGrepCodeHonorsIgnoreForUncleanRoots(t *testing.T) {
 	}
 }
 
-func TestGrepLifecycleFlagsDispatchInAnyPosition(t *testing.T) {
+func TestSearchLifecycleWordsDispatchInAnyPosition(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"--semantic-init", "--yes"}, "--semantic-init --yes"},
-		{[]string{"--yes", "--semantic-init"}, "--semantic-init --yes"},
-		{[]string{"--yes", "--semantic-init", "dir"}, "--semantic-init --yes dir"},
-		{[]string{"dir", "--model-clear"}, "--model-clear dir"},
-		{[]string{"needle", "src"}, ""},
-		{[]string{"--", "--model-clear", "src"}, ""},
+		{[]string{"index", "init", "--yes"}, "init --yes"},
+		{[]string{"--yes", "index", "init"}, "init --yes"},
+		{[]string{"index", "init", "--yes", "dir"}, "init --yes dir"},
+		{[]string{"model", "clear", "dir"}, "model-clear dir"},
+		{[]string{"init", "src"}, ""},
+		{[]string{"status", "src"}, ""},
+		{[]string{"clear", "src"}, ""},
+		{[]string{"model", "src"}, ""},
+		{[]string{"needle", "index", "clear", "src"}, ""},
+		{[]string{"needle", "model", "clear", "src"}, ""},
+		{[]string{"--", "status", "src"}, ""},
 	} {
-		got, ok := grepLifecycleArgs(tc.args)
+		action, rest, ok := searchLifecycleArgs(tc.args)
+		got := append([]string{action}, rest...)
 		if ok != (tc.want != "") || strings.Join(got, " ") != tc.want {
 			t.Fatalf("%v: got %v %t", tc.args, got, ok)
 		}

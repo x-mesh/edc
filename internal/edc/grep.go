@@ -125,6 +125,10 @@ func runSearchWithInput(args []string, input io.Reader, terminal bool, stdout, s
 	if action, lifecycleArgs, ok := searchLifecycleArgs(args); ok {
 		return grepSemanticSearchLifecycleWithInput(action, lifecycleArgs, input, terminal, stdout, stderr)
 	}
+	if usage := searchLifecycleUsage(args); usage != "" {
+		fmt.Fprintln(stderr, T("cli.usage", usage))
+		return 2
+	}
 	options, err := parseSearchOptions(args, stderr)
 	if err != nil {
 		if !errors.Is(err, errFlagReported) && !errors.Is(err, flag.ErrHelp) {
@@ -164,6 +168,35 @@ func searchLifecycleArgs(args []string) (string, []string, bool) {
 		return "", nil, false
 	}
 	return "", nil, false
+}
+
+// searchLifecycleUsage는 위치 인자가 index나 model 하나뿐일 때 그 하위 명령의 사용법을 돌려준다. 이 단어를 검색어로 받으면
+// 색인이 없는 디렉터리에서 전체 임베딩이 시작되므로 검색하지 않는다. 그 단어를 검색하려면 -- 뒤에 쓴다.
+func searchLifecycleUsage(args []string) string {
+	var positionals []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return ""
+		}
+		if strings.HasPrefix(arg, "-") {
+			if arg == "-m" || arg == "--limit" {
+				i++
+			}
+			continue
+		}
+		positionals = append(positionals, arg)
+	}
+	if len(positionals) != 1 {
+		return ""
+	}
+	switch positionals[0] {
+	case "index":
+		return "edc search index init|status|files|clear [directory]"
+	case "model":
+		return "edc search model clear"
+	}
+	return ""
 }
 
 func grepSemanticSearchLifecycleWithInput(action string, args []string, input io.Reader, terminal bool, stdout, stderr io.Writer) int {

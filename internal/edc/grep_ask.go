@@ -445,12 +445,13 @@ func grepSemanticRankScopes(paths []string, options grepOptions, stderr io.Write
 	}
 	var results []grepAskResult
 	var candidates []grepSemanticCandidate
+	query := &grepSemanticQuery{text: options.pattern}
 	for _, scope := range scopes {
 		chunks, _, problems := grepAskCollect([]string{scope.path}, options)
 		if len(problems) > 0 {
 			return nil, errors.New(strings.Join(problems, "; "))
 		}
-		prepared, err := grepSemanticPrepareAuto(scope.path, options, chunks, stderr)
+		prepared, err := grepSemanticPrepareAuto(scope.path, options, chunks, query, stderr)
 		if err != nil {
 			return nil, err
 		}
@@ -485,6 +486,7 @@ func grepSemanticSearch(options searchOptions, input io.Reader, terminal bool, s
 	}
 	var all []grepAskResult
 	skipped := 0
+	query := &grepSemanticQuery{text: options.query}
 	for _, scope := range scopes {
 		askOptions := grepOptions{pattern: options.query, askMode: true, semantic: true, askLimit: options.limit}
 		chunks, skippedCount, problems := grepAskCollect([]string{scope.path}, askOptions)
@@ -495,7 +497,7 @@ func grepSemanticSearch(options searchOptions, input io.Reader, terminal bool, s
 				fmt.Fprintln(stderr, T("grep.failed", problem))
 			}
 		}
-		results, rankErr := grepSemanticRankAuto(scope.path, askOptions, chunks, stderr)
+		results, rankErr := grepSemanticRankAuto(scope.path, askOptions, chunks, query, stderr)
 		if rankErr != nil {
 			complete = false
 			fmt.Fprintln(stderr, T("grep.failed", rankErr))

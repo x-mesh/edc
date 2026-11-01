@@ -340,10 +340,19 @@ func grepFileLock(path string, mode int) (func(), error) {
 	return func() { syscall.Flock(int(file.Fd()), syscall.LOCK_UN); file.Close() }, nil
 }
 
-func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticIndex, query string, progress io.Writer) ([]float32, int, bool, error) {
+// grepSemanticQuery는 한 번의 검색에서 쓰는 질의 벡터다. 인코더는 호출마다 모델을 다시 올리므로,
+// 첫 범위에서 만든 벡터를 다음 범위가 그대로 쓴다. revision은 색인과 같은 모델로 만든 벡터인지 대조하는 데 쓴다.
+type grepSemanticQuery struct {
+	text     string
+	vector   []float32
+	revision string
+}
+
+func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticIndex, query *grepSemanticQuery, progress io.Writer) ([]float32, int, bool, error) {
 	texts := []string{}
-	if query != "" {
-		texts = append(texts, query)
+	embedQuery := query != nil && query.text != "" && query.vector == nil
+	if embedQuery {
+		texts = append(texts, query.text)
 	}
 	missing := []string{}
 	active := map[string]bool{}
@@ -363,26 +372,32 @@ func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticInd
 			missing = append(missing, key)
 		}
 	}
-	if len(texts) == 0 {
-		texts = append(texts, "initialize")
+	cached := query != nil && query.vector != nil
+	var vectors [][]float32
+	revision := ""
+	if len(texts) == 0 && cached {
+		revision = query.revision
+	} else {
+		if len(texts) == 0 {
+			texts = append(texts, "initialize")
+		}
+		encoded, err := grepSemanticEncode(texts, progress)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		revision, vectors = encoded.Revision, encoded.Vectors
 	}
-	encoded, err := grepSemanticEncode(texts, progress)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if encoded.Revision == "" || (index.Revision != "" && index.Revision != encoded.Revision) {
+	if revision == "" || (index.Revision != "" && index.Revision != revision) || (cached && query.revision != revision) {
 		return nil, 0, false, errors.New(T("grep.semantic.invalid"))
 	}
-	index.Revision = encoded.Revision
-	vectors := encoded.Vectors
 	if len(vectors) != len(texts) {
 		return nil, 0, false, errors.New("embedding count mismatch")
 	}
+	index.Revision = revision
 	changed := len(missing) > 0 || len(index.Vectors) != len(active)
 	offset := 0
-	var queryVector []float32
-	if query != "" {
-		queryVector = vectors[0]
+	if embedQuery {
+		query.vector, query.revision = vectors[0], revision
 		offset = 1
 	} else if len(missing) == 0 {
 		offset = 1
@@ -394,6 +409,10 @@ func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticInd
 		if !active[key] {
 			delete(index.Vectors, key)
 		}
+	}
+	var queryVector []float32
+	if query != nil {
+		queryVector = query.vector
 	}
 	return queryVector, len(missing), changed, nil
 }
@@ -446,7 +465,7 @@ func grepSemanticRank(paths []string, options grepOptions, chunks []grepAskChunk
 		return nil, err
 	}
 	fmt.Fprintln(stderr, T("grep.semantic.loading"))
-	query, embedded, changed, err := grepSemanticSync(root, chunks, index, options.pattern, stderr)
+	query, embedded, changed, err := grepSemanticSync(root, chunks, index, &grepSemanticQuery{text: options.pattern}, stderr)
 	if err != nil {
 		return nil, err
 	}
@@ -464,8 +483,8 @@ func grepSemanticRank(paths []string, options grepOptions, chunks []grepAskChunk
 	return grepSemanticScore(root, options, chunks, index, query), nil
 }
 
-func grepSemanticRankAuto(root string, options grepOptions, chunks []grepAskChunk, stderr io.Writer) ([]grepAskResult, error) {
-	candidates, err := grepSemanticPrepareAuto(root, options, chunks, stderr)
+func grepSemanticRankAuto(root string, options grepOptions, chunks []grepAskChunk, query *grepSemanticQuery, stderr io.Writer) ([]grepAskResult, error) {
+	candidates, err := grepSemanticPrepareAuto(root, options, chunks, query, stderr)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +511,7 @@ func grepSemanticFileIdentity(path string) string {
 	return filepath.Clean(canonical)
 }
 
-func grepSemanticPrepareAuto(root string, options grepOptions, chunks []grepAskChunk, stderr io.Writer) ([]grepSemanticCandidate, error) {
+func grepSemanticPrepareAuto(root string, options grepOptions, chunks []grepAskChunk, query *grepSemanticQuery, stderr io.Writer) ([]grepSemanticCandidate, error) {
 	path, err := grepSemanticPath(root)
 	if err != nil {
 		return nil, err
@@ -507,7 +526,7 @@ func grepSemanticPrepareAuto(root string, options grepOptions, chunks []grepAskC
 		index = &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Vectors: map[string][]float32{}}
 	}
 	fmt.Fprintln(stderr, T("grep.semantic.loading"))
-	query, embedded, changed, err := grepSemanticSync(root, chunks, index, options.pattern, stderr)
+	vector, embedded, changed, err := grepSemanticSync(root, chunks, index, query, stderr)
 	if err != nil {
 		return nil, err
 	}
@@ -523,7 +542,7 @@ func grepSemanticPrepareAuto(root string, options grepOptions, chunks []grepAskC
 	}
 	candidates := make([]grepSemanticCandidate, 0, len(chunks))
 	for _, chunk := range chunks {
-		candidates = append(candidates, grepSemanticCandidate{root: root, chunk: chunk, index: index, query: query})
+		candidates = append(candidates, grepSemanticCandidate{root: root, chunk: chunk, index: index, query: vector})
 	}
 	return candidates, nil
 }
@@ -915,7 +934,7 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 	index := &grepSemanticIndex{Version: grepSemanticVersion, Root: root, Model: grepSemanticModel, Vectors: map[string][]float32{}}
 
 	fmt.Fprintln(stderr, T("grep.semantic.loading"))
-	if _, _, _, err = grepSemanticSync(root, chunks, index, "", stderr); err != nil {
+	if _, _, _, err = grepSemanticSync(root, chunks, index, nil, stderr); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}

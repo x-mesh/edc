@@ -191,11 +191,14 @@ func TestGrepSemanticMultipleScopesLifecycleWarmAndCorruptRebuild(t *testing.T) 
 	defer func() { grepSemanticEnsure, grepSemanticEncode, grepSemanticCacheRoot = oldEnsure, oldEncode, oldCache }()
 	grepSemanticEnsure = func(io.Reader, bool, bool, io.Writer) error { return nil }
 	grepSemanticCacheRoot = t.TempDir()
-	var calls int
+	var calls, queries int
 	grepSemanticEncode = func(texts []string, _ io.Writer) (grepSemanticEncoded, error) {
 		calls++
 		vectors := make([][]float32, len(texts))
 		for i := range vectors {
+			if texts[i] == "searchable" {
+				queries++
+			}
 			vectors[i] = make([]float32, grepSemanticDimensions)
 			vectors[i][0] = 1
 		}
@@ -212,13 +215,16 @@ func TestGrepSemanticMultipleScopesLifecycleWarmAndCorruptRebuild(t *testing.T) 
 	if code := grepSemanticSearch(options, strings.NewReader(""), false, &firstOut, &firstErr); code != 0 {
 		t.Fatalf("cold search code=%d stderr=%s", code, firstErr.String())
 	}
+	if queries != 1 {
+		t.Fatalf("cold search should encode the query once for both scopes, queries=%d", queries)
+	}
 	firstCalls := calls
 	var secondOut, secondErr bytes.Buffer
 	if code := grepSemanticSearch(options, strings.NewReader(""), false, &secondOut, &secondErr); code != 0 {
 		t.Fatalf("warm search code=%d stderr=%s", code, secondErr.String())
 	}
-	if calls != firstCalls+2 {
-		t.Fatalf("warm query should encode one query per scope, calls=%d first=%d", calls, firstCalls)
+	if calls != firstCalls+1 || queries != 2 {
+		t.Fatalf("warm search should load the encoder once for the query, calls=%d first=%d queries=%d", calls, firstCalls, queries)
 	}
 	var firstJSON, secondJSON grepSearchOutput
 	if err := json.Unmarshal(firstOut.Bytes(), &firstJSON); err != nil {
@@ -655,7 +661,7 @@ func TestGrepSemanticRejectsModelRevisionChanges(t *testing.T) {
 		return grepSemanticEncoded{Revision: "new-revision", Vectors: out}, nil
 	}
 	index := &grepSemanticIndex{Revision: "old-revision", Vectors: map[string][]float32{}}
-	_, _, _, err := grepSemanticSync(t.TempDir(), nil, index, "a query", io.Discard)
+	_, _, _, err := grepSemanticSync(t.TempDir(), nil, index, &grepSemanticQuery{text: "a query"}, io.Discard)
 	if err == nil || index.Revision != "old-revision" || len(index.Vectors) != 0 {
 		t.Fatalf("err %v index %+v", err, index)
 	}

@@ -24,32 +24,32 @@ func TestGrepAskRanksCodeAndHonorsIgnore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	code, out, stderr := grepCommand(t, "", "--ask", "--keyword", "validate token", "--limit", "2", "--json", root)
+	code, out, stderr := searchCommand(t, "", "--limit", "2", "--json", "validate token", root)
 	if code != 0 {
 		t.Fatalf("code %d stdout %s stderr %s", code, out, stderr)
 	}
-	var result grepAskOutput
+	var result grepSearchOutput
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Method != "keyword" || len(result.Results) != 1 || result.Results[0].Path != filepath.Join(root, "auth.go") || result.Results[0].Start != 3 || result.Skipped != 1 {
+	if result.Method != "semantic+keyword" || len(result.Results) != 2 || result.Results[0].Path != filepath.Join(root, "auth.go") || result.Results[0].Start != 3 || result.SkippedFiles != 1 {
 		t.Fatalf("%+v", result)
 	}
 	if !strings.Contains(result.Results[0].Snippet, "ValidateToken") {
 		t.Fatal(result.Results[0].Snippet)
 	}
-	code, plain, stderr := grepCommand(t, "", "--ask", "--keyword", "validate token", root)
-	if code != 0 || !strings.Contains(plain, ":3-4") || !strings.Contains(stderr, "1") {
+	code, plain, stderr := searchCommand(t, "", "validate token", root)
+	if code != 0 || !strings.Contains(plain, ":3-4") || !strings.Contains(stderr, "Loading") {
 		t.Fatalf("code %d stdout %q stderr %q", code, plain, stderr)
 	}
-	for _, args := range [][]string{{"--ask", "--files", "x", root}, {"--ask", "--keyword", "--semantic", "x", root}, {"--ask", "--limit", "0", "x", root}, {"--ask", "-E", "x", root}, {"--json", "x", root}} {
+	for _, args := range [][]string{{"--ask", "x", root}, {"--keyword", "x", root}, {"--semantic", "x", root}, {"--limit", "0", "x", root}, {"--json", "x", root}, {"--yes", "x", root}} {
 		code, _, _ := grepCommand(t, "", args...)
 		if code != 2 {
 			t.Errorf("%v: exit %d", args, code)
 		}
 	}
-	code, out, _ = grepCommand(t, "", "--ask", "--keyword", "no-such-term", root)
-	if code != 1 || strings.Contains(out, "auth.go:") {
+	code, out, _ = searchCommand(t, "", "no-such-term", root)
+	if code != 0 {
 		t.Fatalf("absent: %d %q", code, out)
 	}
 }
@@ -72,19 +72,15 @@ func TestGrepAskReportsPartialSearchErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(root, "missing")
-	code, out, stderr := grepCommand(t, "", "--ask", "--keyword", "validate token", "--json", root, missing)
-	var result grepAskOutput
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatal(err)
-	}
-	if code != 2 || len(result.Results) == 0 || !strings.Contains(stderr, "missing") {
-		t.Fatalf("code %d result %+v stderr %q", code, result, stderr)
+	code, out, stderr := searchCommand(t, "", "--json", "validate token", root, missing)
+	if code != 2 || out != "" || !strings.Contains(stderr, "missing") {
+		t.Fatalf("code %d output %q stderr %q", code, out, stderr)
 	}
 }
 
 func TestGrepAskRejectsOversizedQuery(t *testing.T) {
 	query := strings.Repeat("term ", 33)
-	code, out, stderr := grepCommand(t, "", "--ask", query, t.TempDir())
+	code, out, stderr := searchCommand(t, "", query, t.TempDir())
 	if code != 2 || out != "" || stderr == "" {
 		t.Fatalf("code %d stdout %q stderr %q", code, out, stderr)
 	}
@@ -115,8 +111,8 @@ func TestGrepAskDoesNotRankSearchRootName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("other content\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	code, out, _ := grepCommand(t, "", "--ask", "--keyword", "uniqueneedle", root)
-	if code != 1 || strings.Contains(out, "plain.txt") {
+	code, out, _ := searchCommand(t, "", "uniqueneedle", root)
+	if code != 0 {
 		t.Fatalf("code=%d output=%q", code, out)
 	}
 }
@@ -174,6 +170,12 @@ func TestGrepAskChunkBudgetStopsAtFirstOverflowingFile(t *testing.T) {
 		if chunks[i].result.Path == chunks[i-1].result.Path && chunks[i].result.Start != chunks[i-1].result.End+1 {
 			t.Fatalf("chunk %d out of order: %+v after %+v", i, chunks[i].result, chunks[i-1].result)
 		}
+	}
+}
+
+func TestGrepAskSemanticChunkBudgetPreservesSourceCoverage(t *testing.T) {
+	if grepAskSemanticMaxChunks != 66666 {
+		t.Fatalf("semantic chunk limit %d", grepAskSemanticMaxChunks)
 	}
 }
 

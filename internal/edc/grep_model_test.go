@@ -142,7 +142,7 @@ func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.Reset()
-	if code := grepSemanticLifecycleWithInput([]string{"--model-clear"}, strings.NewReader(""), false, &output, io.Discard); code != 0 {
+	if code := runSearchWithInput([]string{"model-clear"}, strings.NewReader(""), false, &output, io.Discard); code != 0 {
 		t.Fatalf("clear exit %d", code)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {

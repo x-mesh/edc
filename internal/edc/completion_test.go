@@ -35,6 +35,20 @@ func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 	}
 }
 
+func TestCompletionOffersSemanticSearchContract(t *testing.T) {
+	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
+		if !strings.Contains(script, "search") || !strings.Contains(script, "--limit") || !strings.Contains(script, "--json") || !strings.Contains(script, "--yes") {
+			t.Fatalf("%s completion misses semantic search contract", name)
+		}
+		if name == "zsh" && !strings.Contains(script, "query or path") {
+			t.Fatal("zsh completion must describe query and path positionals")
+		}
+		if name == "bash" && !strings.Contains(script, "compgen -f") {
+			t.Fatal("bash completion must complete query and path positionals")
+		}
+	}
+}
+
 func TestCompletionOffersTraceClickHouse(t *testing.T) {
 	if !strings.Contains(zshCompletion, "http mysql clickhouse postgres redis)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
 		t.Fatal("zsh trace completion must list clickhouse and its options")

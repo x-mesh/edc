@@ -23,8 +23,10 @@ import (
 
 const grepAskMaxFileBytes = 2 << 20
 const grepAskChunkLines = 32
+const grepAskChunkOverlapLines = 8
 const grepAskMaxScanBytes = 32 << 20
 const grepAskMaxChunks = 50000
+const grepAskSemanticMaxChunks = grepAskMaxChunks * grepAskChunkLines / (grepAskChunkLines - grepAskChunkOverlapLines)
 
 // 디렉터리를 훑어 찾은 파일 중 아래 파일은 검색 결과를 흐리기만 하므로 수집하지 않는다. 경로로 직접 지정한 파일은 그대로 수집한다.
 var grepAskLockFiles = map[string]bool{"go.sum": true, "package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true, "Cargo.lock": true, "poetry.lock": true, "uv.lock": true, "composer.lock": true, "Gemfile.lock": true}
@@ -43,6 +45,83 @@ type grepAskOutput struct {
 	Method  string          `json:"method"`
 	Results []grepAskResult `json:"results"`
 	Skipped int             `json:"skipped_files"`
+}
+
+type grepSearchOutput struct {
+	SchemaVersion int             `json:"schema_version"`
+	Method        string          `json:"method"`
+	Query         string          `json:"query"`
+	Scopes        []string        `json:"scopes"`
+	Complete      bool            `json:"complete"`
+	SkippedFiles  int             `json:"skipped_files"`
+	Results       []grepAskResult `json:"results"`
+}
+
+type grepSearchScope struct {
+	path      string
+	directory bool
+	display   string
+}
+
+func grepSearchScopes(paths []string) ([]grepSearchScope, error) {
+	scopes := make([]grepSearchScope, 0, len(paths))
+	seen := make(map[string]bool)
+	for _, input := range paths {
+		absolute, err := filepath.Abs(input)
+		if err != nil {
+			return nil, err
+		}
+		canonical, err := filepath.EvalSymlinks(absolute)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", input, err)
+		}
+		info, err := os.Stat(canonical)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", input, err)
+		}
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			return nil, fmt.Errorf("%s: unsupported search path", input)
+		}
+		canonical = filepath.Clean(canonical)
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		scopes = append(scopes, grepSearchScope{path: canonical, directory: info.IsDir(), display: input})
+	}
+	sort.Slice(scopes, func(i, j int) bool { return scopes[i].path < scopes[j].path })
+	kept := scopes[:0]
+	for _, candidate := range scopes {
+		covered := false
+		for _, parent := range kept {
+			if !parent.directory {
+				continue
+			}
+			relative, err := filepath.Rel(parent.path, candidate.path)
+			if err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept, nil
+}
+
+func grepSearchDisplayPath(path string, scopes []grepSearchScope) string {
+	for _, scope := range scopes {
+		if scope.directory {
+			relative, err := filepath.Rel(scope.path, path)
+			if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return filepath.Join(scope.display, relative)
+			}
+		} else if filepath.Clean(path) == scope.path {
+			return scope.display
+		}
+	}
+	return path
 }
 
 type grepAskChunk struct {
@@ -80,6 +159,10 @@ func grepAskTokens(text string) []string {
 }
 
 func grepAskChunks(path string, data []byte) []grepAskChunk {
+	return grepAskChunksForMode(path, data, false)
+}
+
+func grepAskChunksForMode(path string, data []byte, overlap bool) []grepAskChunk {
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	type span struct{ start, end int }
 	var spans []span
@@ -96,16 +179,30 @@ func grepAskChunks(path string, data []byte) []grepAskChunk {
 					start = set.Position(gen.Doc.Pos()).Line
 				}
 				if start > 0 && end >= start {
-					for n := start; n <= end; n += grepAskChunkLines {
+					step := grepAskChunkLines
+					if overlap {
+						step = max(1, grepAskChunkLines-grepAskChunkOverlapLines)
+					}
+					for n := start; n <= end; n += step {
 						spans = append(spans, span{n, min(end, n+grepAskChunkLines-1)})
+						if n+grepAskChunkLines-1 >= end {
+							break
+						}
 					}
 				}
 			}
 		}
 	}
 	if len(spans) == 0 {
-		for i := 1; i <= len(lines); i += grepAskChunkLines {
+		step := grepAskChunkLines
+		if overlap {
+			step = max(1, grepAskChunkLines-grepAskChunkOverlapLines)
+		}
+		for i := 1; i <= len(lines); i += step {
 			spans = append(spans, span{i, min(len(lines), i+grepAskChunkLines-1)})
+			if i+grepAskChunkLines-1 >= len(lines) {
+				break
+			}
 		}
 	}
 	var chunks []grepAskChunk
@@ -249,28 +346,10 @@ func grepAsk(paths []string, options grepOptions, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, T("grep.ask.query_limit"))
 		return 2
 	}
-	displayRoot := ""
 	if options.semantic {
-		root, err := grepSemanticRoot(paths)
-		if err != nil {
-			fmt.Fprintln(stderr, T("grep.failed", err))
-			return 2
+		if len(paths) == 0 {
+			paths = []string{"."}
 		}
-		displayRoot = paths[0]
-		indexPath, err := grepSemanticPath(root)
-		if err != nil {
-			fmt.Fprintln(stderr, T("grep.failed", err))
-			return 2
-		}
-		if _, err := os.Stat(indexPath); err != nil {
-			if os.IsNotExist(err) {
-				fmt.Fprintln(stderr, T("grep.semantic.init_required"))
-			} else {
-				fmt.Fprintln(stderr, T("grep.failed", err))
-			}
-			return 2
-		}
-		paths = []string{root}
 	}
 	chunks, skipped, problems := grepAskCollect(paths, options)
 	for _, problem := range problems {
@@ -283,15 +362,10 @@ func grepAsk(paths []string, options grepOptions, stdout, stderr io.Writer) int 
 			return 2
 		}
 		var err error
-		results, err = grepSemanticRank(paths, options, chunks, stderr)
+		results, err = grepSemanticRankScopes(paths, options, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, T("grep.failed", err))
 			return 2
-		}
-		for i := range results {
-			if relative, err := filepath.Rel(paths[0], results[i].Path); err == nil {
-				results[i].Path = filepath.Join(displayRoot, relative)
-			}
 		}
 		method = "semantic+keyword"
 	} else {
@@ -345,6 +419,134 @@ func grepAsk(paths []string, options grepOptions, stdout, stderr io.Writer) int 
 	return 0
 }
 
+func grepSemanticRankScopes(paths []string, options grepOptions, stderr io.Writer) ([]grepAskResult, error) {
+	if options.semanticInput == nil {
+		options.semanticInput = strings.NewReader("")
+	}
+	if err := grepSemanticEnsure(options.semanticInput, options.semanticTerminal, options.semanticYes, stderr); err != nil {
+		return nil, err
+	}
+	scopes, err := grepSearchScopes(paths)
+	if err != nil {
+		return nil, err
+	}
+	var results []grepAskResult
+	var candidates []grepSemanticCandidate
+	for _, scope := range scopes {
+		chunks, _, problems := grepAskCollect([]string{scope.path}, options)
+		if len(problems) > 0 {
+			return nil, errors.New(strings.Join(problems, "; "))
+		}
+		prepared, err := grepSemanticPrepareAuto(scope.path, options, chunks, stderr)
+		if err != nil {
+			return nil, err
+		}
+		for i := range prepared {
+			prepared[i].displayPath = grepSearchDisplayPath(prepared[i].chunk.result.Path, []grepSearchScope{scope})
+		}
+		candidates = append(candidates, prepared...)
+	}
+	results = grepSemanticScoreCandidates(options, candidates)
+	if len(results) > options.askLimit {
+		results = results[:options.askLimit]
+	}
+	return results, nil
+}
+
+func grepSemanticSearch(options searchOptions, input io.Reader, terminal bool, stdout, stderr io.Writer) int {
+	scopes, err := grepSearchScopes(options.paths)
+	if err != nil {
+		fmt.Fprintln(stderr, T("grep.failed", err))
+		return 2
+	}
+	if err := grepSemanticEnsure(input, terminal, options.yes, stderr); err != nil {
+		if errors.Is(err, errGrepModelCancelled) {
+			fmt.Fprintln(stderr, T("grep.model.cancelled"))
+			return 4
+		}
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	var all []grepAskResult
+	skipped := 0
+	complete := true
+	for _, scope := range scopes {
+		askOptions := grepOptions{pattern: options.query, askMode: true, semantic: true, askLimit: options.limit}
+		chunks, skippedCount, problems := grepAskCollect([]string{scope.path}, askOptions)
+		skipped += skippedCount
+		if len(problems) > 0 {
+			complete = false
+			for _, problem := range problems {
+				fmt.Fprintln(stderr, T("grep.failed", problem))
+			}
+		}
+		results, rankErr := grepSemanticRankAuto(scope.path, askOptions, chunks, stderr)
+		if rankErr != nil {
+			fmt.Fprintln(stderr, T("grep.failed", rankErr))
+			return 2
+		}
+		all = append(all, results...)
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].Score != all[j].Score {
+			return all[i].Score > all[j].Score
+		}
+		if all[i].Path != all[j].Path {
+			return all[i].Path < all[j].Path
+		}
+		return all[i].Start < all[j].Start
+	})
+	if len(all) > options.limit {
+		all = all[:options.limit]
+	}
+	for i := range all {
+		all[i].Path = sanitizeSearchText(grepSearchDisplayPath(all[i].Path, scopes))
+		all[i].Snippet = sanitizeSearchText(all[i].Snippet)
+	}
+	if options.json {
+		output := grepSearchOutput{SchemaVersion: 1, Method: "semantic+keyword", Query: options.query, Complete: complete, SkippedFiles: skipped, Results: all}
+		for _, scope := range scopes {
+			output.Scopes = append(output.Scopes, scope.display)
+		}
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+	} else {
+		for _, result := range all {
+			if _, err := fmt.Fprintf(stdout, "%s:%d-%d\n", sanitizeSearchText(result.Path), result.Start, result.End); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 2
+			}
+			for _, line := range strings.Split(result.Snippet, "\n") {
+				if _, err := fmt.Fprintf(stdout, "  %s\n", sanitizeSearchText(line)); err != nil {
+					fmt.Fprintln(stderr, err)
+					return 2
+				}
+			}
+		}
+	}
+	if !complete {
+		return 2
+	}
+	if len(all) == 0 {
+		return 1
+	}
+	return 0
+}
+
+func sanitizeSearchText(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			builder.WriteRune('�')
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
+}
+
 // grepAskFile은 읽기를 마친 파일이다. problems와 skipped는 이 파일을 읽은 직후의 값이라, 청크 한도에 걸린 파일 뒤의 결과를 버릴 때 쓴다.
 type grepAskFile struct {
 	path     string
@@ -355,7 +557,7 @@ type grepAskFile struct {
 }
 
 // grepAskChunkFiles는 파일마다 청크를 병렬로 나눈다. 수집 시간의 대부분이 Go 파싱과 토큰화이기 때문이다.
-func grepAskChunkFiles(files []grepAskFile) {
+func grepAskChunkFiles(files []grepAskFile, semantic bool) {
 	jobs := make(chan int)
 	var group sync.WaitGroup
 	for range min(runtime.GOMAXPROCS(0), len(files)) {
@@ -363,7 +565,7 @@ func grepAskChunkFiles(files []grepAskFile) {
 		go func() {
 			defer group.Done()
 			for i := range jobs {
-				files[i].chunks = grepAskChunks(files[i].path, files[i].data)
+				files[i].chunks = grepAskChunksForMode(files[i].path, files[i].data, semantic)
 				files[i].data = nil
 			}
 		}()
@@ -476,7 +678,7 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 		}
 		files = append(files, grepAskFile{path: path, data: data, problems: len(problems), skipped: skipped})
 	}
-	grepAskChunkFiles(files)
+	grepAskChunkFiles(files, options.semantic)
 	var chunks []grepAskChunk
 	for _, file := range files {
 		path, fileChunks := file.path, file.chunks
@@ -496,7 +698,11 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			}
 			break
 		}
-		if len(chunks)+len(fileChunks) > grepAskMaxChunks {
+		chunkLimit := grepAskMaxChunks
+		if options.semantic {
+			chunkLimit = grepAskSemanticMaxChunks
+		}
+		if len(chunks)+len(fileChunks) > chunkLimit {
 			// 파일을 하나씩 처리하던 때처럼 이 파일 뒤에서 생긴 문제와 건너뛴 파일은 결과에 넣지 않는다.
 			return chunks, file.skipped, append(problems[:file.problems], T("grep.ask.budget"))
 		}

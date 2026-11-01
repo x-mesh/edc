@@ -284,11 +284,11 @@ edc log --max-size 20 --keep-files 5 --output /tmp/job.log -- /path/to/job
 
 파이프나 리다이렉트된 stdin에서는 패턴만 주면 stdin을 읽으며, 경로 또는 로그 전용 옵션을 지정하면 기존 로그 검색을 사용합니다.
 
-### 코드 키워드 순위 검색
+### 의미 기반 코드 검색
 
-`edc grep --ask --keyword 'remote inventory config'`는 질의에 쓰인 단어를 기준으로 로컬 코드 조각을 순위화합니다. 키워드 검색이므로 코드와 다른 표현을 쓴 질문, 특히 영문 식별자를 한국어로 묻는 경우 관련 결과를 놓칠 수 있습니다. Go 선언은 최대 32줄로 나누고 다른 텍스트는 32줄씩 나눕니다. 결과에는 경로, 조각의 줄 범위와 관련된 최대 세 줄을 출력합니다.
+`edc search 'remote inventory config'`는 semantic similarity와 키워드 관련성을 기준으로 로컬 코드 조각을 순위화합니다. Go 선언은 최대 32줄로 나누고 다른 텍스트는 32줄씩 나눕니다. 결과에는 경로, 조각의 줄 범위와 관련된 최대 세 줄을 출력합니다.
 
-검색 범위는 `--code`와 같은 `.gitignore`, 숨김 파일, 명시 경로 규칙을 따릅니다. 네트워크를 사용하거나 index·cache를 만들지 않습니다. `--limit N`은 최대 100개 결과를 선택하며 기본값은 10개입니다. `--json`은 `method`, 점수를 포함한 `results`, `skipped_files`를 출력합니다. binary, 잘못된 UTF-8, 2 MiB 초과 파일은 건너뜁니다. 입력 32 MiB 또는 코드 조각 50,000개에 도달하면 불완전한 결과임을 stderr에 알리고 종료 코드 2를 반환합니다. 키워드가 일치하지 않으면 종료 코드 1입니다.
+검색 범위는 `--code`와 같은 `.gitignore`, 숨김 파일, 명시 경로 규칙을 따릅니다. 로컬 model을 설치한 뒤에는 cloud service를 호출하지 않고 project별 index를 만들고 증분 갱신합니다. `--limit N`은 최대 100개 결과를 선택하며 기본값은 10개입니다. `--json`은 `method`, 점수를 포함한 `results`, `scopes`, `complete`, `skipped_files`가 든 versioned 객체를 출력합니다. binary, 잘못된 UTF-8, 2 MiB 초과 파일은 건너뜁니다. 입력 32 MiB 또는 semantic 조각 66,666개에 도달하면 불완전한 결과임을 stderr에 알리고 종료 코드 2를 반환합니다.
 
 저장소 검색 평가: `EDC_EVAL_GREP=1 go test ./internal/edc -run '^TestGrepAskEvaluation$' -count=1 -v`. 질문은 `internal/edc/testdata/grep-ask/queries.json`에 있습니다.
 
@@ -296,10 +296,10 @@ edc log --max-size 20 --keep-files 5 --output /tmp/job.log -- /path/to/job
 
 ```sh
 EDC_EVAL_GREP=1 EDC_EVAL_DUMP=/tmp/edc-grep-corpus.json EDC_EVAL_SCORES=/tmp/edc-grep-scores.json go test ./internal/edc -run '^TestGrepAskEvaluation$' -count=1 -v
-python3 scripts/eval-grep-embedding.py /tmp/edc-grep-corpus.json internal/edc/testdata/grep-ask/queries.json --keyword-scores /tmp/edc-grep-scores.json
+python3 scripts/eval-grep-embedding.py /tmp/edc-grep-corpus.json internal/edc/testdata/grep-ask/queries.json
 ```
 
-내보낸 파일에는 로컬 소스가 들어 있으므로 실험 후 지웁니다. 평가 스크립트는 캐시된 모델만 사용합니다. `--ask` 질의는 최대 32단어입니다.
+내보낸 파일에는 로컬 소스가 들어 있으므로 실험 후 지웁니다. 평가 스크립트는 캐시된 모델만 사용합니다. `edc search` 질의는 최대 32단어입니다.
 
 ### 로컬 semantic 검색
 
@@ -308,19 +308,18 @@ python3 scripts/eval-grep-embedding.py /tmp/edc-grep-corpus.json internal/edc/te
 semantic 검색은 영문 `all-MiniLM-L6-v2` 모델과 native ONNX Runtime을 사용하며 edc 실행에 Python이 필요하지 않습니다. 처음 초기화할 때 다운로드 크기와 경로를 보여 주고 확인을 받은 뒤 Hugging Face와 Microsoft에서 고정된 모델과 runtime을 받습니다. 플랫폼에 따라 다운로드는 약 94–128 MiB이며, 압축을 푼 파일과 index에는 추가 공간이 필요합니다. 설치 전에 고정된 SHA-256을 검증합니다.
 
 ```sh
-edc grep --semantic-init
-edc grep --ask 'Where is authentication configuration loaded?'
-edc grep --semantic 'Where is authentication configuration loaded?'
-edc grep --semantic-status
-edc grep --semantic-files
-edc grep --semantic-clear
-edc grep --model-clear
+edc search init --yes
+edc search 'Where is authentication configuration loaded?'
+edc search status
+edc search files
+edc search clear
+edc search model-clear
 ```
 
-`--semantic`은 `--ask`와 같습니다. `--ask`는 기본으로 semantic 검색을 사용합니다. `--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다. `--semantic-files`는 현재 파일을 다시 읽어 파일마다 `index에 든 청크/전체 청크`와 경로를 출력합니다. 경로에 탭, 줄바꿈 같은 제어 문자나 큰따옴표가 있으면 Go 문자열 형식으로 따옴표를 붙여 출력합니다. 두 수가 다른 파일은 다음 검색 때 다시 벡터화합니다.
+`edc search`가 semantic 질의와 lifecycle을 소유합니다. `edc search init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 `init` 또는 model 설치 뒤 첫 semantic 질의에서 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `edc search clear`는 현재 프로젝트 index만, `edc search model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `edc search status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다. `edc search files`는 현재 파일을 다시 읽어 파일마다 `index에 든 청크/전체 청크`와 경로를 출력합니다. `status`라는 글자를 검색하려면 `edc search -- status`를 사용하세요. 경로에 탭, 줄바꿈 같은 제어 문자나 큰따옴표가 있으면 Go 문자열 형식으로 따옴표를 붙여 출력합니다. 두 수가 다른 파일은 다음 검색 때 다시 벡터화합니다.
 
 디렉터리를 검색할 때 생성 파일, lock 파일, 테스트 fixture는 index에 넣지 않고 순위에서도 뺍니다. 생성 파일은 첫 줄 주석에 `Code generated ... DO NOT EDIT` 또는 `auto-generated`가 있는 파일입니다. lock 파일은 `go.sum`, `package-lock.json`, `yarn.lock`, `Cargo.lock` 등입니다. 테스트 fixture는 `testdata/` 아래 파일이며, `.md`와 `.txt`는 남깁니다. 이런 파일도 경로로 직접 지정하면 검색합니다.
 
-검색은 오프라인으로 실행합니다. 현재 파일을 확인해 변경된 조각만 다시 벡터화하며, 변경이 없으면 index를 다시 쓰지 않습니다. 벡터화 중 파일이 바뀌면 오래된 결과를 저장하지 않고 오류를 반환합니다. `--semantic-init`은 이전 다국어 모델로 만들었거나 이전 형식으로 저장한 index도 다시 만듭니다. index는 벡터를 16비트 실수로 저장합니다. 실패하거나 중단된 다운로드는 사용 가능한 모델로 취급하지 않습니다. 검색 질의는 영어를 사용합니다. 에이전트가 사용자 질문을 영어로 바꿔 호출할 수 있으며, 한국어로만 된 주석·문서는 영문 모델이 놓칠 수 있습니다.
+검색은 오프라인으로 실행합니다. 현재 파일을 확인해 변경된 조각만 다시 벡터화하며, 변경이 없으면 index를 다시 쓰지 않습니다. 벡터화 중 파일이 바뀌면 오래된 결과를 저장하지 않고 오류를 반환합니다. `edc search init`은 이전 다국어 모델로 만들었거나 이전 형식으로 저장한 index도 다시 만듭니다. index는 벡터를 16비트 실수로 저장합니다. 실패하거나 중단된 다운로드는 사용 가능한 모델로 취급하지 않습니다. 검색 질의는 영어를 사용합니다. 에이전트가 사용자 질문을 영어로 바꿔 호출할 수 있으며, 한국어로만 된 주석·문서는 영문 모델이 놓칠 수 있습니다.
 
 점수는 cosine similarity 95%와 정규화된 키워드 점수 5%를 합친 값이며 확률은 아닙니다. 조각마다 최대 3,000자와 모델 토큰 128개를 벡터화합니다. 파일 크기와 전체 검색 한도는 키워드 검색과 같습니다. Linux·macOS의 amd64·arm64를 지원합니다. 공식 Linux runtime은 glibc와 libstdc++가 필요하므로 Alpine 같은 musl 전용 환경은 호환 라이브러리 없이 지원하지 않습니다.

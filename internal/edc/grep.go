@@ -71,27 +71,100 @@ type grepOptions struct {
 	now     time.Time
 	// serial은 파일 안을 구간으로 나누지 않는다는 뜻이다. 여러 파일을 worker로 나눠 찾을 때 worker 안에서 다시 worker를
 	// 띄우지 않기 위해서다.
-	serial bool
+	serial           bool
+	semanticInput    io.Reader
+	semanticTerminal bool
+	semanticYes      bool
 }
 
 func runGrep(args []string) int {
-	if lifecycle, ok := grepLifecycleArgs(args); ok {
-		return grepSemanticLifecycle(lifecycle, os.Stdout, os.Stderr)
-	}
 	return grepRun(args, os.Stdin, os.Stdout, os.Stderr)
 }
 
-func grepLifecycleArgs(args []string) ([]string, bool) {
-	for i, arg := range args {
+type searchOptions struct {
+	query string
+	limit int
+	json  bool
+	yes   bool
+	paths []string
+}
+
+const searchUsage = "edc search [-m N|--limit N] [--json] [--yes] <query> [path...]"
+
+func parseSearchOptions(args []string, stderr io.Writer) (searchOptions, error) {
+	set := newFlagSet("search")
+	set.SetOutput(stderr)
+	options := searchOptions{limit: 10}
+	set.IntVar(&options.limit, "m", 10, "maximum results")
+	set.IntVar(&options.limit, "limit", 10, "maximum results")
+	set.BoolVar(&options.json, "json", false, "emit JSON")
+	set.BoolVar(&options.yes, "yes", false, "authorize model download")
+	if err := parseReordered(set, args); err != nil {
+		return options, err
+	}
+	if options.limit < 1 || options.limit > 100 || set.NArg() == 0 {
+		return options, errors.New(T("cli.usage", searchUsage))
+	}
+	positionals := set.Args()
+	options.query = positionals[0]
+	if strings.TrimSpace(options.query) == "" || len(grepAskTokens(options.query)) > 32 {
+		return options, errors.New(T("cli.usage", searchUsage))
+	}
+	options.paths = append([]string(nil), positionals[1:]...)
+	if len(options.paths) == 0 {
+		options.paths = []string{"."}
+	}
+	return options, nil
+}
+
+func runSearch(args []string) int {
+	return runSearchWithInput(args, os.Stdin, isTerminal(os.Stdin), os.Stdout, os.Stderr)
+}
+
+func runSearchWithInput(args []string, input io.Reader, terminal bool, stdout, stderr io.Writer) int {
+	if action, lifecycleArgs, ok := searchLifecycleArgs(args); ok {
+		return grepSemanticSearchLifecycleWithInput(action, lifecycleArgs, input, terminal, stdout, stderr)
+	}
+	options, err := parseSearchOptions(args, stderr)
+	if err != nil {
+		if !errors.Is(err, errFlagReported) && !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(stderr, err)
+		}
+		return 2
+	}
+	return grepSemanticSearch(options, input, terminal, stdout, stderr)
+}
+
+func searchLifecycleArgs(args []string) (string, []string, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return "", nil, false
+		}
+		if strings.HasPrefix(arg, "-") {
+			if arg == "-m" || arg == "--limit" {
+				i++
+			}
+			continue
+		}
 		switch arg {
-		case "--":
-			return nil, false
-		case "--semantic-init", "--semantic-status", "--semantic-files", "--semantic-clear", "--model-clear":
-			ordered := append([]string{arg}, args[:i]...)
-			return append(ordered, args[i+1:]...), true
+		case "init", "status", "files", "clear", "model-clear":
+			lifecycleArgs := append([]string(nil), args[:i]...)
+			lifecycleArgs = append(lifecycleArgs, args[i+1:]...)
+			return arg, lifecycleArgs, true
+		default:
+			return "", nil, false
 		}
 	}
-	return nil, false
+	return "", nil, false
+}
+
+func grepSemanticSearchLifecycleWithInput(action string, args []string, input io.Reader, terminal bool, stdout, stderr io.Writer) int {
+	legacyAction := "--semantic-" + action
+	if action == "model-clear" {
+		legacyAction = "--model-clear"
+	}
+	return grepSemanticLifecycleWithInput(append([]string{legacyAction}, args...), input, terminal, stdout, stderr)
 }
 
 func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptions, []string, error) {
@@ -102,11 +175,6 @@ func parseGrepOptionsForInput(args []string, stderr io.Writer, now time.Time, te
 	set := newFlagSet("grep")
 	set.SetOutput(stderr)
 	options := grepOptions{minLevel: -1, now: now}
-	set.BoolVar(&options.askKeyword, "keyword", false, T("command.grep.option.ask_keyword"))
-	set.BoolVar(&options.semantic, "semantic", false, T("command.grep.option.semantic"))
-	set.BoolVar(&options.askMode, "ask", false, T("command.grep.option.ask"))
-	set.BoolVar(&options.askJSON, "json", false, T("command.grep.option.ask_json"))
-	set.IntVar(&options.askLimit, "limit", 10, T("command.grep.option.ask_limit"))
 	set.BoolVar(&options.codeMode, "code", false, T("command.grep.option.code"))
 	set.BoolVar(&options.pathMode, "files", false, T("command.grep.option.paths"))
 	set.BoolVar(&options.pathMode, "f", false, T("command.grep.option.paths"))
@@ -132,19 +200,6 @@ func parseGrepOptionsForInput(args []string, stderr io.Writer, now time.Time, te
 		return options, nil, err
 	}
 	filtered := *level != "" || *status != "" || *since != "" || *until != ""
-	if options.semantic {
-		options.askMode = true
-	}
-	if options.askMode {
-		if options.askKeyword && options.semantic {
-			return options, nil, errors.New(T("cli.usage", grepUsage))
-		}
-		if !options.askKeyword {
-			options.semantic = true
-		}
-	} else if options.askKeyword {
-		return options, nil, errors.New(T("cli.usage", grepUsage))
-	}
 	logOptions := false
 	set.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -155,13 +210,6 @@ func parseGrepOptionsForInput(args []string, stderr io.Writer, now time.Time, te
 	if terminal && set.NArg() == 1 && !options.codeMode && !options.pathMode && !options.askMode && !logOptions {
 		options.codeMode = true
 	}
-	if options.askMode {
-		if options.codeMode || options.pathMode || logOptions || options.regex || options.ignoreCase || options.listFiles || options.numbers || options.context != 0 || set.NArg() == 0 || options.askLimit <= 0 || options.askLimit > 100 {
-			return options, nil, errors.New(T("cli.usage", grepUsage))
-		}
-	} else if options.semantic || options.askJSON || options.askLimit != 10 {
-		return options, nil, errors.New(T("cli.usage", grepUsage))
-	}
 	if options.codeMode || options.pathMode {
 		if options.codeMode && options.pathMode || filtered || options.ordered || options.last != 0 || *index || options.verify || (options.pathMode && (options.listFiles || options.numbers || options.context != 0)) {
 			return options, nil, errors.New(T("cli.usage", grepUsage))
@@ -170,7 +218,7 @@ func parseGrepOptionsForInput(args []string, stderr io.Writer, now time.Time, te
 		if options.codeMode {
 			options.numbers = true
 		}
-	} else if !options.askMode && (options.hidden || options.noIgnore) {
+	} else if options.hidden || options.noIgnore {
 		return options, nil, errors.New(T("cli.usage", grepUsage))
 	}
 	if (set.NArg() == 0 && !filtered) || options.context < 0 || options.last < 0 || options.jobs < 0 || (*index && *noIndex) {
@@ -257,9 +305,6 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 	if len(paths) == 0 && isTerminal(stdin) {
 		fmt.Fprintln(stderr, T("cli.usage", grepUsage))
 		return 2
-	}
-	if options.askMode {
-		return grepAsk(paths, options, stdout, stderr)
 	}
 	var targets []string
 	var directories int

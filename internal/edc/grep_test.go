@@ -40,6 +40,13 @@ func grepCommand(t *testing.T, stdin string, args ...string) (int, string, strin
 	return code, string(stdout), string(stderr)
 }
 
+func searchCommand(t *testing.T, stdin string, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runSearchWithInput(args, strings.NewReader(stdin), false, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
+}
+
 // grepFixtureDir은 view의 fixture를 복사한 디렉터리다.
 func grepFixtureDir(t *testing.T) string {
 	t.Helper()

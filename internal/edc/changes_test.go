@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +25,19 @@ func changesTouch(t *testing.T, root, path string, content string, mtime time.Ti
 	if err := os.Chtimes(full, mtime, mtime); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func changesGzip(t *testing.T, content string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
 }
 
 func changesKinds(events []changeEvent) string {
@@ -120,15 +135,16 @@ func TestPackageLogFilesWarnsAboutCompressedSiblings(t *testing.T) {
 	changesTouch(t, root, "/var/log/dpkg.log.2.gz", "", now.Add(-3*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.log.3.gz", "", now.Add(-72*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.log.4", "", now.Add(-72*time.Hour))
+	changesTouch(t, root, "/var/log/dpkg.log.5.xz", "", now.Add(-4*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.logx", "", now)
 	files, compressed, err := packageLogFiles(root, "/var/log/dpkg.log", now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(files, ",") != "/var/log/dpkg.log,/var/log/dpkg.log.1" {
+	if strings.Join(files, ",") != "/var/log/dpkg.log,/var/log/dpkg.log.1,/var/log/dpkg.log.2.gz" {
 		t.Fatalf("files = %v", files)
 	}
-	if strings.Join(compressed, ",") != "/var/log/dpkg.log.2.gz" {
+	if strings.Join(compressed, ",") != "/var/log/dpkg.log.5.xz" {
 		t.Fatalf("compressed = %v", compressed)
 	}
 }
@@ -139,18 +155,38 @@ func TestCollectPackageChangesReadsRotatedLogsAndWarns(t *testing.T) {
 	stamp := func(at time.Time) string { return at.Format("2006-01-02 15:04:05") }
 	changesTouch(t, root, "/var/log/dpkg.log", stamp(now.Add(-time.Hour))+" install curl:amd64 <none> 8.5.0-2\n", now)
 	changesTouch(t, root, "/var/log/dpkg.log.1", stamp(now.Add(-3*time.Hour))+" upgrade libc6:amd64 1 2\n", now.Add(-2*time.Hour))
-	changesTouch(t, root, "/var/log/dpkg.log.2.gz", "binary", now.Add(-5*time.Hour))
+	changesTouch(t, root, "/var/log/dpkg.log.2.gz", changesGzip(t, stamp(now.Add(-6*time.Hour))+" remove nano:amd64 7.2-1 <none>\n"), now.Add(-5*time.Hour))
+	changesTouch(t, root, "/var/log/dpkg.log.3.xz", "binary", now.Add(-7*time.Hour))
 	sources := changesSources{root: root, now: now}
 	result := changesResult("packages", now, collectPackageChanges(sources, now.Add(-24*time.Hour)))
-	if result.Status != StatusPass || result.Metrics["count"] != 2 {
+	if result.Status != StatusPass || result.Metrics["count"] != 3 {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(result.Warnings) != 1 || result.Warnings[0] != T("changes.warning.compressed", "/var/log/dpkg.log.2.gz") {
+	if len(result.Warnings) != 1 || result.Warnings[0] != T("changes.warning.compressed", "/var/log/dpkg.log.3.xz") {
 		t.Fatalf("warnings = %v", result.Warnings)
 	}
 	events := result.Metrics["events"].([]changeEvent)
 	if events[0].Name != "curl:amd64" || events[0].Source != "dpkg" {
 		t.Fatalf("events = %+v", events)
+	}
+	if last := events[len(events)-1]; last.Name != "nano:amd64" || last.Source != "dpkg" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestCollectPackageChangesTruncatedGzipIsWarning(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	stamp := now.Add(-time.Hour).Format("2006-01-02 15:04:05")
+	changesTouch(t, root, "/var/log/dpkg.log", stamp+" install curl:amd64 <none> 8.5.0-2\n", now)
+	whole := changesGzip(t, stamp+" upgrade libc6:amd64 1 2\n")
+	changesTouch(t, root, "/var/log/dpkg.log.1.gz", whole[:len(whole)-6], now.Add(-2*time.Hour))
+	result := changesResult("packages", now, collectPackageChanges(changesSources{root: root, now: now}, now.Add(-24*time.Hour)))
+	if result.Status != StatusPass || result.Metrics["count"] != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Warnings) != 1 || !strings.HasPrefix(result.Warnings[0], T("changes.skip.unreadable", "/var/log/dpkg.log.1.gz", "")) {
+		t.Fatalf("warnings = %v", result.Warnings)
 	}
 }
 

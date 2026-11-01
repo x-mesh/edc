@@ -322,7 +322,7 @@ The output starts with one result for each source. A merged table follows, with 
 
 | Result | Source |
 |---|---|
-| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`, and their uncompressed rotated files |
+| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`, and their uncompressed or `.gz` rotated files |
 | `changes.etc` | the mtime of each file and symlink under `/etc` |
 | `changes.services` | the latest start of each service unit and its restart count |
 
@@ -330,7 +330,7 @@ If a boot is in the window, the table shows one `boot` row. That row holds the s
 
 If edc cannot read a source, the result is `skip` with the reason. A `skip` does not mean that nothing changed. Run it as root to read all sources. Without root, edc cannot read some directories under `/etc` and some package logs.
 
-`edc changes` does not decompress rotated logs. If a compressed log is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
+`edc changes` reads `.gz` rotated logs. It does not decompress other formats, such as `.xz` or `.zst`. If one of those logs is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
 
 ## Kernel and systemd events (Linux)
 

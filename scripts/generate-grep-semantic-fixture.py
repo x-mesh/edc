@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import gzip
 import json
 import os
 import re
@@ -152,7 +153,7 @@ def main():
         "chunks": metadata_documents,
         "queries": metadata_queries,
     }
-    with open(args.metadata, "w", encoding="utf-8") as file:
+    with gzip.open(args.metadata, "wt", encoding="utf-8") as file:
         json.dump(metadata, file, ensure_ascii=False, separators=(",", ":"))
         file.write("\n")
 

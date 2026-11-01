@@ -2,8 +2,10 @@ package edc
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -14,7 +16,17 @@ import (
 
 func TestGrepSemanticRetrievalEvaluation(t *testing.T) {
 	const authenticFixtureSchema = 5
-	metadata, err := os.ReadFile("testdata/grep-semantic/authentic-retrieval.json")
+	metadataFile, err := os.Open("testdata/grep-semantic/authentic-retrieval.json.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadataFile.Close()
+	metadataReader, err := gzip.NewReader(metadataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadataReader.Close()
+	metadata, err := io.ReadAll(metadataReader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +77,7 @@ func TestGrepSemanticRetrievalEvaluation(t *testing.T) {
 	if fixture.SchemaVersion != authenticFixtureSchema || fixture.Model != grepSemanticModel || fixture.ModelRevision != grepMiniLMRevision || !strings.Contains(fixture.EncoderRevision, ":onnx-") || fixture.VectorFile != "authentic-retrieval.f16" || fixture.VectorEncoding == "" || fixture.Dimensions != grepSemanticDimensions || fixture.Corpus == "" || fixture.Provenance.SourceRevision == "" || fixture.Provenance.SourceDescription == "" || fixture.Provenance.EncoderCommand == "" || fixture.Provenance.Selection == "" || fixture.Provenance.GenerationCommand == "" || fixture.Evaluation.QueryCount != len(fixture.Queries) || fixture.Evaluation.ProductionQueryCount <= 0 || fixture.Evaluation.FixtureQueryCount != len(fixture.Queries) || fixture.Evaluation.ProductionQueryCount >= fixture.Evaluation.FixtureQueryCount || fixture.Evaluation.ProductionRecallAt5 < 0.80 || fixture.Evaluation.ProductionMRRAt10 < 0.70 || fixture.Evaluation.FixtureRecallAt5 < 0.80 || fixture.Evaluation.FixtureMRRAt10 < 0.70 || fixture.Evaluation.Tolerance != 0.05 || len(fixture.Documents) == 0 || len(fixture.Queries) == 0 {
 		t.Fatalf("invalid fixture: %+v", fixture)
 	}
-	vectorData, err := os.ReadFile(filepath.Join(filepath.Dir("testdata/grep-semantic/authentic-retrieval.json"), fixture.VectorFile))
+	vectorData, err := os.ReadFile(filepath.Join(filepath.Dir("testdata/grep-semantic/authentic-retrieval.json.gz"), fixture.VectorFile))
 	if err != nil {
 		t.Fatal(err)
 	}

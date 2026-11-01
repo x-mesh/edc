@@ -35,6 +35,28 @@ func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 	}
 }
 
+func TestCompletionOffersSemanticSearchContract(t *testing.T) {
+	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
+		start := strings.Index(script, "search)")
+		if start < 0 {
+			t.Fatalf("%s completion misses search block", name)
+		}
+		block := script[start:]
+		if !strings.Contains(block, "index") || !strings.Contains(block, "model") || !strings.Contains(block, "--limit") || !strings.Contains(block, "--json") || !strings.Contains(block, "--yes") {
+			t.Fatalf("%s completion misses semantic search contract", name)
+		}
+		if name == "zsh" && !strings.Contains(block, "query or path") {
+			t.Fatal("zsh completion must describe query and path positionals")
+		}
+		if name == "bash" && !strings.Contains(block, "compgen -f") {
+			t.Fatal("bash completion must complete query and path positionals")
+		}
+	}
+	if !strings.Contains(zshCompletion, "if [[ $words[3] == model ]]; then") || !strings.Contains(zshCompletion, "'2:action:(clear)'") {
+		t.Fatal("zsh completion must offer only model clear under edc search model")
+	}
+}
+
 func TestCompletionOffersTraceClickHouse(t *testing.T) {
 	if !strings.Contains(zshCompletion, "http mysql clickhouse postgres redis)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
 		t.Fatal("zsh trace completion must list clickhouse and its options")

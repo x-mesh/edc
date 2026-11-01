@@ -40,6 +40,31 @@ func grepCommand(t *testing.T, stdin string, args ...string) (int, string, strin
 	return code, string(stdout), string(stderr)
 }
 
+func searchCommand(t *testing.T, stdin string, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runSearchWithInput(args, strings.NewReader(stdin), false, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
+}
+
+func grepSemanticTestSetup(t *testing.T) {
+	t.Helper()
+	oldEnsure, oldEncode, oldCache := grepSemanticEnsure, grepSemanticEncode, grepSemanticCacheRoot
+	t.Cleanup(func() {
+		grepSemanticEnsure, grepSemanticEncode, grepSemanticCacheRoot = oldEnsure, oldEncode, oldCache
+	})
+	grepSemanticEnsure = func(io.Reader, bool, bool, io.Writer) error { return nil }
+	grepSemanticCacheRoot = t.TempDir()
+	grepSemanticEncode = func(texts []string, _ io.Writer) (grepSemanticEncoded, error) {
+		vectors := make([][]float32, len(texts))
+		for i := range vectors {
+			vectors[i] = make([]float32, grepSemanticDimensions)
+			vectors[i][0] = 1
+		}
+		return grepSemanticEncoded{Revision: "test-search", Vectors: vectors}, nil
+	}
+}
+
 // grepFixtureDir은 view의 fixture를 복사한 디렉터리다.
 func grepFixtureDir(t *testing.T) string {
 	t.Helper()

@@ -215,17 +215,6 @@ command:
   grep:
     summary: "Search logs, code, and file paths"
     option:
-      model_clear: "remove the shared model and runtime"
-      semantic_yes: "confirm the model download without a prompt"
-      ask_keyword: "use keyword ranking with --ask without a model"
-      semantic_init: "build or rebuild the local semantic index"
-      semantic_status: "show semantic index metadata"
-      semantic_files: "indexed and total chunks for each file"
-      semantic_clear: "remove the semantic index"
-      semantic: "search code with the initialized local embedding index (implies --ask)"
-      ask: "search code by meaning with a local embedding index"
-      ask_json: "emit JSON for --ask"
-      ask_limit: "maximum --ask results (default 10, max 100)"
       code: "search code contents with .gitignore rules"
       paths: "search file paths instead of file contents"
       hidden: "include hidden files in code or path searches"
@@ -245,9 +234,9 @@ command:
       verify: "compare the index result with a whole read and remove a wrong index"
       last: "the newest N matches, read from the end of the file"
     notes:
-      - "Semantic search runs locally. --semantic-init downloads the English MiniLM model and runtime with your confirmation."
+      - "Semantic search runs locally through edc search. edc search index init --yes downloads the English MiniLM model and runtime with your confirmation."
       - "The index is stored in the user cache, not the project. Files that change are re-embedded on the next semantic query."
-      - "--ask --keyword uses local keyword ranking; it does not understand meaning or generate answers. Both modes skip binary, invalid UTF-8 and files larger than 2 MiB."
+      - "edc grep searches literal text, regex, logs, code, or file paths. Semantic queries belong to edc search."
       - "With a terminal and one pattern, grep searches code in the current directory. Pipes read stdin; an explicit path keeps log search behavior."
       - "Code and path searches default to the current directory and skip hidden files and .git; --hidden includes hidden files, --no-ignore ignores .gitignore."
       - "Code search reads current files without a log index and prints line numbers."
@@ -261,6 +250,17 @@ command:
       - "Files of 64 MB or more get an index in the cache directory on the second search within 24h. It records which 1 MB blocks hold which letters, times, levels, and statuses, so later searches read only the blocks that can match. The index assumes a log that only grows: a file edited in place keeps its index until it shrinks or its first or last indexed block changes, so use --no-index or --verify-index for such a file."
       - "Every search tells on stderr whether it used, built, or skipped the index, when stderr is a terminal."
       - "In a pipe or with NO_COLOR, the bytes of a line stay unchanged. Exit codes: 0 found, 1 none, 2 error."
+  search:
+    summary: "Search code by meaning with the local semantic engine"
+    option:
+      limit: "maximum results, from 1 to 100"
+      json: "emit one versioned JSON document"
+      yes: "authorize the first model download without a prompt"
+    notes:
+      - "edc search accepts a natural-language query followed by zero or more files or directories."
+      - "The first positional argument is the complete quoted query; every following positional argument is a path. Use -- when a query or path begins with a dash."
+      - "It uses a local MiniLM index and never calls a cloud service after model installation."
+      - "Use edc search index status, files, and clear with an optional directory. Use edc search model clear to remove the shared model and runtime. Words such as status remain ordinary queries."
   du:
     summary: "Disk usage under a directory, largest first (Linux and macOS)"
     option:

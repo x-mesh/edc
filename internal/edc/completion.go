@@ -289,8 +289,8 @@ _edc() {
           _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--code[search code]' '(-f --files)'{-f,--files}'[search file paths]' '--hidden[include hidden files]' '--no-ignore[ignore .gitignore]' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
           ;;
         search)
-          if [[ $words[2] == model ]]; then
-            _arguments '1:namespace:(index model)' '2:action:(clear)' '(-m --limit)'{-m,--limit}'[maximum semantic results]:count' '--json[emit one JSON document]' '--yes[authorize model download]' '*:query or path:_files'
+          if [[ $words[3] == model ]]; then
+            _arguments '1:namespace:(index model)' '2:action:(clear)'
           else
             _arguments '1:namespace:(index model)' '2:action:(init status files clear)' '(-m --limit)'{-m,--limit}'[maximum semantic results]:count' '--json[emit one JSON document]' '--yes[authorize model download]' '*:query or path:_files'
           fi

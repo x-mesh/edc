@@ -52,6 +52,9 @@ func TestCompletionOffersSemanticSearchContract(t *testing.T) {
 			t.Fatal("bash completion must complete query and path positionals")
 		}
 	}
+	if !strings.Contains(zshCompletion, "if [[ $words[3] == model ]]; then") || !strings.Contains(zshCompletion, "'2:action:(clear)'") {
+		t.Fatal("zsh completion must offer only model clear under edc search model")
+	}
 }
 
 func TestCompletionOffersTraceClickHouse(t *testing.T) {

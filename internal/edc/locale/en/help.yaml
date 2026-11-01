@@ -260,7 +260,7 @@ command:
       - "edc search accepts a natural-language query followed by zero or more files or directories."
       - "The first positional argument is the complete quoted query; every following positional argument is a path. Use -- when a query or path begins with a dash."
       - "It uses a local MiniLM index and never calls a cloud service after model installation."
-      - "Use edc search index status, files, and clear with an optional directory. Use edc search model clear to remove the shared model and runtime. Words such as status remain ordinary queries."
+      - "Use edc search index status, files, and clear with an optional directory. Use edc search model clear to remove the shared model and runtime. Words such as status remain ordinary queries. index or model alone prints its usage; run edc search -- model to search for that word."
   du:
     summary: "Disk usage under a directory, largest first (Linux and macOS)"
     option:

@@ -3,6 +3,7 @@ package edc
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -221,6 +222,39 @@ func TestSearchLifecycleWordsDispatchInAnyPosition(t *testing.T) {
 		got := append([]string{action}, rest...)
 		if ok != (tc.want != "") || strings.Join(got, " ") != tc.want {
 			t.Fatalf("%v: got %v %t", tc.args, got, ok)
+		}
+	}
+}
+
+func TestSearchBareLifecycleWordPrintsUsageInsteadOfSearching(t *testing.T) {
+	oldEnsure := grepSemanticEnsure
+	t.Cleanup(func() { grepSemanticEnsure = oldEnsure })
+	searched := false
+	grepSemanticEnsure = func(io.Reader, bool, bool, io.Writer) error {
+		searched = true
+		return errors.New("stop")
+	}
+	for _, tc := range []struct {
+		args  []string
+		usage string
+	}{
+		{[]string{"model"}, "edc search model clear"},
+		{[]string{"--json", "model"}, "edc search model clear"},
+		{[]string{"index"}, "edc search index init|status|files|clear [directory]"},
+		{[]string{"-m", "5", "index", "--yes"}, "edc search index init|status|files|clear [directory]"},
+	} {
+		searched = false
+		code, _, stderr := searchCommand(t, "", tc.args...)
+		if code != 2 || searched || !strings.Contains(stderr, T("cli.usage", tc.usage)) {
+			t.Fatalf("%v: code %d searched %t stderr %q", tc.args, code, searched, stderr)
+		}
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{{"--", "model"}, {"model", dir}, {"index", dir}} {
+		searched = false
+		searchCommand(t, "", args...)
+		if !searched {
+			t.Fatalf("%v: query was not searched", args)
 		}
 	}
 }

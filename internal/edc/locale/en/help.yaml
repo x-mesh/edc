@@ -234,7 +234,7 @@ command:
       verify: "compare the index result with a whole read and remove a wrong index"
       last: "the newest N matches, read from the end of the file"
     notes:
-      - "Semantic search runs locally through edc search. edc search init --yes downloads the English MiniLM model and runtime with your confirmation."
+      - "Semantic search runs locally through edc search. edc search index init --yes downloads the English MiniLM model and runtime with your confirmation."
       - "The index is stored in the user cache, not the project. Files that change are re-embedded on the next semantic query."
       - "edc grep searches literal text, regex, logs, code, or file paths. Semantic queries belong to edc search."
       - "With a terminal and one pattern, grep searches code in the current directory. Pipes read stdin; an explicit path keeps log search behavior."
@@ -260,7 +260,7 @@ command:
       - "edc search accepts a natural-language query followed by zero or more files or directories."
       - "The first positional argument is the complete quoted query; every following positional argument is a path. Use -- when a query or path begins with a dash."
       - "It uses a local MiniLM index and never calls a cloud service after model installation."
-      - "Use edc search status, files, and clear with an optional directory. Use edc search model-clear to remove the shared model and runtime. Use edc search -- status when status is the literal query."
+      - "Use edc search index status, files, and clear with an optional directory. Use edc search model clear to remove the shared model and runtime. Words such as status remain ordinary queries."
   du:
     summary: "Disk usage under a directory, largest first (Linux and macOS)"
     option:

@@ -37,13 +37,18 @@ func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 
 func TestCompletionOffersSemanticSearchContract(t *testing.T) {
 	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
-		if !strings.Contains(script, "search") || !strings.Contains(script, "--limit") || !strings.Contains(script, "--json") || !strings.Contains(script, "--yes") {
+		start := strings.Index(script, "search)")
+		if start < 0 {
+			t.Fatalf("%s completion misses search block", name)
+		}
+		block := script[start:]
+		if !strings.Contains(block, "index") || !strings.Contains(block, "model") || !strings.Contains(block, "--limit") || !strings.Contains(block, "--json") || !strings.Contains(block, "--yes") {
 			t.Fatalf("%s completion misses semantic search contract", name)
 		}
-		if name == "zsh" && !strings.Contains(script, "query or path") {
+		if name == "zsh" && !strings.Contains(block, "query or path") {
 			t.Fatal("zsh completion must describe query and path positionals")
 		}
-		if name == "bash" && !strings.Contains(script, "compgen -f") {
+		if name == "bash" && !strings.Contains(block, "compgen -f") {
 			t.Fatal("bash completion must complete query and path positionals")
 		}
 	}

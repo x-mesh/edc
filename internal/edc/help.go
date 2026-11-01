@@ -383,13 +383,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "search", group: "observe",
-		usage: []string{"edc search [-m N|--limit N] [--json] [--yes] <query> [path...]", "edc search init [--yes] [directory]", "edc search status [directory]", "edc search files [directory]", "edc search clear [directory]", "edc search model-clear"},
+		usage: []string{"edc search [-m N|--limit N] [--json] [--yes] <query> [path...]", "edc search index init [--yes] [directory]", "edc search index status [directory]", "edc search index files [directory]", "edc search index clear [directory]", "edc search model clear"},
 		options: []optionDoc{
 			{"-m N, --limit N", "command.search.option.limit"},
 			{"--json", "command.search.option.json"},
 			{"--yes", "command.search.option.yes"},
 		},
-		examples: []string{"edc search -m 5 'retry budget'", "edc search 'authentication middleware' internal cmd", "edc search init --yes", "edc search status", "edc search -- status"},
+		examples: []string{"edc search -m 5 'retry budget'", "edc search 'authentication middleware' internal cmd", "edc search index init --yes", "edc search index status", "edc search status"},
 	},
 	{
 		name: "du", group: "observe",

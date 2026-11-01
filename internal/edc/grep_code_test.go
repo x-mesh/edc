@@ -205,11 +205,16 @@ func TestSearchLifecycleWordsDispatchInAnyPosition(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"init", "--yes"}, "init --yes"},
-		{[]string{"--yes", "init"}, "init --yes"},
-		{[]string{"init", "--yes", "dir"}, "init --yes dir"},
-		{[]string{"model-clear", "dir"}, "model-clear dir"},
-		{[]string{"needle", "src"}, ""},
+		{[]string{"index", "init", "--yes"}, "init --yes"},
+		{[]string{"--yes", "index", "init"}, "init --yes"},
+		{[]string{"index", "init", "--yes", "dir"}, "init --yes dir"},
+		{[]string{"model", "clear", "dir"}, "model-clear dir"},
+		{[]string{"init", "src"}, ""},
+		{[]string{"status", "src"}, ""},
+		{[]string{"clear", "src"}, ""},
+		{[]string{"model", "src"}, ""},
+		{[]string{"needle", "index", "clear", "src"}, ""},
+		{[]string{"needle", "model", "clear", "src"}, ""},
 		{[]string{"--", "status", "src"}, ""},
 	} {
 		action, rest, ok := searchLifecycleArgs(tc.args)

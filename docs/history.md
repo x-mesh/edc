@@ -337,18 +337,18 @@ The pinned sources are [the MiniLM model](https://huggingface.co/sentence-transf
 Semantic search uses the English `all-MiniLM-L6-v2` model and a native ONNX Runtime. Python is not needed for edc. The first initialization shows the download size and destination, then asks before downloading the pinned model and runtime from Hugging Face and Microsoft. The download is approximately 94–128 MiB depending on the platform; extracted files and the index need additional disk space. edc verifies the pinned SHA-256 values before installing anything.
 
 ```sh
-edc search init --yes
+edc search index init --yes
 edc search 'where is the auth configuration loaded?'
-edc search status
-edc search files
-edc search clear
-edc search model-clear
+edc search index status
+edc search index files
+edc search index clear
+edc search model clear
 ```
 
-`edc search` owns semantic queries and lifecycle operations. `edc search init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created by `init` or by the first semantic query after the model is installed. Another project reuses the model but needs its own index. `edc search clear` removes only the current project index. `edc search model-clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `edc search status` reports the model and stored index, not whether source files have changed. `edc search files` reads the current files again and prints `indexed/total chunks` and the path for each file. Paths containing tabs, newlines, or quotes are rendered as quoted Go strings, and a file with fewer indexed than total chunks is re-embedded on the next search. Use `edc search -- status` when status is the literal query.
+`edc search` owns semantic queries and lifecycle operations. `edc search index init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created by `init` or by the first semantic query after the model is installed. Another project reuses the model but needs its own index. `edc search index clear` removes only the current project index. `edc search model clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `edc search index status` reports the model and stored index, not whether source files have changed. `edc search index files` reads the current files again and prints `indexed/total chunks` and the path for each file. Paths containing tabs, newlines, or quotes are rendered as quoted Go strings, and a file with fewer indexed than total chunks is re-embedded on the next search. Words such as `status` remain ordinary queries.
 
 If a directory search finds generated files, lock files, or test fixtures, it does not index or rank them. Generated files start with a comment that contains `Code generated ... DO NOT EDIT` or `auto-generated`. Lock files include `go.sum`, `package-lock.json`, `yarn.lock`, and `Cargo.lock`. Test fixtures are files under `testdata/`, except `.md` and `.txt` files. If you name such a file as the path, edc searches it.
 
-Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `edc search init` rebuilds the current project's index, including indexes made by the earlier multilingual model or stored in the earlier format. The index stores vectors as 16-bit floats. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
+Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `edc search index init` rebuilds the current project's index, including indexes made by the earlier multilingual model or stored in the earlier format. The index stores vectors as 16-bit floats. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
 
 Scores combine cosine similarity (95%) and normalized keyword relevance (5%); they are not probabilities. Each embedding uses at most 3,000 characters and 128 model tokens per chunk. File-size and search limits are shared with keyword search. The model and native runtime support Linux and macOS on amd64 and arm64. The official Linux runtime requires glibc and libstdc++; a musl-only environment such as Alpine is not supported by this runtime without compatible libraries.

@@ -459,7 +459,7 @@ func TestGrepAskSemanticMissingModelNonTTYDoesNotDownload(t *testing.T) {
 	called := false
 	grepSemanticEnsure = func(io.Reader, bool, bool, io.Writer) error {
 		called = true
-		return errors.New("No terminal; use edc search init --yes")
+		return errors.New("No terminal; use edc search index init --yes")
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "x.go"), []byte("package p\nfunc X() {}\n"), 0600); err != nil {
@@ -467,7 +467,7 @@ func TestGrepAskSemanticMissingModelNonTTYDoesNotDownload(t *testing.T) {
 	}
 	var out, errOut bytes.Buffer
 	options := grepOptions{pattern: "x", askMode: true, semantic: true, askJSON: true, askLimit: 1, semanticInput: strings.NewReader(""), semanticTerminal: false}
-	if code := grepAsk([]string{root}, options, &out, &errOut); code != 2 || !called || out.Len() != 0 || !strings.Contains(errOut.String(), "edc search init --yes") {
+	if code := grepAsk([]string{root}, options, &out, &errOut); code != 2 || !called || out.Len() != 0 || !strings.Contains(errOut.String(), "edc search index init --yes") {
 		t.Fatalf("code=%d called=%v out=%q err=%q", code, called, out.String(), errOut.String())
 	}
 }
@@ -505,6 +505,37 @@ func TestGrepSemanticOutputMarksIncompleteAndSkippedFiles(t *testing.T) {
 	}
 }
 
+func TestGrepSemanticPartialScopeJSONOutput(t *testing.T) {
+	grepSemanticTestSetup(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.go"), []byte("package p\nfunc OK() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	var out, errOut bytes.Buffer
+	code := grepSemanticSearch(searchOptions{query: "ok", limit: 4, json: true, paths: []string{root, missing}}, strings.NewReader(""), false, &out, &errOut)
+	var output grepSearchOutput
+	if err := json.Unmarshal(out.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != 2 || output.Complete || len(output.Scopes) != 1 || len(output.Results) == 0 || !strings.Contains(errOut.String(), missing) {
+		t.Fatalf("code=%d output=%+v stderr=%q", code, output, errOut.String())
+	}
+}
+
+func TestGrepSemanticJSONOutputFailure(t *testing.T) {
+	grepSemanticTestSetup(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.go"), []byte("package p\nfunc OK() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	code := grepSemanticSearch(searchOptions{query: "ok", limit: 4, json: true, paths: []string{root}}, strings.NewReader(""), false, grepAskErrorWriter{}, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "write failed") {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+}
+
 func TestGrepSemanticLifecycleAndIncrementalUpdates(t *testing.T) {
 	oldRoot, oldEncode, oldEnsure := grepSemanticCacheRoot, grepSemanticEncode, grepSemanticEnsure
 	defer func() {
@@ -530,7 +561,7 @@ func TestGrepSemanticLifecycleAndIncrementalUpdates(t *testing.T) {
 		return grepSemanticEncoded{Revision: "test-revision", Vectors: out}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runSearchWithInput([]string{"init", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
 		t.Fatalf("init=%d %s", code, stderr.String())
 	}
 	if len(calls) != 1 || len(calls[0]) != 1 || !strings.Contains(calls[0][0], "auth.go") {
@@ -582,7 +613,7 @@ func TestGrepSemanticLifecycleAndIncrementalUpdates(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSearchWithInput([]string{"clear", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "clear", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
 		t.Fatalf("clear %d %s", code, stderr.String())
 	}
 	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
@@ -590,7 +621,7 @@ func TestGrepSemanticLifecycleAndIncrementalUpdates(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSearchWithInput([]string{"status", root}, strings.NewReader(""), false, &stdout, &stderr); code != 1 {
+	if code := runSearchWithInput([]string{"index", "status", root}, strings.NewReader(""), false, &stdout, &stderr); code != 1 {
 		t.Fatalf("status %d", code)
 	}
 }
@@ -605,7 +636,7 @@ func TestGrepSemanticRequiresInitializationWithoutWritingCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, stderr := searchCommand(t, "", "x", root)
-	if code != 2 || out != "" || !strings.Contains(stderr, "edc search init") {
+	if code != 2 || out != "" || !strings.Contains(stderr, "edc search index init") {
 		t.Fatalf("code %d out %q stderr %q", code, out, stderr)
 	}
 	if _, err := os.Stat(cache); !os.IsNotExist(err) {
@@ -680,7 +711,7 @@ func TestGrepSemanticDoesNotSaveWhenFilesChangeDuringEmbedding(t *testing.T) {
 		return grepSemanticEncoded{Revision: "test", Vectors: out}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := runSearchWithInput([]string{"init", root}, strings.NewReader(""), false, &stdout, &stderr)
+	code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &stdout, &stderr)
 	canonical, _ := grepSemanticRoot([]string{root})
 	path, _ := grepSemanticPath(canonical)
 	if _, err := os.Stat(path); code != 2 || !os.IsNotExist(err) {
@@ -696,7 +727,7 @@ func TestGrepSemanticRejectsPreviousModelIndex(t *testing.T) {
 	if err := grepSemanticSave(path, index); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := grepSemanticRead(path, root); err == nil || !strings.Contains(err.Error(), "edc search init") {
+	if _, err := grepSemanticRead(path, root); err == nil || !strings.Contains(err.Error(), "edc search index init") {
 		t.Fatalf("old model accepted or missing instruction: %v", err)
 	}
 }
@@ -726,7 +757,7 @@ func TestGrepSemanticReusesUnchangedChunksWhenLinesMove(t *testing.T) {
 		return grepSemanticEncoded{Revision: "revision", Vectors: vectors}, nil
 	}
 	var out, stderr bytes.Buffer
-	if code := runSearchWithInput([]string{"init", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
 		t.Fatalf("init %d: %s", code, stderr.String())
 	}
 	if err := os.WriteFile(path, []byte("package p\n\n\nfunc ValidateToken() {}\n"), 0600); err != nil {
@@ -768,7 +799,7 @@ func TestGrepSemanticSkipsRecollectWhenNothingWasEmbedded(t *testing.T) {
 		return grepSemanticEncoded{Revision: "revision", Vectors: vectors}, nil
 	}
 	var out, stderr bytes.Buffer
-	if code := runSearchWithInput([]string{"init", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
 		t.Fatalf("init %d: %s", code, stderr.String())
 	}
 	searching = true
@@ -817,10 +848,10 @@ func TestGrepSemanticFilesListsIndexedChunks(t *testing.T) {
 		}
 	}
 	var out, stderr bytes.Buffer
-	if code := runSearchWithInput([]string{"files", root}, strings.NewReader(""), false, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "edc search init") {
+	if code := runSearchWithInput([]string{"index", "files", root}, strings.NewReader(""), false, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "edc search index init") {
 		t.Fatalf("before init %d %q", code, stderr.String())
 	}
-	if code := runSearchWithInput([]string{"init", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
 		t.Fatalf("init %d: %s", code, stderr.String())
 	}
 	if err := os.WriteFile(filepath.Join(root, "c.go"), []byte("package p\nfunc C() {}\n"), 0600); err != nil {
@@ -828,7 +859,7 @@ func TestGrepSemanticFilesListsIndexedChunks(t *testing.T) {
 	}
 	out.Reset()
 	stderr.Reset()
-	if code := runSearchWithInput([]string{"files", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "files", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
 		t.Fatalf("files %d: %s", code, stderr.String())
 	}
 	for _, name := range []string{"tab\tname.go", "line\nbreak.go", "quote\".go"} {
@@ -838,16 +869,16 @@ func TestGrepSemanticFilesListsIndexedChunks(t *testing.T) {
 	}
 	out.Reset()
 	stderr.Reset()
-	if code := runSearchWithInput([]string{"files", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"index", "files", root}, strings.NewReader(""), false, &out, &stderr); code != 0 {
 		t.Fatalf("files %d: %s", code, stderr.String())
 	}
 	if want := "1/1\ta.go\n0/1\tc.go\n1/1\tdocs/b.md\n0/1\t\"line\\nbreak.go\"\n0/1\t\"quote\\\".go\"\n0/1\t\"tab\\tname.go\"\n"; out.String() != want {
 		t.Fatalf("got %q want %q", out.String(), want)
 	}
-	if action, args, ok := searchLifecycleArgs([]string{"files", root}); !ok || action != "files" || len(args) != 1 || args[0] != root {
+	if action, args, ok := searchLifecycleArgs([]string{"index", "files", root}); !ok || action != "files" || len(args) != 1 || args[0] != root {
 		t.Fatalf("lifecycle args %q %v %v", action, args, ok)
 	}
-	if code := runSearchWithInput([]string{"files", "--yes", root}, strings.NewReader(""), false, &out, &stderr); code != 2 {
+	if code := runSearchWithInput([]string{"index", "files", "--yes", root}, strings.NewReader(""), false, &out, &stderr); code != 2 {
 		t.Fatalf("--yes accepted: %d", code)
 	}
 }
@@ -892,7 +923,7 @@ func TestGrepSemanticRejectsGobIndex(t *testing.T) {
 	if err := os.WriteFile(path, append([]byte("EDC1"), make([]byte, 64)...), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := grepSemanticRead(path, root); err == nil || !strings.Contains(err.Error(), "edc search init") {
+	if _, err := grepSemanticRead(path, root); err == nil || !strings.Contains(err.Error(), "edc search index init") {
 		t.Fatalf("old format accepted or missing instruction: %v", err)
 	}
 }

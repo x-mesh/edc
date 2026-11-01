@@ -115,12 +115,12 @@ func TestGrepNativeModelInstallAndSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runSearchWithInput([]string{"init", root}, strings.NewReader(""), false, &stdout, &stderr); code != 2 || requests.Load() != 0 {
+	if code := runSearchWithInput([]string{"index", "init", root}, strings.NewReader(""), false, &stdout, &stderr); code != 2 || requests.Load() != 0 {
 		t.Fatalf("unexpected download without confirmation: %d calls=%d %s", code, requests.Load(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSearchWithInput([]string{"init", "--yes", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 || requests.Load() != 3 {
+	if code := runSearchWithInput([]string{"index", "init", "--yes", root}, strings.NewReader(""), false, &stdout, &stderr); code != 0 || requests.Load() != 3 {
 		t.Fatalf("init=%d calls=%d out=%s err=%s", code, requests.Load(), stdout.String(), stderr.String())
 	}
 	encoded, err := grepSemanticNative([]string{"hello world", "a considerably longer sentence to test reordered batches and padding", "hello world"}, io.Discard)
@@ -145,11 +145,11 @@ func TestGrepNativeModelInstallAndSearch(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSearchWithInput([]string{"model-clear"}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
+	if code := runSearchWithInput([]string{"model", "clear"}, strings.NewReader(""), false, &stdout, &stderr); code != 0 {
 		t.Fatalf("clear model=%d %s", code, stderr.String())
 	}
 	code, _, stderrText = searchCommand(t, "", "login", root)
-	if code != 2 || !strings.Contains(stderrText, "edc search init") || requests.Load() != 3 {
+	if code != 2 || !strings.Contains(stderrText, "edc search index init") || requests.Load() != 3 {
 		t.Fatalf("missing model search=%d err=%s calls=%d", code, stderrText, requests.Load())
 	}
 }
@@ -167,7 +167,7 @@ func TestGrepNativeOfficialDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output, stderr bytes.Buffer
-	code := runSearchWithInput([]string{"init", "--yes", root}, strings.NewReader(""), false, &output, &stderr)
+	code := runSearchWithInput([]string{"index", "init", "--yes", root}, strings.NewReader(""), false, &output, &stderr)
 	if code != 0 {
 		t.Fatalf("official init=%d output=%s stderr=%s", code, output.String(), stderr.String())
 	}

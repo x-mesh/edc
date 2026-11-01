@@ -138,7 +138,7 @@ def main():
             "encoder_command": "SentenceTransformer(model, local_files_only=True, device=cpu), max_seq_length=128, normalize_embeddings=True",
             "source_description": "repository source captured from the working tree; source_revision records its base HEAD, and chunks retain path, declaration span, and source text",
             "selection": "top-k semantic, keyword, exact-token, and source-class candidates for every query plus every chunk in each relevance file; top-k is configurable and recorded at generation time",
-            "generation_command": "python3 scripts/generate-grep-semantic-fixture.py <captured-corpus.json> internal/edc/testdata/grep-semantic/authentic-retrieval.json internal/edc/testdata/grep-semantic/authentic-retrieval.f16 --source-revision \"$(git rev-parse HEAD)\" --top-k 128 --production-recall-at-5 0.958333333 --production-mrr-at-10 0.735763889 --fixture-recall-at-5 0.962962963 --fixture-mrr-at-10 0.780864198 --metric-tolerance 0.05",
+            "generation_command": "python3 scripts/generate-grep-semantic-fixture.py <captured-corpus.json> internal/edc/testdata/grep-semantic/authentic-retrieval.json.gz internal/edc/testdata/grep-semantic/authentic-retrieval.f16 --source-revision \"$(git rev-parse HEAD)\" --top-k 128 --production-recall-at-5 0.958333333 --production-mrr-at-10 0.735763889 --fixture-recall-at-5 0.962962963 --fixture-mrr-at-10 0.780864198 --metric-tolerance 0.05",
         },
         "evaluation": {
             "query_count": len(queries),

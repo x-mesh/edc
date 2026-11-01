@@ -64,23 +64,36 @@ type grepSearchScope struct {
 }
 
 func grepSearchScopes(paths []string) ([]grepSearchScope, error) {
+	scopes, problems := grepSearchScopesPartial(paths)
+	if len(problems) > 0 {
+		return nil, errors.New(strings.Join(problems, "; "))
+	}
+	return scopes, nil
+}
+
+func grepSearchScopesPartial(paths []string) ([]grepSearchScope, []string) {
 	scopes := make([]grepSearchScope, 0, len(paths))
+	var problems []string
 	seen := make(map[string]bool)
 	for _, input := range paths {
 		absolute, err := filepath.Abs(input)
 		if err != nil {
-			return nil, err
+			problems = append(problems, fmt.Sprintf("%s: %v", input, err))
+			continue
 		}
 		canonical, err := filepath.EvalSymlinks(absolute)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", input, err)
+			problems = append(problems, fmt.Sprintf("%s: %v", input, err))
+			continue
 		}
 		info, err := os.Stat(canonical)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", input, err)
+			problems = append(problems, fmt.Sprintf("%s: %v", input, err))
+			continue
 		}
 		if !info.Mode().IsRegular() && !info.IsDir() {
-			return nil, fmt.Errorf("%s: unsupported search path", input)
+			problems = append(problems, fmt.Sprintf("%s: unsupported search path", input))
+			continue
 		}
 		canonical = filepath.Clean(canonical)
 		if seen[canonical] {
@@ -107,7 +120,7 @@ func grepSearchScopes(paths []string) ([]grepSearchScope, error) {
 			kept = append(kept, candidate)
 		}
 	}
-	return kept, nil
+	return kept, problems
 }
 
 func grepSearchDisplayPath(path string, scopes []grepSearchScope) string {
@@ -454,9 +467,12 @@ func grepSemanticRankScopes(paths []string, options grepOptions, stderr io.Write
 }
 
 func grepSemanticSearch(options searchOptions, input io.Reader, terminal bool, stdout, stderr io.Writer) int {
-	scopes, err := grepSearchScopes(options.paths)
-	if err != nil {
-		fmt.Fprintln(stderr, T("grep.failed", err))
+	scopes, scopeProblems := grepSearchScopesPartial(options.paths)
+	complete := len(scopeProblems) == 0
+	for _, problem := range scopeProblems {
+		fmt.Fprintln(stderr, T("grep.failed", problem))
+	}
+	if len(scopes) == 0 {
 		return 2
 	}
 	if err := grepSemanticEnsure(input, terminal, options.yes, stderr); err != nil {
@@ -469,7 +485,6 @@ func grepSemanticSearch(options searchOptions, input io.Reader, terminal bool, s
 	}
 	var all []grepAskResult
 	skipped := 0
-	complete := true
 	for _, scope := range scopes {
 		askOptions := grepOptions{pattern: options.query, askMode: true, semantic: true, askLimit: options.limit}
 		chunks, skippedCount, problems := grepAskCollect([]string{scope.path}, askOptions)
@@ -482,8 +497,9 @@ func grepSemanticSearch(options searchOptions, input io.Reader, terminal bool, s
 		}
 		results, rankErr := grepSemanticRankAuto(scope.path, askOptions, chunks, stderr)
 		if rankErr != nil {
+			complete = false
 			fmt.Fprintln(stderr, T("grep.failed", rankErr))
-			return 2
+			continue
 		}
 		all = append(all, results...)
 	}

@@ -11,6 +11,7 @@ import (
 )
 
 func TestGrepAskRanksCodeAndHonorsIgnore(t *testing.T) {
+	grepSemanticTestSetup(t)
 	root := t.TempDir()
 	files := map[string]string{
 		".gitignore": "ignored.go\n",
@@ -66,6 +67,7 @@ func TestGrepAskDeterministicRankingAndBoundedResults(t *testing.T) {
 }
 
 func TestGrepAskReportsPartialSearchErrors(t *testing.T) {
+	grepSemanticTestSetup(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "auth.go")
 	if err := os.WriteFile(path, []byte("package p\nfunc ValidateToken() {}\n"), 0600); err != nil {
@@ -73,8 +75,12 @@ func TestGrepAskReportsPartialSearchErrors(t *testing.T) {
 	}
 	missing := filepath.Join(root, "missing")
 	code, out, stderr := searchCommand(t, "", "--json", "validate token", root, missing)
-	if code != 2 || out != "" || !strings.Contains(stderr, "missing") {
-		t.Fatalf("code %d output %q stderr %q", code, out, stderr)
+	var result grepSearchOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if code != 2 || result.Complete || len(result.Results) != 1 || !strings.Contains(stderr, "missing") {
+		t.Fatalf("code %d output %+v stderr %q", code, result, stderr)
 	}
 }
 
@@ -104,6 +110,7 @@ func TestGrepAskReportsOutputFailure(t *testing.T) {
 }
 
 func TestGrepAskDoesNotRankSearchRootName(t *testing.T) {
+	grepSemanticTestSetup(t)
 	root := filepath.Join(t.TempDir(), "uniqueneedle-root")
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)

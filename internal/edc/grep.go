@@ -147,14 +147,21 @@ func searchLifecycleArgs(args []string) (string, []string, bool) {
 			}
 			continue
 		}
-		switch arg {
-		case "init", "status", "files", "clear", "model-clear":
-			lifecycleArgs := append([]string(nil), args[:i]...)
-			lifecycleArgs = append(lifecycleArgs, args[i+1:]...)
-			return arg, lifecycleArgs, true
-		default:
-			return "", nil, false
+		if arg == "index" && i+1 < len(args) {
+			action := args[i+1]
+			switch action {
+			case "init", "status", "files", "clear":
+				lifecycleArgs := append([]string(nil), args[:i]...)
+				lifecycleArgs = append(lifecycleArgs, args[i+2:]...)
+				return action, lifecycleArgs, true
+			}
 		}
+		if arg == "model" && i+1 < len(args) && args[i+1] == "clear" {
+			lifecycleArgs := append([]string(nil), args[:i]...)
+			lifecycleArgs = append(lifecycleArgs, args[i+2:]...)
+			return "model-clear", lifecycleArgs, true
+		}
+		return "", nil, false
 	}
 	return "", nil, false
 }

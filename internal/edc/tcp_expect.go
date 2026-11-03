@@ -662,6 +662,9 @@ type expectSession struct {
 	attempts   int
 	stopReason string
 	stopAt     time.Time
+	// live는 상태줄에 보이는 실행 중 합계다. otherPorts는 다른 port로 온 SYN의 port별 수이고, nil이면 세지 않는다.
+	live       expectLiveCounts
+	otherPorts map[uint16]int
 }
 
 func newExpectSession(port uint16, from netip.Prefix, emit func(expectEvent)) *expectSession {
@@ -715,6 +718,7 @@ func (session *expectSession) packet(packet expectPacket) {
 			flow.synIn++
 			flow.synRetransmits++
 			flow.lastSYN = packet.at
+			session.live.SYN++
 			event.kind, event.count, event.iface = expectEventSYNRetransmit, flow.synIn, flow.iface
 			session.emit(event)
 			return
@@ -729,6 +733,7 @@ func (session *expectSession) packet(packet expectPacket) {
 		session.flows[key] = flow
 		event.kind = expectEventSYN
 		session.emit(event)
+		session.live.SYN++
 		session.attempts++
 		if session.until == "syn" {
 			session.armStop(packet.at, expectStopUntilSYN, expectStopGrace)
@@ -789,6 +794,7 @@ func (session *expectSession) packet(packet expectPacket) {
 		}
 		flow.lastActivity = packet.at
 		flow.completed = true
+		session.live.Handshakes++
 		event.kind, event.iface = expectEventEstablished, flow.iface
 		event.detail = T("expect.live.handshake_time", formatExpectElapsed(packet.at.Sub(flow.firstSYN)))
 		session.emit(event)
@@ -796,6 +802,38 @@ func (session *expectSession) packet(packet expectPacket) {
 			session.armStop(packet.at, expectStopUntilHandshake, 0)
 		}
 	}
+}
+
+// otherSYN은 다른 port로 온 SYN 하나를 센다. port를 잘못 알고 접속하는 client를 드러내려는 것이라 port별 수만 두고 packet이나
+// 연결 상태는 남기지 않는다. loopback은 이 host 안의 연결이고, 이 host의 주소가 아니면 넘겨주는 packet이라 세지 않는다.
+func (session *expectSession) otherSYN(remote, local netip.Addr, port uint16) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.otherPorts == nil || remote.IsLoopback() || !session.wanted(remote) {
+		return
+	}
+	if session.isLocal != nil && !session.isLocal(local) {
+		return
+	}
+	session.otherPorts[port]++
+}
+
+// countOtherPorts는 다른 port의 SYN을 세기 시작한다. 그 socket을 열지 못하면 부르지 않고, 그러면 metrics에도 남지 않는다.
+func (session *expectSession) countOtherPorts() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.otherPorts = map[uint16]int{}
+}
+
+// snapshot은 상태줄에 넘길 실행 중 합계다.
+func (session *expectSession) snapshot() expectLiveCounts {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	counts := session.live
+	if session.otherPorts != nil {
+		counts.OtherPorts = topExpectPorts(session.otherPorts, expectStatusPorts)
+	}
+	return counts
 }
 
 // armStop은 멈출 조건을 처음 만난 때를 적는다. 먼저 만난 조건이 stop_reason이 된다.
@@ -852,7 +890,9 @@ func (session *expectSession) drop(at time.Time, source, destination, reason, lo
 			flow.drops = map[string]int{}
 		}
 		flow.drops[reason]++
+		session.live.Drops++
 	default:
+		session.live.Drops++
 		if session.pendingDrops[key] == nil {
 			session.pendingDrops[key] = &expectPendingDrops{at: at, reasons: map[string]int{}}
 		}
@@ -1209,6 +1249,11 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	if len(session.otherDrops) > 0 {
 		metrics["other_drops"] = session.otherDrops
 	}
+	var otherPorts []expectPortCount
+	if len(session.otherPorts) > 0 {
+		otherPorts = topExpectPorts(session.otherPorts, expectMetricPorts)
+		metrics["other_port_syns"] = expectPortMetric(otherPorts)
+	}
 	result := Result{Probe: expectProbeID, Status: expectVerdictStatus(verdict), StartedAt: started.UTC(), DurationMS: elapsed.Milliseconds(), Metrics: metrics}
 	var fromRoute *expectReturnPath
 	if len(sources) == 0 && session.from.IsValid() && session.from.IsSingleIP() {
@@ -1217,6 +1262,10 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	}
 	result.Summary = expectSummary(verdict, lead, len(sources), session.port, elapsed)
 	result.Warnings = expectWarnings(sources, session.socketDrops, session.dropLost, session.untracked)
+	// 이 port에는 SYN이 없는데 다른 port에는 왔다면 client가 port를 잘못 알고 있을 수 있다.
+	if verdict == expectVerdictNoSYN && len(otherPorts) > 0 {
+		result.Warnings = append(result.Warnings, T("expect.warning.other_ports", session.port, formatExpectPorts(otherPorts)))
+	}
 	if (verdict == expectVerdictNoSYN || verdict == expectVerdictUnseen) && session.ipsecInbound != nil && session.ipsecInbound(session.from) {
 		result.Warnings = append(result.Warnings, T("expect.warning.ipsec_transport"))
 		// SYN이 왔어도 보이지 않았을 수 있으므로 오지 않았다고 단정하지 않는다.
@@ -1572,7 +1621,15 @@ func runTCPExpect(args []string, version string) int {
 	if options.common.jsonPath == "-" {
 		liveOutput = os.Stderr
 	}
-	printer := expectLivePrinter{writer: liveOutput, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
+	var liveWriter io.Writer = liveOutput
+	var status *expectStatus
+	// 상태줄은 사람이 보는 터미널에만 그린다. pipe, 파일과 --json -의 stderr 출력은 바뀌지 않는다.
+	if options.common.jsonPath != "-" && isTerminal(os.Stdout) && isTerminal(os.Stderr) {
+		status = newExpectStatus(os.Stdout, terminalWidth, time.Now)
+		status.color = richEnabled(os.Stdout)
+		liveWriter = status
+	}
+	printer := expectLivePrinter{writer: liveWriter, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
 	session := newExpectSession(options.port, options.from, printer.event)
 	session.verbose = options.common.verbose
 	session.until, session.stopAfter = options.until, options.stopAfter
@@ -1580,11 +1637,35 @@ func runTCPExpect(args []string, version string) int {
 	listener := expectListenerState(sockets, listenErr, options.port)
 	session.listener = &listener
 	started := time.Now()
+	statusDone := make(chan struct{})
+	var statusLoop sync.WaitGroup
 	err := runExpectCapture(expectRun{ctx: ctx, port: options.port, session: session, ready: func(dropTrace expectDropTrace) {
 		addresses := expectClientAddresses(session.clientRouteSource(), expectHostInterfaces())
 		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener, until: options.until, stopAfter: options.stopAfter, addresses: addresses})
 		session.start(dropTrace, time.Now())
+		if status != nil {
+			status.update(session.snapshot())
+			statusLoop.Add(1)
+			go func() {
+				defer statusLoop.Done()
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-statusDone:
+						return
+					case <-ticker.C:
+						status.update(session.snapshot())
+					}
+				}
+			}()
+		}
 	}})
+	close(statusDone)
+	statusLoop.Wait()
+	if status != nil {
+		status.close()
+	}
 	target := map[string]interface{}{"input": strconv.Itoa(int(options.port))}
 	if err != nil {
 		report := buildReport(version, started, target, []Result{resultFromError(expectProbeID, started, "capture", err)}, options.common.redact)

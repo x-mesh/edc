@@ -49,6 +49,12 @@ expect:
     socket_drops: "the packet socket dropped %d packets. The counts can be low"
     drop_lost: "the drop trace lost %d events, so kernel drops for this port can be missing"
     untracked: "%d connection attempts were not tracked because too many attempts or sources were live. Narrow the observation with --from"
+    other_ports: "no SYN came for port %[1]d, but SYNs came for other ports: %[2]s. Check the port that the client uses"
+  status:
+    syn: "SYN %d"
+    handshakes: "handshakes %d"
+    drops: "drops %d"
+    other_ports: "other ports: %s"
   evidence:
     sources: "sources"
     return: "return path"

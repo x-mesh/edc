@@ -49,6 +49,12 @@ expect:
     socket_drops: "packet socket が packet %d 件を取りこぼしました。件数は実際より少ない可能性があります"
     drop_lost: "drop の追跡がイベントを %d 件取りこぼしたため、この port の kernel drop が欠けている可能性があります"
     untracked: "接続試行か送信元が多すぎたため、接続試行 %d 件を数えませんでした。--from で観測範囲を絞ってください"
+    other_ports: "port %[1]d には SYN が来ませんでしたが、他の port には来ました: %[2]s。client が接続する port を確認してください"
+  status:
+    syn: "SYN %d"
+    handshakes: "handshake %d"
+    drops: "drop %d"
+    other_ports: "他の port: %s"
   evidence:
     sources: "送信元"
     return: "戻り経路"

@@ -37,6 +37,8 @@ const (
 	expectSweepInterval = 5 * time.Second
 	// expectSourceLimit은 JSON에 남기는 출발지 줄의 상한이다. 공개 port에서는 scanner가 수천 개의 출발지를 만든다.
 	expectSourceLimit = 50
+	// expectClientAddressLimit은 대기 줄에 보이는 이 host 주소의 상한이다.
+	expectClientAddressLimit = 3
 	// expectEvidenceLimit은 terminal 표에 보이는 출발지 줄의 상한이다.
 	expectEvidenceLimit = 20
 	// expectFlowTrackLimit은 동시에 따라가는 연결 시도의 상한이고, expectSourceTrackLimit은 합계를 남기는 출발지의 상한이다.
@@ -818,6 +820,89 @@ func (session *expectSession) start(dropTrace expectDropTrace, now time.Time) {
 	}
 }
 
+// clientRouteSource는 --from으로 돌아가는 경로의 출발 주소다. 이 host가 그 client와 주고받을 때 쓰는 주소라 client가 접속할
+// 주소로 가장 그럴듯하다. 대역이면 대역의 첫 주소로 묻는다. 모르면 빈 문자열이다.
+func (session *expectSession) clientRouteSource() string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.from.IsValid() || session.returnPath == nil {
+		return ""
+	}
+	var route *expectReturnPath
+	if session.from.IsSingleIP() {
+		route = session.lookupRoute(expectSourceKey{remote: session.from.Addr()})
+	} else {
+		found := session.returnPath(session.from.Addr(), netip.Addr{}, "")
+		route = &found
+	}
+	if route == nil || route.Error != "" {
+		return ""
+	}
+	return route.Source
+}
+
+// expectContainerPrefixes는 container와 overlay network가 만드는 interface 이름이다. 이 주소는 대개 이 host 안에서만 닿으므로
+// 대기 줄에서 다른 interface 뒤에 둔다.
+var expectContainerPrefixes = []string{"docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "vxlan", "kube", "cilium", "lxc"}
+
+func expectContainerInterface(name string) bool {
+	for _, prefix := range expectContainerPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectClientAddresses는 대기 줄의 예시 명령에 넣을 이 host의 주소다. --from으로 돌아가는 경로의 출발 주소가 있으면 그것 하나이고,
+// 없으면 기본 경로의 interface, 다른 interface, container interface 순으로 expectClientAddressLimit개까지 고른다. link-local 주소는
+// 다른 망의 client가 쓸 수 없어 뺀다.
+func expectClientAddresses(routeSource string, interfaces []interfaceDetails) []string {
+	if address, err := netip.ParseAddr(routeSource); err == nil && !address.IsUnspecified() {
+		return []string{address.Unmap().String()}
+	}
+	ordered := append([]interfaceDetails(nil), interfaces...)
+	rank := func(iface interfaceDetails) int {
+		switch {
+		case iface.Gateway != "":
+			return 0
+		case expectContainerInterface(iface.Name):
+			return 2
+		}
+		return 1
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return rank(ordered[i]) < rank(ordered[j]) })
+	var addresses []string
+	for _, iface := range ordered {
+		address, err := netip.ParseAddr(iface.Address)
+		if err != nil || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsUnspecified() {
+			continue
+		}
+		addresses = appendUnique(addresses, address.Unmap().String())
+		if len(addresses) == expectClientAddressLimit {
+			break
+		}
+	}
+	return addresses
+}
+
+// expectHostInterfaces는 edc info와 같은 interface 목록에서 carrier가 있는 것만 남긴다. 올라와 있어도 연결이 없는
+// interface(NO-CARRIER인 docker0 같은)의 주소로는 client가 닿지 못한다.
+func expectHostInterfaces() []interfaceDetails {
+	defaultInterface, gateway := collectDefaultRoute()
+	interfaces, err := networkInterfaces(defaultInterface, gateway)
+	if err != nil {
+		return nil
+	}
+	running := interfaces[:0]
+	for _, iface := range interfaces {
+		if link, err := net.InterfaceByName(iface.Name); err == nil && link.Flags&net.FlagRunning != 0 {
+			running = append(running, iface)
+		}
+	}
+	return running
+}
+
 // tick은 packet이 없을 때도 불린다. 도착 interface가 정해진 새 출발지의 돌아가는 경로를 보이고, 오래된 시도를 접는다.
 func (session *expectSession) tick(now time.Time) {
 	session.mu.Lock()
@@ -1293,6 +1378,8 @@ type expectHeader struct {
 	duration  time.Duration
 	dropTrace expectDropTrace
 	listener  *expectListener
+	// addresses는 client가 접속할 이 host의 주소다. 비어 있으면 자리표시를 보인다.
+	addresses []string
 }
 
 func (printer expectLivePrinter) header(header expectHeader) {
@@ -1328,8 +1415,15 @@ func (printer expectLivePrinter) header(header expectHeader) {
 		printer.println(text)
 	}
 	// 시작한 뒤 SYN이 오기 전에는 화면이 멈춘 것처럼 보인다. 무엇을 기다리는지와 client에서 할 일을 알린다.
-	client := "edc tcp check --diagnose " + T("expect.live.this_host") + ":" + strconv.Itoa(int(port))
+	host := T("expect.live.this_host")
+	if len(header.addresses) > 0 {
+		host = header.addresses[0]
+	}
+	client := "edc tcp check --diagnose " + net.JoinHostPort(host, strconv.Itoa(int(port)))
 	printer.println(T("expect.live.waiting", port, style.command(client)))
+	if len(header.addresses) > 1 {
+		printer.println(style.dim(T("expect.live.other_addresses", strings.Join(header.addresses[1:], ", "))))
+	}
 }
 
 func (printer expectLivePrinter) event(event expectEvent) {
@@ -1412,7 +1506,8 @@ func runTCPExpect(args []string, version string) int {
 	session.listener = &listener
 	started := time.Now()
 	err := runExpectCapture(expectRun{ctx: ctx, port: options.port, session: session, ready: func(dropTrace expectDropTrace) {
-		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener})
+		addresses := expectClientAddresses(session.clientRouteSource(), expectHostInterfaces())
+		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener, addresses: addresses})
 		session.start(dropTrace, time.Now())
 	}})
 	target := map[string]interface{}{"input": strconv.Itoa(int(options.port))}

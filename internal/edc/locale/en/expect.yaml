@@ -13,6 +13,7 @@ expect:
     drop_skip: "kernel drop reasons: skip (%s)"
     waiting: "Waiting for SYNs to port %d. Connect from the client now, for example: %s"
     this_host: "<this-host>"
+    other_addresses: "other addresses of this host: %s"
     retransmit: "retransmit %d"
     duplicate: "same packet on another interface"
     handshake_time: "handshake %s"

@@ -673,3 +673,72 @@ func TestExpectResultCarriesTheListener(t *testing.T) {
 		t.Fatalf("listener metric = %s, %v", data, err)
 	}
 }
+
+// 대기 줄의 예시 명령은 client가 실제로 넣을 주소를 쓴다. --from으로 돌아가는 경로의 출발 주소가 있으면 그것이다.
+func TestExpectClientAddresses(t *testing.T) {
+	interfaces := []interfaceDetails{
+		{Name: "docker0", Address: "172.17.0.1"},
+		{Name: "eth0", Address: "10.0.0.5", Gateway: "10.0.0.1"},
+		{Name: "eth1", Address: "169.254.3.4"},
+		{Name: "tailscale0", Address: "100.83.200.248"},
+		{Name: "wg0", Address: "10.9.0.1"},
+	}
+	// container bridge는 이 host 안에서만 닿으므로 뒤로 간다.
+	if got := strings.Join(expectClientAddresses("", interfaces), ","); got != "10.0.0.5,100.83.200.248,10.9.0.1" {
+		t.Errorf("interfaces = %s", got)
+	}
+	if got := strings.Join(expectClientAddresses("100.83.200.248", interfaces), ","); got != "100.83.200.248" {
+		t.Errorf("route source = %s", got)
+	}
+	if got := expectClientAddresses("", nil); len(got) != 0 {
+		t.Errorf("no interfaces = %v", got)
+	}
+}
+
+func TestExpectClientRouteSourceFollowsFrom(t *testing.T) {
+	asked := []string{}
+	for _, from := range []string{"100.64.0.9", "100.64.0.0/10", ""} {
+		scenario := newExpectScenario(from)
+		scenario.session.returnPath = func(remote, local netip.Addr, arrival string) expectReturnPath {
+			asked = append(asked, remote.String())
+			return expectReturnPath{Device: "tailscale0", Source: "100.83.200.248"}
+		}
+		got := scenario.session.clientRouteSource()
+		if from == "" && got != "" {
+			t.Errorf("without --from the route source = %q", got)
+		}
+		if from != "" && got != "100.83.200.248" {
+			t.Errorf("--from %s: route source = %q", from, got)
+		}
+	}
+	if strings.Join(asked, ",") != "100.64.0.9,100.64.0.0" {
+		t.Errorf("asked = %v", asked)
+	}
+	failed := newExpectScenario("100.64.0.9")
+	failed.session.returnPath = func(netip.Addr, netip.Addr, string) expectReturnPath { return expectReturnPath{Error: "no route"} }
+	if got := failed.session.clientRouteSource(); got != "" {
+		t.Errorf("failed lookup = %q", got)
+	}
+}
+
+func TestExpectHeaderShowsRealAddresses(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	var out bytes.Buffer
+	printer := expectLivePrinter{writer: &out, style: newTextStyle(false)}
+	printer.header(expectHeader{port: 8000, dropTrace: expectDropTrace{Status: StatusPass}, addresses: []string{"10.0.0.5", "2001:db8::5", "100.83.200.248"}})
+	text := out.String()
+	if !strings.Contains(text, "edc tcp check --diagnose 10.0.0.5:8000") || strings.Contains(text, "<this-host>") {
+		t.Errorf("waiting line = %q", text)
+	}
+	if !strings.Contains(text, "other addresses of this host: 2001:db8::5, 100.83.200.248") {
+		t.Errorf("other addresses = %q", text)
+	}
+	out.Reset()
+	printer.redact = true
+	printer.header(expectHeader{port: 8000, dropTrace: expectDropTrace{Status: StatusPass}, addresses: []string{"10.0.0.5"}})
+	if strings.Contains(out.String(), "10.0.0.5") || strings.Contains(out.String(), "other addresses") {
+		t.Errorf("redacted header = %q", out.String())
+	}
+}

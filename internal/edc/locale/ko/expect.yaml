@@ -13,6 +13,7 @@ expect:
     drop_skip: "kernel drop 이유: skip (%s)"
     waiting: "port %d에 오는 SYN을 기다립니다. 지금 client에서 접속해 보세요. 예: %s"
     this_host: "<이-host-주소>"
+    other_addresses: "이 host의 다른 주소: %s"
     retransmit: "재전송 %d"
     duplicate: "같은 packet이 다른 interface에도 보임"
     handshake_time: "handshake %s"

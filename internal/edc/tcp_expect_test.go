@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"net"
@@ -599,5 +600,25 @@ func TestExpectTrackingStopsAtTheLimits(t *testing.T) {
 	}
 	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "4") {
 		t.Fatalf("warnings = %q", result.Warnings)
+	}
+}
+
+// 시작 머리말은 무엇을 기다리는지와 client에서 실행할 명령을 알려야 한다. SYN이 오기 전에는 화면이 멈춘 것처럼 보인다.
+func TestExpectHeaderTellsWhatToRunOnTheClient(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	var out bytes.Buffer
+	printer := expectLivePrinter{writer: &out, style: newTextStyle(false)}
+	printer.header(8000, netip.Prefix{}, 0, expectDropTrace{Status: StatusPass})
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("header = %q", out.String())
+	}
+	if !strings.Contains(lines[1], "DROP line") {
+		t.Errorf("drop line must say what it means: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "port 8000") || !strings.Contains(lines[2], "edc tcp check --diagnose <this-host>:8000") {
+		t.Errorf("waiting line = %q", lines[2])
 	}
 }

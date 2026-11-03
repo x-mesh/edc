@@ -1,6 +1,7 @@
 # edc tcp expect の日本語メッセージ。
 expect:
-  prompt_port: "port"
+  prompt_port: "client が接続するこの host の port"
+  prompt_hint: "tcp expect は対象 host で実行します。TCP port に SYN が届くかと、この host がどう応答するかをすべての interface で見ます。\nclient が接続するサービスの port を入力してください。例: 2142。送信元を 1 つに絞るには --from <ip|cidr> を付けます。"
   port_invalid: "port は 1 から 65535 までの数値にしてください: %s"
   from_invalid: "--from には IP アドレスか CIDR 範囲を指定してください: %s"
   duration_range: "--duration は 0s 以上、%s 以下にしてください"
@@ -8,8 +9,10 @@ expect:
   live:
     from: "送信元 %s"
     stop: "停止"
-    drop_on: "kernel drop 理由: 有効"
+    drop_on: "kernel drop 理由: 有効 (kernel が捨てた packet は理由付きの DROP 行に出ます)"
     drop_skip: "kernel drop 理由: skip (%s)"
+    waiting: "port %d への SYN を待っています。いま client から接続してください。例: %s"
+    this_host: "<この-host-のアドレス>"
     retransmit: "再送 %d"
     duplicate: "同じ packet が別の interface にも見えます"
     handshake_time: "handshake %s"

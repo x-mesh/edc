@@ -215,11 +215,14 @@ _edc() {
             grow)
               _arguments $common '(-n --dry-run)'{-n,--dry-run}'[print the plan and exit]' '--yes[skip the confirmation]' '1:mount:_directories'
               ;;
+            detach)
+              _arguments $common '(-n --dry-run)'{-n,--dry-run}'[print the plan and exit]' '--yes[skip the confirmation]' '*:mount:_directories'
+              ;;
             check)
               _arguments $common '1:mount:_directories'
               ;;
             *)
-              _arguments '1:subcommand:(check grow)'
+              _arguments '1:subcommand:(check grow detach)'
               ;;
           esac
           ;;
@@ -428,10 +431,10 @@ _edc() {
       fi ;;
     disk)
       if [[ $COMP_CWORD -eq 2 ]]; then
-        COMPREPLY=($(compgen -W "check grow" -- "$cur"))
+        COMPREPLY=($(compgen -W "check grow detach" -- "$cur"))
       elif [[ $cur == -* ]]; then
         case "${COMP_WORDS[2]}" in
-          grow) COMPREPLY=($(compgen -W "--dry-run --yes $common" -- "$cur")) ;;
+          grow|detach) COMPREPLY=($(compgen -W "--dry-run --yes $common" -- "$cur")) ;;
           *) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
         esac
       else

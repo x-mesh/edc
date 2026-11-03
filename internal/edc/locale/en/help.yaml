@@ -129,15 +129,17 @@ command:
       - "check never changes a route. switch arms a rollback timer first."
       - "status reads /run/edc. rollback --state repeats one state file."
   disk:
-    summary: "Grow a partition and file system after a disk resize"
+    summary: "Grow disks after a resize, detach leftover disk images"
     sub:
-      check: "show the mounts that can grow, change nothing"
+      check: "show growable mounts or leftover images, change nothing"
       grow: "grow a partition and its file system"
+      detach: "detach leftover read-only disk images (macOS)"
     notes:
       - "check reads the layers and changes nothing."
       - "Run check as root to see the size of every layer."
       - "grow needs root. edc does not add sudo itself."
       - "grow cannot be undone. Take a snapshot of the volume first."
+      - "detach works on macOS only. It detaches read-only disk images under /Volumes, for example installer DMGs."
   change:
     summary: "Protected host changes with automatic rollback"
     sub:

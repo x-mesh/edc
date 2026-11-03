@@ -379,7 +379,7 @@ func TestSubcommandUsageKeepsTheOldText(t *testing.T) {
 		"dns":        "edc dns <lookup|compare|config>",
 		"net":        "edc net <interfaces|route|ping|trace>",
 		"route":      "edc route <check|switch|status|rollback>",
-		"disk":       "edc disk <check|grow>",
+		"disk":       "edc disk <check|grow|detach>",
 		"change":     "edc change <apply|status|confirm|rollback>",
 		"completion": "edc completion <zsh|bash|groups>",
 	} {

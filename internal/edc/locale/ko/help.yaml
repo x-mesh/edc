@@ -129,15 +129,17 @@ command:
       - "check는 경로를 바꾸지 않습니다. switch는 먼저 롤백 타이머를 무장합니다."
       - "status는 /run/edc를 읽고, rollback --state는 파일 하나를 다시 실행합니다."
   disk:
-    summary: "디스크 증설 뒤 파티션과 파일시스템 확장"
+    summary: "디스크 증설 뒤 확장, 남은 디스크 이미지 정리"
     sub:
-      check: "늘릴 수 있는 mount 보기, 변경 없음"
+      check: "늘릴 수 있는 mount나 남은 이미지 보기, 변경 없음"
       grow: "파티션과 파일시스템 확장"
+      detach: "남은 읽기 전용 디스크 이미지 떼기 (macOS)"
     notes:
       - "check는 층을 읽기만 하고 아무것도 바꾸지 않습니다."
       - "root로 실행하면 모든 층의 크기가 보입니다."
       - "grow는 root 권한이 필요합니다. sudo는 붙이지 않습니다."
       - "grow는 되돌릴 수 없습니다. 먼저 볼륨 스냅샷을 만드세요."
+      - "detach는 macOS에서만 동작합니다. 설치용 DMG처럼 /Volumes에 붙은 읽기 전용 디스크 이미지를 뗍니다."
   change:
     summary: "자동 롤백을 제공하는 시스템 변경"
     sub:

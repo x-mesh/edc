@@ -576,6 +576,23 @@ func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]di
 			}
 		}
 	}
+	if images := countDiskImages(disks); images > 0 {
+		noun := "disk images"
+		if images == 1 {
+			noun = "disk image"
+		}
+		style.line(writer, style.dim(fmt.Sprintf("    %d %s hidden · edc disk check", images, noun)))
+	}
+}
+
+func countDiskImages(disks []diskDetails) int {
+	count := 0
+	for _, disk := range disks {
+		if disk.Image != "" {
+			count++
+		}
+	}
+	return count
 }
 
 const (
@@ -601,7 +618,7 @@ var diskHiddenRoots = []string{"/dev", "/proc", "/sys"}
 
 // hiddenDisk는 실제 저장 장치를 나타내지 않는 항목이다. os.Stat을 쓰지 않아 어느 platform에서도 검사할 수 있다.
 func hiddenDisk(disk diskDetails) bool {
-	if disk.Total == 0 || diskPseudoDevices[disk.Device] {
+	if disk.Total == 0 || diskPseudoDevices[disk.Device] || disk.Image != "" {
 		return true
 	}
 	for _, prefix := range diskHiddenPrefixes {

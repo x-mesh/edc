@@ -1,7 +1,7 @@
-# disk 명령군(check, grow)의 한국어 메시지.
+# disk 명령군(check, grow, detach)의 한국어 메시지.
 disk:
   skip:
-    linux_only: "디스크 읽기와 확장은 Linux에서만 동작합니다"
+    linux_only: "디스크 확장은 Linux에서만 동작합니다"
   flag:
     dry_run: "아무것도 바꾸지 않고 계획만 출력"
     yes: "확인 생략"
@@ -51,3 +51,18 @@ disk:
       unchanged: "%s를 실행했지만 크기가 바뀌지 않았습니다"
       resume: "같은 명령을 다시 실행하면 실패한 단계부터 이어서 진행합니다."
       interrupted: "신호를 받아 %s 뒤에 멈췄습니다"
+  image:
+    skip:
+      macos_only: "디스크 이미지 떼기는 macOS에서만 동작합니다"
+    check:
+      none: "/Volumes에 붙은 읽기 전용 디스크 이미지가 없습니다"
+      found: "/Volumes에 읽기 전용 디스크 이미지 %d개가 붙어 있습니다. 떼어도 디스크 공간은 늘지 않습니다"
+    error:
+      not_image: "%s는 /Volumes에 붙은 읽기 전용 디스크 이미지가 아닙니다"
+    detach:
+      dry_run: "계획만 출력, 변경 없음: 디스크 이미지 %d개를 뗍니다"
+      question: "디스크 이미지 %d개를 뗄까요?"
+      done: "뗌"
+      failed: "실패: %v"
+      summary: "디스크 이미지 %d/%d개를 뗐습니다"
+      busy: "사용 중인 이미지는 붙은 채로 남습니다. 그 이미지를 쓰는 파일을 닫고 같은 명령을 다시 실행하세요."

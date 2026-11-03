@@ -212,3 +212,20 @@ A mount on a partition that is not last, such as `/boot` in the OCI and Ubuntu c
 
 `grow` asks before it changes the disk. Use `--yes` to skip the question in a script. If you answer no, `grow` stops with exit code `4`.
 
+
+## Leftover disk images
+
+On macOS, installers often leave their DMG attached under `/Volumes`. Each update can attach one more copy, for example `/Volumes/Kiro CLI 1`. `edc info` hides these images and shows only their count. Use `edc disk` to list and detach them. macOS only.
+
+```bash
+edc disk check                       # list the leftover images and their DMG files, change nothing
+edc disk detach -n                   # print the plan, change nothing
+edc disk detach                      # show the plan, ask, then detach
+edc disk detach "/Volumes/Kiro CLI"  # detach one image
+```
+
+`edc` reads the images from `hdiutil info -plist`. A leftover image is a read-only image with a mount under `/Volumes`. `edc` does not touch writable images, because you can keep data on them. It also does not touch system images, for example Xcode simulator runtimes and cryptexes, because they mount outside `/Volumes`.
+
+`detach` runs `hdiutil detach /dev/diskN` for each image. It does not use `-force`. If a file on the image is open, that image stays attached and the result fails. Close the file and run the command again. A detach frees no disk space. Delete the DMG file to free its space.
+
+`detach` asks before it changes anything. Use `--yes` to skip the question in a script. If you answer no, `detach` stops with exit code `4`.

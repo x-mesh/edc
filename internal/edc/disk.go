@@ -525,6 +525,8 @@ func runDisk(args []string, version string) int {
 		return runDiskCheck(args[1:], version)
 	case "grow":
 		return runDiskGrow(args[1:], version)
+	case "detach":
+		return runDiskDetach(args[1:], version)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -547,6 +549,15 @@ func runDiskCheck(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
+	// macOS에는 늘릴 층이 없으므로 check는 떼어도 되는 디스크 이미지를 보인다.
+	if diskImagesSupported() {
+		images, err := readDiskImages(ctx)
+		result := checkDiskImages(images, set.Arg(0))
+		if err != nil {
+			result = resultFromError(diskProbeImages, started, "disk", err)
+		}
+		return emit(options, buildReport(version, started, nil, []Result{result}, options.redact))
+	}
 	system, ok := newDiskSystem()
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported(diskProbeCheck, T("disk.skip.linux_only"))}, options.redact))

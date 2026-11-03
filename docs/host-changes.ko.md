@@ -212,3 +212,20 @@ OCI와 Ubuntu 클라우드 이미지의 `/boot`처럼 마지막이 아닌 파티
 
 `grow`는 디스크를 바꾸기 전에 확인을 받습니다. 스크립트에서는 `--yes`로 질문을 건너뜁니다. 거절하면 exit code `4`로 끝납니다.
 
+
+## 남은 디스크 이미지
+
+macOS에서는 설치 프로그램이 DMG를 `/Volumes`에 붙인 채로 두는 일이 많습니다. 업데이트할 때마다 `/Volumes/Kiro CLI 1`처럼 하나씩 더 붙기도 합니다. `edc info`는 이런 이미지를 숨기고 개수만 보여 줍니다. 목록을 보고 떼려면 `edc disk`를 씁니다. macOS에서만 동작합니다.
+
+```bash
+edc disk check                       # 남은 이미지와 원본 DMG 파일을 보여 줍니다. 아무것도 바꾸지 않습니다
+edc disk detach -n                   # 계획만 출력하고 아무것도 바꾸지 않습니다
+edc disk detach                      # 계획을 보여 주고, 확인을 받은 뒤 뗍니다
+edc disk detach "/Volumes/Kiro CLI"  # 이미지 하나만 뗍니다
+```
+
+`edc`는 `hdiutil info -plist`에서 이미지를 읽습니다. `/Volumes` 아래에 붙은 읽기 전용 이미지만 남은 이미지로 봅니다. 쓸 수 있는 이미지는 사용자가 데이터를 두는 곳일 수 있어 건드리지 않습니다. Xcode simulator runtime과 cryptex 같은 시스템 이미지는 `/Volumes` 밖에 붙으므로 역시 건드리지 않습니다.
+
+`detach`는 이미지마다 `hdiutil detach /dev/diskN`을 실행하고 `-force`는 쓰지 않습니다. 이미지 안의 파일이 열려 있으면 그 이미지는 붙은 채로 남고 결과는 실패로 나옵니다. 파일을 닫고 같은 명령을 다시 실행하세요. 이미지를 떼어도 디스크 공간은 늘지 않습니다. 공간을 비우려면 DMG 파일을 지우세요.
+
+`detach`는 바꾸기 전에 확인을 받습니다. 스크립트에서는 `--yes`로 질문을 건너뜁니다. 거절하면 exit code `4`로 끝납니다.

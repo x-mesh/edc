@@ -17,6 +17,7 @@ join:
     reports: "report  %s + %s"
     arrived_on: "도착 interface %s"
     return_same: "답은 도착 interface(%s)로 나갑니다"
+    return_other: "답은 도착 interface(%[2]s)가 아닌 다른 interface(%[1]s)로 나갑니다"
     latency_rtt: "RTT %s (평균 %s, 연결 %d개)"
     latency_connect: "connect %s (연결 %d개, 추적이 없어 RTT 없음)"
     client_counts: "연결 %d/%d · 거부 %d · 응답 없음 %d · SYN 재전송 %d · client의 drop: %s"
@@ -24,6 +25,10 @@ join:
     target_counts: "SYN 수신 %d · SYN-ACK 송신 %d · RST 송신 %d · handshake %d · kernel drop: %s"
     time: "시작 시각 차이 %s (대상 − client) · %s"
     overlap_no: "두 실행이 겹치지 않습니다 (간격 %s)"
+  rp_filter:
+    off: "rp_filter 0(꺼짐)이라 받아들입니다"
+    loose: "rp_filter 2(loose)라 받아들입니다"
+    strict: "rp_filter 1(strict): kernel이 이 SYN을 버립니다"
   basis:
     trace: "(eBPF 추적)"
     partial: "(일부 추적)"

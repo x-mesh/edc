@@ -112,3 +112,40 @@ func TestPeerSummaryKeepsTheClientErrorWhenUndetermined(t *testing.T) {
 		t.Errorf("the client error must stay next to the undetermined join:\n%s", text)
 	}
 }
+
+// 답이 도착 interface와 다른 곳으로 나가면 두 interface와 rp_filter 판단을 함께 보인다. strict만 SYN을 버린다.
+func TestJoinReturnLineComparesTheArrivalInterface(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	differs := false
+	for mode, want := range map[int]string{
+		0: "replies leave by br0, not by the arrival interface eno2 · rp_filter 0 (off) accepts this",
+		1: "replies leave by br0, not by the arrival interface eno2 · rp_filter 1 (strict): the kernel drops these SYNs",
+		2: "replies leave by br0, not by the arrival interface eno2 · rp_filter 2 (loose) accepts this",
+	} {
+		target := joinTarget{SourceInterface: "eno2", Return: &expectReturnPath{Device: "br0", MatchesArrival: &differs, RPFilter: &expectRPFilter{Effective: mode}}}
+		if got := joinReturnLine(target); got != want {
+			t.Errorf("rp_filter %d: %q, want %q", mode, got, want)
+		}
+	}
+	target := joinTarget{SourceInterface: "eno2", Return: &expectReturnPath{Device: "br0", Via: "20.20.0.1", MatchesArrival: &differs}}
+	if got := joinReturnLine(target); got != "replies leave by br0 via 20.20.0.1, not by the arrival interface eno2" {
+		t.Errorf("via without rp_filter: %q", got)
+	}
+}
+
+// 정상 경로의 서비스 점검은 client가 쓴 이름으로 한다. IP로 접속하면 가상 호스트가 다른 사이트를 줄 수 있다.
+func TestJoinWorksNextUsesTheClientHostName(t *testing.T) {
+	client := joinClient{Host: "jwserver68", Port: "80", Target: "20.20.6.11:80"}
+	target := joinTarget{Local: "20.20.6.11", Port: 80}
+	items := joinChecklist(joinSegmentWorks, client, target)
+	if len(items) == 0 || items[0] != "edc http check http://jwserver68:80" {
+		t.Errorf("checklist = %q", items)
+	}
+	client.Host = ""
+	items = joinChecklist(joinSegmentWorks, client, target)
+	if len(items) == 0 || !strings.HasPrefix(items[0], "edc http check http://20.20.6.11:80") {
+		t.Errorf("without a host name the address must stay: %q", items)
+	}
+}

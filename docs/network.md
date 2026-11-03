@@ -142,6 +142,38 @@ If the client report has `basis: phases`, a drop on the client host is not exclu
 
 `--json` writes one object with `inputs`, `segment`, `status`, `summary`, `warnings`, `checklist`, `client`, `target`, and `time`. `--redact` hides addresses and host names. The exit code is `0` if the path works, `1` for any other segment, and `2` for a usage error or a file that is not an edc report.
 
+The `target` section of the join JSON has the `listener` of the target report. If the target used `--listen`, the segment does not change, and a warning says that the service itself was not tested.
+
+### Run both sides from the client
+
+Use `--peer` to run `edc tcp expect` on the target host over ssh. One command on the client then does the work of the two commands and the join.
+
+```bash
+edc tcp check --diagnose --peer <ssh-host> [--count N] [--interval 1s] [--timeout 5s] [--json <path|->] [--redact] <host:port>
+```
+
+`--peer` implies `--diagnose`. The ssh destination can be an alias or `user@host` from your OpenSSH config. It can differ from `<host:port>`. For example, use a bastion alias for ssh and a private IP for the target.
+
+The peer host must meet these conditions:
+
+- It runs Linux and has edc 0.80.0 or later in the PATH of the login shell.
+- The ssh user is root, or the user can run edc with `sudo -n`.
+- The local ssh agent and known hosts let you connect without a prompt.
+
+If a condition is not met, the command stops before the first connect and tells you the fix. The exit code is `2`.
+
+The command does these steps:
+
+1. It checks the version of edc and the user ID on the peer.
+2. It starts `edc tcp expect --json - --duration <D> <port>` on the peer. `--from` is the source address of this host. If the target address is public and the source address is private, a NAT changes the source. Then the command does not set `--from`.
+3. It waits until the peer starts the capture. Then it connects to the target `--count` times.
+4. It shows the peer lines with the prefix `[<ssh-host>]` between the attempt lines.
+5. It stops the peer, reads its report, and joins the two reports.
+
+The output shows the client result, the peer result, the join verdict, and the checklist. The exit code is `0` if the path works and `1` for any other segment. Push Ctrl-C to stop the attempts. The command then stops the peer, shows the results so far, and exits with `4`. If the ssh connection fails, the peer process stops by itself. `--duration` is a limit in case this step also fails.
+
+`--json client.json` writes three files: `client.json`, `client.target.json`, and `client.join.json`. `--json -` writes one object with `client`, `target`, and `join` to stdout. The live lines then go to stderr. `--redact` hides addresses and host names in the files and in the live lines.
+
 ### Diagnose a TCP path
 
 Run the check several times and get a verdict:
@@ -177,7 +209,7 @@ If you test in a network namespace, use `nsenter --net=/run/netns/<name>`. `ip n
 Run `edc tcp expect` on the destination host. It shows if a SYN arrives and how this host answers.
 
 ```bash
-sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--json <path|->] [--redact] [-v] <port>
+sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] [--stop-after N] [--listen] [--json <path|->] [--redact] [-v] <port>
 ```
 
 - The command runs on Linux only. It needs root or `CAP_NET_RAW`. If not, the exit code is `3`.
@@ -223,6 +255,30 @@ Limits:
 - edc finds the handshake from a last ACK without payload. If the client puts data in that ACK, edc does not see the handshake.
 - edc does not read IPv6 extension headers or IPv4 fragments after the first fragment.
 - The route lookup does not use fwmark or UID rules.
+
+#### Start, stop, and the next step
+
+At the start, edc shows the listener of the port: the process, the PID, and the address. If no process listens, the line says that SYNs get an RST. If the listener is bound to loopback only, edc shows a warning, because SYNs from other hosts get an RST.
+
+The waiting line shows a command for the client with a real address of this host. With `--from`, edc uses the source address of the route back to that address. Without `--from`, edc shows up to 3 IPv4 addresses of interfaces with a carrier. The default route interface is first, and container bridges are last.
+
+- `--until syn` stops 1s after the first SYN, so the reply of this host is in the result.
+- `--until handshake` stops at the first completed handshake.
+- `--stop-after N` stops 1s after the Nth connection attempt. Attempts in that second are also counted.
+
+An early stop is a normal end, and the verdict sets the exit code. `stop_reason` is `duration`, `cancelled`, `until_syn`, `until_handshake`, or `stop_after`. If `--until` is not `syn` or `handshake`, or `--stop-after` is less than 1, the exit code is `2`.
+
+In a terminal, a status line at the bottom shows the elapsed time, SYNs, handshakes, kernel drops, and SYNs for other ports. edc removes the line before the result. edc does not show the status line with `--json -` or when stdout or stderr is not a terminal.
+
+edc counts SYNs to other TCP ports with a second packet socket and keeps one count for each port only. It does not count loopback, forwarded packets, or sources outside `--from`. `other_port_syns` in the metrics has the 5 ports with the most SYNs. If no SYN arrived for the port, edc shows a warning with these ports, because the client can use a different port.
+
+After the result, edc shows the next step for the verdict and the command that joins this report with the client report.
+
+#### Test the path when the service is down
+
+With `--listen`, edc opens a temporary listener on all addresses if no process listens on the port. It accepts each connection and closes it at once, so a reachable path gives `completed` even when the service is down. If a process listens on the port, `--listen` stops with exit code `2`; edc does not take over a port. edc closes the temporary listener at each end: `--duration`, `--until`, `--stop-after`, Ctrl-C, or an error.
+
+The `listener` metric has `state` (`present`, `none`, `unknown`, or `temporary`), `process`, `pid`, `address`, and `scope`.
 
 ### File watching and actions (Linux and macOS)
 

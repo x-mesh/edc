@@ -85,7 +85,7 @@ func runHTTPWatch(args []string) int {
 	intervalText := "1"
 	set.StringVar(&intervalText, "i", intervalText, T("command.watch.option.interval"))
 	set.StringVar(&intervalText, "interval", intervalText, T("command.watch.option.interval"))
-	duration := set.Duration("duration", 0, T("command.watch.option.duration"))
+	duration := durationFlag(set, "duration", 0, T("command.watch.option.duration"))
 	expectStatus := set.Int("expect-status", configuredInt(activeConfig.Defaults.HTTP.ExpectStatus, 0), T("command.http.option.expect_status"))
 	if err := set.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

@@ -27,7 +27,7 @@ edc report diff before.json after.json
 
 `report diff`는 저장한 report 두 개를 비교하며, 악화된 probe가 있으면 exit code `1`을 반환합니다.
 
-공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다. 단위 없는 시간 값은 초로 읽으므로 `--timeout 5`는 `5s`입니다.
 
 ### 이름 조회
 

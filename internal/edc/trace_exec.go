@@ -52,7 +52,7 @@ func runTraceExec(args []string) int {
 	options := execTraceOptions{}
 	set := newFlagSet("trace exec")
 	set.SetOutput(os.Stderr)
-	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&options.process, "process", "", T("command.trace.option.process"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.groupBy, "group-by", "", "process, parent, cgroup, or event")

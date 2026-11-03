@@ -27,7 +27,7 @@ edc report diff before.json after.json
 
 `report diff` compares two saved reports and returns exit code `1` when a probe gets worse.
 
-The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact`. Go `flag` rules put an option before the target.
+The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact`. Go `flag` rules put an option before the target. A time value without a unit is seconds, so `--timeout 5` means `5s`.
 
 ### Name lookup
 

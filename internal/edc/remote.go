@@ -102,7 +102,7 @@ func runRemoteRun(group string, args []string, version string) int {
 	set.StringVar(&remoteOptions.inventoryPath, "inventory", remoteOptions.inventoryPath, T("command.remote.option.inventory"))
 	set.StringVar(&remoteOptions.recipePath, "recipe", remoteOptions.recipePath, T("command.remote.option.recipe"))
 	set.StringVar(&groupFlag, "group", "", T("command.remote.option.group"))
-	set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, T("command.remote.option.connect_timeout"))
+	durationFlagVar(set, &connectTimeout, "connect-timeout", connectTimeout, T("command.remote.option.connect_timeout"))
 	set.IntVar(&outputLimit, "output-limit", outputLimit, T("command.remote.option.output_limit"))
 	set.IntVar(&parallelOverride, "parallel", parallelOverride, T("command.remote.option.parallel"))
 	set.BoolVar(&force, "force", false, T("command.remote.option.force"))

@@ -97,7 +97,7 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	bindCommon(set, &options.common)
 	fromText := ""
 	set.StringVar(&fromText, "from", "", T("command.tcp.option.from"))
-	set.DurationVar(&options.duration, "duration", 0, T("command.tcp.option.duration"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.tcp.option.duration"))
 	set.StringVar(&options.until, "until", "", T("command.tcp.option.until"))
 	set.IntVar(&options.stopAfter, "stop-after", 0, T("command.tcp.option.stop_after"))
 	set.BoolVar(&options.listen, "listen", false, T("command.tcp.option.listen"))

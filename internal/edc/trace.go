@@ -509,8 +509,8 @@ func runTraceProtocol(args []string) int {
 	options := tcpTraceOptions{}
 	set := newFlagSet("trace " + args[0])
 	set.SetOutput(os.Stderr)
-	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
-	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.trace.option.duration"))
+	durationFlagVar(set, &options.slow, "slow", 0, T("command.trace.option.slow"))
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
 	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
 	set.BoolVar(&options.live, "live", false, T("command.trace.option.live"))

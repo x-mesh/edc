@@ -370,7 +370,7 @@ edc trace mysql --raw
 
 JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 로컬 port가 MySQL port이면 서버 쪽 socket이고, 상대 port가 MySQL port이면 client 쪽 socket입니다.
 
-`--slow <duration>`은 `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
+`--slow <duration>`은 `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받고, 단위 없는 숫자는 초로 읽습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
 
 | 보려는 것 | 명령 |
 | --- | --- |

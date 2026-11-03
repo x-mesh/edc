@@ -386,3 +386,27 @@ func TestPeerRunStopsAtPreflightAndEarlyExit(t *testing.T) {
 		t.Fatalf("early exit: exit %d, %s", code, stderr)
 	}
 }
+
+// 원격 expect의 종료 안내는 report를 손으로 합치라고 시킨다. --peer는 스스로 합치므로 그 줄을 보이지 않는다.
+func TestPeerLineShownHidesTheRemoteNextSteps(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range []string{"en", "ko"} {
+		setLanguage(language)
+		hidden := []string{
+			T("expect.next.step", T("expect.next.rst")),
+			T("expect.next.join_rerun", "edc report join <client.json> target.json"),
+			T("expect.live.waiting", 2171, "edc tcp check --diagnose 10.0.0.1:2171"),
+		}
+		for _, line := range hidden {
+			if peerLineShown(line) {
+				t.Errorf("%s: %q is shown", language, line)
+			}
+		}
+		for _, line := range []string{T("expect.live.drop_on"), "12:00:00.000  SYN in  eth0  10.0.0.2:5000 → 10.0.0.1:2171"} {
+			if !peerLineShown(line) {
+				t.Errorf("%s: %q is hidden", language, line)
+			}
+		}
+	}
+}

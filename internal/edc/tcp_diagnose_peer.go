@@ -361,9 +361,15 @@ func (lines *peerLines) earlyText() string {
 	return strings.TrimSpace(strings.Join(lines.early, "\n"))
 }
 
-// peerLineShown은 원격 expect가 client에서 실행할 명령을 알리는 대기 줄을 뺀다. --peer는 그 명령을 이미 실행하고 있다.
+// peerLineShown은 원격 expect가 사람에게 시키는 줄을 뺀다. client에서 실행할 명령을 알리는 대기 줄과, 끝난 뒤 report를
+// 합치라는 안내다. --peer는 그 명령을 이미 실행하고 결과도 스스로 합치므로, 두 줄은 틀린 지시가 된다. 원격은 이 host와
+// 같은 언어로 실행하므로 접두사를 이 host의 번역으로 맞춘다.
 func peerLineShown(line string) bool {
-	return !strings.Contains(line, "edc tcp check --diagnose")
+	if strings.Contains(line, "edc tcp check --diagnose") || strings.Contains(line, "edc report join") {
+		return false
+	}
+	step, _, _ := strings.Cut(T("expect.next.step"), "%s")
+	return step == "" || !strings.HasPrefix(line, step)
 }
 
 // peerExpect는 시작된 원격 expect다. stop이 입력을 닫고 report를 받는다.

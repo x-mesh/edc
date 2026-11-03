@@ -38,7 +38,7 @@ diagnose:
     phases: "이벤트 추적을 건너뛰어서 연결 phase만으로 판정했습니다: %s"
     partial: "이벤트 추적의 일부만으로 판정했습니다: %s"
   verdict:
-    connected: "%d번 모두 재전송이나 지연 없이 연결했습니다. TCP 경로와 IPsec은 정상입니다. 다음으로 TLS, 애플리케이션, LB backend를 확인합니다"
+    connected: "%d번 모두 재전송이나 지연 없이 연결했습니다. TCP 경로는 정상입니다. 다음으로 TLS, 애플리케이션, LB backend를 확인합니다"
     degraded: "%d번 모두 연결했지만 문제가 보였습니다 (%s). tunnel 품질, MTU/MSS, 비대칭 경로를 의심합니다"
     intermittent: "%d/%d번만 연결했습니다 (%s). 실패하는 LB backend나 시도마다 바뀌는 경로를 의심합니다"
     local_drop: "이 host가 이 흐름의 packet을 버렸습니다 (%s). 이 host를 먼저 의심합니다: NETFILTER_DROP이면 firewall, 그 밖에는 이유 이름이 가리키는 kernel 단계입니다"
@@ -52,12 +52,13 @@ diagnose:
   next:
     on_host: "%s에서 실행"
   peer:
+    cancelled_early: "첫 연결을 시도하기 전에 멈췄으므로 판정할 결과가 없습니다"
     invalid: "--peer에는 host나 user@host 같은 ssh 접속 대상을 줍니다. %q는 쓸 수 없습니다"
     ssh_failed: "ssh로 %s에 접속하지 못했습니다: %s"
     edc_missing: "%s에 edc가 설치되어 있지 않습니다. 그 host에 설치한 뒤 이 명령을 다시 실행합니다: %s"
     version_unknown: "%s의 edc가 version을 알려 주지 않았습니다: %s"
     version_old: "edc %s(%s)는 --peer에 필요한 %s보다 오래되었습니다. %s에서 edc update를 실행합니다"
-    sudo_password: "%s에서 tcp expect를 실행하려면 root나 CAP_NET_RAW가 필요한데, sudo가 password를 묻습니다 (%s). ssh 접속 대상을 root@%s로 바꾸거나, %s를 password 없이 sudo로 실행할 수 있게 합니다"
+    sudo_password: "%s에서 tcp expect를 실행하려면 root나 CAP_NET_RAW가 필요한데, sudo가 password를 묻습니다 (%s). ssh 접속 대상을 root@%s 형태로 바꾸거나, %s를 password 없이 sudo로 실행할 수 있게 합니다"
     not_ready: "%s의 tcp expect가 %s 안에 시작하지 않았습니다: %s"
     ended: "%s의 tcp expect가 시작하기 전에 끝났습니다 (exit %s): %s"
     no_report: "%s의 tcp expect가 report를 돌려주지 않았습니다 (exit %s): %s"

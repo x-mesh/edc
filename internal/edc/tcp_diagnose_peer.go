@@ -382,6 +382,10 @@ func peerLineShown(line string) bool {
 	if strings.Contains(line, "edc tcp check --diagnose") || strings.Contains(line, "edc report join") {
 		return false
 	}
+	// 원격 결과 줄 아래의 next:는 이 host의 판정과 join 확인 항목이 이미 다룬다. 두 번 보이면 어느 쪽에서 실행할지 헷갈린다.
+	if strings.HasPrefix(strings.TrimSpace(line), "next:") {
+		return false
+	}
 	step, _, _ := strings.Cut(T("expect.next.step"), "%s")
 	return step == "" || !strings.HasPrefix(line, step)
 }
@@ -581,8 +585,7 @@ func runTCPDiagnosePeer(ctx context.Context, target diagnoseTarget, options tcpD
 func (run peerRun) execute(ctx context.Context) int {
 	capture := run.runner.Capture(ctx, run.name, peerRemoteCommand(peerPreflightScript(run.language)), peerPreflightTimeout, remoteOutputLimit)
 	if ctx.Err() != nil {
-		fmt.Fprintln(run.stderr, errProbeCancelled)
-		return 4
+		return run.cancelledEarly()
 	}
 	preflight, ok := parsePeerPreflight(capture.Stdout)
 	if !ok {
@@ -608,8 +611,7 @@ func (run peerRun) execute(ctx context.Context) int {
 	expect, err := startPeerExpect(ctx, run.runner, run.name, peerRemoteCommand(script), run.target.port, printer.remote)
 	if err != nil {
 		if ctx.Err() != nil {
-			fmt.Fprintln(run.stderr, errProbeCancelled)
-			return 4
+			return run.cancelledEarly()
 		}
 		fmt.Fprintln(run.stderr, err)
 		return 2
@@ -643,6 +645,14 @@ func (run peerRun) execute(ctx context.Context) int {
 		return 4
 	}
 	return code
+}
+
+// cancelledEarly는 첫 연결 시도 전에 Ctrl-C로 멈춘 경우다. 원격이 막 준비된 순간과 겹치면 원격 줄만 보이고 끝나므로,
+// 판정할 결과가 없다는 것을 알린다.
+func (run peerRun) cancelledEarly() int {
+	fmt.Fprintln(run.stderr, T("diagnose.peer.cancelled_early"))
+	fmt.Fprintln(run.stderr, errProbeCancelled)
+	return 4
 }
 
 // printClient는 원격 report가 없을 때 이 host의 결과만 보인다.
@@ -714,8 +724,9 @@ func (run peerRun) printSummary(client, target Report, join reportJoin) {
 	fmt.Fprint(run.stdout, formatResultLine(local, run.color))
 	printResultDetail(run.stdout, local, verbose, run.color)
 	fmt.Fprint(run.stdout, formatPeerLine(newTextStyle(run.color).dim("["+run.name+"]")+" ", formatResultLine(remote, run.color), run.options.common.redact))
-	// expect의 실패에는 Error가 없어 실패 상자가 비므로 next와 warning만 보인다.
-	printResultDetail(run.stdout, Result{Probe: remote.Probe, Next: remote.Next, Warnings: remote.Warnings}, verbose, run.color)
+	// expect의 실패에는 Error가 없어 실패 상자가 비므로 warning만 보인다. 원격의 next는 이 host의 next와 join 확인 항목이
+	// 이미 다루고, 어느 host에서 실행할지도 적혀 있지 않아 두 번 보이면 헷갈린다.
+	printResultDetail(run.stdout, Result{Probe: remote.Probe, Warnings: remote.Warnings}, verbose, run.color)
 	fmt.Fprintln(run.stdout)
 	printReportJoin(run.stdout, join)
 }

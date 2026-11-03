@@ -220,9 +220,11 @@ func TestPeerJSONPathsAndLinePrefix(t *testing.T) {
 type fakePeerRunner struct {
 	preflight string
 	header    bool
-	report    []byte
-	commands  []string
-	mu        sync.Mutex
+	// silent는 원격이 header를 내지 않고 입력이 닫힐 때까지 기다리는 경우다. 원격 준비를 기다리는 중의 취소를 만든다.
+	silent   bool
+	report   []byte
+	commands []string
+	mu       sync.Mutex
 }
 
 func (runner *fakePeerRunner) Capture(_ context.Context, _, command string, _ time.Duration, _ int) remoteCapture {
@@ -239,6 +241,10 @@ func (runner *fakePeerRunner) Start(_, command string, stdout, stderr io.Writer)
 	session := &fakePeerSession{closed: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(session.done)
+		if runner.silent {
+			<-session.closed
+			return
+		}
 		if !runner.header {
 			_, _ = stderr.Write([]byte("tcp expect needs root\n"))
 			return
@@ -445,5 +451,80 @@ func TestPeerLinesBoundsWhatTheyKeep(t *testing.T) {
 	_, _ = lines.Write(bytes.Repeat([]byte("x"), peerLineLimit+10))
 	if len(lines.partial) != 0 {
 		t.Errorf("partial = %d bytes, want 0 after the limit", len(lines.partial))
+	}
+}
+
+// 원격 결과 줄 아래의 next:는 이 host의 판정과 겹친다. --peer 화면에는 한 번만 보인다.
+func TestPeerLineShownHidesTheRemoteNextLine(t *testing.T) {
+	if peerLineShown("      next: edc listen") {
+		t.Error("the remote next line is shown")
+	}
+	if !peerLineShown("FAIL  tcp.expect                10.0.0.5, eth0: SYN 3 arrived") {
+		t.Error("the remote result line is hidden")
+	}
+}
+
+// 원격 report에서 그리는 대상 결과 줄도 next를 보이지 않는다. 이 host의 next와 겹친다.
+func TestPeerSummaryShowsOneNextLine(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	report := peerTestTargetReport(t, expectVerdictRST)
+	var parsed Report
+	if err := json.Unmarshal(report, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	parsed.Results[0].Next = "edc listen"
+	report, _ = json.Marshal(parsed)
+	runner := &fakePeerRunner{preflight: preflight, header: true, report: report}
+	run, stdout, _ := peerTestRun(t, runner, "")
+	run.execute(context.Background())
+	if strings.Contains(stdout.String(), "next: edc listen\n") {
+		t.Errorf("the remote next line is shown:\n%s", stdout)
+	}
+}
+
+// 첫 연결 시도 전에 멈추면 취소 한 줄만으로는 무엇이 됐는지 알 수 없다. 판정할 결과가 없다고 알린다.
+func TestPeerRunSaysWhenItStopsBeforeTheFirstAttempt(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	runner := &fakePeerRunner{preflight: preflight, header: true, report: peerTestTargetReport(t, expectVerdictCompleted)}
+	run, _, stderr := peerTestRun(t, runner, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if code := run.execute(ctx); code != 4 {
+		t.Fatalf("exit = %d, want 4", code)
+	}
+	if !strings.Contains(stderr.String(), T("diagnose.peer.cancelled_early")) {
+		t.Errorf("stderr lacks the early-stop note:\n%s", stderr)
+	}
+}
+
+// 원격이 준비되기를 기다리는 동안 Ctrl-C가 오면, 원격을 멈추고 시도 전에 멈췄다고 알린다. jw-server에서 원격 준비와
+// Ctrl-C가 겹쳤을 때 결과 없이 끝나던 경우다.
+func TestPeerRunSaysWhenItStopsWhileWaitingForTheRemote(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	runner := &fakePeerRunner{preflight: preflight, silent: true}
+	run, stdout, stderr := peerTestRun(t, runner, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(30*time.Millisecond, cancel)
+	if code := run.execute(ctx); code != 4 {
+		t.Fatalf("exit = %d, want 4", code)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("the remote expect did not start: %q", runner.commands)
+	}
+	if !strings.Contains(stderr.String(), T("diagnose.peer.cancelled_early")) {
+		t.Errorf("stderr lacks the early-stop note:\n%s", stderr)
+	}
+	if strings.Contains(stdout.String(), "route") {
+		t.Errorf("no local attempt may start:\n%s", stdout)
 	}
 }

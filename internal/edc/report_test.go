@@ -155,8 +155,8 @@ func TestHTTPStatusVerdict(t *testing.T) {
 	if status, err := httpStatusVerdict(404, 0); status != StatusWarn || err != nil {
 		t.Fatalf("default 4xx = %v %#v", status, err)
 	}
-	if status, _ := httpStatusVerdict(503, 0); status != StatusFail {
-		t.Fatalf("default 5xx = %v", status)
+	if status, err := httpStatusVerdict(503, 0); status != StatusFail || err == nil || err.Kind != "status" || err.Message == "" {
+		t.Fatalf("default 5xx = %v %#v", status, err)
 	}
 }
 

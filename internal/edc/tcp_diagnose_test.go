@@ -293,3 +293,17 @@ func TestDiagnoseTraceRunGuardsSkipReasons(t *testing.T) {
 		t.Fatal("tcpTraced and dropTraced should follow the skip reasons")
 	}
 }
+
+// --count와 --interval은 diagnose에만 있는 값이다. tcp check에 주면 flag 오류 대신 diagnose로 넘긴다.
+func TestTCPCheckCountOrIntervalImpliesDiagnose(t *testing.T) {
+	for _, args := range [][]string{{"host:80", "--count", "10"}, {"--count=3", "host:80"}, {"-interval", "2s", "host:80"}} {
+		if !hasValueFlag(args, "count") && !hasValueFlag(args, "interval") {
+			t.Errorf("%v: not detected", args)
+		}
+	}
+	for _, args := range [][]string{{"host:80"}, {"--", "--count", "3"}, {"---count", "3"}, {"--counter", "3"}} {
+		if hasValueFlag(args, "count") {
+			t.Errorf("%v: detected", args)
+		}
+	}
+}

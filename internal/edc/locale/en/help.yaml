@@ -49,8 +49,8 @@ command:
     summary: "TCP connection check"
     option:
       diagnose: "repeat the check while tracing TCP events and kernel drops, then name the likely segment"
-      count: "--diagnose: number of attempts (default 5)"
-      interval: "--diagnose: time between attempts (default 1s)"
+      count: "number of attempts (default 5); implies --diagnose"
+      interval: "time between attempts (default 1s); implies --diagnose"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
       ports: "scan: ports and ranges to check, with commas between them (default: the sensitive ports of audit and the common service ports)"

@@ -49,8 +49,8 @@ command:
     summary: "TCP 接続の確認"
     option:
       diagnose: "接続を繰り返しながら TCP イベントと kernel drop を追跡し、疑わしい区間を示します"
-      count: "--diagnose: 試行回数 (既定 5)"
-      interval: "--diagnose: 試行間隔 (既定 1s)"
+      count: "試行回数 (既定 5)、指定すると --diagnose で実行"
+      interval: "試行間隔 (既定 1s)、指定すると --diagnose で実行"
       from: "expect: このアドレスや範囲から来た packet だけを数えます"
       duration: "expect: 待つ時間、省略すると Ctrl-C まで"
       ports: "scan: 確認する port と範囲、カンマ区切り (既定: audit の要注意 port と一般的なサービス port)"

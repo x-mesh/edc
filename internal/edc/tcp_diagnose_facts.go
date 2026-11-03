@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -442,7 +443,8 @@ func diagnoseServiceNext(hostPort, port string) string {
 	case diagnoseTLSPorts[port]:
 		return "edc tls check " + hostPort
 	case diagnoseHTTPPorts[port]:
-		return "edc http check http://" + hostPort
+		// URL은 IPv6 zone의 %를 %25로 써야 한다. 그대로 붙이면 http check가 URL을 읽지 못한다.
+		return "edc http check " + (&url.URL{Scheme: "http", Host: hostPort}).String()
 	}
 	return ""
 }

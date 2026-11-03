@@ -38,7 +38,7 @@ diagnose:
     phases: "イベント追跡を省いたため、接続 phase だけで判定しました: %s"
     partial: "イベント追跡の一部だけで判定しました: %s"
   verdict:
-    connected: "%d 回すべて再送や遅延なしで接続しました。TCP 経路は正常です。次は TLS、アプリケーション、LB backend を確認します"
+    connected: "%d 回すべて再送や遅延なしで接続しました。TCP 経路は正常です。次はサービス、アプリケーション、LB backend を確認します"
     degraded: "%d 回すべて接続しましたが、問題がありました (%s)。tunnel の品質、MTU/MSS、非対称経路を疑います"
     intermittent: "%d/%d 回だけ接続しました (%s)。失敗する LB backend か、試行ごとに変わる経路を疑います"
     local_drop: "この host がこのフローの packet を破棄しました (%s)。まずこの host を疑います: NETFILTER_DROP なら firewall、それ以外は理由名が示す kernel の処理です"

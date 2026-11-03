@@ -30,7 +30,7 @@ func runInfo(args []string, version string) int {
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Info
 	includePublic := set.Bool("public", configuredBool(config.Public, true), T("command.info.option.public"))
-	timeout := set.Duration("timeout", configuredDurationFallback(config.Timeout, activeConfig.Defaults.Common.Timeout, 3*time.Second), T("command.info.option.timeout"))
+	timeout := durationFlag(set, "timeout", configuredDurationFallback(config.Timeout, activeConfig.Defaults.Common.Timeout, 3*time.Second), T("command.info.option.timeout"))
 	verbose := configuredBoolFallback(config.Verbose, activeConfig.Defaults.Common.Verbose, false)
 	set.BoolVar(&verbose, "verbose", verbose, T("command.info.option.verbose"))
 	set.BoolVar(&verbose, "v", verbose, T("option.verbose"))

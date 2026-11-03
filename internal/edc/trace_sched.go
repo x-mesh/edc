@@ -164,8 +164,8 @@ func runTraceSched(args []string) int {
 	options := schedTraceOptions{}
 	set := newFlagSet("trace sched")
 	set.SetOutput(os.Stderr)
-	set.DurationVar(&options.duration, "duration", 0, "trace duration")
-	set.DurationVar(&options.slow, "slow", schedMinimumLatency, "minimum span latency with a unit, such as 20us, 500us, or 2ms")
+	durationFlagVar(set, &options.duration, "duration", 0, "trace duration")
+	durationFlagVar(set, &options.slow, "slow", schedMinimumLatency, "minimum span latency, such as 20us, 500us, or 2ms; a bare number is seconds")
 	set.StringVar(&options.process, "process", "", "process name")
 	set.StringVar(&options.containerRef, "container", "", "container name or ID")
 	set.StringVar(&options.groupBy, "group-by", "", "process, cgroup, or event")

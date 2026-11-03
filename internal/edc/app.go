@@ -288,8 +288,8 @@ func runTCP(args []string, version string) int {
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
-	// --count와 --interval은 반복 시도의 값이라 diagnose에만 있다. 주면 반복하라는 뜻이므로 diagnose로 실행한다.
-	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval"):
+	// --count, --interval, --peer는 diagnose에만 있는 값이다. 주면 반복하거나 양쪽을 함께 보라는 뜻이므로 diagnose로 실행한다.
+	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer"):
 		return runTCPDiagnose(args[1:], version)
 	}
 	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", T("cli.prompt.host_port"), func(ctx context.Context, target string) Result {
@@ -599,7 +599,7 @@ func runSimpleWithOptions(args []string, version, name, probeID string, options 
 
 func bindCommon(set *flag.FlagSet, options *commonOptions) {
 	set.StringVar(&options.jsonPath, "json", options.jsonPath, T("option.json"))
-	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
+	durationFlagVar(set, &options.timeout, "timeout", options.timeout, T("option.timeout"))
 	set.BoolVar(&options.verbose, "verbose", options.verbose, T("option.verbose"))
 	set.BoolVar(&options.verbose, "v", options.verbose, T("option.verbose"))
 	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))

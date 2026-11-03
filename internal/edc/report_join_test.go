@@ -320,3 +320,59 @@ func TestRunReportJoinAcceptsEitherOrderAndRedacts(t *testing.T) {
 		}
 	}
 }
+
+// 대상이 --listen으로 연 임시 listener가 답했으면 경로는 동작해도 서비스는 시험하지 않은 것이다. 구간은 그대로 두고 경고를 남긴다.
+func TestJoinReportsWarnsAboutATemporaryListener(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	started := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	completed := joinTestSource("10.8.0.2", expectVerdictCompleted)
+	completed.Handshakes, completed.RSTOut = 3, 0
+	cases := []struct {
+		client, target, listener, segment, warning string
+	}{
+		{diagnoseVerdictConnected, expectVerdictCompleted, expectListenerTemporary, joinSegmentWorks, "the path works. The service itself was not tested"},
+		{diagnoseVerdictDegraded, expectVerdictCompleted, expectListenerTemporary, joinSegmentPathQuality, "the path works. The service itself was not tested"},
+		{diagnoseVerdictNoReply, expectVerdictNoACK, expectListenerTemporary, joinSegmentReturnPath, "a temporary listener of edc answered"},
+		{diagnoseVerdictNoReply, expectVerdictNoSYN, expectListenerTemporary, joinSegmentBetweenHosts, "the temporary listener sent no SYN-ACK"},
+		{diagnoseVerdictConnected, expectVerdictCompleted, expectListenerPresent, joinSegmentWorks, ""},
+		{diagnoseVerdictConnected, expectVerdictCompleted, "", joinSegmentWorks, ""},
+	}
+	for _, test := range cases {
+		source := completed
+		if test.target != expectVerdictCompleted {
+			source = joinTestSource("10.8.0.2", test.target)
+		}
+		// synack_no_ack는 대상이 SYN-ACK를 보냈다는 판정이다. 임시 listener가 답했다는 경고는 그 수를 근거로 한다.
+		if test.target == expectVerdictNoACK {
+			source.SYNACKOut, source.RSTOut = 3, 0
+		}
+		if test.target == expectVerdictNoSYN {
+			source.SYNIn, source.Attempts, source.RSTOut, source.SYNRetransmits = 0, 0, 0, 0
+		}
+		targetResult := joinTestTarget(test.target, started, []expectSource{source})
+		if test.listener != "" {
+			targetResult.Metrics["listener"] = map[string]interface{}{"state": test.listener, "process": "edc", "pid": float64(4242), "address": "[::]:5432"}
+		}
+		join := joinReports(
+			joinTestSaved("c.json", started, 12000, "client-host", joinTestClient(test.client, diagnoseBasisTrace, started)),
+			joinTestSaved("t.json", started, 30000, "target-host", targetResult),
+		)
+		if join.Segment != test.segment {
+			t.Errorf("%s/%s: segment = %q", test.client, test.listener, join.Segment)
+		}
+		warnings := strings.Join(join.Warnings, "\n")
+		if test.warning == "" && strings.Contains(warnings, "--listen") {
+			t.Errorf("%s/%s: unexpected warning %q", test.client, test.listener, warnings)
+		}
+		if test.warning != "" && !strings.Contains(warnings, test.warning) {
+			t.Errorf("%s/%s: warnings = %q", test.client, test.listener, warnings)
+		}
+		data, _ := json.Marshal(join)
+		hasListener := strings.Contains(string(data), `"listener":{"state":"`+test.listener+`"`)
+		if (test.listener != "") != hasListener {
+			t.Errorf("%s/%s: listener in JSON = %v: %s", test.client, test.listener, hasListener, data)
+		}
+	}
+}

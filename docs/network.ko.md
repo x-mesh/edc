@@ -27,7 +27,7 @@ edc report diff before.json after.json
 
 `report diff`는 저장한 report 두 개를 비교하며, 악화된 probe가 있으면 exit code `1`을 반환합니다.
 
-공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다. 단위 없는 시간 값은 초로 읽으므로 `--timeout 5`는 `5s`입니다.
 
 ### 이름 조회
 
@@ -128,6 +128,38 @@ client report의 `basis`가 `phases`면 client host 자신의 drop을 배제하�
 
 `--json`은 `inputs`, `segment`, `status`, `summary`, `warnings`, `checklist`, `client`, `target`, `time`을 담은 객체 하나를 씁니다. `--redact`는 주소와 host 이름을 가립니다. exit code는 경로가 동작하면 `0`, 다른 구간이면 `1`, usage 오류나 edc report가 아닌 파일이면 `2`입니다.
 
+join JSON의 `target`에는 대상 report의 `listener`가 들어갑니다. 대상이 `--listen`으로 실행했으면 구간 판정은 그대로이고, 서비스 자체는 시험하지 않았다는 경고가 붙습니다.
+
+### client에서 양쪽 함께 실행
+
+`--peer`를 주면 대상 host의 `edc tcp expect`를 ssh로 함께 실행합니다. client에서 명령 하나로 두 명령과 join까지 마칩니다.
+
+```bash
+edc tcp check --diagnose --peer <ssh-host> [--count N] [--interval 1s] [--timeout 5s] [--json <path|->] [--redact] <host:port>
+```
+
+`--peer`를 주면 `--diagnose`로 실행합니다. ssh 접속 대상에는 OpenSSH 설정의 별칭이나 `user@host`를 씁니다. 이 값은 `<host:port>`와 달라도 됩니다. 예를 들어 ssh는 bastion 별칭으로 접속하고 대상은 사설 IP로 줄 수 있습니다.
+
+peer host는 다음 조건을 갖춰야 합니다.
+
+- Linux이고, 로그인 shell의 PATH에 edc 0.80.0 이상이 있습니다.
+- ssh 사용자가 root이거나, 그 사용자가 `sudo -n`으로 edc를 실행할 수 있습니다.
+- 로컬 ssh agent와 known hosts로 묻지 않고 접속할 수 있습니다.
+
+조건이 맞지 않으면 첫 연결 전에 멈추고 고칠 방법을 알려 줍니다. exit code는 `2`입니다.
+
+명령은 다음 순서로 동작합니다.
+
+1. peer의 edc version과 사용자 ID를 확인합니다.
+2. peer에서 `edc tcp expect --json - --duration <D> <port>`를 시작합니다. `--from`에는 이 host의 출발지 주소를 줍니다. 대상 주소가 공인 주소이고 출발지 주소가 사설 주소면 NAT가 출발지를 바꾸므로 `--from`을 주지 않습니다.
+3. peer가 capture를 시작할 때까지 기다린 뒤 대상에 `--count`번 연결합니다.
+4. 시도 줄 사이에 peer의 줄을 `[<ssh-host>]`를 붙여 보여 줍니다.
+5. peer를 멈추고 그 report를 받아 두 report를 합칩니다.
+
+출력에는 client 결과, peer 결과, join 판정과 장비 담당자가 볼 항목이 나옵니다. 경로가 정상이면 exit code는 `0`이고, 그 밖의 판정이면 `1`입니다. Ctrl-C를 누르면 시도를 멈추고 peer도 멈춘 뒤 그때까지의 결과를 보여 주고 `4`로 끝납니다. ssh 연결이 끊어지면 peer의 process도 스스로 멈춥니다. 이마저 실패할 때를 대비해 `--duration`으로 실행 시간을 제한합니다.
+
+`--json client.json`은 `client.json`, `client.target.json`, `client.join.json` 세 파일을 씁니다. `--json -`은 `client`, `target`, `join`을 담은 객체 하나를 stdout에 쓰고, 실시간 줄은 stderr로 보냅니다. `--redact`는 파일과 실시간 줄의 주소와 host 이름을 가립니다.
+
 ### TCP 경로 진단
 
 연결을 여러 번 시도하고 의심 구간을 판정합니다.
@@ -161,7 +193,7 @@ network namespace에서 시험할 때는 `nsenter --net=/run/netns/<이름>`을 
 목적지 host에서 `edc tcp expect`를 실행하면 SYN이 이 host에 도착하는지, host가 어떻게 답하는지 보입니다.
 
 ```bash
-sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--json <path|->] [--redact] [-v] <port>
+sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] [--stop-after N] [--listen] [--json <path|->] [--redact] [-v] <port>
 ```
 
 - Linux에서만 실행하며 root나 `CAP_NET_RAW`가 필요합니다. 없으면 exit code `3`으로 멈춥니다.
@@ -194,6 +226,30 @@ eBPF와 `skb/kfree_skb` tracepoint를 쓸 수 있으면 `NO_SOCKET`, `IP_RPFILTE
 `--json`은 probe `tcp.expect` 하나를 담은 report를 씁니다. `--json -`이면 실시간 줄은 stderr로 갑니다. 저장한 파일은 `edc report show`로 다시 볼 수 있습니다.
 
 한계: 마지막 ACK에 data를 실은 client의 handshake는 보지 못합니다. IPv6 확장 header와 IPv4의 두 번째 이후 fragment는 읽지 않습니다. 경로 조회는 fwmark와 UID 규칙을 재현하지 않습니다.
+
+#### 시작, 멈춤, 다음 단계
+
+시작할 때 이 port의 listener(process, PID, 주소)를 보입니다. 기다리는 process가 없으면 SYN이 RST를 받는다고 알립니다. listener가 loopback에만 묶여 있으면 다른 host의 SYN은 RST를 받으므로 경고합니다.
+
+대기 줄에는 이 host의 실제 주소로 만든 client 명령이 나옵니다. `--from`이 있으면 그 주소로 돌아가는 경로의 출발 주소를 씁니다. `--from`이 없으면 carrier가 있는 interface의 IPv4 주소를 3개까지 보이며, 기본 경로 interface가 앞이고 container bridge는 뒤입니다.
+
+- `--until syn`은 첫 SYN을 본 1초 뒤에 멈춥니다. 그래서 이 host의 답이 결과에 남습니다.
+- `--until handshake`는 첫 handshake 완료에서 멈춥니다.
+- `--stop-after N`은 N번째 연결 시도를 본 1초 뒤에 멈추며, 그 1초 사이의 시도도 셉니다.
+
+일찍 멈춰도 정상 종료이고, 종료 코드는 판정이 정합니다. `stop_reason`은 `duration`, `cancelled`, `until_syn`, `until_handshake`, `stop_after` 중 하나입니다. `--until`이 `syn`이나 `handshake`가 아니거나 `--stop-after`가 1보다 작으면 종료 코드는 `2`입니다.
+
+터미널에서는 맨 아래 상태 줄에 경과 시간, SYN, handshake, kernel drop, 다른 port의 SYN을 보이고, 결과를 쓰기 전에 지웁니다. `--json -`이거나 stdout이나 stderr가 터미널이 아니면 상태 줄을 그리지 않습니다.
+
+다른 TCP port로 온 SYN은 두 번째 packet socket으로 port별 수만 셉니다. loopback, 이 host를 지나가기만 하는 packet, `--from` 밖의 출발지는 세지 않습니다. metrics의 `other_port_syns`에는 SYN이 많은 port 5개가 들어갑니다. 이 port로 온 SYN이 없으면 client가 다른 port를 쓰고 있을 수 있으므로 그 port들을 경고에 보입니다.
+
+결과 뒤에는 판정별 다음 단계와, client report와 합치는 명령을 보입니다.
+
+#### 서비스가 내려가 있을 때 경로만 시험하기
+
+`--listen`을 주면, 기다리는 process가 없을 때 모든 주소에서 임시 listener를 엽니다. 연결을 받자마자 닫으므로, 서비스가 내려가 있어도 경로가 열려 있으면 판정은 `completed`입니다. 이미 기다리는 process가 있으면 `--listen`은 종료 코드 `2`로 멈추고 port를 빼앗지 않습니다. 임시 listener는 `--duration`, `--until`, `--stop-after`, Ctrl-C, 오류 중 어떤 경로로 끝나도 닫습니다.
+
+`listener` metric에는 `state`(`present`, `none`, `unknown`, `temporary`), `process`, `pid`, `address`, `scope`가 들어갑니다.
 
 ### 파일 감시와 action (Linux·macOS)
 

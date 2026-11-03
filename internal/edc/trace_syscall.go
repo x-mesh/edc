@@ -228,14 +228,14 @@ func runTraceSyscall(args []string) int {
 	var process string
 	set := newFlagSet("trace syscall")
 	set.SetOutput(os.Stderr)
-	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.groupBy, "group-by", "", "process, syscall, or cgroup")
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
 	var syscalls string
 	set.StringVar(&syscalls, "syscall", "", T("command.trace.option.syscall"))
-	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
+	durationFlagVar(set, &options.slow, "slow", 0, T("command.trace.option.slow"))
 	set.StringVar(&options.errors, "errors", "", T("command.trace.option.errors"))
 	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
 	set.BoolVar(&options.all, "all", false, T("command.trace.option.all"))

@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -610,15 +613,292 @@ func TestExpectHeaderTellsWhatToRunOnTheClient(t *testing.T) {
 	setLanguage("en")
 	var out bytes.Buffer
 	printer := expectLivePrinter{writer: &out, style: newTextStyle(false)}
-	printer.header(8000, netip.Prefix{}, 0, expectDropTrace{Status: StatusPass})
+	listener := expectListener{State: expectListenerNone}
+	printer.header(expectHeader{port: 8000, dropTrace: expectDropTrace{Status: StatusPass}, listener: &listener})
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if len(lines) != 3 {
+	if len(lines) != 4 {
 		t.Fatalf("header = %q", out.String())
 	}
 	if !strings.Contains(lines[1], "DROP line") {
 		t.Errorf("drop line must say what it means: %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "port 8000") || !strings.Contains(lines[2], "edc tcp check --diagnose <this-host>:8000") {
-		t.Errorf("waiting line = %q", lines[2])
+	if !strings.Contains(lines[2], "listener: none") || !strings.Contains(lines[2], "RST") || !strings.Contains(lines[2], "--listen") {
+		t.Errorf("listener line = %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "port 8000") || !strings.Contains(lines[3], "edc tcp check --diagnose <this-host>:8000") {
+		t.Errorf("waiting line = %q", lines[3])
+	}
+}
+
+// listener는 edc listen과 같은 목록에서 이 port의 TCP socket만 고른다. 모든 주소에 묶인 것이 loopback보다 앞이다.
+func TestExpectListenerState(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	sockets := []listenSocket{
+		{Proto: "udp", Address: "0.0.0.0", Port: 8000, Process: "dnsmasq", PID: "10"},
+		{Proto: "tcp", Address: "127.0.0.1", Port: 8000, Process: "helper", PID: "11"},
+		{Proto: "tcp", Address: "0.0.0.0", Port: 8000, Process: "nginx", PID: "812"},
+		{Proto: "tcp", Address: "0.0.0.0", Port: 8080, Process: "other", PID: "13"},
+	}
+	listener := expectListenerState(sockets, nil, 8000)
+	if listener.State != expectListenerPresent || listener.Process != "nginx" || listener.PID != 812 || listener.Address != "0.0.0.0:8000" || listener.Scope != "all" {
+		t.Fatalf("listener = %+v", listener)
+	}
+	if text := describeExpectListener(listener); text != "listener: nginx (pid 812) on 0.0.0.0:8000" {
+		t.Errorf("line = %q", text)
+	}
+	loopback := expectListenerState(sockets[:2], nil, 8000)
+	if loopback.Scope != "loopback" || !strings.Contains(describeExpectListener(loopback), "loopback only") {
+		t.Errorf("loopback = %+v, %q", loopback, describeExpectListener(loopback))
+	}
+	v6 := expectListenerState([]listenSocket{{Proto: "tcp", Address: "::", Port: 8000}}, nil, 8000)
+	if v6.Address != "[::]:8000" || !strings.Contains(describeExpectListener(v6), "unknown process on [::]:8000") {
+		t.Errorf("v6 = %+v, %q", v6, describeExpectListener(v6))
+	}
+	if none := expectListenerState(sockets, nil, 9000); none.State != expectListenerNone {
+		t.Errorf("none = %+v", none)
+	}
+	// 목록을 읽지 못해도 관측은 계속하고 모른다고만 남긴다.
+	unknown := expectListenerState(nil, errors.New("sock_diag tcp: permission denied\nmore"), 8000)
+	if unknown.State != expectListenerUnknown || unknown.Error != "sock_diag tcp: permission denied" {
+		t.Errorf("unknown = %+v", unknown)
+	}
+}
+
+func TestExpectResultCarriesTheListener(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.listener = &expectListener{State: expectListenerNone}
+	result, _, _ := scenario.finish("duration")
+	data, err := json.Marshal(result.Metrics["listener"])
+	if err != nil || string(data) != `{"state":"none"}` {
+		t.Fatalf("listener metric = %s, %v", data, err)
+	}
+}
+
+// 대기 줄의 예시 명령은 client가 실제로 넣을 주소를 쓴다. --from으로 돌아가는 경로의 출발 주소가 있으면 그것이다.
+func TestExpectClientAddresses(t *testing.T) {
+	interfaces := []interfaceDetails{
+		{Name: "docker0", Address: "172.17.0.1"},
+		{Name: "eth0", Address: "10.0.0.5", Gateway: "10.0.0.1"},
+		{Name: "eth1", Address: "169.254.3.4"},
+		{Name: "tailscale0", Address: "100.83.200.248"},
+		{Name: "wg0", Address: "10.9.0.1"},
+	}
+	// container bridge는 이 host 안에서만 닿으므로 뒤로 간다.
+	if got := strings.Join(expectClientAddresses("", interfaces), ","); got != "10.0.0.5,100.83.200.248,10.9.0.1" {
+		t.Errorf("interfaces = %s", got)
+	}
+	if got := strings.Join(expectClientAddresses("100.83.200.248", interfaces), ","); got != "100.83.200.248" {
+		t.Errorf("route source = %s", got)
+	}
+	if got := expectClientAddresses("", nil); len(got) != 0 {
+		t.Errorf("no interfaces = %v", got)
+	}
+}
+
+func TestExpectClientRouteSourceFollowsFrom(t *testing.T) {
+	asked := []string{}
+	for _, from := range []string{"100.64.0.9", "100.64.0.0/10", ""} {
+		scenario := newExpectScenario(from)
+		scenario.session.returnPath = func(remote, local netip.Addr, arrival string) expectReturnPath {
+			asked = append(asked, remote.String())
+			return expectReturnPath{Device: "tailscale0", Source: "100.83.200.248"}
+		}
+		got := scenario.session.clientRouteSource()
+		if from == "" && got != "" {
+			t.Errorf("without --from the route source = %q", got)
+		}
+		if from != "" && got != "100.83.200.248" {
+			t.Errorf("--from %s: route source = %q", from, got)
+		}
+	}
+	if strings.Join(asked, ",") != "100.64.0.9,100.64.0.0" {
+		t.Errorf("asked = %v", asked)
+	}
+	failed := newExpectScenario("100.64.0.9")
+	failed.session.returnPath = func(netip.Addr, netip.Addr, string) expectReturnPath { return expectReturnPath{Error: "no route"} }
+	if got := failed.session.clientRouteSource(); got != "" {
+		t.Errorf("failed lookup = %q", got)
+	}
+}
+
+func TestExpectHeaderShowsRealAddresses(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	var out bytes.Buffer
+	printer := expectLivePrinter{writer: &out, style: newTextStyle(false)}
+	printer.header(expectHeader{port: 8000, dropTrace: expectDropTrace{Status: StatusPass}, addresses: []string{"10.0.0.5", "2001:db8::5", "100.83.200.248"}})
+	text := out.String()
+	if !strings.Contains(text, "edc tcp check --diagnose 10.0.0.5:8000") || strings.Contains(text, "<this-host>") {
+		t.Errorf("waiting line = %q", text)
+	}
+	if !strings.Contains(text, "other addresses of this host: 2001:db8::5, 100.83.200.248") {
+		t.Errorf("other addresses = %q", text)
+	}
+	out.Reset()
+	printer.redact = true
+	printer.header(expectHeader{port: 8000, dropTrace: expectDropTrace{Status: StatusPass}, addresses: []string{"10.0.0.5"}})
+	if strings.Contains(out.String(), "10.0.0.5") || strings.Contains(out.String(), "other addresses") {
+		t.Errorf("redacted header = %q", out.String())
+	}
+}
+
+func TestParseExpectStopOptions(t *testing.T) {
+	options, code, ok := parseTCPExpectArgs([]string{"--until", "handshake", "--stop-after", "3", "2142"})
+	if !ok || code != 0 || options.until != "handshake" || options.stopAfter != 3 || options.port != 2142 {
+		t.Fatalf("options = %+v, %d, %v", options, code, ok)
+	}
+	for _, args := range [][]string{{"--until", "ack", "2142"}, {"--stop-after", "0", "2142"}, {"--stop-after", "-1", "2142"}, {"--stop-after", "x", "2142"}} {
+		if _, code, ok := parseTCPExpectArgs(args); ok || code != 2 {
+			t.Errorf("%v: code %d, ok %v", args, code, ok)
+		}
+	}
+}
+
+// --until syn은 첫 SYN 뒤 유예 시간만큼 더 보아 이 host의 답을 남긴다. 답이 남아야 판정이 rst나 completed가 된다.
+func TestExpectUntilSYNWaitsForTheReply(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.until = "syn"
+	scenario.in("tailscale0", "100.64.0.9", tcpFlagSYN, 100, 0)
+	if scenario.session.stopDue(scenario.now) {
+		t.Fatal("stopped before the reply could arrive")
+	}
+	scenario.out("tailscale0", "100.64.0.9", tcpFlagRST|tcpFlagACK, 0, time.Millisecond)
+	scenario.in("tailscale0", "100.64.0.10", tcpFlagSYN, 200, 10*time.Millisecond)
+	if scenario.session.stopDue(scenario.now.Add(500 * time.Millisecond)) {
+		t.Fatal("a second SYN must not move the stop time")
+	}
+	if !scenario.session.stopDue(scenario.now.Add(expectStopGrace)) {
+		t.Fatal("not stopped after the grace")
+	}
+	result, sources, code := scenario.finish(scenario.session.stoppedBy())
+	verdicts := map[string]string{}
+	for _, source := range sources {
+		verdicts[source.Address] = source.Verdict
+	}
+	if result.Metrics["stop_reason"] != expectStopUntilSYN || verdicts["100.64.0.9"] != expectVerdictRST || code != 1 {
+		t.Fatalf("stop_reason %v, sources %+v, code %d", result.Metrics["stop_reason"], sources, code)
+	}
+}
+
+func TestExpectUntilHandshakeStopsAtOnce(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.until = "handshake"
+	scenario.in("eth0", "10.0.0.9", tcpFlagSYN, 100, 0)
+	scenario.out("eth0", "10.0.0.9", tcpFlagSYN|tcpFlagACK, 5000, time.Millisecond)
+	if scenario.session.stopDue(scenario.now.Add(time.Hour)) {
+		t.Fatal("stopped without a handshake")
+	}
+	scenario.in("eth0", "10.0.0.9", tcpFlagACK, 101, time.Millisecond)
+	if !scenario.session.stopDue(scenario.now) {
+		t.Fatal("not stopped at the handshake")
+	}
+	result, _, code := scenario.finish(scenario.session.stoppedBy())
+	if result.Metrics["stop_reason"] != expectStopUntilHandshake || code != 0 {
+		t.Fatalf("stop_reason %v, code %d", result.Metrics["stop_reason"], code)
+	}
+}
+
+// --stop-after는 client의 첫 sequence가 다른 연결 시도를 센다. 재전송과 다른 interface에 보인 같은 packet은 세지 않는다.
+func TestExpectStopAfterCountsAttempts(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.stopAfter = 2
+	scenario.in("eth0", "10.0.0.9", tcpFlagSYN, 100, 0)
+	scenario.in("eth1", "10.0.0.9", tcpFlagSYN, 100, time.Millisecond)
+	scenario.in("eth1", "10.0.0.9", tcpFlagSYN, 100, time.Second)
+	if scenario.session.stopDue(scenario.now.Add(time.Hour)) {
+		t.Fatal("a retransmit counted as a second attempt")
+	}
+	scenario.in("eth0", "10.0.0.9", tcpFlagSYN, 900, time.Second)
+	if scenario.session.stopDue(scenario.now) || !scenario.session.stopDue(scenario.now.Add(expectStopGrace)) {
+		t.Fatal("stop-after must stop one grace after the second attempt")
+	}
+	result, _, _ := scenario.finish(scenario.session.stoppedBy())
+	if result.Metrics["stop_reason"] != expectStopAfter || result.Metrics["attempts"] != 2 {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+}
+
+// 끝난 뒤의 다음 단계는 판정마다 볼 곳과, client report와 합치는 정확한 명령이다.
+func TestExpectNextSteps(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		for _, verdict := range append([]string{expectVerdictNoSYN}, expectVerdictOrder...) {
+			steps := expectNextSteps(verdict, false, false, "")
+			if len(steps) != 2 || strings.Contains(steps[0], "expect.next") || strings.Contains(steps[1], "expect.next") {
+				t.Errorf("%s %s: %q", language, verdict, steps)
+			}
+		}
+	}
+	setLanguage("en")
+	if steps := expectNextSteps(expectVerdictNoSYN, false, false, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
+		t.Errorf("file = %q", steps)
+	}
+	if steps := expectNextSteps(expectVerdictRST, false, false, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
+		t.Errorf("quoted file = %q", steps)
+	}
+	for _, jsonPath := range []string{"", "-"} {
+		if steps := expectNextSteps(expectVerdictCompleted, false, false, jsonPath); !strings.Contains(steps[1], "--json target.json") {
+			t.Errorf("%q: %q", jsonPath, steps)
+		}
+	}
+}
+
+// --listen의 임시 listener는 연결을 받자마자 닫고, 이미 쓰는 port는 빼앗지 않으며, 닫으면 port를 돌려준다.
+func TestExpectTemporaryListener(t *testing.T) {
+	probe, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Skip("cannot listen:", err)
+	}
+	port := uint16(probe.Addr().(*net.TCPAddr).Port)
+	probe.Close()
+	temporary, err := openExpectListener(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := temporary.state()
+	if state.State != expectListenerTemporary || state.Process != "edc" || state.PID == 0 || !strings.HasSuffix(state.Address, ":"+strconv.Itoa(int(port))) {
+		t.Errorf("state = %+v", state)
+	}
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))), 2*time.Second)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	connection.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := connection.Read(make([]byte, 1)); err == nil {
+		t.Error("the temporary listener must close the connection without data")
+	}
+	connection.Close()
+	if second, err := openExpectListener(port); err == nil {
+		second.close()
+		t.Fatal("a second listener took over the port")
+	} else if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("busy port error = %v", err)
+	}
+	temporary.close()
+	again, err := net.Listen("tcp", ":"+strconv.Itoa(int(port)))
+	if err != nil {
+		t.Fatalf("the port is still held after close: %v", err)
+	}
+	again.Close()
+}
+
+func TestExpectNextStepWithTemporaryListener(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	if steps := expectNextSteps(expectVerdictCompleted, true, false, ""); !strings.Contains(steps[0], "service itself was not tested") {
+		t.Errorf("steps = %q", steps)
+	}
+	if steps := expectNextSteps(expectVerdictRST, true, false, ""); strings.Contains(steps[0], "not tested") {
+		t.Errorf("rst steps = %q", steps)
+	}
+	// IPsec transport mode가 SYN을 가릴 수 있으면 다음 단계도 오지 않았다고 단정하지 않는다.
+	if steps := expectNextSteps(expectVerdictNoSYN, false, true, ""); !strings.Contains(steps[0], "ip -s xfrm state") || strings.Contains(steps[0], "does not reach") {
+		t.Errorf("ipsec steps = %q", steps)
 	}
 }

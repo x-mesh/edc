@@ -51,3 +51,15 @@ diagnose:
     attempts: "試行"
   next:
     on_host: "%s で実行"
+  peer:
+    invalid: "--peer には host や user@host のような ssh の接続先を指定します。%q は使えません"
+    ssh_failed: "ssh で %s に接続できませんでした: %s"
+    edc_missing: "%s に edc がインストールされていません。その host にインストールしてから、このコマンドをもう一度実行します: %s"
+    version_unknown: "%s の edc が version を返しませんでした: %s"
+    version_old: "edc %s (%s) は --peer に必要な %s より古いです。%s で edc update を実行します"
+    sudo_password: "%s で tcp expect を実行するには root か CAP_NET_RAW が必要ですが、sudo がパスワードを求めます (%s)。ssh の接続先を root@%s にするか、%s をパスワードなしで sudo 実行できるようにします"
+    not_ready: "%s の tcp expect が %s 以内に開始しませんでした: %s"
+    ended: "%s の tcp expect が開始前に終了しました (exit %s): %s"
+    no_report: "%s の tcp expect が report を返しませんでした (exit %s): %s"
+    empty_report: "出力に tcp.expect の report がありません"
+    saved: "保存: %s"

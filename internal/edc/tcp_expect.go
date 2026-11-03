@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -37,12 +38,17 @@ const (
 	expectSweepInterval = 5 * time.Second
 	// expectSourceLimit은 JSON에 남기는 출발지 줄의 상한이다. 공개 port에서는 scanner가 수천 개의 출발지를 만든다.
 	expectSourceLimit = 50
+	// expectClientAddressLimit은 대기 줄에 보이는 이 host 주소의 상한이다.
+	expectClientAddressLimit = 3
 	// expectEvidenceLimit은 terminal 표에 보이는 출발지 줄의 상한이다.
 	expectEvidenceLimit = 20
 	// expectFlowTrackLimit은 동시에 따라가는 연결 시도의 상한이고, expectSourceTrackLimit은 합계를 남기는 출발지의 상한이다.
 	// 공개 port에 SYN flood가 오면 시도마다 2분, 출발지마다 끝까지 memory를 쥐므로, 넘치는 만큼은 세기만 하고 쥐지 않는다.
 	expectFlowTrackLimit   = 10000
 	expectSourceTrackLimit = 10000
+	// expectStopGrace는 --until syn과 --stop-after가 조건을 만난 뒤 더 보는 시간이다. 그 사이에 이 host의 SYN-ACK나 RST와 kernel drop이
+	// 따라와야 판정이 맞다. SYN을 받은 host는 대개 1ms 안에 답한다.
+	expectStopGrace = time.Second
 
 	tcpFlagSYN = 0x02
 	tcpFlagRST = 0x04
@@ -76,6 +82,11 @@ type expectOptions struct {
 	port     uint16
 	from     netip.Prefix
 	duration time.Duration
+	// until은 syn이나 handshake이고, stopAfter는 0이면 끄는 연결 시도 수다.
+	until     string
+	stopAfter int
+	// listen은 listener가 없을 때 임시 listener를 열어 handshake가 끝나게 한다.
+	listen bool
 }
 
 // parseTCPExpectArgs는 option과 port를 읽는다. 실패하면 이미 오류를 출력했고 exit code를 돌려준다.
@@ -86,7 +97,10 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	bindCommon(set, &options.common)
 	fromText := ""
 	set.StringVar(&fromText, "from", "", T("command.tcp.option.from"))
-	set.DurationVar(&options.duration, "duration", 0, T("command.tcp.option.duration"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.tcp.option.duration"))
+	set.StringVar(&options.until, "until", "", T("command.tcp.option.until"))
+	set.IntVar(&options.stopAfter, "stop-after", 0, T("command.tcp.option.stop_after"))
+	set.BoolVar(&options.listen, "listen", false, T("command.tcp.option.listen"))
 	positional, err := parseInterspersed(set, args)
 	if err != nil {
 		return options, 2, false
@@ -94,7 +108,7 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	if len(positional) == 0 {
 		// 인자 없이 실행한 사람은 어느 host의 어떤 port를 넣을지 모른다. 묻기 전에 하는 일과 넣을 값을 알린다.
 		if _, ok := terminalInput(os.Stdin); ok {
-			fmt.Fprintln(os.Stdout, T("expect.prompt_hint"))
+			fmt.Fprintln(os.Stdout, newTextStyle(promptColor(os.Stdout)).dim(T("expect.prompt_hint")))
 		}
 		values, ok := promptMissingArgs("edc tcp expect", T("expect.prompt_port"))
 		if !ok {
@@ -121,6 +135,16 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	}
 	if options.duration < 0 || options.duration > expectMaxDuration {
 		fmt.Fprintln(os.Stderr, T("expect.duration_range", expectMaxDuration))
+		return options, 2, false
+	}
+	if options.until != "" && options.until != "syn" && options.until != "handshake" {
+		fmt.Fprintln(os.Stderr, T("expect.until_invalid", options.until))
+		return options, 2, false
+	}
+	stopAfterSet := false
+	set.Visit(func(item *flag.Flag) { stopAfterSet = stopAfterSet || item.Name == "stop-after" })
+	if stopAfterSet && options.stopAfter < 1 {
+		fmt.Fprintln(os.Stderr, T("expect.stop_after_invalid", options.stopAfter))
 		return options, 2, false
 	}
 	return options, 0, true
@@ -500,6 +524,132 @@ func expectNetContains(network *net.IPNet, address netip.Addr) bool {
 	return network.Contains(net.IP(address.AsSlice()))
 }
 
+// stop_reason 값이다. duration과 cancelled 말고는 --until과 --stop-after가 정한다.
+const (
+	expectStopDuration       = "duration"
+	expectStopCancelled      = "cancelled"
+	expectStopUntilSYN       = "until_syn"
+	expectStopUntilHandshake = "until_handshake"
+	expectStopAfter          = "stop_after"
+)
+
+const (
+	expectListenerPresent   = "present"
+	expectListenerNone      = "none"
+	expectListenerUnknown   = "unknown"
+	expectListenerTemporary = "temporary"
+)
+
+// expectListener는 관측을 시작할 때 port에서 연결을 기다리는 socket이다. listener가 없으면 도착한 SYN은 RST를 받으므로,
+// 판정을 읽기 전에 알아야 한다.
+type expectListener struct {
+	State   string `json:"state"`
+	Process string `json:"process,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Address string `json:"address,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// expectListenerState는 edc listen과 같은 목록에서 이 port의 TCP listener를 고른다. 읽지 못하면 관측은 계속하고 모른다고만 남긴다.
+// 여럿이면 모든 주소에 묶인 것을 먼저 보인다. loopback에만 묶인 listener는 다른 host의 SYN을 받지 못한다.
+func expectListenerState(sockets []listenSocket, err error, port uint16) expectListener {
+	if err != nil {
+		return expectListener{State: expectListenerUnknown, Error: firstLine(err.Error())}
+	}
+	rank := map[string]int{"all": 0, "specific": 1, "loopback": 2}
+	var chosen *listenSocket
+	for index := range sockets {
+		socket := &sockets[index]
+		if socket.Proto != "tcp" || socket.Port != int(port) {
+			continue
+		}
+		scope, known := rank[listenBindingScope(socket.Proto, socket.Address)]
+		if !known {
+			scope = len(rank)
+		}
+		if chosen == nil || scope < rank[listenBindingScope(chosen.Proto, chosen.Address)] {
+			chosen = socket
+		}
+	}
+	if chosen == nil {
+		return expectListener{State: expectListenerNone}
+	}
+	listener := expectListener{State: expectListenerPresent, Process: chosen.Process, Address: net.JoinHostPort(chosen.Address, strconv.Itoa(int(port))), Scope: listenBindingScope(chosen.Proto, chosen.Address)}
+	listener.PID, _ = strconv.Atoi(chosen.PID)
+	return listener
+}
+
+// describeExpectListener는 머리말의 listener 줄이다.
+func describeExpectListener(listener expectListener) string {
+	switch listener.State {
+	case expectListenerNone:
+		return T("expect.listener.none")
+	case expectListenerUnknown:
+		return T("expect.listener.unknown", listener.Error)
+	case expectListenerTemporary:
+		return T("expect.listener.temporary", listener.Address)
+	}
+	owner := expectListenerOwner(listener)
+	if listener.Scope == "loopback" {
+		return T("expect.listener.loopback", owner, listener.Address)
+	}
+	return T("expect.listener.present", owner, listener.Address)
+}
+
+// expectListenerOwner는 listener를 가진 process다. 이름을 모르면 그렇다고 쓴다.
+func expectListenerOwner(listener expectListener) string {
+	owner := T("expect.listener.unknown_process")
+	if listener.Process != "" {
+		owner = listener.Process
+	}
+	if listener.PID != 0 {
+		owner += " (pid " + strconv.Itoa(listener.PID) + ")"
+	}
+	return owner
+}
+
+// expectTemporaryListener는 --listen이 여는 listener다. 연결을 받자마자 읽지 않고 닫는다. handshake만 끝나게 하려는 것이고
+// 서비스 흉내를 내지 않는다.
+type expectTemporaryListener struct {
+	listener net.Listener
+	done     chan struct{}
+}
+
+// openExpectListener는 모든 주소에서 port를 연다. Go는 ":port"를 IPv4와 IPv6를 함께 받는 socket으로 연다. IPv6를 끈 host에서
+// 실패하면 IPv4만 연다. 이미 쓰는 port는 EADDRINUSE로 실패하므로 남의 port를 빼앗지 않는다.
+func openExpectListener(port uint16) (*expectTemporaryListener, error) {
+	address := ":" + strconv.Itoa(int(port))
+	listener, err := net.Listen("tcp", address)
+	if err != nil && !errors.Is(err, syscall.EADDRINUSE) {
+		listener, err = net.Listen("tcp4", address)
+	}
+	if err != nil {
+		return nil, err
+	}
+	temporary := &expectTemporaryListener{listener: listener, done: make(chan struct{})}
+	go func() {
+		defer close(temporary.done)
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connection.Close()
+		}
+	}()
+	return temporary, nil
+}
+
+func (temporary *expectTemporaryListener) state() expectListener {
+	return expectListener{State: expectListenerTemporary, Process: "edc", PID: os.Getpid(), Address: temporary.listener.Addr().String()}
+}
+
+func (temporary *expectTemporaryListener) close() {
+	temporary.listener.Close()
+	<-temporary.done
+}
+
 // expectEvent는 실행 중에 한 줄로 보이는 일이다.
 type expectEvent struct {
 	at     time.Time
@@ -554,6 +704,17 @@ type expectSession struct {
 	// 보이지 않는다.
 	ipsecInbound func(from netip.Prefix) bool
 	emit         func(expectEvent)
+	// listener는 시작할 때 본 port의 listener다. nil이면 metrics에 넣지 않는다.
+	listener *expectListener
+	// until과 stopAfter는 멈출 조건이다. 조건을 만나면 stopReason과 멈출 시각 stopAt을 적고, capture는 stopDue를 보고 멈춘다.
+	until      string
+	stopAfter  int
+	attempts   int
+	stopReason string
+	stopAt     time.Time
+	// live는 상태줄에 보이는 실행 중 합계다. otherPorts는 다른 port로 온 SYN의 port별 수이고, nil이면 세지 않는다.
+	live       expectLiveCounts
+	otherPorts map[uint16]int
 }
 
 func newExpectSession(port uint16, from netip.Prefix, emit func(expectEvent)) *expectSession {
@@ -607,6 +768,7 @@ func (session *expectSession) packet(packet expectPacket) {
 			flow.synIn++
 			flow.synRetransmits++
 			flow.lastSYN = packet.at
+			session.live.SYN++
 			event.kind, event.count, event.iface = expectEventSYNRetransmit, flow.synIn, flow.iface
 			session.emit(event)
 			return
@@ -621,6 +783,14 @@ func (session *expectSession) packet(packet expectPacket) {
 		session.flows[key] = flow
 		event.kind = expectEventSYN
 		session.emit(event)
+		session.live.SYN++
+		session.attempts++
+		if session.until == "syn" {
+			session.armStop(packet.at, expectStopUntilSYN, expectStopGrace)
+		}
+		if session.stopAfter > 0 && session.attempts >= session.stopAfter {
+			session.armStop(packet.at, expectStopAfter, expectStopGrace)
+		}
 		if pending, ok := session.pendingDrops[key]; ok {
 			flow.drops = pending.reasons
 			delete(session.pendingDrops, key)
@@ -674,10 +844,68 @@ func (session *expectSession) packet(packet expectPacket) {
 		}
 		flow.lastActivity = packet.at
 		flow.completed = true
+		session.live.Handshakes++
 		event.kind, event.iface = expectEventEstablished, flow.iface
 		event.detail = T("expect.live.handshake_time", formatExpectElapsed(packet.at.Sub(flow.firstSYN)))
 		session.emit(event)
+		if session.until == "handshake" {
+			session.armStop(packet.at, expectStopUntilHandshake, 0)
+		}
 	}
+}
+
+// otherSYN은 다른 port로 온 SYN 하나를 센다. port를 잘못 알고 접속하는 client를 드러내려는 것이라 port별 수만 두고 packet이나
+// 연결 상태는 남기지 않는다. loopback은 이 host 안의 연결이고, 이 host의 주소가 아니면 넘겨주는 packet이라 세지 않는다.
+func (session *expectSession) otherSYN(remote, local netip.Addr, port uint16) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.otherPorts == nil || remote.IsLoopback() || !session.wanted(remote) {
+		return
+	}
+	if session.isLocal != nil && !session.isLocal(local) {
+		return
+	}
+	session.otherPorts[port]++
+}
+
+// countOtherPorts는 다른 port의 SYN을 세기 시작한다. 그 socket을 열지 못하면 부르지 않고, 그러면 metrics에도 남지 않는다.
+func (session *expectSession) countOtherPorts() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.otherPorts = map[uint16]int{}
+}
+
+// snapshot은 상태줄에 넘길 실행 중 합계다.
+func (session *expectSession) snapshot() expectLiveCounts {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	counts := session.live
+	if session.otherPorts != nil {
+		counts.OtherPorts = topExpectPorts(session.otherPorts, expectStatusPorts)
+	}
+	return counts
+}
+
+// armStop은 멈출 조건을 처음 만난 때를 적는다. 먼저 만난 조건이 stop_reason이 된다.
+func (session *expectSession) armStop(at time.Time, reason string, grace time.Duration) {
+	if session.stopReason != "" {
+		return
+	}
+	session.stopReason, session.stopAt = reason, at.Add(grace)
+}
+
+// stopDue는 --until이나 --stop-after의 조건을 만나고 유예 시간이 지났는지다. capture는 이 값이 true면 관측을 끝낸다.
+func (session *expectSession) stopDue(now time.Time) bool {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.stopReason != "" && !now.Before(session.stopAt)
+}
+
+// stoppedBy는 멈출 조건의 이름이다. 조건을 만나지 않았으면 빈 문자열이다.
+func (session *expectSession) stoppedBy() string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.stopReason
 }
 
 // drop은 kernel이 버린 packet 하나를 연결 시도에 붙인다. drop은 packet socket보다 먼저 읽힐 수 있어 SYN이 아직 없으면
@@ -712,7 +940,9 @@ func (session *expectSession) drop(at time.Time, source, destination, reason, lo
 			flow.drops = map[string]int{}
 		}
 		flow.drops[reason]++
+		session.live.Drops++
 	default:
+		session.live.Drops++
 		if session.pendingDrops[key] == nil {
 			session.pendingDrops[key] = &expectPendingDrops{at: at, reasons: map[string]int{}}
 		}
@@ -744,6 +974,89 @@ func (session *expectSession) start(dropTrace expectDropTrace, now time.Time) {
 		route := session.lookupRoute(expectSourceKey{remote: session.from.Addr()})
 		session.emit(expectEvent{at: now, kind: expectEventRoute, remote: netip.AddrPortFrom(session.from.Addr(), 0), detail: describeExpectRoute(route, "")})
 	}
+}
+
+// clientRouteSource는 --from으로 돌아가는 경로의 출발 주소다. 이 host가 그 client와 주고받을 때 쓰는 주소라 client가 접속할
+// 주소로 가장 그럴듯하다. 대역이면 대역의 첫 주소로 묻는다. 모르면 빈 문자열이다.
+func (session *expectSession) clientRouteSource() string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.from.IsValid() || session.returnPath == nil {
+		return ""
+	}
+	var route *expectReturnPath
+	if session.from.IsSingleIP() {
+		route = session.lookupRoute(expectSourceKey{remote: session.from.Addr()})
+	} else {
+		found := session.returnPath(session.from.Addr(), netip.Addr{}, "")
+		route = &found
+	}
+	if route == nil || route.Error != "" {
+		return ""
+	}
+	return route.Source
+}
+
+// expectContainerPrefixes는 container와 overlay network가 만드는 interface 이름이다. 이 주소는 대개 이 host 안에서만 닿으므로
+// 대기 줄에서 다른 interface 뒤에 둔다.
+var expectContainerPrefixes = []string{"docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "vxlan", "kube", "cilium", "lxc"}
+
+func expectContainerInterface(name string) bool {
+	for _, prefix := range expectContainerPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectClientAddresses는 대기 줄의 예시 명령에 넣을 이 host의 주소다. --from으로 돌아가는 경로의 출발 주소가 있으면 그것 하나이고,
+// 없으면 기본 경로의 interface, 다른 interface, container interface 순으로 expectClientAddressLimit개까지 고른다. link-local 주소는
+// 다른 망의 client가 쓸 수 없어 뺀다.
+func expectClientAddresses(routeSource string, interfaces []interfaceDetails) []string {
+	if address, err := netip.ParseAddr(routeSource); err == nil && !address.IsUnspecified() {
+		return []string{address.Unmap().String()}
+	}
+	ordered := append([]interfaceDetails(nil), interfaces...)
+	rank := func(iface interfaceDetails) int {
+		switch {
+		case iface.Gateway != "":
+			return 0
+		case expectContainerInterface(iface.Name):
+			return 2
+		}
+		return 1
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return rank(ordered[i]) < rank(ordered[j]) })
+	var addresses []string
+	for _, iface := range ordered {
+		address, err := netip.ParseAddr(iface.Address)
+		if err != nil || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsUnspecified() {
+			continue
+		}
+		addresses = appendUnique(addresses, address.Unmap().String())
+		if len(addresses) == expectClientAddressLimit {
+			break
+		}
+	}
+	return addresses
+}
+
+// expectHostInterfaces는 edc info와 같은 interface 목록에서 carrier가 있는 것만 남긴다. 올라와 있어도 연결이 없는
+// interface(NO-CARRIER인 docker0 같은)의 주소로는 client가 닿지 못한다.
+func expectHostInterfaces() []interfaceDetails {
+	defaultInterface, gateway := collectDefaultRoute()
+	interfaces, err := networkInterfaces(defaultInterface, gateway)
+	if err != nil {
+		return nil
+	}
+	running := interfaces[:0]
+	for _, iface := range interfaces {
+		if link, err := net.InterfaceByName(iface.Name); err == nil && link.Flags&net.FlagRunning != 0 {
+			running = append(running, iface)
+		}
+	}
+	return running
 }
 
 // tick은 packet이 없을 때도 불린다. 도착 interface가 정해진 새 출발지의 돌아가는 경로를 보이고, 오래된 시도를 접는다.
@@ -911,7 +1224,7 @@ func expectVerdictStatus(verdict string) Status {
 // 출발지가 한 번 이상 연결되었을 때만 0이다.
 func expectExitCode(sources []expectSource, stopReason string) int {
 	if len(sources) == 0 {
-		if stopReason == "duration" {
+		if stopReason == expectStopDuration {
 			return 2
 		}
 		return 4
@@ -974,6 +1287,9 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	if session.from.IsValid() {
 		metrics["from"] = session.from.String()
 	}
+	if session.listener != nil {
+		metrics["listener"] = *session.listener
+	}
 	kept := sources
 	if len(kept) > expectSourceLimit {
 		kept = kept[:expectSourceLimit]
@@ -983,6 +1299,11 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	if len(session.otherDrops) > 0 {
 		metrics["other_drops"] = session.otherDrops
 	}
+	var otherPorts []expectPortCount
+	if len(session.otherPorts) > 0 {
+		otherPorts = topExpectPorts(session.otherPorts, expectMetricPorts)
+		metrics["other_port_syns"] = expectPortMetric(otherPorts)
+	}
 	result := Result{Probe: expectProbeID, Status: expectVerdictStatus(verdict), StartedAt: started.UTC(), DurationMS: elapsed.Milliseconds(), Metrics: metrics}
 	var fromRoute *expectReturnPath
 	if len(sources) == 0 && session.from.IsValid() && session.from.IsSingleIP() {
@@ -991,6 +1312,10 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	}
 	result.Summary = expectSummary(verdict, lead, len(sources), session.port, elapsed)
 	result.Warnings = expectWarnings(sources, session.socketDrops, session.dropLost, session.untracked)
+	// 이 port에는 SYN이 없는데 다른 port에는 왔다면 client가 port를 잘못 알고 있을 수 있다.
+	if verdict == expectVerdictNoSYN && len(otherPorts) > 0 {
+		result.Warnings = append(result.Warnings, T("expect.warning.other_ports", session.port, formatExpectPorts(otherPorts)))
+	}
 	if (verdict == expectVerdictNoSYN || verdict == expectVerdictUnseen) && session.ipsecInbound != nil && session.ipsecInbound(session.from) {
 		result.Warnings = append(result.Warnings, T("expect.warning.ipsec_transport"))
 		// SYN이 왔어도 보이지 않았을 수 있으므로 오지 않았다고 단정하지 않는다.
@@ -1009,6 +1334,25 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 		}
 	}
 	return result, expectExitCode(sources, stopReason)
+}
+
+// expectNextSteps는 결과 뒤에 보이는 다음 할 일이다. 첫 줄은 판정마다 볼 곳이고, 둘째 줄은 client의 tcp check --diagnose
+// report와 합치는 명령이다. --json으로 파일을 남겼으면 그 파일 이름을 넣고, 아니면 파일을 남겨 다시 실행하라고 한다.
+func expectNextSteps(verdict string, temporary, ipsecHidden bool, jsonPath string) []string {
+	key := "expect.next." + verdict
+	switch {
+	// 임시 listener가 handshake를 끝냈으면 경로만 확인한 것이다.
+	case verdict == expectVerdictCompleted && temporary:
+		key = "expect.next.completed_temporary"
+	// IPsec transport mode는 도착한 SYN을 가릴 수 있으므로 오지 않았다고 단정하지 않는다. 요약과 같은 말을 한다.
+	case verdict == expectVerdictNoSYN && ipsecHidden:
+		key = "expect.next.no_syn_ipsec"
+	}
+	steps := []string{T("expect.next.step", T(key))}
+	if jsonPath != "" && jsonPath != "-" {
+		return append(steps, T("expect.next.join_file", "edc report join <client.json> "+quoteLocalShellWord(jsonPath)))
+	}
+	return append(steps, T("expect.next.join_rerun", "edc report join <client.json> target.json"))
 }
 
 // expectOverallVerdict는 여러 출발지 중 먼저 고칠 판정과 그 출발지다. 모두 연결되면 가장 많이 시도한 출발지다.
@@ -1211,26 +1555,67 @@ var expectEventLabels = map[string]string{
 	expectEventRoute: "ROUTE", expectEventDuplicate: "SYN in",
 }
 
-func (printer expectLivePrinter) header(port uint16, from netip.Prefix, duration time.Duration, dropTrace expectDropTrace) {
+// expectHeader는 시작할 때 보이는 머리말의 값이다.
+type expectHeader struct {
+	port      uint16
+	from      netip.Prefix
+	duration  time.Duration
+	dropTrace expectDropTrace
+	listener  *expectListener
+	until     string
+	stopAfter int
+	// addresses는 client가 접속할 이 host의 주소다. 비어 있으면 자리표시를 보인다.
+	addresses []string
+}
+
+func (printer expectLivePrinter) header(header expectHeader) {
 	style := printer.style
+	port := header.port
 	parts := []string{style.heading(fmt.Sprintf("tcp expect :%d", port))}
-	if from.IsValid() {
-		parts = append(parts, T("expect.live.from", from.String()))
+	if header.from.IsValid() {
+		parts = append(parts, T("expect.live.from", header.from.String()))
 	}
-	if duration > 0 {
-		parts = append(parts, duration.String())
+	if header.duration > 0 {
+		parts = append(parts, header.duration.String())
+	}
+	if header.until != "" {
+		parts = append(parts, T("expect.live.until_"+header.until))
+	}
+	if header.stopAfter > 0 {
+		parts = append(parts, T("expect.live.stop_after", header.stopAfter))
 	}
 	parts = append(parts, style.command("Ctrl-C")+" "+T("expect.live.stop"))
 	line := strings.Join(parts, style.dim("  ·  "))
 	drops := T("expect.live.drop_on")
-	if dropTrace.Status != StatusPass {
-		drops = T("expect.live.drop_skip", dropTrace.Reason)
+	if header.dropTrace.Status != StatusPass {
+		drops = T("expect.live.drop_skip", header.dropTrace.Reason)
 	}
 	printer.println(line)
 	printer.println(style.dim(drops))
+	if header.listener != nil {
+		text := describeExpectListener(*header.listener)
+		switch header.listener.State {
+		case expectListenerNone:
+			text = style.warn(text)
+		case expectListenerPresent:
+			if header.listener.Scope == "loopback" {
+				text = style.warn(text)
+			}
+		default:
+			text = style.dim(text)
+		}
+		printer.println(text)
+	}
 	// 시작한 뒤 SYN이 오기 전에는 화면이 멈춘 것처럼 보인다. 무엇을 기다리는지와 client에서 할 일을 알린다.
-	client := "edc tcp check --diagnose " + T("expect.live.this_host") + ":" + strconv.Itoa(int(port))
+	host := T("expect.live.this_host")
+	if len(header.addresses) > 0 {
+		host = header.addresses[0]
+	}
+	client := "edc tcp check --diagnose " + net.JoinHostPort(host, strconv.Itoa(int(port)))
 	printer.println(T("expect.live.waiting", port, style.command(client)))
+	if len(header.addresses) > 1 {
+		printer.println(style.dim(T("expect.live.other_addresses", strings.Join(header.addresses[1:], ", "))))
+	}
 }
 
 func (printer expectLivePrinter) event(event expectEvent) {
@@ -1305,23 +1690,83 @@ func runTCPExpect(args []string, version string) int {
 	if options.common.jsonPath == "-" {
 		liveOutput = os.Stderr
 	}
-	printer := expectLivePrinter{writer: liveOutput, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
+	var liveWriter io.Writer = liveOutput
+	var status *expectStatus
+	// 상태줄은 사람이 보는 터미널에만 그린다. pipe, 파일과 --json -의 stderr 출력은 바뀌지 않는다.
+	if options.common.jsonPath != "-" && isTerminal(os.Stdout) && isTerminal(os.Stderr) {
+		status = newExpectStatus(os.Stdout, terminalWidth, time.Now)
+		status.color = richEnabled(os.Stdout)
+		liveWriter = status
+	}
+	printer := expectLivePrinter{writer: liveWriter, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
 	session := newExpectSession(options.port, options.from, printer.event)
 	session.verbose = options.common.verbose
+	session.until, session.stopAfter = options.until, options.stopAfter
+	sockets, listenErr := collectListenSockets(listenFamilies{TCP: true})
+	listener := expectListenerState(sockets, listenErr, options.port)
+	if options.listen {
+		// 이미 기다리는 process가 있으면 그 서비스를 시험해야 한다. edc가 port를 빼앗지 않는다.
+		if listener.State == expectListenerPresent {
+			fmt.Fprintln(os.Stderr, T("expect.listen_busy", options.port, expectListenerOwner(listener)+", "+listener.Address))
+			return 2
+		}
+		temporary, err := openExpectListener(options.port)
+		if errors.Is(err, syscall.EADDRINUSE) {
+			fmt.Fprintln(os.Stderr, T("expect.listen_busy", options.port, err))
+			return 2
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("expect.listen_failed", options.port, err))
+			return 1
+		}
+		// 어떤 경로로 끝나도(--duration, --until, --stop-after, Ctrl-C, 오류) 함수를 나가면서 닫는다.
+		defer temporary.close()
+		listener = temporary.state()
+	}
+	session.listener = &listener
 	started := time.Now()
+	statusDone := make(chan struct{})
+	var statusLoop sync.WaitGroup
 	err := runExpectCapture(expectRun{ctx: ctx, port: options.port, session: session, ready: func(dropTrace expectDropTrace) {
-		printer.header(options.port, options.from, options.duration, dropTrace)
+		addresses := expectClientAddresses(session.clientRouteSource(), expectHostInterfaces())
+		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener, until: options.until, stopAfter: options.stopAfter, addresses: addresses})
 		session.start(dropTrace, time.Now())
+		if status != nil {
+			status.update(session.snapshot())
+			statusLoop.Add(1)
+			go func() {
+				defer statusLoop.Done()
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-statusDone:
+						return
+					case <-ticker.C:
+						status.update(session.snapshot())
+					}
+				}
+			}()
+		}
 	}})
+	close(statusDone)
+	statusLoop.Wait()
+	if status != nil {
+		status.close()
+	}
 	target := map[string]interface{}{"input": strconv.Itoa(int(options.port))}
 	if err != nil {
 		report := buildReport(version, started, target, []Result{resultFromError(expectProbeID, started, "capture", err)}, options.common.redact)
 		emit(options.common, report)
 		return 1
 	}
-	stopReason := "cancelled"
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		stopReason = "duration"
+	// capture는 ctx가 끝나거나 멈출 조건을 만나야 돌아온다. 유예 시간 중에 Ctrl-C를 누르면 ctx 쪽이 이유다.
+	stopReason := session.stoppedBy()
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		stopReason = expectStopDuration
+	case ctx.Err() != nil:
+		stopReason = expectStopCancelled
 	}
 	result, exit := session.result(started, stopReason)
 	if options.common.jsonPath == "" {
@@ -1329,6 +1774,12 @@ func runTCPExpect(args []string, version string) int {
 	}
 	if code := emit(options.common, buildReport(version, started, target, []Result{result}, options.common.redact)); code == 2 {
 		return 2
+	}
+	verdict, _ := result.Metrics["verdict"].(string)
+	printer.writer = liveOutput
+	ipsecHidden := verdict == expectVerdictNoSYN && result.Status == StatusWarn
+	for _, step := range expectNextSteps(verdict, options.listen, ipsecHidden, options.common.jsonPath) {
+		printer.println(printer.style.dim(step))
 	}
 	return exit
 }

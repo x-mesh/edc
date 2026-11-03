@@ -30,7 +30,7 @@ func runCapture(args []string) int {
 	config := activeConfig.Defaults.Capture
 	mode := set.String("mode", "pcap", T("command.capture.option.mode"))
 	interfaceName := set.String("interface", configuredString(config.Interface, ""), T("command.capture.option.interface"))
-	duration := set.Duration("duration", configuredDuration(config.Duration, 15*time.Second), T("command.capture.option.duration"))
+	duration := durationFlag(set, "duration", configuredDuration(config.Duration, 15*time.Second), T("command.capture.option.duration"))
 	count := set.Int("count", configuredInt(config.Count, 500), T("command.capture.option.count"))
 	filter := set.String("filter", configuredString(config.Filter, ""), T("command.capture.option.filter"))
 	output := set.String("output", configuredString(config.Output, ""), T("command.capture.option.output"))

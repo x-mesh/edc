@@ -34,14 +34,14 @@ func runSnapshot(args []string, version string) int {
 	set := newFlagSet("snapshot")
 	set.SetOutput(os.Stderr)
 	output := set.String("output", "", T("command.snapshot.option.output"))
-	since := set.Duration("since", configuredDuration(activeConfig.Defaults.Snapshot.Since, snapshotDefaultSince), T("command.snapshot.option.since"))
+	since := durationFlag(set, "since", configuredDuration(activeConfig.Defaults.Snapshot.Since, snapshotDefaultSince), T("command.snapshot.option.since"))
 	force := set.Bool("force", false, T("command.snapshot.option.force"))
 	var duPaths snapshotPaths
 	set.Var(&duPaths, "du", T("command.snapshot.option.du"))
 	writePath := set.String("write", "", T("command.snapshot.option.write"))
 	set.StringVar(writePath, "w", "", T("command.snapshot.option.write"))
 	noWrite := set.Bool("no-write", false, T("command.snapshot.option.no_write"))
-	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
+	durationFlagVar(set, &options.timeout, "timeout", options.timeout, T("option.timeout"))
 	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))
 	args, defaultWrite := normalizeTopWriteArgs(args, set)
 	if err := set.Parse(args); err != nil {

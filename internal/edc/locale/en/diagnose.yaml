@@ -51,3 +51,15 @@ diagnose:
     attempts: "attempts"
   next:
     on_host: "run on %s"
+  peer:
+    invalid: "--peer takes an ssh destination such as host or user@host, not %q"
+    ssh_failed: "edc cannot connect to %s over ssh: %s"
+    edc_missing: "edc is not installed on %s. Install it there, then run this command again: %s"
+    version_unknown: "edc on %s did not report a version: %s"
+    version_old: "edc %s on %s is older than %s, which --peer needs. Run edc update on %s"
+    sudo_password: "tcp expect on %s needs root or CAP_NET_RAW, and sudo asks for a password (%s). Use root@%s as the ssh destination, or allow sudo without a password for %s"
+    not_ready: "tcp expect on %s did not start within %s: %s"
+    ended: "tcp expect on %s stopped before it started (exit %s): %s"
+    no_report: "tcp expect on %s returned no report (exit %s): %s"
+    empty_report: "the output has no tcp.expect report"
+    saved: "saved: %s"

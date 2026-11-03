@@ -196,7 +196,7 @@ On Linux as root, edc also traces TCP events and kernel drops for this flow. It 
 | `no_reply` | SYNs got no answer, and this host did not drop them. | `edc tcp expect --from <source> <port>` on the target |
 | `intermittent` | Some attempts connected and some failed. | `edc tcp expect --from <source> <port>` on the target |
 | `degraded` | All attempts connected with retransmits or a slow connect. | `edc net mtu <host>` |
-| `connected` | All attempts connected cleanly. Check TLS and the application next. | `edc tls check <host:port>` |
+| `connected` | All attempts connected cleanly. Check TLS and the application next. | TLS ports such as 443: `edc tls check <host:port>`. Ports 80 and 8080: `edc http check`. Other ports: none |
 
 A firewall on the path can also send the RST. Only drop reasons that block a flow change the verdict, such as `NETFILTER_DROP` and `XFRM_POLICY`. Other drop reasons go to `other_drops`.
 

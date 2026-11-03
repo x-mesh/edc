@@ -70,7 +70,6 @@ join:
     mtu: "edc net mtu %s"
     retransmits: "retransmits: client SYN %d, data %d · target SYN %d, SYN-ACK %d"
     attempt_counts: "attempts: client %d (connected %d) · target %d (handshakes %d)"
-    tls: "edc tls check %s"
     application: "the application log on the target"
     same_port: "the same port on both sides: client %s, target %d"
     same_time: "the two commands ran at the same time"

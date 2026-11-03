@@ -397,7 +397,10 @@ func joinChecklist(segment string, client joinClient, target joinTarget) []strin
 			T("join.check.attempt_counts", client.Attempts, client.Totals.Connected, target.Counts.Attempts, target.Counts.Handshakes),
 		}
 	case joinSegmentWorks:
-		items = []string{T("join.check.tls", destination), T("join.check.application")}
+		if next := diagnoseServiceNext(destination, port); next != "" {
+			items = append(items, next)
+		}
+		items = append(items, T("join.check.application"))
 	case joinSegmentInconsistent:
 		items = []string{
 			T("join.check.same_port", joinValue(client.Port), target.Port),

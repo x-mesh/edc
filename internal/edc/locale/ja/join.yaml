@@ -70,7 +70,6 @@ join:
     mtu: "edc net mtu %s"
     retransmits: "再送: client SYN %d、データ %d · 対象 SYN %d、SYN-ACK %d"
     attempt_counts: "試行: client %d (接続 %d) · 対象 %d (handshake %d)"
-    tls: "edc tls check %s"
     application: "対象のアプリケーションログ"
     same_port: "両側の port が同じか: client %s、対象 %d"
     same_time: "2 つのコマンドを同時に実行したか"

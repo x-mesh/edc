@@ -1,0 +1,15 @@
+# jobs 명령의 한국어 메시지.
+jobs:
+  summary: "예약 작업 %d개"
+  failed: "예약 작업 %[2]d개 중 %[1]d개가 마지막 실행에서 실패했습니다: %[3]s"
+  unreadable: "root가 있어야 읽을 수 있는 경로 %d개: %s"
+  next: "%s 뒤 실행"
+  last: "%s 전 실행"
+  skip:
+    unsupported: "edc jobs는 Linux에서 systemd timer와 cron을, macOS에서 launchd를 읽습니다"
+  cron:
+    none: "crontab이 없습니다"
+    note: "cron은 실행 결과를 남기지 않습니다. 결과는 cron log에서 확인하세요."
+  launchd:
+    interval: "%s마다"
+    not_loaded: "이 domain에 올라가 있지 않음"

@@ -453,6 +453,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "jobs", group: "observe",
+		usage:      []string{"edc jobs [options]"},
+		usesCommon: true,
+	},
+	{
 		name: "ctr", group: "observe",
 		usage: []string{"edc ctr [options] [--all]", "edc ctr [options] <container>"},
 		options: []optionDoc{

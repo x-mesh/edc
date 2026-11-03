@@ -1,0 +1,15 @@
+# jobs コマンドの日本語メッセージ。
+jobs:
+  summary: "予約ジョブ %d 個"
+  failed: "予約ジョブ %[2]d 個のうち %[1]d 個が前回の実行で失敗しました: %[3]s"
+  unreadable: "root でないと読めないパス %d 個: %s"
+  next: "%s 後に実行"
+  last: "%s 前に実行"
+  skip:
+    unsupported: "edc jobs は Linux で systemd timer と cron を、macOS で launchd を読みます"
+  cron:
+    none: "crontab がありません"
+    note: "cron は実行結果を記録しません。結果は cron のログで確認してください。"
+  launchd:
+    interval: "%s ごと"
+    not_loaded: "この domain に読み込まれていません"

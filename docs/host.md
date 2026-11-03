@@ -244,6 +244,23 @@ In a pipe or with `--json`, edc prints one `svc.list` result and a table. A fail
 <a id="container-view-linux"></a>
 <a id="container-view-linux-and-macos"></a>
 
+## Scheduled jobs (Linux and macOS)
+
+`edc jobs` lists the scheduled jobs and the result of their last run. It changes nothing.
+
+```bash
+edc jobs
+sudo edc jobs -v   # every job, also the user crontabs and the launchd daemons
+```
+
+| Source | Read from | Result of the last run |
+|---|---|---|
+| `jobs.timers` (Linux) | the active systemd timers, and `systemctl show` of each timer and its service | The `Result` of the service. A result other than `success` fails, and `next` is `journalctl -u <service>`. A service that never ran has no result. |
+| `jobs.cron` (Linux) | `/etc/crontab`, `/etc/cron.d`, the user crontabs in `/var/spool/cron`, and `/etc/cron.{hourly,daily,weekly,monthly}` | None. cron does not record it. |
+| `jobs.launchd` (macOS) | the plists with `StartInterval` or `StartCalendarInterval` in `/Library/LaunchDaemons`, `/Library/LaunchAgents`, and `~/Library/LaunchAgents` | The last exit status from `launchctl list`. A positive exit code fails. A job that ended by a signal does not fail, as in `check`. |
+
+A failed job comes first and makes the exit code 1. If a job failed, the default output shows only the failed jobs. Use `-v` to see all jobs. Without root, the user crontabs are not read, and `launchctl list` shows only the agents of your session.
+
 ## Container view (Linux and macOS)
 
 `edc ctr <container>` reads one container through the Docker Engine API over a Unix socket. It runs no Docker CLI command. It does not change target state.

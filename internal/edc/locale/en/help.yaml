@@ -354,6 +354,13 @@ command:
       - "Run it as root. Without root, fds, socket owners, and the journal show skip."
     option:
       all: "also list the services that are not running"
+  jobs:
+    summary: "Scheduled jobs and their last result"
+    notes:
+      - "Linux: systemd timers with the last result of their service, and cron entries."
+      - "macOS: launchd jobs with StartInterval or StartCalendarInterval, and their last exit status."
+      - "A job whose last run failed is listed first and makes the exit code 1."
+      - "Without root, user crontabs and the results of launchd daemons are not shown."
   ctr:
     summary: "Docker containers over a Unix socket (Linux, macOS)"
     notes:

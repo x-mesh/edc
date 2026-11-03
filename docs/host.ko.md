@@ -234,6 +234,23 @@ pipe나 `--json`에서는 `svc.list` 결과 하나와 표를 출력합니다. �
 <a id="container-보기-linux"></a>
 <a id="container-보기-linux와-macos"></a>
 
+## 예약 작업 (Linux와 macOS)
+
+`edc jobs`는 예약 작업과 마지막 실행 결과를 보여 줍니다. 아무것도 바꾸지 않습니다.
+
+```bash
+edc jobs
+sudo edc jobs -v   # 모든 작업, 사용자 crontab과 launchd daemon까지
+```
+
+| 원천 | 읽는 곳 | 마지막 실행 결과 |
+|---|---|---|
+| `jobs.timers` (Linux) | 켜진 systemd timer, timer와 그 service의 `systemctl show` | service의 `Result`입니다. `success`가 아니면 실패이고, `next`는 `journalctl -u <service>`입니다. 한 번도 돌지 않은 service는 결과가 없습니다. |
+| `jobs.cron` (Linux) | `/etc/crontab`, `/etc/cron.d`, `/var/spool/cron`의 사용자 crontab, `/etc/cron.{hourly,daily,weekly,monthly}` | 없습니다. cron은 결과를 남기지 않습니다. |
+| `jobs.launchd` (macOS) | `/Library/LaunchDaemons`, `/Library/LaunchAgents`, `~/Library/LaunchAgents`에서 `StartInterval`이나 `StartCalendarInterval`이 있는 plist | `launchctl list`의 마지막 종료 상태입니다. 양수 종료 코드는 실패입니다. 신호로 끝난 job은 `check`와 같이 실패로 보지 않습니다. |
+
+실패한 작업은 맨 위에 나오고 종료 코드를 1로 만듭니다. 실패한 작업이 있으면 기본 출력은 실패한 작업만 보여 줍니다. 모든 작업은 `-v`로 봅니다. root가 아니면 사용자 crontab을 읽지 못하고, `launchctl list`는 현재 세션의 agent만 알려 줍니다.
+
 ## Container 보기 (Linux와 macOS)
 
 `edc ctr <container>`는 Unix socket으로 Docker Engine API를 읽어 container 하나를 보여 줍니다. Docker CLI를 실행하거나 container 상태를 바꾸지 않습니다.

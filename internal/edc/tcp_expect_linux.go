@@ -115,7 +115,11 @@ func runExpectCapture(run expectRun) error {
 			session.packet(packet)
 		}
 		drops.poll()
-		session.tick(time.Now())
+		now := time.Now()
+		session.tick(now)
+		if session.stopDue(now) {
+			break
+		}
 	}
 	if stats, err := unix.GetsockoptTpacketStats(fd, unix.SOL_PACKET, unix.PACKET_STATISTICS); err == nil {
 		session.mu.Lock()

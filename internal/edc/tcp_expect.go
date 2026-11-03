@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -45,6 +46,9 @@ const (
 	// 공개 port에 SYN flood가 오면 시도마다 2분, 출발지마다 끝까지 memory를 쥐므로, 넘치는 만큼은 세기만 하고 쥐지 않는다.
 	expectFlowTrackLimit   = 10000
 	expectSourceTrackLimit = 10000
+	// expectStopGrace는 --until syn과 --stop-after가 조건을 만난 뒤 더 보는 시간이다. 그 사이에 이 host의 SYN-ACK나 RST와 kernel drop이
+	// 따라와야 판정이 맞다. SYN을 받은 host는 대개 1ms 안에 답한다.
+	expectStopGrace = time.Second
 
 	tcpFlagSYN = 0x02
 	tcpFlagRST = 0x04
@@ -78,6 +82,9 @@ type expectOptions struct {
 	port     uint16
 	from     netip.Prefix
 	duration time.Duration
+	// until은 syn이나 handshake이고, stopAfter는 0이면 끄는 연결 시도 수다.
+	until     string
+	stopAfter int
 }
 
 // parseTCPExpectArgs는 option과 port를 읽는다. 실패하면 이미 오류를 출력했고 exit code를 돌려준다.
@@ -89,6 +96,8 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	fromText := ""
 	set.StringVar(&fromText, "from", "", T("command.tcp.option.from"))
 	set.DurationVar(&options.duration, "duration", 0, T("command.tcp.option.duration"))
+	set.StringVar(&options.until, "until", "", T("command.tcp.option.until"))
+	set.IntVar(&options.stopAfter, "stop-after", 0, T("command.tcp.option.stop_after"))
 	positional, err := parseInterspersed(set, args)
 	if err != nil {
 		return options, 2, false
@@ -123,6 +132,16 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	}
 	if options.duration < 0 || options.duration > expectMaxDuration {
 		fmt.Fprintln(os.Stderr, T("expect.duration_range", expectMaxDuration))
+		return options, 2, false
+	}
+	if options.until != "" && options.until != "syn" && options.until != "handshake" {
+		fmt.Fprintln(os.Stderr, T("expect.until_invalid", options.until))
+		return options, 2, false
+	}
+	stopAfterSet := false
+	set.Visit(func(item *flag.Flag) { stopAfterSet = stopAfterSet || item.Name == "stop-after" })
+	if stopAfterSet && options.stopAfter < 1 {
+		fmt.Fprintln(os.Stderr, T("expect.stop_after_invalid", options.stopAfter))
 		return options, 2, false
 	}
 	return options, 0, true
@@ -502,6 +521,15 @@ func expectNetContains(network *net.IPNet, address netip.Addr) bool {
 	return network.Contains(net.IP(address.AsSlice()))
 }
 
+// stop_reason 값이다. duration과 cancelled 말고는 --until과 --stop-after가 정한다.
+const (
+	expectStopDuration       = "duration"
+	expectStopCancelled      = "cancelled"
+	expectStopUntilSYN       = "until_syn"
+	expectStopUntilHandshake = "until_handshake"
+	expectStopAfter          = "stop_after"
+)
+
 const (
 	expectListenerPresent   = "present"
 	expectListenerNone      = "none"
@@ -628,6 +656,12 @@ type expectSession struct {
 	emit         func(expectEvent)
 	// listener는 시작할 때 본 port의 listener다. nil이면 metrics에 넣지 않는다.
 	listener *expectListener
+	// until과 stopAfter는 멈출 조건이다. 조건을 만나면 stopReason과 멈출 시각 stopAt을 적고, capture는 stopDue를 보고 멈춘다.
+	until      string
+	stopAfter  int
+	attempts   int
+	stopReason string
+	stopAt     time.Time
 }
 
 func newExpectSession(port uint16, from netip.Prefix, emit func(expectEvent)) *expectSession {
@@ -695,6 +729,13 @@ func (session *expectSession) packet(packet expectPacket) {
 		session.flows[key] = flow
 		event.kind = expectEventSYN
 		session.emit(event)
+		session.attempts++
+		if session.until == "syn" {
+			session.armStop(packet.at, expectStopUntilSYN, expectStopGrace)
+		}
+		if session.stopAfter > 0 && session.attempts >= session.stopAfter {
+			session.armStop(packet.at, expectStopAfter, expectStopGrace)
+		}
 		if pending, ok := session.pendingDrops[key]; ok {
 			flow.drops = pending.reasons
 			delete(session.pendingDrops, key)
@@ -751,7 +792,32 @@ func (session *expectSession) packet(packet expectPacket) {
 		event.kind, event.iface = expectEventEstablished, flow.iface
 		event.detail = T("expect.live.handshake_time", formatExpectElapsed(packet.at.Sub(flow.firstSYN)))
 		session.emit(event)
+		if session.until == "handshake" {
+			session.armStop(packet.at, expectStopUntilHandshake, 0)
+		}
 	}
+}
+
+// armStop은 멈출 조건을 처음 만난 때를 적는다. 먼저 만난 조건이 stop_reason이 된다.
+func (session *expectSession) armStop(at time.Time, reason string, grace time.Duration) {
+	if session.stopReason != "" {
+		return
+	}
+	session.stopReason, session.stopAt = reason, at.Add(grace)
+}
+
+// stopDue는 --until이나 --stop-after의 조건을 만나고 유예 시간이 지났는지다. capture는 이 값이 true면 관측을 끝낸다.
+func (session *expectSession) stopDue(now time.Time) bool {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.stopReason != "" && !now.Before(session.stopAt)
+}
+
+// stoppedBy는 멈출 조건의 이름이다. 조건을 만나지 않았으면 빈 문자열이다.
+func (session *expectSession) stoppedBy() string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.stopReason
 }
 
 // drop은 kernel이 버린 packet 하나를 연결 시도에 붙인다. drop은 packet socket보다 먼저 읽힐 수 있어 SYN이 아직 없으면
@@ -1068,7 +1134,7 @@ func expectVerdictStatus(verdict string) Status {
 // 출발지가 한 번 이상 연결되었을 때만 0이다.
 func expectExitCode(sources []expectSource, stopReason string) int {
 	if len(sources) == 0 {
-		if stopReason == "duration" {
+		if stopReason == expectStopDuration {
 			return 2
 		}
 		return 4
@@ -1378,6 +1444,8 @@ type expectHeader struct {
 	duration  time.Duration
 	dropTrace expectDropTrace
 	listener  *expectListener
+	until     string
+	stopAfter int
 	// addresses는 client가 접속할 이 host의 주소다. 비어 있으면 자리표시를 보인다.
 	addresses []string
 }
@@ -1391,6 +1459,12 @@ func (printer expectLivePrinter) header(header expectHeader) {
 	}
 	if header.duration > 0 {
 		parts = append(parts, header.duration.String())
+	}
+	if header.until != "" {
+		parts = append(parts, T("expect.live.until_"+header.until))
+	}
+	if header.stopAfter > 0 {
+		parts = append(parts, T("expect.live.stop_after", header.stopAfter))
 	}
 	parts = append(parts, style.command("Ctrl-C")+" "+T("expect.live.stop"))
 	line := strings.Join(parts, style.dim("  ·  "))
@@ -1501,13 +1575,14 @@ func runTCPExpect(args []string, version string) int {
 	printer := expectLivePrinter{writer: liveOutput, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
 	session := newExpectSession(options.port, options.from, printer.event)
 	session.verbose = options.common.verbose
+	session.until, session.stopAfter = options.until, options.stopAfter
 	sockets, listenErr := collectListenSockets(listenFamilies{TCP: true})
 	listener := expectListenerState(sockets, listenErr, options.port)
 	session.listener = &listener
 	started := time.Now()
 	err := runExpectCapture(expectRun{ctx: ctx, port: options.port, session: session, ready: func(dropTrace expectDropTrace) {
 		addresses := expectClientAddresses(session.clientRouteSource(), expectHostInterfaces())
-		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener, addresses: addresses})
+		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener, until: options.until, stopAfter: options.stopAfter, addresses: addresses})
 		session.start(dropTrace, time.Now())
 	}})
 	target := map[string]interface{}{"input": strconv.Itoa(int(options.port))}
@@ -1516,9 +1591,13 @@ func runTCPExpect(args []string, version string) int {
 		emit(options.common, report)
 		return 1
 	}
-	stopReason := "cancelled"
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		stopReason = "duration"
+	// capture는 ctx가 끝나거나 멈출 조건을 만나야 돌아온다. 유예 시간 중에 Ctrl-C를 누르면 ctx 쪽이 이유다.
+	stopReason := session.stoppedBy()
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		stopReason = expectStopDuration
+	case ctx.Err() != nil:
+		stopReason = expectStopCancelled
 	}
 	result, exit := session.result(started, stopReason)
 	if options.common.jsonPath == "" {

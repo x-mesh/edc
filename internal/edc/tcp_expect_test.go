@@ -742,3 +742,79 @@ func TestExpectHeaderShowsRealAddresses(t *testing.T) {
 		t.Errorf("redacted header = %q", out.String())
 	}
 }
+
+func TestParseExpectStopOptions(t *testing.T) {
+	options, code, ok := parseTCPExpectArgs([]string{"--until", "handshake", "--stop-after", "3", "2142"})
+	if !ok || code != 0 || options.until != "handshake" || options.stopAfter != 3 || options.port != 2142 {
+		t.Fatalf("options = %+v, %d, %v", options, code, ok)
+	}
+	for _, args := range [][]string{{"--until", "ack", "2142"}, {"--stop-after", "0", "2142"}, {"--stop-after", "-1", "2142"}, {"--stop-after", "x", "2142"}} {
+		if _, code, ok := parseTCPExpectArgs(args); ok || code != 2 {
+			t.Errorf("%v: code %d, ok %v", args, code, ok)
+		}
+	}
+}
+
+// --until syn은 첫 SYN 뒤 유예 시간만큼 더 보아 이 host의 답을 남긴다. 답이 남아야 판정이 rst나 completed가 된다.
+func TestExpectUntilSYNWaitsForTheReply(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.until = "syn"
+	scenario.in("tailscale0", "100.64.0.9", tcpFlagSYN, 100, 0)
+	if scenario.session.stopDue(scenario.now) {
+		t.Fatal("stopped before the reply could arrive")
+	}
+	scenario.out("tailscale0", "100.64.0.9", tcpFlagRST|tcpFlagACK, 0, time.Millisecond)
+	scenario.in("tailscale0", "100.64.0.10", tcpFlagSYN, 200, 10*time.Millisecond)
+	if scenario.session.stopDue(scenario.now.Add(500 * time.Millisecond)) {
+		t.Fatal("a second SYN must not move the stop time")
+	}
+	if !scenario.session.stopDue(scenario.now.Add(expectStopGrace)) {
+		t.Fatal("not stopped after the grace")
+	}
+	result, sources, code := scenario.finish(scenario.session.stoppedBy())
+	verdicts := map[string]string{}
+	for _, source := range sources {
+		verdicts[source.Address] = source.Verdict
+	}
+	if result.Metrics["stop_reason"] != expectStopUntilSYN || verdicts["100.64.0.9"] != expectVerdictRST || code != 1 {
+		t.Fatalf("stop_reason %v, sources %+v, code %d", result.Metrics["stop_reason"], sources, code)
+	}
+}
+
+func TestExpectUntilHandshakeStopsAtOnce(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.until = "handshake"
+	scenario.in("eth0", "10.0.0.9", tcpFlagSYN, 100, 0)
+	scenario.out("eth0", "10.0.0.9", tcpFlagSYN|tcpFlagACK, 5000, time.Millisecond)
+	if scenario.session.stopDue(scenario.now.Add(time.Hour)) {
+		t.Fatal("stopped without a handshake")
+	}
+	scenario.in("eth0", "10.0.0.9", tcpFlagACK, 101, time.Millisecond)
+	if !scenario.session.stopDue(scenario.now) {
+		t.Fatal("not stopped at the handshake")
+	}
+	result, _, code := scenario.finish(scenario.session.stoppedBy())
+	if result.Metrics["stop_reason"] != expectStopUntilHandshake || code != 0 {
+		t.Fatalf("stop_reason %v, code %d", result.Metrics["stop_reason"], code)
+	}
+}
+
+// --stop-after는 client의 첫 sequence가 다른 연결 시도를 센다. 재전송과 다른 interface에 보인 같은 packet은 세지 않는다.
+func TestExpectStopAfterCountsAttempts(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.stopAfter = 2
+	scenario.in("eth0", "10.0.0.9", tcpFlagSYN, 100, 0)
+	scenario.in("eth1", "10.0.0.9", tcpFlagSYN, 100, time.Millisecond)
+	scenario.in("eth1", "10.0.0.9", tcpFlagSYN, 100, time.Second)
+	if scenario.session.stopDue(scenario.now.Add(time.Hour)) {
+		t.Fatal("a retransmit counted as a second attempt")
+	}
+	scenario.in("eth0", "10.0.0.9", tcpFlagSYN, 900, time.Second)
+	if scenario.session.stopDue(scenario.now) || !scenario.session.stopDue(scenario.now.Add(expectStopGrace)) {
+		t.Fatal("stop-after must stop one grace after the second attempt")
+	}
+	result, _, _ := scenario.finish(scenario.session.stoppedBy())
+	if result.Metrics["stop_reason"] != expectStopAfter || result.Metrics["attempts"] != 2 {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+}

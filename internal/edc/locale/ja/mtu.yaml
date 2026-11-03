@@ -21,6 +21,7 @@ mtu:
   summary:
     measured: "経路 MTU %d, %s MTU %d, 差 %d, TCP MSS %d"
     at_least: "経路 MTU %d 以上 (--max), %s MTU %d, TCP MSS %d"
+    incomplete: "経路 MTU %d から %d の間 (探索中断), %s MTU %d"
   skip:
     no_time: "timeout が短く probe を送る時間がありません"
     denied: "ping の実行が許可されませんでした: %s"

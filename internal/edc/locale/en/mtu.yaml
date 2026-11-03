@@ -21,6 +21,7 @@ mtu:
   summary:
     measured: "path MTU %d, %s MTU %d, gap %d, TCP MSS %d"
     at_least: "path MTU at least %d (--max), %s MTU %d, TCP MSS %d"
+    incomplete: "path MTU between %d and %d (search stopped), %s MTU %d"
   skip:
     no_time: "the timeout left no time to send a probe"
     denied: "ping was not permitted: %s"

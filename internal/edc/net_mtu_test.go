@@ -174,6 +174,20 @@ func TestNetMTUNeverTriesAboveTheInterfaceMTU(t *testing.T) {
 	}
 }
 
+// Linux loopback은 MTU 65536을 보고하지만 IP packet은 65535를 넘지 못한다. 그 위를 보내면 ping이 인자를
+// 거절하고, 그 거절을 무응답으로 읽으면 멀쩡한 경로가 블랙홀로 판정된다.
+func TestNetMTUNeverTriesAboveTheIPPacketLimit(t *testing.T) {
+	rejected := mtuAttempt{Outcome: mtuError, detail: "ping: packet size 65508 is too large. Maximum is 65507"}
+	result := probeNetMTUWith(context.Background(), fakeMTUDeps(65536, fakeMTUPath(65535, rejected)), "example.com", 0)
+	attempts := result.Metrics["attempts"].([]mtuAttempt)
+	if got := mtuSizes(attempts); !reflect.DeepEqual(got, []int{576, 65535}) {
+		t.Fatalf("sizes = %v", got)
+	}
+	if result.Status != StatusPass || result.Metrics["max"] != 65535 || result.Metrics["black_hole"] != false || len(result.Warnings) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 // 사용자가 취소하면 그때까지 찾은 범위만 남기고 warn으로 끝낸다.
 func TestNetMTUStopsWhenTheContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -190,6 +204,35 @@ func TestNetMTUStopsWhenTheContextEnds(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(result.Warnings, "\n"), "between 576 and 1500") {
 		t.Errorf("warnings = %v", result.Warnings)
+	}
+}
+
+// 블랙홀에서 시간이 모자라 멈춘 탐색의 pathMTU는 하한일 뿐이다. 그 값으로 차이 원인이나 MSS를 짚지 않는다.
+func TestNetMTUDoesNotDiagnoseFromAnIncompleteSearch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	timeouts := 0
+	send := func(_ context.Context, size int) mtuAttempt {
+		if size <= 1000 {
+			return mtuAttempt{Size: size, Outcome: mtuReply}
+		}
+		timeouts++
+		if timeouts == 3 {
+			cancel()
+		}
+		return mtuAttempt{Size: size, Outcome: mtuTimeout}
+	}
+	result := probeNetMTUWith(ctx, fakeMTUDeps(1500, send), "example.com", 0)
+	if result.Status != StatusWarn || result.Metrics["complete"] != false || result.Metrics["black_hole"] != true || result.Metrics["path_mtu"] != 576 {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, ok := result.Metrics["gap"]; ok {
+		t.Errorf("an unfinished search must not claim a gap: %v", result.Metrics)
+	}
+	if result.Summary != T("mtu.summary.incomplete", 576, 1499, "eth0", 1500) {
+		t.Errorf("summary = %q", result.Summary)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "between 576 and 1499") {
+		t.Errorf("only the incomplete range belongs in the warnings: %v", result.Warnings)
 	}
 }
 
@@ -238,6 +281,8 @@ func TestClassifyMTUPing(t *testing.T) {
 		{"macos router", "PING 10.0.0.2 (10.0.0.2): 1472 data bytes\n36 bytes from 10.9.0.1: frag needed and DF set (MTU 1400)", exit, mtuAttempt{Outcome: mtuFragNeeded, MTU: 1400}},
 		{"macos ipv6 root", "ping6: IPV6_DONTFRAG: Operation not permitted", exit, mtuAttempt{Outcome: mtuDenied, detail: "ping6: IPV6_DONTFRAG: Operation not permitted"}},
 		{"unknown host", "ping: nowhere.invalid: Name or service not known\nping: unknown host", exit, mtuAttempt{Outcome: mtuError, detail: "ping: nowhere.invalid: Name or service not known"}},
+		{"linux too large", "ping: packet size 65508 is too large. Maximum is 65507", exit, mtuAttempt{Outcome: mtuError, detail: "ping: packet size 65508 is too large. Maximum is 65507"}},
+		{"macos too large", "ping: packet size too large: 65508 > 65507", exit, mtuAttempt{Outcome: mtuError, detail: "ping: packet size too large: 65508 > 65507"}},
 		{"killed", "PING 10.0.0.2 (10.0.0.2): 1452 data bytes", context.DeadlineExceeded, mtuAttempt{Outcome: mtuTimeout}},
 		{"not started", "", errors.New("fork/exec /sbin/ping: permission denied"), mtuAttempt{Outcome: mtuError, detail: "fork/exec /sbin/ping: permission denied"}},
 	}

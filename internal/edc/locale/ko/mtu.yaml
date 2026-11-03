@@ -21,6 +21,7 @@ mtu:
   summary:
     measured: "경로 MTU %d, %s MTU %d, 차이 %d, TCP MSS %d"
     at_least: "경로 MTU %d 이상 (--max), %s MTU %d, TCP MSS %d"
+    incomplete: "경로 MTU %d에서 %d 사이 (탐색 중단), %s MTU %d"
   skip:
     no_time: "timeout이 짧아 probe를 보낼 시간이 없습니다"
     denied: "ping 실행이 허용되지 않았습니다: %s"

@@ -141,8 +141,10 @@ func probeNetMTUWith(ctx context.Context, deps mtuDeps, target string, maxSize i
 		plan.floor = mtuIPv6Floor
 	}
 	// DF를 켠 packet은 interface MTU를 넘으면 kernel이 보내지 않는다. 그 위는 시도할 필요가 없다.
-	if plan.max == 0 || plan.max > interfaceMTU {
-		plan.max = interfaceMTU
+	// IP packet은 65535를 넘지 못한다. Linux loopback은 MTU 65536을 보고하고, 그 크기의 -s는 ping이 거절한다.
+	limit := min(interfaceMTU, mtuMaxLimit)
+	if plan.max == 0 || plan.max > limit {
+		plan.max = limit
 	}
 	plan.floor = min(plan.floor, plan.max)
 	finding := searchPathMTU(ctx, plan, deps.sender(deps.goos, address))
@@ -224,7 +226,9 @@ var (
 	mtuReplyPattern  = regexp.MustCompile(`(?m)^\d+ bytes from `)
 	// macOS ping6 -D는 root가 아니면 "IPV6_DONTFRAG: Operation not permitted"로 끝난다.
 	mtuDeniedPattern = regexp.MustCompile(`(?i)operation not permitted`)
-	mtuErrorPattern  = regexp.MustCompile(`(?i)unknown host|cannot resolve|network is unreachable|no route to host|usage:|invalid (?:argument|option)|unrecognized option|illegal option`)
+	// Linux: "ping: packet size 65508 is too large. Maximum is 65507"
+	// macOS: "ping: packet size too large: 65508 > 65507"
+	mtuErrorPattern = regexp.MustCompile(`(?i)unknown host|cannot resolve|network is unreachable|no route to host|usage:|invalid (?:argument|option)|unrecognized option|illegal option|too large`)
 )
 
 // classifyMTUPing은 ping 출력으로 시도 결과를 정한다. 두 OS 모두 too long과 무응답에서 같은 exit code를
@@ -465,18 +469,21 @@ func mtuVerdict(target mtuTarget, finding mtuFinding) Result {
 		result.Summary = T("mtu.summary.at_least", pathMTU, target.iface, target.interfaceMTU, mss)
 		return result
 	}
-	gap := max(target.interfaceMTU-pathMTU, 0)
-	metrics["gap"] = gap
-	result.Summary = T("mtu.summary.measured", pathMTU, target.iface, target.interfaceMTU, gap, mss)
-	result.Status = StatusPass
+	// 시간이 모자라 멈춘 탐색의 pathMTU는 하한일 뿐이다. 그 값으로 차이 원인이나 MSS를 짚으면 틀린 진단이 된다.
 	if finding.incomplete {
-		result.Status = StatusWarn
 		upper := finding.upper
 		if upper == 0 {
 			upper = target.max + 1
 		}
-		result.Warnings = append(result.Warnings, T("mtu.warning.incomplete", pathMTU, upper-1))
+		result.Status = StatusWarn
+		result.Summary = T("mtu.summary.incomplete", pathMTU, upper-1, target.iface, target.interfaceMTU)
+		result.Warnings = []string{T("mtu.warning.incomplete", pathMTU, upper-1)}
+		return result
 	}
+	gap := max(target.interfaceMTU-pathMTU, 0)
+	metrics["gap"] = gap
+	result.Summary = T("mtu.summary.measured", pathMTU, target.iface, target.interfaceMTU, gap, mss)
+	result.Status = StatusPass
 	if finding.limit.Outcome == mtuDenied || finding.limit.Outcome == mtuError {
 		result.Status = StatusWarn
 		result.Warnings = append(result.Warnings, T("mtu.warning.stopped", finding.upper, finding.limit.detail))

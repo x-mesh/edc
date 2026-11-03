@@ -344,13 +344,14 @@ command:
       - "--password, --token 같은 옵션의 값과 URL의 암호는 ***로 가립니다."
       - "edc listen --json은 읽을 수 있는 process의 args와 cwd를 담습니다. --full은 --watch와 함께 쓸 수 없습니다."
   svc:
-    summary: "systemd service 목록, 또는 service 하나를 한 화면에 (Linux)"
+    summary: "service 목록, 또는 service 하나를 한 화면에 (systemd와 launchd)"
     notes:
       - "unit 없이 실행하면 service 목록을 보여 줍니다. 실패한 것이 먼저 옵니다."
       - "터미널에서는 Enter로 service 하나를 열고 Esc로 돌아옵니다."
       - "상태, 가동 시간, 재시작, process, fd, 소켓, journal 오류를 보여 줍니다."
       - "읽기만 합니다. unit을 시작·중지·reload하지 않습니다."
-      - "systemd가 있는 Linux에서만 동작하고, 다른 호스트에서는 skip입니다."
+      - "Linux에서는 systemd를 읽습니다. systemd가 없는 Linux 호스트에서는 skip입니다."
+      - "macOS에서는 launchd job의 상태, 마지막 종료, process, job log 파일의 끝을 봅니다."
       - "root로 실행하세요. root가 아니면 fd, 소켓 주인, journal이 skip입니다."
     option:
       all: "실행 중이 아닌 service도 목록에 포함"

@@ -344,13 +344,14 @@ command:
       - "Values of options such as --password and --token and URL passwords show as ***."
       - "With --json, edc listen includes args and cwd when edc can read them. --full does not work with --watch."
   svc:
-    summary: "systemd services, or one service on one screen (Linux)"
+    summary: "Services, or one service on one screen (systemd and launchd)"
     notes:
       - "Without a unit, it lists the services. Failed ones come first."
       - "In a terminal, Enter opens one service and Esc goes back."
       - "It shows state, uptime, restarts, processes, fds, sockets, and journal errors."
       - "It reads only. It does not start, stop, or reload the unit."
-      - "It needs Linux with systemd. On other hosts it shows skip."
+      - "On Linux it reads systemd. A Linux host without systemd shows skip."
+      - "On macOS it reads launchd jobs: the state, the last exit, the process, and the end of the job log file."
       - "Run it as root. Without root, fds, socket owners, and the journal show skip."
     option:
       all: "also list the services that are not running"

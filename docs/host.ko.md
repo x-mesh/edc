@@ -234,6 +234,25 @@ pipe나 `--json`에서는 `svc.list` 결과 하나와 표를 출력합니다. �
 <a id="container-보기-linux"></a>
 <a id="container-보기-linux와-macos"></a>
 
+### launchd job (macOS)
+
+macOS에서 `edc svc`는 systemd unit 대신 launchd job을 읽습니다.
+
+```bash
+edc svc                          # 실행 중인 job과 실패한 job, 실패한 것이 먼저
+edc svc --all                    # Apple job, 열린 앱, 쉬는 job까지
+edc svc com.example.sync         # job 하나
+sudo edc svc com.example.daemon  # system daemon
+```
+
+목록은 `launchctl list`에서 읽습니다. 돌고 있지 않으면서 양수 종료 코드로 끝난 job은 `check`와 같이 실패입니다. 신호로 끝난 job은 실패가 아닙니다. 기본 목록은 `com.apple.*` job, 열린 앱(`application.*`), 돌지 않고 0으로 끝난 job을 뺍니다. 실패한 job은 늘 보입니다.
+
+job 하나를 볼 때는 `gui/<uid>`, `user/<uid>`, `system` domain에서 찾고, root로 실행하면 `system`부터 찾습니다. 결과는 세 가지입니다.
+
+- `svc.state`: `launchctl print`의 상태, PID, 실행 횟수, 마지막 종료와 함께 plist, 프로그램, 인자를 보여 줍니다. 비밀 인자는 가립니다. 돌고 있지 않으면서 양수 종료 코드로 끝난 job은 실패입니다.
+- `svc.process`: 실행 중인 process의 CPU, 메모리, 열린 fd, 대기 포트입니다. `next`는 `edc proc <pid>`입니다.
+- `svc.log`: `StandardErrorPath` 파일의 마지막 20줄입니다. 없으면 `StandardOutPath`를 읽습니다. 둘 다 없으면 `next`로 unified log를 보는 `log show` 명령을 알려 줍니다.
+
 ## Process 보기 (Linux와 macOS)
 
 `edc proc <pid|이름>`은 process 하나를 한 화면에 보여 줍니다. 읽기만 하고 아무것도 바꾸지 않습니다.

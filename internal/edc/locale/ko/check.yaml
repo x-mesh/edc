@@ -70,6 +70,13 @@ check:
     array_inactive: "%s가 inactive입니다"
     array_degraded: "%s(%s)가 degraded입니다. 구성원 %d개가 빠졌습니다"
     array_sync: "%s: %s 진행 중"
+  cert:
+    ok: "인증서 파일 %d개, 가장 먼저 %s에 만료 (%s)"
+    none: "알려진 위치와 cert_paths에 인증서 파일이 없습니다"
+    expired: "%s가 %s에 만료됐습니다"
+    expiring: "%s가 %d일 뒤 만료됩니다"
+    unreadable: "인증서 위치의 파일 %d개는 root가 있어야 읽을 수 있어 확인하지 않았습니다: %s"
+    truncated: "인증서 파일은 처음 %d개만 읽었습니다"
   thermal:
     level: "thermal pressure %s"
   backup:

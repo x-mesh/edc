@@ -70,6 +70,13 @@ check:
     array_inactive: "%s is inactive"
     array_degraded: "%s (%s) is degraded, %d members missing"
     array_sync: "%s: %s in progress"
+  cert:
+    ok: "%d certificate files, the earliest expires on %s (%s)"
+    none: "no certificate file found in the known locations or cert_paths"
+    expired: "%s expired on %s"
+    expiring: "%s expires in %d days"
+    unreadable: "%d files in the certificate paths need root to read and were not checked: %s"
+    truncated: "only the first %d certificate files were read"
   thermal:
     level: "thermal pressure %s"
   backup:

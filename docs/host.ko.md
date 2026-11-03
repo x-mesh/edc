@@ -49,6 +49,7 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `process` | | defunct process나 D 상태 process가 있음 |
 | `memory` | 가용 메모리가 5% 미만 | 가용 메모리가 10% 미만 |
 | `disk` | mount의 사용률이나 inode 사용률이 95% 이상 | 같은 값이 90% 이상이거나 mount가 읽기 전용 |
+| `cert` | 인증서 파일이 만료됨 | 인증서 파일이 30일 안에 만료됨 |
 | `storage` | SMART가 디스크 실패를 알리거나, NVMe의 남은 예비 블록이 기준보다 적거나, 보증 쓰기 수명을 100% 이상 썼거나, md RAID가 degraded 또는 inactive | 보증 쓰기 수명을 90% 이상 썼거나, NVMe에 미디어 오류가 있거나, ATA 디스크에 재할당·대기·복구 불가 섹터가 있거나, md 배열이 recovery, resync, reshape 중 |
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
@@ -89,6 +90,7 @@ accept_units = ["systemd-networkd-wait-online.service"]
 accept_containers = ["job-*"]
 accept_mounts = ["/media/*"]
 require_units = ["nginx.service"]
+cert_paths = ["/etc/myapp/tls/*.crt"]
 
 [check.limits]
 disk = [90, 95]
@@ -99,6 +101,8 @@ usage = [80, 90]
 `accept`에는 위 표의 점검 이름을 씁니다. 받아들인 점검은 `skip`으로 나오고 요약 앞에 `받아들임 (warn)` 같은 표시가 붙습니다. JSON의 `metrics.accepted_status`에는 원래 상태가 남습니다.
 
 `accept_units`, `accept_containers`, `accept_mounts`에는 glob 패턴을 씁니다. 패턴에 맞는 이름은 판정하지 않습니다. 대신 요약 끝에 받아들인 개수가 붙고, `metrics.accepted`에 이름이 남습니다.
+
+`cert`는 파일마다 첫 인증서를 읽습니다. 읽는 위치는 `/etc/letsencrypt/live/*/cert.pem`, `/etc/kubernetes/pki`의 Kubernetes와 etcd 파일, `/var/lib/kubelet/pki`의 kubelet 파일, nginx와 Apache 설정에서 `ssl_certificate`와 `SSLCertificateFile`이 가리키는 절대 경로입니다. `cert_paths`로 절대 경로 glob을 더할 수 있습니다. key 파일처럼 인증서가 없는 파일은 건너뜁니다. `/etc/ssl/certs`의 CA 묶음은 만료된 루트가 늘 섞여 있어 읽지 않습니다. root가 아니면 root가 필요한 파일을 경고 줄에 적고, 하나도 읽지 못하면 `skip`입니다.
 
 `[check.limits]`의 값은 모두 `[warn, fail]` 백분율입니다. `usage`는 conntrack, TCP 메모리, 파일 핸들에 적용됩니다. `memory_available`은 남은 비율이므로 warn 값이 fail 값보다 크거나 같아야 합니다.
 
@@ -120,7 +124,7 @@ timeout = "5s"
 level = "fail"
 ```
 
-`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록과 `require_units`는 `[check]`의 값에 더해집니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
+`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록, `require_units`, `cert_paths`는 `[check]`의 값에 더해집니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
 
 명령은 `sh -c`로 실행하고, 결과 이름은 `check.cmd.<name>`입니다. 종료 코드가 0이면 `pass`이고, 다른 코드면 `fail`입니다. `level = "warn"`이면 `warn`이 됩니다. `timeout`(기본 10s) 안에 끝나지 않으면 `fail`이고, edc가 명령과 그 자식 process를 멈춥니다. 결과에는 출력의 마지막 10줄이 4 KiB까지 남습니다. 명령의 결과를 받아들이려면 `accept`에 `cmd.<name>`을 넣으세요.
 

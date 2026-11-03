@@ -70,6 +70,13 @@ check:
     array_inactive: "%s が inactive です"
     array_degraded: "%s (%s) が degraded です。メンバー %d 台が欠けています"
     array_sync: "%s: %s 進行中"
+  cert:
+    ok: "証明書ファイル %d 個、最も早い期限は %s (%s)"
+    none: "既知の場所と cert_paths に証明書ファイルがありません"
+    expired: "%s は %s に期限切れになりました"
+    expiring: "%s はあと %d 日で期限切れです"
+    unreadable: "証明書の場所にあるファイル %d 個は root でないと読めないため確認していません: %s"
+    truncated: "証明書ファイルは最初の %d 個だけ読みました"
   thermal:
     level: "thermal pressure %s"
   backup:

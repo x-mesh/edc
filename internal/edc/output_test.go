@@ -167,7 +167,7 @@ func TestColorSummaryOmitsTheBarForOneResult(t *testing.T) {
 
 // -v 없이 evidence를 보이는 probe는 각 probe 파일이 등록한다. 공통 출력 함수는 이름을 따로 알지 않는다.
 func TestEvidenceShownProbesAreRegisteredByTheProbes(t *testing.T) {
-	for _, probe := range []string{endpointProbeID, "dns.compare", "http.check"} {
+	for _, probe := range []string{endpointProbeID, "dns.compare", "http.check", diskProbeImages, diskProbeDetach} {
 		if !evidenceShownProbes[probe] {
 			t.Errorf("%s must show its evidence without -v", probe)
 		}

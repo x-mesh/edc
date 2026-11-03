@@ -204,6 +204,7 @@ var commandDocs = []commandDoc{
 		usage: []string{
 			"edc disk check [mount]",
 			"edc disk grow <mount> [options]",
+			"edc disk detach [mount...] [options]",
 		},
 		options: []optionDoc{
 			{"-n, --dry-run", "disk.flag.dry_run"},
@@ -213,6 +214,7 @@ var commandDocs = []commandDoc{
 		subcommands: []subcommandDoc{
 			{"check", "edc disk check [mount]"},
 			{"grow", "edc disk grow <mount>"},
+			{"detach", "edc disk detach [mount...]"},
 		},
 	},
 	{

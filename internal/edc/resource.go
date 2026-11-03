@@ -1068,7 +1068,9 @@ type interfaceDetails struct {
 type diskDetails struct {
 	Mount, Device string
 	// FSType은 파일시스템 종류다. df는 알려 주지 않으므로 macOS에서만 getfsstat으로 채우고, 모르면 비어 있다.
-	FSType      string
+	FSType string
+	// Image는 열어 두고 잊은 디스크 이미지의 원본 파일이다. macOS에서만 채우고, info는 이 행을 숨기고 개수만 보인다.
+	Image       string
 	Used, Total uint64
 	Percent     float64
 }

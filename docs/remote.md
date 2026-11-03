@@ -87,9 +87,9 @@ The confirmation questions put the question, the two answers, and the key help o
 
 Use `-f` or `--force` to skip the confirmation. Combine it with `-v` for streaming output. If you name no group, `-f` needs an inventory with exactly one group.
 
-A recipe command runs without a terminal, and its input is empty. If a step runs a `host changes` command without `--yes`, the command cannot get a confirmation. `edc disk grow` stops with exit code `4`. `edc route switch` restores the route. `edc change apply` rolls back when its timer fires.
+A recipe command runs without a terminal, and its input is empty. If a step runs a `host changes` command without `--yes`, the command cannot get a confirmation. `edc disk grow` and `edc disk detach` stop with exit code `4`. `edc route switch` restores the route. `edc change apply` rolls back when its timer fires.
 
-If a step adds `--yes`, `edc disk grow` and `edc change apply` run on every host of the group without a question. `edc route switch` does the same when the exit identity matches. Read the plan before you confirm. Do not run such a recipe with `-f`.
+If a step adds `--yes`, `edc disk grow`, `edc disk detach`, and `edc change apply` run on every host of the group without a question. `edc route switch` does the same when the exit identity matches. Read the plan before you confirm. Do not run such a recipe with `-f`.
 
 These group names are reserved for future subcommands: `run`, `list`, `plan`, `hosts`, `groups`. An inventory that uses one of them fails to load.
 

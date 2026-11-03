@@ -98,9 +98,9 @@ inventory 파일
 
 `-f`나 `--force`를 쓰면 확인을 생략합니다. `-v`와 함께 쓰면 출력을 흘려보냅니다. group을 지정하지 않은 채 `-f`를 쓰려면 inventory에 group이 정확히 하나 있어야 합니다.
 
-recipe의 command는 terminal 없이 실행되고 입력이 비어 있습니다. step이 `host changes` command를 `--yes` 없이 실행하면 확인을 받을 수 없습니다. `edc disk grow`는 exit code `4`로 멈추고, `edc route switch`는 경로를 되돌리고, `edc change apply`는 타이머가 실행될 때 되돌립니다.
+recipe의 command는 terminal 없이 실행되고 입력이 비어 있습니다. step이 `host changes` command를 `--yes` 없이 실행하면 확인을 받을 수 없습니다. `edc disk grow`와 `edc disk detach`는 exit code `4`로 멈추고, `edc route switch`는 경로를 되돌리고, `edc change apply`는 타이머가 실행될 때 되돌립니다.
 
-step에 `--yes`를 넣으면 `edc disk grow`와 `edc change apply`는 group의 모든 host에서 질문 없이 실행됩니다. `edc route switch`는 출구 신원이 일치할 때 그렇습니다. 확인하기 전에 plan을 읽고, 이런 recipe는 `-f`로 실행하지 마세요.
+step에 `--yes`를 넣으면 `edc disk grow`, `edc disk detach`, `edc change apply`는 group의 모든 host에서 질문 없이 실행됩니다. `edc route switch`는 출구 신원이 일치할 때 그렇습니다. 확인하기 전에 plan을 읽고, 이런 recipe는 `-f`로 실행하지 마세요.
 
 `run`, `list`, `plan`, `hosts`, `groups`는 앞으로 쓸 subcommand 이름이라 group 이름으로 예약돼 있습니다. 이 중 하나를 쓴 inventory는 로드에 실패합니다.
 

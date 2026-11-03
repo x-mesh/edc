@@ -29,7 +29,7 @@ func TestCheckEndpointJudgesEachAddress(t *testing.T) {
 		{"all pass", []checkEndpointOutcome{fast, {Address: "db:5432", Connect: time.Second}}, StatusPass, "2 endpoints reachable", ""},
 		{"one refused", []checkEndpointOutcome{fast, refused}, StatusFail, "127.0.0.1:1 refused the connection", "edc tcp check --diagnose 127.0.0.1:1"},
 		{"one slow", []checkEndpointOutcome{slow, fast}, StatusWarn, "db:5432 connected in 1.5s", "edc tcp check --diagnose db:5432"},
-		{"mixed", []checkEndpointOutcome{slow, timedOut, refused}, StatusFail, "db:5432 connected in 1.5s; 10.0.0.9:443 did not answer in 2s; 127.0.0.1:1 refused the connection", "edc tcp check --diagnose db:5432"},
+		{"mixed", []checkEndpointOutcome{slow, timedOut, refused}, StatusFail, "db:5432 connected in 1.5s; 10.0.0.9:443 did not answer in 2s; 127.0.0.1:1 refused the connection", "edc tcp check --diagnose 10.0.0.9:443"},
 	} {
 		result := checkEndpointResult(checkFacts{Endpoints: test.endpoints}, policy)
 		if result.Probe != "check.endpoint" || result.Status != test.status || result.Summary != test.summary || result.Next != test.next {

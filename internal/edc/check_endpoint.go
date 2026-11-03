@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"cmp"
 	"context"
 	"net"
 	"time"
@@ -58,21 +59,25 @@ func probeCheckEndpoint(parent context.Context, address string) checkEndpointOut
 func checkEndpointResult(facts checkFacts, policy checkPolicy) Result {
 	const id = "endpoint"
 	var issues checkIssues
-	next := ""
-	suggest := func(address string) {
-		if next == "" {
-			next = "edc tcp check --diagnose " + quoteLocalShellWord(address)
-		}
-	}
+	// next는 처음 실패한 endpoint를 가리킨다. 느린 endpoint는 실패한 것이 없을 때만 가리킨다.
+	failed, slow := "", ""
 	for _, endpoint := range facts.Endpoints {
 		switch {
 		case endpoint.Err != nil:
 			issues.add(StatusFail, checkEndpointFailure(endpoint))
-			suggest(endpoint.Address)
+			if failed == "" {
+				failed = endpoint.Address
+			}
 		case latencyStatus(endpoint.Connect) != StatusPass:
 			issues.add(StatusWarn, T("check.endpoint.slow", endpoint.Address, endpoint.Connect.Round(time.Millisecond)))
-			suggest(endpoint.Address)
+			if slow == "" {
+				slow = endpoint.Address
+			}
 		}
+	}
+	next := ""
+	if address := cmp.Or(failed, slow); address != "" {
+		next = "edc tcp check --diagnose " + quoteLocalShellWord(address)
 	}
 	return issues.result(id, T("check.endpoint.ok", len(facts.Endpoints)), next)
 }

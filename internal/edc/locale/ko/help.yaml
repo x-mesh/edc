@@ -354,6 +354,13 @@ command:
       - "root로 실행하세요. root가 아니면 fd, 소켓 주인, journal이 skip입니다."
     option:
       all: "실행 중이 아닌 service도 목록에 포함"
+  jobs:
+    summary: "예약 작업과 마지막 실행 결과"
+    notes:
+      - "Linux에서는 systemd timer와 그 service의 마지막 결과, cron 항목을 봅니다."
+      - "macOS에서는 StartInterval이나 StartCalendarInterval이 있는 launchd job과 마지막 종료 상태를 봅니다."
+      - "마지막 실행이 실패한 작업은 맨 위에 나오고, 종료 코드를 1로 만듭니다."
+      - "root가 아니면 사용자 crontab과 launchd daemon의 결과는 보이지 않습니다."
   ctr:
     summary: "Unix socket으로 Docker container 조회 (Linux, macOS)"
     notes:

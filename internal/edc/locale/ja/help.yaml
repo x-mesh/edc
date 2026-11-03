@@ -354,6 +354,13 @@ command:
       - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
     option:
       all: "動いていない service も一覧に含める"
+  jobs:
+    summary: "予約ジョブと前回の実行結果"
+    notes:
+      - "Linux では systemd timer とその service の前回の結果、cron の項目を見ます。"
+      - "macOS では StartInterval か StartCalendarInterval を持つ launchd job と前回の終了状態を見ます。"
+      - "前回の実行が失敗したジョブは先頭に出て、終了コードを 1 にします。"
+      - "root でなければユーザーの crontab と launchd daemon の結果は見えません。"
   ctr:
     summary: "Unix socket で Docker container を確認 (Linux、macOS)"
     notes:

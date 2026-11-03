@@ -270,7 +270,7 @@ _edc() {
           _arguments -S '--stream[capture할 stream]:stream:(stdout stderr)' '--output[append log 경로]:path:_files' '--command-display[marker에 기록할 command 범위]:mode:(full name none)' '1:separator:(--)' '2:command:_command_names -e' '*::command argument'
           ;;
         report)
-          _arguments '--json[JSON 출력 경로]:path:_files' '1:subcommand:(list show diff)' '*:report file:_files -g "*.json"'
+          _arguments '--json[JSON 출력 경로]:path:_files' '--redact[민감정보 redaction]' '1:subcommand:(list show diff join)' '*:report file:_files -g "*.json"'
           ;;
         remote)
           _arguments $common \
@@ -492,8 +492,8 @@ _edc() {
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--stream --output --command-display --" -- "$cur")); fi ;;
     update) COMPREPLY=($(compgen -W "--check --yes --timeout" -- "$cur")) ;;
     report)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list show diff" -- "$cur"))
-      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--json" -- "$cur"))
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list show diff join" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--json --redact" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     remote)
       case "$prev" in

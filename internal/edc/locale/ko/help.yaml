@@ -635,6 +635,8 @@ command:
       - "terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료."
       - "diff는 probe별 status 변화와 metric 차이를 보여 줍니다."
       - "악화된 probe가 있으면 exit code 1을 돌려줍니다."
+      - "join은 tcp check --diagnose report와 tcp expect report를 순서에 상관없이 읽어 끊긴 구간을 이름 짓습니다."
+      - "join은 장비 담당자가 볼 항목을 출력합니다. 경로가 동작할 때만 exit code 0입니다."
   log:
     summary: "명령 출력과 종료 상태 기록"
     sub:

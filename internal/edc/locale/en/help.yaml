@@ -635,6 +635,8 @@ command:
       - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
+      - "join reads one tcp check --diagnose report and one tcp expect report, in either order, and names the broken segment."
+      - "join prints a checklist for the device engineer. Exit code 0 only if the path works."
   log:
     summary: "Record command output and exit status"
     sub:

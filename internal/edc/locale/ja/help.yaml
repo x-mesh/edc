@@ -635,6 +635,8 @@ command:
       - "terminal ではビューアを開きます。f 絞り込み、e 詳細、q 終了。"
       - "diff は probe ごとの status の変化と metric の差を示します。"
       - "悪化した probe があれば exit code 1 を返します。"
+      - "join は tcp check --diagnose の report と tcp expect の report を順不同で読み、切れている区間を特定します。"
+      - "join は機器担当者が確認する項目を出力します。経路が動く場合のみ exit code 0 です。"
   log:
     summary: "コマンド出力と終了状態を記録"
     sub:

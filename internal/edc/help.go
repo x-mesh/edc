@@ -589,6 +589,7 @@ var commandDocs = []commandDoc{
 			"edc report list [directory]",
 			"edc report show <file>",
 			"edc report diff [--json <path|->] <before> <after>",
+			reportJoinUsage,
 		},
 	},
 	{

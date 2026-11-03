@@ -691,7 +691,7 @@ func (run peerRun) printSummary(client, target Report, join reportJoin) {
 	fmt.Fprintln(run.stdout)
 	fmt.Fprint(run.stdout, formatResultLine(local, run.color))
 	printResultDetail(run.stdout, local, verbose, run.color)
-	fmt.Fprint(run.stdout, newTextStyle(run.color).dim("["+run.name+"]")+" "+formatResultLine(remote, run.color))
+	fmt.Fprint(run.stdout, formatPeerLine(newTextStyle(run.color).dim("["+run.name+"]")+" ", formatResultLine(remote, run.color), run.options.common.redact))
 	// expect의 실패에는 Error가 없어 실패 상자가 비므로 next와 warning만 보인다.
 	printResultDetail(run.stdout, Result{Probe: remote.Probe, Next: remote.Next, Warnings: remote.Warnings}, verbose, run.color)
 	fmt.Fprintln(run.stdout)

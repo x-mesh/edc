@@ -234,6 +234,26 @@ pipe나 `--json`에서는 `svc.list` 결과 하나와 표를 출력합니다. �
 <a id="container-보기-linux"></a>
 <a id="container-보기-linux와-macos"></a>
 
+## Process 보기 (Linux와 macOS)
+
+`edc proc <pid|이름>`은 process 하나를 한 화면에 보여 줍니다. 읽기만 하고 아무것도 바꾸지 않습니다.
+
+```bash
+edc proc 1234
+sudo edc proc nginx      # 이름이 nginx인 process가 여럿이면 PID 목록을 보여 줍니다
+edc proc -v 1234         # 명령행 전체
+```
+
+| 결과 | 보여 주는 것 | 경고 조건 |
+|---|---|---|
+| `proc.process` | PID, 이름, 사용자, 실행 시간, 명령행, 부모, 작업 디렉터리, thread 수 | zombie이거나(`next`는 부모를 가리킵니다) D 상태로 I/O를 기다릴 때 |
+| `proc.resources` | 0.5초 동안의 CPU, 메모리와 RSS | |
+| `proc.fd` | 종류별 열린 fd 수, Linux에서는 soft limit 대비 사용률, 지워졌지만 아직 열린 파일 | fd 한도의 80% 이상을 쓸 때 |
+| `proc.sockets` | 대기 포트, 상태별 연결 수, 연결이 많은 상대 | `CLOSE_WAIT` 연결이 10개 이상일 때 |
+| `proc.cgroup` | cgroup v2 경로, `memory.max` 대비 메모리 사용량, OOM kill, CPU 제한 횟수. Linux에서만 읽습니다. | 메모리가 `memory.max`의 80% 이상이거나 OOM kill이 있었을 때 |
+
+명령행의 비밀 옵션과 URL 인증 정보는 `edc listen`과 같은 규칙으로 가립니다. `-v`가 없으면 명령행을 200자 한 줄로 자릅니다. process의 대기 포트로 들어온 연결은 상대 주소로, 나간 연결은 상대 주소와 포트로 묶습니다. Linux에서는 `/proc/<pid>`와 그 process의 network namespace에서 본 TCP 표를 읽으므로 container process는 자기 연결이 보입니다. macOS에서는 `lsof`로 fd와 소켓을 읽습니다. root가 아니면 다른 계정의 fd와 소켓은 `skip`입니다. 지워진 파일은 process가 닫을 때까지 디스크 공간을 차지합니다. memfd와 `/dev/shm` 파일은 세지 않습니다.
+
 ## 예약 작업 (Linux와 macOS)
 
 `edc jobs`는 예약 작업과 마지막 실행 결과를 보여 줍니다. 아무것도 바꾸지 않습니다.

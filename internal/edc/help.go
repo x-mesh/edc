@@ -453,6 +453,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "proc", group: "observe",
+		usage:      []string{"edc proc <pid|name> [options]"},
+		usesCommon: true,
+	},
+	{
 		name: "jobs", group: "observe",
 		usage:      []string{"edc jobs [options]"},
 		usesCommon: true,

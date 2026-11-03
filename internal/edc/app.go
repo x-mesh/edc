@@ -125,6 +125,8 @@ func Run(args []string, version string) int {
 		return runSvc(args[1:], version)
 	case "jobs":
 		return runJobs(args[1:], version)
+	case "proc":
+		return runProc(args[1:], version)
 	case "ctr":
 		return runCtr(args[1:], version)
 	case "changes":

@@ -86,7 +86,7 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	bindCommon(set, &options.common)
 	fromText := ""
 	set.StringVar(&fromText, "from", "", T("command.tcp.option.from"))
-	set.DurationVar(&options.duration, "duration", 0, T("command.tcp.option.duration"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.tcp.option.duration"))
 	positional, err := parseInterspersed(set, args)
 	if err != nil {
 		return options, 2, false

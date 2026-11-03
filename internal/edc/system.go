@@ -455,7 +455,7 @@ func runListen(args []string, version string) int {
 	intervalText := "1"
 	set.StringVar(&intervalText, "i", intervalText, T("command.watch.option.interval"))
 	set.StringVar(&intervalText, "interval", intervalText, T("command.watch.option.interval"))
-	duration := set.Duration("duration", 0, T("command.watch.option.duration"))
+	duration := durationFlag(set, "duration", 0, T("command.watch.option.duration"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

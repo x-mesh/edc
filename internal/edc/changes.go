@@ -53,7 +53,7 @@ func runChanges(args []string, version string) int {
 	set := newFlagSet("changes")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	since := set.Duration("since", configuredDuration(activeConfig.Defaults.Changes.Since, changesDefaultSince), T("command.changes.option.since"))
+	since := durationFlag(set, "since", configuredDuration(activeConfig.Defaults.Changes.Since, changesDefaultSince), T("command.changes.option.since"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

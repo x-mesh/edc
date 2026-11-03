@@ -123,12 +123,12 @@ func runTraceReclaim(args []string) int {
 	var process string
 	set := newFlagSet("trace reclaim")
 	set.SetOutput(os.Stderr)
-	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
+	durationFlagVar(set, &options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.groupBy, "group-by", "", "process, cgroup, or kind")
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
-	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
+	durationFlagVar(set, &options.slow, "slow", 0, T("command.trace.option.slow"))
 	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
 	if err := set.Parse(args); err != nil {
 		return 2

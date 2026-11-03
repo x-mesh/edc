@@ -875,7 +875,7 @@ func runTunnel(args []string, version string) int {
 	set.StringVar(&socks, "D", "", T("command.tunnel.option.socks"))
 	set.BoolVar(&all, "all", false, T("command.tunnel.option.all"))
 	set.BoolVar(&save, "save", false, T("command.tunnel.option.save"))
-	set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, T("command.tunnel.option.connect_timeout"))
+	durationFlagVar(set, &connectTimeout, "connect-timeout", connectTimeout, T("command.tunnel.option.connect_timeout"))
 	if err := parseReordered(set, args); err != nil {
 		return 2
 	}

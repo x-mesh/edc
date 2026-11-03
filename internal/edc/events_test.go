@@ -420,11 +420,14 @@ func TestEventsEvidenceKeepsTheMostRecentLines(t *testing.T) {
 }
 
 func TestParseEventsFlagsRejectsBadSince(t *testing.T) {
-	for _, args := range [][]string{{"--since", "0"}, {"--since", "-1h"}, {"--since", "abc"}, {"--since", "6"}, {"extra"}} {
+	for _, args := range [][]string{{"--since", "0"}, {"--since", "-1h"}, {"--since", "abc"}, {"extra"}} {
 		var stderr bytes.Buffer
 		if _, _, ok := parseEventsFlags(args, commonOptions{}, &stderr); ok || stderr.Len() == 0 {
 			t.Errorf("%q를 받아들였다", args)
 		}
+	}
+	if _, since, ok := parseEventsFlags([]string{"--since", "6"}, commonOptions{}, io.Discard); !ok || since != 6*time.Second {
+		t.Errorf("--since 6 = %v, %v; want 6s", since, ok)
 	}
 	options, since, ok := parseEventsFlags([]string{"--since", "90m", "--json", "-"}, commonOptions{}, io.Discard)
 	if !ok || since != 90*time.Minute || options.jsonPath != "-" {

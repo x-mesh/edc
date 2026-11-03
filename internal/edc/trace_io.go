@@ -181,8 +181,8 @@ func runIOTrace(args []string) int {
 	options := ioTraceOptions{}
 	set := newFlagSet("trace io")
 	set.SetOutput(os.Stderr)
-	set.DurationVar(&options.duration, "duration", 0, "trace duration")
-	set.DurationVar(&options.slow, "slow", ioLatencyThreshold, "minimum request latency with a unit, such as 20us, 500us, or 2ms")
+	durationFlagVar(set, &options.duration, "duration", 0, "trace duration")
+	durationFlagVar(set, &options.slow, "slow", ioLatencyThreshold, "minimum request latency, such as 20us, 500us, or 2ms; a bare number is seconds")
 	set.StringVar(&options.process, "process", "", "process name")
 	set.StringVar(&options.device, "device", "", "block device major:minor")
 	set.StringVar(&options.groupBy, "group-by", "", "device, process, cgroup, or event")

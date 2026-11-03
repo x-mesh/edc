@@ -22,7 +22,7 @@ func runTop(args []string, version string) (code int) {
 	set := newFlagSet("top")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Top
-	interval := set.Duration("interval", configuredDuration(config.Interval, time.Second), T("command.top.option.interval"))
+	interval := durationFlag(set, "interval", configuredDuration(config.Interval, time.Second), T("command.top.option.interval"))
 	count := set.Int("count", configuredInt(config.Count, 0), T("command.top.option.count"))
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))

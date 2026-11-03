@@ -581,7 +581,7 @@ func runSimpleWithOptions(args []string, version, name, probeID string, options 
 
 func bindCommon(set *flag.FlagSet, options *commonOptions) {
 	set.StringVar(&options.jsonPath, "json", options.jsonPath, T("option.json"))
-	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
+	durationFlagVar(set, &options.timeout, "timeout", options.timeout, T("option.timeout"))
 	set.BoolVar(&options.verbose, "verbose", options.verbose, T("option.verbose"))
 	set.BoolVar(&options.verbose, "v", options.verbose, T("option.verbose"))
 	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))

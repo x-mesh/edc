@@ -335,6 +335,7 @@ func TestJoinReportsWarnsAboutATemporaryListener(t *testing.T) {
 		{diagnoseVerdictConnected, expectVerdictCompleted, expectListenerTemporary, joinSegmentWorks, "the path works. The service itself was not tested"},
 		{diagnoseVerdictDegraded, expectVerdictCompleted, expectListenerTemporary, joinSegmentPathQuality, "the path works. The service itself was not tested"},
 		{diagnoseVerdictNoReply, expectVerdictNoACK, expectListenerTemporary, joinSegmentReturnPath, "a temporary listener of edc answered"},
+		{diagnoseVerdictNoReply, expectVerdictNoSYN, expectListenerTemporary, joinSegmentBetweenHosts, "the temporary listener sent no SYN-ACK"},
 		{diagnoseVerdictConnected, expectVerdictCompleted, expectListenerPresent, joinSegmentWorks, ""},
 		{diagnoseVerdictConnected, expectVerdictCompleted, "", joinSegmentWorks, ""},
 	}
@@ -342,6 +343,13 @@ func TestJoinReportsWarnsAboutATemporaryListener(t *testing.T) {
 		source := completed
 		if test.target != expectVerdictCompleted {
 			source = joinTestSource("10.8.0.2", test.target)
+		}
+		// synack_no_ack는 대상이 SYN-ACK를 보냈다는 판정이다. 임시 listener가 답했다는 경고는 그 수를 근거로 한다.
+		if test.target == expectVerdictNoACK {
+			source.SYNACKOut, source.RSTOut = 3, 0
+		}
+		if test.target == expectVerdictNoSYN {
+			source.SYNIn, source.Attempts, source.RSTOut, source.SYNRetransmits = 0, 0, 0, 0
 		}
 		targetResult := joinTestTarget(test.target, started, []expectSource{source})
 		if test.listener != "" {

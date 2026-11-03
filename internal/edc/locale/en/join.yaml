@@ -28,6 +28,7 @@ join:
     source_missing: "the client source %s is not among the target sources (%s). If the client did not connect, the target is judged as no_syn for this client. NAT on the path may have changed the source address"
     temporary_listener_works: "the path works. The service itself was not tested, because the target ran tcp expect --listen"
     temporary_listener: "the target ran tcp expect --listen, so a temporary listener of edc answered and not the service. The service itself was not tested"
+    temporary_listener_silent: "the target ran tcp expect --listen, but the temporary listener sent no SYN-ACK. The service itself was not tested"
   reason:
     basis_phases: "the client judged from connect phases only, without the event trace. A drop on the client host itself is not excluded"
     rst_lost: "the target sent RST, but the client saw no answer. The RST did not come back, which points at the return path"

@@ -410,3 +410,40 @@ func TestPeerLineShownHidesTheRemoteNextSteps(t *testing.T) {
 		}
 	}
 }
+
+// 로컬 시도가 끝난 뒤 원격 report를 기다리는 사이의 Ctrl-C도 취소로 끝나야 한다. 놓치면 결과가 정상 종료 코드로 나온다.
+func TestPeerRunTreatsACtrlCAfterTheAttemptsAsCancelled(t *testing.T) {
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	runner := &fakePeerRunner{preflight: preflight, header: true, report: peerTestTargetReport(t, expectVerdictCompleted)}
+	run, stdout, stderr := peerTestRun(t, runner, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := run.diagnose
+	run.diagnose = func(ctx context.Context, show func(Result)) Result {
+		result := attempts(ctx, show)
+		time.AfterFunc(20*time.Millisecond, cancel)
+		return result
+	}
+	if code := run.execute(ctx); code != 4 {
+		t.Fatalf("exit = %d, want 4; stderr %s", code, stderr)
+	}
+	if !strings.Contains(stdout.String(), "works") {
+		t.Errorf("the joined result must still show:\n%s", stdout)
+	}
+}
+
+// 원격이 header 없이 줄을 끝없이 내도 모아 두는 줄과 조각은 상한을 넘지 않는다.
+func TestPeerLinesBoundsWhatTheyKeep(t *testing.T) {
+	lines := newPeerLines("2171", func(string) {})
+	for index := 0; index < peerEarlyLines*3; index++ {
+		_, _ = lines.Write([]byte("noise line\n"))
+	}
+	if len(lines.early) != peerEarlyLines {
+		t.Errorf("early = %d lines, want %d", len(lines.early), peerEarlyLines)
+	}
+	_, _ = lines.Write(bytes.Repeat([]byte("x"), peerLineLimit+10))
+	if len(lines.partial) != 0 {
+		t.Errorf("partial = %d bytes, want 0 after the limit", len(lines.partial))
+	}
+}

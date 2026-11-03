@@ -28,6 +28,7 @@ join:
     source_missing: "client 출발지 %s가 대상의 출발지 목록(%s)에 없습니다. client가 연결되지 않았다면 이 client에 대해 no_syn으로 판정합니다. 경로의 NAT가 출발지 주소를 바꿨을 수 있습니다"
     temporary_listener_works: "경로는 동작합니다. 대상이 tcp expect --listen으로 실행했으므로 서비스 자체는 시험하지 않았습니다"
     temporary_listener: "대상이 tcp expect --listen으로 실행해서 서비스가 아니라 edc의 임시 listener가 답했습니다. 서비스 자체는 시험하지 않았습니다"
+    temporary_listener_silent: "대상은 tcp expect --listen으로 실행했지만 임시 listener가 SYN-ACK를 보내지 않았습니다. 서비스 자체는 시험하지 않았습니다"
   reason:
     basis_phases: "client는 이벤트 추적 없이 연결 phase만으로 판정했습니다. client host 자신의 drop을 배제하지 못합니다"
     rst_lost: "대상은 RST를 보냈는데 client는 응답을 받지 못했습니다. RST가 돌아오지 않았으므로 돌아오는 경로를 의심합니다"

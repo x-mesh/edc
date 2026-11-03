@@ -316,6 +316,13 @@ func newPeerLines(port string, show func(string)) *peerLines {
 	return &peerLines{header: "tcp expect :" + port, ready: make(chan struct{}), show: show}
 }
 
+// peerEarlyLines와 peerLineLimit은 원격이 header를 내기 전의 줄과 줄바꿈 없는 조각을 묶어 둔다. 원격이 잘못된 출력을 끝없이
+// 내도 이 host의 메모리가 그만큼 늘지 않게 한다. header 전의 줄은 시작하지 못한 이유를 보이려는 것이라 마지막 몇 줄이면 된다.
+const (
+	peerEarlyLines = 50
+	peerLineLimit  = 64 << 10
+)
+
 func (lines *peerLines) Write(data []byte) (int, error) {
 	lines.mu.Lock()
 	defer lines.mu.Unlock()
@@ -328,6 +335,10 @@ func (lines *peerLines) Write(data []byte) (int, error) {
 		line := strings.TrimRight(string(lines.partial[:index]), "\r")
 		lines.partial = lines.partial[index+1:]
 		lines.handle(line)
+	}
+	if len(lines.partial) > peerLineLimit {
+		lines.handle(string(lines.partial[:peerLineLimit]))
+		lines.partial = nil
 	}
 	return len(data), nil
 }
@@ -345,6 +356,9 @@ func (lines *peerLines) handle(line string) {
 	if !lines.started {
 		if !strings.Contains(line, lines.header) {
 			lines.early = append(lines.early, line)
+			if len(lines.early) > peerEarlyLines {
+				lines.early = lines.early[len(lines.early)-peerEarlyLines:]
+			}
 			return
 		}
 		lines.started = true
@@ -610,6 +624,8 @@ func (run peerRun) execute(ctx context.Context) int {
 		sleepContext(ctx, peerLinger)
 	}
 	output := expect.stop(grace)
+	// 로컬 시도가 끝난 뒤 원격 report를 기다리는 동안 누른 Ctrl-C도 취소다. 놓치면 정상 결과와 종료 코드로 끝난다.
+	cancelled = cancelled || ctx.Err() != nil
 	client := buildReport(run.version, run.started, run.targetInfo, []Result{result}, false)
 	targetReport, err := parsePeerReport(output)
 	if err != nil {

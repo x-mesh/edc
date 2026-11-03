@@ -229,10 +229,14 @@ func joinReports(clientSaved, targetSaved savedReport) reportJoin {
 	}
 	// 임시 listener가 답한 handshake는 경로만 증명한다. 구간 판정은 그대로 두고 서비스는 시험하지 않았다고 남긴다.
 	if target.Listener != nil && target.Listener.State == expectListenerTemporary {
-		if segment == joinSegmentWorks || segment == joinSegmentPathQuality {
+		switch {
+		case segment == joinSegmentWorks || segment == joinSegmentPathQuality:
 			join.Warnings = append(join.Warnings, T("join.warning.temporary_listener_works"))
-		} else {
+		case target.Counts.SYNACKOut > 0 || target.Counts.Handshakes > 0:
 			join.Warnings = append(join.Warnings, T("join.warning.temporary_listener"))
+		default:
+			// 임시 listener가 SYN-ACK를 보내지 않았으면 답한 것이 없다. 답했다고 적으면 경로를 잘못 짚게 한다.
+			join.Warnings = append(join.Warnings, T("join.warning.temporary_listener_silent"))
 		}
 	}
 	join.Segment = segment

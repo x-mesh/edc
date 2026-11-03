@@ -16,6 +16,13 @@ expect:
     retransmit: "再送 %d"
     duplicate: "同じ packet が別の interface にも見えます"
     handshake_time: "handshake %s"
+  listener:
+    present: "listener: %[1]s、アドレス %[2]s"
+    loopback: "listener: %[1]s、アドレス %[2]s。loopback だけに bind しているため、他の host からの SYN は RST を受けます"
+    none: "listener: なし。--listen を付けないと SYN は RST を受けます"
+    unknown: "listener: 不明 (%s)"
+    temporary: "listener: 一時。終了まで edc が %s で接続を受け付けてすぐ閉じます"
+    unknown_process: "不明な process"
   summary:
     no_syn: "%[2]s の間、port %[1]d への SYN はありませんでした。packet がこのホストまで届いていません"
     no_syn_ipsec: "%[2]s の間、port %[1]d への SYN は見えませんでした。IPsec transport mode は届いた packet を edc から隠すことがあります"

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
@@ -610,15 +611,65 @@ func TestExpectHeaderTellsWhatToRunOnTheClient(t *testing.T) {
 	setLanguage("en")
 	var out bytes.Buffer
 	printer := expectLivePrinter{writer: &out, style: newTextStyle(false)}
-	printer.header(8000, netip.Prefix{}, 0, expectDropTrace{Status: StatusPass})
+	listener := expectListener{State: expectListenerNone}
+	printer.header(expectHeader{port: 8000, dropTrace: expectDropTrace{Status: StatusPass}, listener: &listener})
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if len(lines) != 3 {
+	if len(lines) != 4 {
 		t.Fatalf("header = %q", out.String())
 	}
 	if !strings.Contains(lines[1], "DROP line") {
 		t.Errorf("drop line must say what it means: %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "port 8000") || !strings.Contains(lines[2], "edc tcp check --diagnose <this-host>:8000") {
-		t.Errorf("waiting line = %q", lines[2])
+	if !strings.Contains(lines[2], "listener: none") || !strings.Contains(lines[2], "RST") || !strings.Contains(lines[2], "--listen") {
+		t.Errorf("listener line = %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "port 8000") || !strings.Contains(lines[3], "edc tcp check --diagnose <this-host>:8000") {
+		t.Errorf("waiting line = %q", lines[3])
+	}
+}
+
+// listener는 edc listen과 같은 목록에서 이 port의 TCP socket만 고른다. 모든 주소에 묶인 것이 loopback보다 앞이다.
+func TestExpectListenerState(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	sockets := []listenSocket{
+		{Proto: "udp", Address: "0.0.0.0", Port: 8000, Process: "dnsmasq", PID: "10"},
+		{Proto: "tcp", Address: "127.0.0.1", Port: 8000, Process: "helper", PID: "11"},
+		{Proto: "tcp", Address: "0.0.0.0", Port: 8000, Process: "nginx", PID: "812"},
+		{Proto: "tcp", Address: "0.0.0.0", Port: 8080, Process: "other", PID: "13"},
+	}
+	listener := expectListenerState(sockets, nil, 8000)
+	if listener.State != expectListenerPresent || listener.Process != "nginx" || listener.PID != 812 || listener.Address != "0.0.0.0:8000" || listener.Scope != "all" {
+		t.Fatalf("listener = %+v", listener)
+	}
+	if text := describeExpectListener(listener); text != "listener: nginx (pid 812) on 0.0.0.0:8000" {
+		t.Errorf("line = %q", text)
+	}
+	loopback := expectListenerState(sockets[:2], nil, 8000)
+	if loopback.Scope != "loopback" || !strings.Contains(describeExpectListener(loopback), "loopback only") {
+		t.Errorf("loopback = %+v, %q", loopback, describeExpectListener(loopback))
+	}
+	v6 := expectListenerState([]listenSocket{{Proto: "tcp", Address: "::", Port: 8000}}, nil, 8000)
+	if v6.Address != "[::]:8000" || !strings.Contains(describeExpectListener(v6), "unknown process on [::]:8000") {
+		t.Errorf("v6 = %+v, %q", v6, describeExpectListener(v6))
+	}
+	if none := expectListenerState(sockets, nil, 9000); none.State != expectListenerNone {
+		t.Errorf("none = %+v", none)
+	}
+	// 목록을 읽지 못해도 관측은 계속하고 모른다고만 남긴다.
+	unknown := expectListenerState(nil, errors.New("sock_diag tcp: permission denied\nmore"), 8000)
+	if unknown.State != expectListenerUnknown || unknown.Error != "sock_diag tcp: permission denied" {
+		t.Errorf("unknown = %+v", unknown)
+	}
+}
+
+func TestExpectResultCarriesTheListener(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.listener = &expectListener{State: expectListenerNone}
+	result, _, _ := scenario.finish("duration")
+	data, err := json.Marshal(result.Metrics["listener"])
+	if err != nil || string(data) != `{"state":"none"}` {
+		t.Fatalf("listener metric = %s, %v", data, err)
 	}
 }

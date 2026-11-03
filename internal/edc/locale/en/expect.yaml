@@ -16,6 +16,13 @@ expect:
     retransmit: "retransmit %d"
     duplicate: "same packet on another interface"
     handshake_time: "handshake %s"
+  listener:
+    present: "listener: %[1]s on %[2]s"
+    loopback: "listener: %[1]s on %[2]s, loopback only. SYNs from other hosts get an RST"
+    none: "listener: none. SYNs get an RST unless you add --listen"
+    unknown: "listener: unknown (%s)"
+    temporary: "listener: temporary. edc accepts and closes connections on %s until the end"
+    unknown_process: "unknown process"
   summary:
     no_syn: "No SYN for port %d arrived in %s. Packets do not reach this host"
     no_syn_ipsec: "No SYN for port %d was visible in %s. IPsec transport mode can hide arriving packets from edc"

@@ -500,6 +500,76 @@ func expectNetContains(network *net.IPNet, address netip.Addr) bool {
 	return network.Contains(net.IP(address.AsSlice()))
 }
 
+const (
+	expectListenerPresent   = "present"
+	expectListenerNone      = "none"
+	expectListenerUnknown   = "unknown"
+	expectListenerTemporary = "temporary"
+)
+
+// expectListener는 관측을 시작할 때 port에서 연결을 기다리는 socket이다. listener가 없으면 도착한 SYN은 RST를 받으므로,
+// 판정을 읽기 전에 알아야 한다.
+type expectListener struct {
+	State   string `json:"state"`
+	Process string `json:"process,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Address string `json:"address,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// expectListenerState는 edc listen과 같은 목록에서 이 port의 TCP listener를 고른다. 읽지 못하면 관측은 계속하고 모른다고만 남긴다.
+// 여럿이면 모든 주소에 묶인 것을 먼저 보인다. loopback에만 묶인 listener는 다른 host의 SYN을 받지 못한다.
+func expectListenerState(sockets []listenSocket, err error, port uint16) expectListener {
+	if err != nil {
+		return expectListener{State: expectListenerUnknown, Error: firstLine(err.Error())}
+	}
+	rank := map[string]int{"all": 0, "specific": 1, "loopback": 2}
+	var chosen *listenSocket
+	for index := range sockets {
+		socket := &sockets[index]
+		if socket.Proto != "tcp" || socket.Port != int(port) {
+			continue
+		}
+		scope, known := rank[listenBindingScope(socket.Proto, socket.Address)]
+		if !known {
+			scope = len(rank)
+		}
+		if chosen == nil || scope < rank[listenBindingScope(chosen.Proto, chosen.Address)] {
+			chosen = socket
+		}
+	}
+	if chosen == nil {
+		return expectListener{State: expectListenerNone}
+	}
+	listener := expectListener{State: expectListenerPresent, Process: chosen.Process, Address: net.JoinHostPort(chosen.Address, strconv.Itoa(int(port))), Scope: listenBindingScope(chosen.Proto, chosen.Address)}
+	listener.PID, _ = strconv.Atoi(chosen.PID)
+	return listener
+}
+
+// describeExpectListener는 머리말의 listener 줄이다.
+func describeExpectListener(listener expectListener) string {
+	switch listener.State {
+	case expectListenerNone:
+		return T("expect.listener.none")
+	case expectListenerUnknown:
+		return T("expect.listener.unknown", listener.Error)
+	case expectListenerTemporary:
+		return T("expect.listener.temporary", listener.Address)
+	}
+	owner := T("expect.listener.unknown_process")
+	if listener.Process != "" {
+		owner = listener.Process
+	}
+	if listener.PID != 0 {
+		owner += " (pid " + strconv.Itoa(listener.PID) + ")"
+	}
+	if listener.Scope == "loopback" {
+		return T("expect.listener.loopback", owner, listener.Address)
+	}
+	return T("expect.listener.present", owner, listener.Address)
+}
+
 // expectEvent는 실행 중에 한 줄로 보이는 일이다.
 type expectEvent struct {
 	at     time.Time
@@ -554,6 +624,8 @@ type expectSession struct {
 	// 보이지 않는다.
 	ipsecInbound func(from netip.Prefix) bool
 	emit         func(expectEvent)
+	// listener는 시작할 때 본 port의 listener다. nil이면 metrics에 넣지 않는다.
+	listener *expectListener
 }
 
 func newExpectSession(port uint16, from netip.Prefix, emit func(expectEvent)) *expectSession {
@@ -974,6 +1046,9 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	if session.from.IsValid() {
 		metrics["from"] = session.from.String()
 	}
+	if session.listener != nil {
+		metrics["listener"] = *session.listener
+	}
 	kept := sources
 	if len(kept) > expectSourceLimit {
 		kept = kept[:expectSourceLimit]
@@ -1211,23 +1286,47 @@ var expectEventLabels = map[string]string{
 	expectEventRoute: "ROUTE", expectEventDuplicate: "SYN in",
 }
 
-func (printer expectLivePrinter) header(port uint16, from netip.Prefix, duration time.Duration, dropTrace expectDropTrace) {
+// expectHeader는 시작할 때 보이는 머리말의 값이다.
+type expectHeader struct {
+	port      uint16
+	from      netip.Prefix
+	duration  time.Duration
+	dropTrace expectDropTrace
+	listener  *expectListener
+}
+
+func (printer expectLivePrinter) header(header expectHeader) {
 	style := printer.style
+	port := header.port
 	parts := []string{style.heading(fmt.Sprintf("tcp expect :%d", port))}
-	if from.IsValid() {
-		parts = append(parts, T("expect.live.from", from.String()))
+	if header.from.IsValid() {
+		parts = append(parts, T("expect.live.from", header.from.String()))
 	}
-	if duration > 0 {
-		parts = append(parts, duration.String())
+	if header.duration > 0 {
+		parts = append(parts, header.duration.String())
 	}
 	parts = append(parts, style.command("Ctrl-C")+" "+T("expect.live.stop"))
 	line := strings.Join(parts, style.dim("  ·  "))
 	drops := T("expect.live.drop_on")
-	if dropTrace.Status != StatusPass {
-		drops = T("expect.live.drop_skip", dropTrace.Reason)
+	if header.dropTrace.Status != StatusPass {
+		drops = T("expect.live.drop_skip", header.dropTrace.Reason)
 	}
 	printer.println(line)
 	printer.println(style.dim(drops))
+	if header.listener != nil {
+		text := describeExpectListener(*header.listener)
+		switch header.listener.State {
+		case expectListenerNone:
+			text = style.warn(text)
+		case expectListenerPresent:
+			if header.listener.Scope == "loopback" {
+				text = style.warn(text)
+			}
+		default:
+			text = style.dim(text)
+		}
+		printer.println(text)
+	}
 	// 시작한 뒤 SYN이 오기 전에는 화면이 멈춘 것처럼 보인다. 무엇을 기다리는지와 client에서 할 일을 알린다.
 	client := "edc tcp check --diagnose " + T("expect.live.this_host") + ":" + strconv.Itoa(int(port))
 	printer.println(T("expect.live.waiting", port, style.command(client)))
@@ -1308,9 +1407,12 @@ func runTCPExpect(args []string, version string) int {
 	printer := expectLivePrinter{writer: liveOutput, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
 	session := newExpectSession(options.port, options.from, printer.event)
 	session.verbose = options.common.verbose
+	sockets, listenErr := collectListenSockets(listenFamilies{TCP: true})
+	listener := expectListenerState(sockets, listenErr, options.port)
+	session.listener = &listener
 	started := time.Now()
 	err := runExpectCapture(expectRun{ctx: ctx, port: options.port, session: session, ready: func(dropTrace expectDropTrace) {
-		printer.header(options.port, options.from, options.duration, dropTrace)
+		printer.header(expectHeader{port: options.port, from: options.from, duration: options.duration, dropTrace: dropTrace, listener: session.listener})
 		session.start(dropTrace, time.Now())
 	}})
 	target := map[string]interface{}{"input": strconv.Itoa(int(options.port))}

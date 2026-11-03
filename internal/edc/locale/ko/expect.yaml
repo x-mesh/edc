@@ -16,6 +16,13 @@ expect:
     retransmit: "재전송 %d"
     duplicate: "같은 packet이 다른 interface에도 보임"
     handshake_time: "handshake %s"
+  listener:
+    present: "listener: %[1]s, 주소 %[2]s"
+    loopback: "listener: %[1]s, 주소 %[2]s. loopback에만 묶여 있어 다른 host의 SYN은 RST를 받습니다"
+    none: "listener: 없음. --listen을 주지 않으면 SYN은 RST를 받습니다"
+    unknown: "listener: 알 수 없음 (%s)"
+    temporary: "listener: 임시. 끝날 때까지 edc가 %s에서 연결을 받자마자 닫습니다"
+    unknown_process: "알 수 없는 process"
   summary:
     no_syn: "%[2]s 동안 port %[1]d로 온 SYN이 없습니다. packet이 이 host까지 오지 않습니다"
     no_syn_ipsec: "%[2]s 동안 port %[1]d로 온 SYN이 보이지 않았습니다. IPsec transport mode는 도착한 packet을 edc에게서 가릴 수 있습니다"

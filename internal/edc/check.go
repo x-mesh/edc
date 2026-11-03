@@ -15,7 +15,8 @@ import (
 )
 
 // check는 지금 고장 난 곳을 한 번에 훑는 읽기 전용 점검이다. 원천은 info, svc, ctr, events의 수집기를 그대로 쓰고
-// 판정만 여기서 한다. NIC drop처럼 부팅 뒤 누적된 카운터는 한 번 읽어서는 지금의 문제인지 알 수 없어 판정하지 않는다.
+// 판정만 여기서 한다. NIC drop처럼 부팅 뒤 누적된 카운터는 한 번 읽어서는 지금의 문제인지 알 수 없어, 1초 간격으로 두 번
+// 읽어 늘었는지만 본다.
 
 // checkKernelWindow는 커널 장애 신호를 찾는 범위다. 지금의 장애를 보려는 것이라 events의 기본 창보다 좁다.
 const checkKernelWindow = time.Hour
@@ -49,6 +50,8 @@ type checkPolicy struct {
 	// checks가 비어 있으면 모든 점검을 낸다. commands는 루틴의 사용자 명령이다.
 	checks   []string
 	commands []checkCommandConfig
+	// requireEndpoints는 check.endpoint가 접속해 볼 host:port다. checks가 endpoint를 빼면 패킷을 보내지 않도록 여기서 비운다.
+	requireEndpoints []string
 }
 
 // newCheckPolicy는 전역 [check]에 루틴을 얹는다. 목록은 더하고, limits는 루틴에 적은 값만 바꾼다. routine이 비면 전역 값만 쓴다.
@@ -64,7 +67,7 @@ func newCheckPolicy(config checkConfig, routine string) checkPolicy {
 		return topThreshold{warn: values[0], danger: values[1]}
 	}
 	join := func(global, own []string) []string { return append(slices.Clone(global), own...) }
-	return checkPolicy{
+	policy := checkPolicy{
 		accept: join(config.Accept, selected.Accept), acceptUnits: join(config.AcceptUnits, selected.AcceptUnits),
 		acceptContainers: join(config.AcceptContainers, selected.AcceptContainers), acceptMounts: join(config.AcceptMounts, selected.AcceptMounts),
 		requireUnits: join(config.RequireUnits, selected.RequireUnits), certPaths: join(config.CertPaths, selected.CertPaths),
@@ -74,6 +77,10 @@ func newCheckPolicy(config checkConfig, routine string) checkPolicy {
 		checks:   selected.Checks,
 		commands: selected.Commands,
 	}
+	if len(policy.checks) == 0 || slices.Contains(policy.checks, "endpoint") {
+		policy.requireEndpoints = join(config.RequireEndpoints, selected.RequireEndpoints)
+	}
+	return policy
 }
 
 // checkMatches는 name이 glob 하나에라도 맞는지다. 설정을 읽을 때 glob을 검사하므로 여기서 오류는 나지 않는다.
@@ -104,9 +111,15 @@ type checkNetwork struct {
 	Route    string
 	RouteErr error
 	DNS      infoDNS
-	// Conntrack과 TCPMemory는 한도 대비 사용률이다. OK가 false면 읽지 못했거나 이 커널에 없는 값이다.
-	Conntrack, TCPMemory     float64
-	ConntrackOK, TCPMemoryOK bool
+	// Conntrack, TCPMemory, Orphans는 한도 대비 사용률이다. OK가 false면 읽지 못했거나 이 커널에 없는 값이다.
+	Conntrack, TCPMemory, Orphans       float64
+	ConntrackOK, TCPMemoryOK, OrphansOK bool
+	// Link는 route interface의 상태이고 GatewayNeighbor는 gateway의 neighbor 상태다. 읽지 못했거나 항목이 없으면 비어 있다.
+	Link            checkNetworkLink
+	GatewayNeighbor string
+	// CountersGrown은 두 번 읽는 사이에 늘어난 drop 카운터다. CountersSkipped는 두 번째로 읽기 전에 deadline이 온 것이다.
+	CountersGrown   []string
+	CountersSkipped bool
 }
 
 // checkBackup은 마지막 Time Machine 백업이다. Configured가 false면 백업 대상이 없다.
@@ -136,7 +149,7 @@ type checkSources struct {
 	disks       func() ([]checkDisk, error)
 	kernel      func(ctx context.Context, since time.Duration) eventsFacts
 	clock       func() *infoClock
-	network     func() checkNetwork
+	network     func(ctx context.Context) checkNetwork
 	containers  func(ctx context.Context) ([]ctrListItem, error)
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
@@ -144,6 +157,9 @@ type checkSources struct {
 	// certs는 인증서 파일을 읽는다. certPaths는 설정의 cert_paths이고 runCheck가 정책에서 채운다.
 	certs     func(extra []string) checkCerts
 	certPaths []string
+	// endpoints는 requireEndpoints에 TCP로 접속해 본다. 유일하게 패킷을 보내는 원천이라 대상이 있을 때만 부른다.
+	endpoints        func(ctx context.Context, addresses []string) []checkEndpointOutcome
+	requireEndpoints []string
 	// thermal은 macOS의 thermal pressure 단계(0~4)이고 backup은 마지막 Time Machine 백업이다. Linux에는 없다.
 	thermal func() (int, error)
 	backup  func() checkBackup
@@ -175,6 +191,8 @@ type checkFacts struct {
 	Reboot         checkReboot
 	Storage        checkStorage
 	Certs          checkCerts
+	// Endpoints는 policy.requireEndpoints와 같은 순서다.
+	Endpoints []checkEndpointOutcome
 	// Commands는 policy.commands와 같은 순서다. CommandsErr가 있으면 명령을 실행하지 않은 이유다.
 	Commands    []checkCommandOutcome
 	CommandsErr error
@@ -243,7 +261,7 @@ func runCheck(args []string, version string) int {
 	defer cancel()
 	defer deadline()
 	policy := newCheckPolicy(activeConfig.Check, *routine)
-	sources.certPaths = policy.certPaths
+	sources.certPaths, sources.requireEndpoints = policy.certPaths, policy.requireEndpoints
 	var target map[string]interface{}
 	if *routine != "" {
 		target = map[string]interface{}{"routine": *routine}
@@ -290,7 +308,7 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			return func(facts *checkFacts) { facts.Clock = clock }
 		},
 		"network": func() func(*checkFacts) {
-			network := sources.network()
+			network := sources.network(ctx)
 			return func(facts *checkFacts) { facts.Network = network }
 		},
 		"container": func() func(*checkFacts) {
@@ -332,6 +350,17 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 		if !available {
 			delete(jobs, id)
 			facts.Unsupported = append(facts.Unsupported, id)
+		}
+	}
+	// endpoint는 설정에 대상이 있을 때만 접속한다. 대상이 없으면 결과에도 나오지 않는다.
+	if len(sources.requireEndpoints) > 0 {
+		if sources.endpoints == nil {
+			facts.Unsupported = append(facts.Unsupported, "endpoint")
+		} else {
+			jobs["endpoint"] = func() func(*checkFacts) {
+				endpoints := sources.endpoints(ctx, sources.requireEndpoints)
+				return func(facts *checkFacts) { facts.Endpoints = endpoints }
+			}
 		}
 	}
 	// 사용자 명령도 같은 방식으로 기다린다. 설정 파일이 안전하지 않으면 실행하지 않는다.
@@ -392,6 +421,9 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkRebootResult(facts),
 		checkThermal(facts),
 		checkBackupResult(facts),
+	}
+	if len(policy.requireEndpoints) > 0 {
+		results = append(results, checkEndpointResult(facts, policy))
 	}
 	results = slices.DeleteFunc(results, func(result Result) bool {
 		id := strings.TrimPrefix(result.Probe, "check.")
@@ -793,10 +825,27 @@ func checkNetworkResult(facts checkFacts, policy checkPolicy) Result {
 	const id = "network"
 	network := facts.Network
 	var issues checkIssues
-	next := "edc info -v"
+	next := ""
+	suggest := func(command string) {
+		if next == "" {
+			next = command
+		}
+	}
 	if network.RouteErr == nil && network.Route == "" {
 		issues.add(StatusFail, T("check.network.no_route"))
-		next = "ip route"
+		suggest("ip route")
+	}
+	gateway, iface := checkRouteParts(network.Route)
+	if network.Link.down() {
+		issues.add(StatusFail, T("check.network.link_down", iface, network.Link.detail()))
+		suggest("edc net interfaces")
+	}
+	if checkNeighborProblem(network.GatewayNeighbor) {
+		issues.add(StatusWarn, T("check.network.gateway_neighbor", gateway, network.GatewayNeighbor))
+		if address, _ := checkGatewayAddress(gateway); address.Is6() {
+			suggest("edc trace ndp")
+		}
+		suggest("edc trace arp")
 	}
 	switch {
 	case errors.Is(network.DNS.Err, fs.ErrNotExist):
@@ -816,11 +865,26 @@ func checkNetworkResult(facts checkFacts, policy checkPolicy) Result {
 			issues.add(status, T("check.network.tcp_memory", network.TCPMemory))
 		}
 	}
+	if network.OrphansOK {
+		if status := checkUsageStatus(network.Orphans, policy.usage); status != StatusPass {
+			issues.add(status, T("check.network.tcp_orphans", network.Orphans))
+		}
+	}
+	if len(network.CountersGrown) > 0 {
+		issues.add(StatusWarn, T("check.network.counters", checkCounterInterval.String(), checkNames(network.CountersGrown)))
+		suggest(checkCounterNext(network.CountersGrown[0]))
+	}
+	suggest("edc info -v")
 	route := network.Route
 	if network.RouteErr != nil {
 		route = T("check.network.route_unknown")
 	}
-	return issues.result(id, T("check.network.ok", route, len(network.DNS.Config.Nameservers)), next)
+	result := issues.result(id, T("check.network.ok", route, len(network.DNS.Config.Nameservers)), next)
+	// 카운터를 비교하지 못했는데 통과로만 적으면 늘지 않았다고 읽힌다.
+	if network.CountersSkipped {
+		result.Summary += T("check.network.counters_skipped")
+	}
+	return result
 }
 
 func checkContainers(facts checkFacts, policy checkPolicy) Result {

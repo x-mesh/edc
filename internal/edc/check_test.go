@@ -261,7 +261,7 @@ func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
 			return eventsFacts{KernelSource: "journal"}
 		},
 		clock:       func() *infoClock { return &infoClock{Synced: true} },
-		network:     func() checkNetwork { return checkNetwork{Route: "10.0.0.1 dev eth0"} },
+		network:     func(context.Context) checkNetwork { return checkNetwork{Route: "10.0.0.1 dev eth0"} },
 		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
 		fileHandles: func() (*infoFileHandles, error) { return &infoFileHandles{Used: 1, Max: 100}, nil },
 		reboot:      func() checkReboot { return checkReboot{} },
@@ -357,7 +357,7 @@ func TestCollectCheckFactsDoesNotWaitPastTheTimeout(t *testing.T) {
 		disks:       func() ([]checkDisk, error) { <-block; return nil, nil },
 		kernel:      func(context.Context, time.Duration) eventsFacts { return eventsFacts{} },
 		clock:       func() *infoClock { return &infoClock{Synced: true} },
-		network:     func() checkNetwork { return checkNetwork{} },
+		network:     func(context.Context) checkNetwork { return checkNetwork{} },
 		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
 		fileHandles: func() (*infoFileHandles, error) { return nil, nil },
 		reboot:      func() checkReboot { return checkReboot{} },

@@ -401,7 +401,12 @@ func joinChecklist(segment string, client joinClient, target joinTarget) []strin
 			T("join.check.attempt_counts", client.Attempts, client.Totals.Connected, target.Counts.Attempts, target.Counts.Handshakes),
 		}
 	case joinSegmentWorks:
-		if next := diagnoseServiceNext(destination, port); next != "" {
+		// 서비스 점검은 client가 쓴 이름으로 한다. IP로 접속하면 가상 호스트가 다른 사이트를 주거나 인증서 이름이 맞지 않는다.
+		serviceHost := client.Host
+		if serviceHost == "" {
+			serviceHost = targetIP
+		}
+		if next := diagnoseServiceNext(net.JoinHostPort(serviceHost, port), port); next != "" {
 			items = append(items, next)
 		}
 		items = append(items, T("join.check.application"))
@@ -775,10 +780,36 @@ func joinEndpoint(name, address string) string {
 // 의미가 있어, 그때 자세한 경로와 함께 보인다.
 func joinReturnLine(target joinTarget) string {
 	route := target.Return
-	if route.Error == "" && !route.IPsecPolicy && route.MatchesArrival != nil && *route.MatchesArrival {
-		return T("join.line.return_same", joinValue(route.Device))
+	if route.Error == "" && !route.IPsecPolicy && route.MatchesArrival != nil {
+		if *route.MatchesArrival {
+			return T("join.line.return_same", joinValue(route.Device))
+		}
+		if target.SourceInterface != "" {
+			device := joinValue(route.Device)
+			if route.Via != "" {
+				device += " " + T("expect.route.via", route.Via)
+			}
+			line := T("join.line.return_other", device, target.SourceInterface)
+			if route.RPFilter != nil {
+				line += " · " + joinRPFilterVerdict(route.RPFilter.Effective)
+			}
+			return line
+		}
 	}
 	return T("expect.evidence.return") + " " + joinReturnText(route)
+}
+
+// joinRPFilterVerdict는 답이 도착 interface와 다른 곳으로 나갈 때 kernel이 SYN을 받는지 말한다. strict(1)만 버린다.
+func joinRPFilterVerdict(mode int) string {
+	switch mode {
+	case 0:
+		return T("join.rp_filter.off")
+	case 1:
+		return T("join.rp_filter.strict")
+	case 2:
+		return T("join.rp_filter.loose")
+	}
+	return fmt.Sprintf("rp_filter %d", mode)
 }
 
 // joinLatency는 연결된 시도의 RTT를 쓴다. RTT는 trace가 있을 때만 있으므로, 없으면 ms 단위의 connect 시간을 쓴다.

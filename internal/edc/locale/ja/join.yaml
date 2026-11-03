@@ -17,6 +17,7 @@ join:
     reports: "report  %s + %s"
     arrived_on: "到着 interface %s"
     return_same: "応答は到着 interface (%s) から出ます"
+    return_other: "応答は到着 interface (%[2]s) ではなく %[1]s から出ます"
     latency_rtt: "RTT %s (平均 %s、接続 %d 件)"
     latency_connect: "connect %s (接続 %d 件、追跡がないため RTT なし)"
     client_counts: "接続 %d/%d · 拒否 %d · 応答なし %d · SYN 再送 %d · client 側の drop: %s"
@@ -24,6 +25,10 @@ join:
     target_counts: "SYN 受信 %d · SYN-ACK 送信 %d · RST 送信 %d · handshake %d · kernel drop: %s"
     time: "開始時刻の差 %s (対象 − client) · %s"
     overlap_no: "2 つの実行は重なっていません (間隔 %s)"
+  rp_filter:
+    off: "rp_filter 0 (無効) のため受け入れます"
+    loose: "rp_filter 2 (loose) のため受け入れます"
+    strict: "rp_filter 1 (strict) のため kernel がこの SYN を破棄します"
   basis:
     trace: "(eBPF 追跡)"
     partial: "(一部の追跡)"

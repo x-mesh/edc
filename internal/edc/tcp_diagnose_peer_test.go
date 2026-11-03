@@ -220,9 +220,11 @@ func TestPeerJSONPathsAndLinePrefix(t *testing.T) {
 type fakePeerRunner struct {
 	preflight string
 	header    bool
-	report    []byte
-	commands  []string
-	mu        sync.Mutex
+	// silent는 원격이 header를 내지 않고 입력이 닫힐 때까지 기다리는 경우다. 원격 준비를 기다리는 중의 취소를 만든다.
+	silent   bool
+	report   []byte
+	commands []string
+	mu       sync.Mutex
 }
 
 func (runner *fakePeerRunner) Capture(_ context.Context, _, command string, _ time.Duration, _ int) remoteCapture {
@@ -239,6 +241,10 @@ func (runner *fakePeerRunner) Start(_, command string, stdout, stderr io.Writer)
 	session := &fakePeerSession{closed: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(session.done)
+		if runner.silent {
+			<-session.closed
+			return
+		}
 		if !runner.header {
 			_, _ = stderr.Write([]byte("tcp expect needs root\n"))
 			return
@@ -494,5 +500,31 @@ func TestPeerRunSaysWhenItStopsBeforeTheFirstAttempt(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), T("diagnose.peer.cancelled_early")) {
 		t.Errorf("stderr lacks the early-stop note:\n%s", stderr)
+	}
+}
+
+// 원격이 준비되기를 기다리는 동안 Ctrl-C가 오면, 원격을 멈추고 시도 전에 멈췄다고 알린다. jw-server에서 원격 준비와
+// Ctrl-C가 겹쳤을 때 결과 없이 끝나던 경우다.
+func TestPeerRunSaysWhenItStopsWhileWaitingForTheRemote(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	runner := &fakePeerRunner{preflight: preflight, silent: true}
+	run, stdout, stderr := peerTestRun(t, runner, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(30*time.Millisecond, cancel)
+	if code := run.execute(ctx); code != 4 {
+		t.Fatalf("exit = %d, want 4", code)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("the remote expect did not start: %q", runner.commands)
+	}
+	if !strings.Contains(stderr.String(), T("diagnose.peer.cancelled_early")) {
+		t.Errorf("stderr lacks the early-stop note:\n%s", stderr)
+	}
+	if strings.Contains(stdout.String(), "route") {
+		t.Errorf("no local attempt may start:\n%s", stdout)
 	}
 }

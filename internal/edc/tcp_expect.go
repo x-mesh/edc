@@ -85,6 +85,8 @@ type expectOptions struct {
 	// until은 syn이나 handshake이고, stopAfter는 0이면 끄는 연결 시도 수다.
 	until     string
 	stopAfter int
+	// listen은 listener가 없을 때 임시 listener를 열어 handshake가 끝나게 한다.
+	listen bool
 }
 
 // parseTCPExpectArgs는 option과 port를 읽는다. 실패하면 이미 오류를 출력했고 exit code를 돌려준다.
@@ -98,6 +100,7 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	set.DurationVar(&options.duration, "duration", 0, T("command.tcp.option.duration"))
 	set.StringVar(&options.until, "until", "", T("command.tcp.option.until"))
 	set.IntVar(&options.stopAfter, "stop-after", 0, T("command.tcp.option.stop_after"))
+	set.BoolVar(&options.listen, "listen", false, T("command.tcp.option.listen"))
 	positional, err := parseInterspersed(set, args)
 	if err != nil {
 		return options, 2, false
@@ -587,6 +590,15 @@ func describeExpectListener(listener expectListener) string {
 	case expectListenerTemporary:
 		return T("expect.listener.temporary", listener.Address)
 	}
+	owner := expectListenerOwner(listener)
+	if listener.Scope == "loopback" {
+		return T("expect.listener.loopback", owner, listener.Address)
+	}
+	return T("expect.listener.present", owner, listener.Address)
+}
+
+// expectListenerOwner는 listener를 가진 process다. 이름을 모르면 그렇다고 쓴다.
+func expectListenerOwner(listener expectListener) string {
 	owner := T("expect.listener.unknown_process")
 	if listener.Process != "" {
 		owner = listener.Process
@@ -594,10 +606,48 @@ func describeExpectListener(listener expectListener) string {
 	if listener.PID != 0 {
 		owner += " (pid " + strconv.Itoa(listener.PID) + ")"
 	}
-	if listener.Scope == "loopback" {
-		return T("expect.listener.loopback", owner, listener.Address)
+	return owner
+}
+
+// expectTemporaryListener는 --listen이 여는 listener다. 연결을 받자마자 읽지 않고 닫는다. handshake만 끝나게 하려는 것이고
+// 서비스 흉내를 내지 않는다.
+type expectTemporaryListener struct {
+	listener net.Listener
+	done     chan struct{}
+}
+
+// openExpectListener는 모든 주소에서 port를 연다. Go는 ":port"를 IPv4와 IPv6를 함께 받는 socket으로 연다. IPv6를 끈 host에서
+// 실패하면 IPv4만 연다. 이미 쓰는 port는 EADDRINUSE로 실패하므로 남의 port를 빼앗지 않는다.
+func openExpectListener(port uint16) (*expectTemporaryListener, error) {
+	address := ":" + strconv.Itoa(int(port))
+	listener, err := net.Listen("tcp", address)
+	if err != nil && !errors.Is(err, syscall.EADDRINUSE) {
+		listener, err = net.Listen("tcp4", address)
 	}
-	return T("expect.listener.present", owner, listener.Address)
+	if err != nil {
+		return nil, err
+	}
+	temporary := &expectTemporaryListener{listener: listener, done: make(chan struct{})}
+	go func() {
+		defer close(temporary.done)
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connection.Close()
+		}
+	}()
+	return temporary, nil
+}
+
+func (temporary *expectTemporaryListener) state() expectListener {
+	return expectListener{State: expectListenerTemporary, Process: "edc", PID: os.Getpid(), Address: temporary.listener.Addr().String()}
+}
+
+func (temporary *expectTemporaryListener) close() {
+	temporary.listener.Close()
+	<-temporary.done
 }
 
 // expectEvent는 실행 중에 한 줄로 보이는 일이다.
@@ -1288,8 +1338,13 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 
 // expectNextSteps는 결과 뒤에 보이는 다음 할 일이다. 첫 줄은 판정마다 볼 곳이고, 둘째 줄은 client의 tcp check --diagnose
 // report와 합치는 명령이다. --json으로 파일을 남겼으면 그 파일 이름을 넣고, 아니면 파일을 남겨 다시 실행하라고 한다.
-func expectNextSteps(verdict, jsonPath string) []string {
-	steps := []string{T("expect.next.step", T("expect.next."+verdict))}
+func expectNextSteps(verdict string, temporary bool, jsonPath string) []string {
+	key := "expect.next." + verdict
+	// 임시 listener가 handshake를 끝냈으면 경로만 확인한 것이다.
+	if verdict == expectVerdictCompleted && temporary {
+		key = "expect.next.completed_temporary"
+	}
+	steps := []string{T("expect.next.step", T(key))}
 	if jsonPath != "" && jsonPath != "-" {
 		return append(steps, T("expect.next.join_file", "edc report join <client.json> "+quoteLocalShellWord(jsonPath)))
 	}
@@ -1645,6 +1700,25 @@ func runTCPExpect(args []string, version string) int {
 	session.until, session.stopAfter = options.until, options.stopAfter
 	sockets, listenErr := collectListenSockets(listenFamilies{TCP: true})
 	listener := expectListenerState(sockets, listenErr, options.port)
+	if options.listen {
+		// 이미 기다리는 process가 있으면 그 서비스를 시험해야 한다. edc가 port를 빼앗지 않는다.
+		if listener.State == expectListenerPresent {
+			fmt.Fprintln(os.Stderr, T("expect.listen_busy", options.port, expectListenerOwner(listener)+", "+listener.Address))
+			return 2
+		}
+		temporary, err := openExpectListener(options.port)
+		if errors.Is(err, syscall.EADDRINUSE) {
+			fmt.Fprintln(os.Stderr, T("expect.listen_busy", options.port, err))
+			return 2
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("expect.listen_failed", options.port, err))
+			return 1
+		}
+		// 어떤 경로로 끝나도(--duration, --until, --stop-after, Ctrl-C, 오류) 함수를 나가면서 닫는다.
+		defer temporary.close()
+		listener = temporary.state()
+	}
 	session.listener = &listener
 	started := time.Now()
 	statusDone := make(chan struct{})
@@ -1699,7 +1773,7 @@ func runTCPExpect(args []string, version string) int {
 	}
 	verdict, _ := result.Metrics["verdict"].(string)
 	printer.writer = liveOutput
-	for _, step := range expectNextSteps(verdict, options.common.jsonPath) {
+	for _, step := range expectNextSteps(verdict, options.listen, options.common.jsonPath) {
 		printer.println(printer.style.dim(step))
 	}
 	return exit

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -826,22 +828,73 @@ func TestExpectNextSteps(t *testing.T) {
 	for _, language := range []string{"en", "ko", "ja"} {
 		setLanguage(language)
 		for _, verdict := range append([]string{expectVerdictNoSYN}, expectVerdictOrder...) {
-			steps := expectNextSteps(verdict, "")
+			steps := expectNextSteps(verdict, false, "")
 			if len(steps) != 2 || strings.Contains(steps[0], "expect.next") || strings.Contains(steps[1], "expect.next") {
 				t.Errorf("%s %s: %q", language, verdict, steps)
 			}
 		}
 	}
 	setLanguage("en")
-	if steps := expectNextSteps(expectVerdictNoSYN, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
+	if steps := expectNextSteps(expectVerdictNoSYN, false, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
 		t.Errorf("file = %q", steps)
 	}
-	if steps := expectNextSteps(expectVerdictRST, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
+	if steps := expectNextSteps(expectVerdictRST, false, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
 		t.Errorf("quoted file = %q", steps)
 	}
 	for _, jsonPath := range []string{"", "-"} {
-		if steps := expectNextSteps(expectVerdictCompleted, jsonPath); !strings.Contains(steps[1], "--json target.json") {
+		if steps := expectNextSteps(expectVerdictCompleted, false, jsonPath); !strings.Contains(steps[1], "--json target.json") {
 			t.Errorf("%q: %q", jsonPath, steps)
 		}
+	}
+}
+
+// --listen의 임시 listener는 연결을 받자마자 닫고, 이미 쓰는 port는 빼앗지 않으며, 닫으면 port를 돌려준다.
+func TestExpectTemporaryListener(t *testing.T) {
+	probe, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Skip("cannot listen:", err)
+	}
+	port := uint16(probe.Addr().(*net.TCPAddr).Port)
+	probe.Close()
+	temporary, err := openExpectListener(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := temporary.state()
+	if state.State != expectListenerTemporary || state.Process != "edc" || state.PID == 0 || !strings.HasSuffix(state.Address, ":"+strconv.Itoa(int(port))) {
+		t.Errorf("state = %+v", state)
+	}
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))), 2*time.Second)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	connection.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := connection.Read(make([]byte, 1)); err == nil {
+		t.Error("the temporary listener must close the connection without data")
+	}
+	connection.Close()
+	if second, err := openExpectListener(port); err == nil {
+		second.close()
+		t.Fatal("a second listener took over the port")
+	} else if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("busy port error = %v", err)
+	}
+	temporary.close()
+	again, err := net.Listen("tcp", ":"+strconv.Itoa(int(port)))
+	if err != nil {
+		t.Fatalf("the port is still held after close: %v", err)
+	}
+	again.Close()
+}
+
+func TestExpectNextStepWithTemporaryListener(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	if steps := expectNextSteps(expectVerdictCompleted, true, ""); !strings.Contains(steps[0], "service itself was not tested") {
+		t.Errorf("steps = %q", steps)
+	}
+	if steps := expectNextSteps(expectVerdictRST, true, ""); strings.Contains(steps[0], "not tested") {
+		t.Errorf("rst steps = %q", steps)
 	}
 }

@@ -7,6 +7,8 @@ expect:
   duration_range: "--duration must be 0s or more and %s at most"
   until_invalid: "--until must be syn or handshake: %s"
   stop_after_invalid: "--stop-after must be 1 or more: %d"
+  listen_busy: "--listen: something already listens on port %d (%v). edc does not take over a port. Remove --listen to test the service"
+  listen_failed: "--listen: edc cannot listen on port %d: %v"
   linux_only: "tcp expect requires Linux, not %s"
   live:
     from: "from %s"
@@ -64,6 +66,7 @@ expect:
     dropped_unseen: "the kernel drops the SYN on this host. Read the drop reasons above"
     reply_hidden_ipsec: "the reply leaves as ESP. Run edc tcp check --diagnose on the client and join the two reports"
     completed: "the path works. Check TLS and the application next"
+    completed_temporary: "the path works. The service itself was not tested, because the temporary listener of --listen answered"
     join_file: "join with the client report: %s"
     join_rerun: "to join with the client report, rerun with --json target.json: %s"
   evidence:

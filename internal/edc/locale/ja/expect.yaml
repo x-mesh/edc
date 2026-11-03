@@ -7,6 +7,8 @@ expect:
   duration_range: "--duration は 0s 以上、%s 以下にしてください"
   until_invalid: "--until には syn か handshake を指定してください: %s"
   stop_after_invalid: "--stop-after は 1 以上にしてください: %d"
+  listen_busy: "--listen: port %d ではすでに待ち受けている process があります (%v)。edc は port を奪いません。サービスを試すには --listen を外してください"
+  listen_failed: "--listen: port %d を開けませんでした: %v"
   linux_only: "tcp expect は Linux でのみ動きます。現在は %s です"
   live:
     from: "送信元 %s"
@@ -64,6 +66,7 @@ expect:
     dropped_unseen: "この host の kernel が SYN を破棄しています。上の drop 理由を確認してください"
     reply_hidden_ipsec: "応答は ESP で出ていきます。client で edc tcp check --diagnose を実行し、2 つの report を結合してください"
     completed: "経路は動作しています。次に TLS と application を確認してください"
+    completed_temporary: "経路は動作しています。--listen の一時 listener が応答したため、サービス自体は試していません"
     join_file: "client の report と結合: %s"
     join_rerun: "client の report と結合するには --json target.json を付けて再実行してください: %s"
   evidence:

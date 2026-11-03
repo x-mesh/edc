@@ -1,7 +1,7 @@
 # edc tcp expect の日本語メッセージ。
 expect:
-  prompt_port: "client が接続するこの host の port"
-  prompt_hint: "tcp expect は対象 host で実行します。TCP port に SYN が届くかと、この host がどう応答するかをすべての interface で見ます。\nclient が接続するサービスの port を入力してください。例: 2142。送信元を 1 つに絞るには --from <ip|cidr> を付けます。"
+  prompt_port: "port"
+  prompt_hint: "対象 host で実行し、port に SYN が届くかと、この host がどう応答するかを表示します。\nclient が接続する port を入力してください。例: 2142"
   port_invalid: "port は 1 から 65535 までの数値にしてください: %s"
   from_invalid: "--from には IP アドレスか CIDR 範囲を指定してください: %s"
   duration_range: "--duration は 0s 以上、%s 以下にしてください"

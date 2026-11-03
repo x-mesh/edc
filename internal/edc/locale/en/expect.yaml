@@ -1,7 +1,7 @@
 # English messages for edc tcp expect.
 expect:
-  prompt_port: "port on this host that the client connects to"
-  prompt_hint: "tcp expect runs on the target host. It watches whether SYNs reach a TCP port on any interface and how this host answers.\nEnter the service port that the client connects to, for example 2142. Add --from <ip|cidr> to watch one source only."
+  prompt_port: "port"
+  prompt_hint: "Runs on the target host and shows whether SYNs reach the port and how this host answers.\nEnter the port that the client connects to, for example 2142."
   port_invalid: "the port must be a number from 1 to 65535: %s"
   from_invalid: "--from needs an IP address or a CIDR range: %s"
   duration_range: "--duration must be 0s or more and %s at most"

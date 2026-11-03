@@ -1,7 +1,7 @@
 # edc tcp expect의 한국어 메시지.
 expect:
-  prompt_port: "client가 접속하는 이 host의 port"
-  prompt_hint: "tcp expect는 대상 host에서 실행합니다. TCP port로 SYN이 도착하는지와 이 host가 어떻게 답하는지 모든 interface에서 지켜봅니다.\nclient가 접속하는 서비스 port를 넣으세요. 예: 2142. 출발지 하나만 보려면 --from <ip|cidr>를 붙입니다."
+  prompt_port: "port"
+  prompt_hint: "대상 host에서 실행해, port로 SYN이 오는지와 이 host가 어떻게 답하는지 보여 줍니다.\nclient가 접속하는 port를 넣으세요. 예: 2142"
   port_invalid: "port는 1에서 65535 사이의 숫자여야 합니다: %s"
   from_invalid: "--from에는 IP 주소나 CIDR 대역을 주세요: %s"
   duration_range: "--duration은 0s 이상, %s 이하여야 합니다"

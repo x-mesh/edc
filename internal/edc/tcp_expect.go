@@ -94,7 +94,7 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 	if len(positional) == 0 {
 		// 인자 없이 실행한 사람은 어느 host의 어떤 port를 넣을지 모른다. 묻기 전에 하는 일과 넣을 값을 알린다.
 		if _, ok := terminalInput(os.Stdin); ok {
-			fmt.Fprintln(os.Stdout, T("expect.prompt_hint"))
+			fmt.Fprintln(os.Stdout, newTextStyle(promptColor(os.Stdout)).dim(T("expect.prompt_hint")))
 		}
 		values, ok := promptMissingArgs("edc tcp expect", T("expect.prompt_port"))
 		if !ok {

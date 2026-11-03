@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -22,7 +23,8 @@ import (
 const (
 	expectProbeID = "tcp.expect"
 	expectUsage   = "edc tcp expect [--from <ip|cidr>] [--duration 30s] [options] <port>"
-	// expectMaxDuration은 --duration의 상한이다. header만 읽어 가볍지만, 잊고 둔 관측이 끝없이 돌지 않게 한다.
+	// expectMaxDuration은 --duration의 상한이다. 기본(0)은 Ctrl-C까지 돌고, 그동안의 memory는 expectFlowTrackLimit과
+	// expectSourceTrackLimit이 묶는다.
 	expectMaxDuration = time.Hour
 	// expectSnapLength는 kernel이 넘기는 packet 앞부분이다. IP와 TCP header만 읽고 payload는 받지 않는다.
 	expectSnapLength = 128
@@ -37,6 +39,10 @@ const (
 	expectSourceLimit = 50
 	// expectEvidenceLimit은 terminal 표에 보이는 출발지 줄의 상한이다.
 	expectEvidenceLimit = 20
+	// expectFlowTrackLimit은 동시에 따라가는 연결 시도의 상한이고, expectSourceTrackLimit은 합계를 남기는 출발지의 상한이다.
+	// 공개 port에 SYN flood가 오면 시도마다 2분, 출발지마다 끝까지 memory를 쥐므로, 넘치는 만큼은 세기만 하고 쥐지 않는다.
+	expectFlowTrackLimit   = 10000
+	expectSourceTrackLimit = 10000
 
 	tcpFlagSYN = 0x02
 	tcpFlagRST = 0x04
@@ -408,6 +414,86 @@ type expectPendingDrops struct {
 type expectDropTrace struct {
 	Status Status `json:"status"`
 	Reason string `json:"reason,omitempty"`
+	// LostEvents는 drop ring buffer가 넘쳐 읽지 못한 drop 수다. 이 port의 drop도 그 안에 있을 수 있다.
+	LostEvents uint64 `json:"lost_events,omitempty"`
+}
+
+// expectPolicy는 xfrm policy 중 판정에 쓰는 부분이다. netlink의 policy type은 Linux에서만 컴파일되므로 OS에 매이지 않는
+// 값으로 옮겨 둔다. src와 dst가 nil이면 모든 주소에 맞는다. port가 0이면 모든 port에 맞는다.
+type expectPolicy struct {
+	inbound   bool
+	src, dst  *net.IPNet
+	proto     int
+	srcPort   int
+	dstPort   int
+	priority  int
+	ifid      int
+	mark      uint32
+	allow     bool
+	templates int
+	transport bool
+}
+
+// expectPolicyMatchesTCP는 policy가 이 port의 TCP에 맞는지다. ownPort는 이 host 쪽 port 선택자이고, peerPort는 상대 쪽이다.
+// 상대 쪽 port는 연결마다 다른 임시 port라 policy가 그 port를 고정하면 이 관측의 연결 대부분에 맞지 않으므로 맞지 않는 것으로 본다.
+func expectPolicyMatchesTCP(ownPort, peerPort int, port uint16) bool {
+	return (ownPort == 0 || ownPort == int(port)) && peerPort == 0
+}
+
+// expectPolicyCoversReply는 답(SYN-ACK, RST)이 IPsec policy를 타고 암호화되어 나가는지 본다. 그러면 packet socket에는 평문이
+// 아니라 ESP만 보인다. if_id나 mark가 있는 policy는 xfrm/VTI interface로 나가 평문이 그 interface에 보이므로 뺀다. 우선순위가
+// 가장 높은(숫자가 작은) 일치 policy가 정한다. 같은 대역을 우회(bypass)로 두는 policy가 먼저 맞을 수 있다.
+func expectPolicyCoversReply(policies []expectPolicy, remote, local netip.Addr, port uint16) bool {
+	var matched []expectPolicy
+	for _, policy := range policies {
+		if policy.inbound || policy.ifid != 0 || policy.mark != 0 {
+			continue
+		}
+		if policy.proto != 0 && policy.proto != int(syscall.IPPROTO_TCP) {
+			continue
+		}
+		// 답은 local:port에서 remote의 임시 port로 나간다.
+		if !expectPolicyMatchesTCP(policy.srcPort, policy.dstPort, port) {
+			continue
+		}
+		if !expectNetContains(policy.dst, remote) || (local.IsValid() && !expectNetContains(policy.src, local)) {
+			continue
+		}
+		matched = append(matched, policy)
+	}
+	if len(matched) == 0 {
+		return false
+	}
+	sort.SliceStable(matched, func(i, j int) bool { return matched[i].priority < matched[j].priority })
+	return matched[0].allow && matched[0].templates > 0
+}
+
+// expectPolicyTransportInbound는 from에서 이 port로 오는 packet을 받는 transport mode IPsec policy가 있는지 본다.
+func expectPolicyTransportInbound(policies []expectPolicy, from netip.Prefix, port uint16) bool {
+	for _, policy := range policies {
+		if !policy.inbound || !policy.allow || policy.ifid != 0 || !policy.transport {
+			continue
+		}
+		if policy.proto != 0 && policy.proto != int(syscall.IPPROTO_TCP) {
+			continue
+		}
+		// SYN은 remote의 임시 port에서 local:port로 들어온다.
+		if !expectPolicyMatchesTCP(policy.dstPort, policy.srcPort, port) {
+			continue
+		}
+		if from.IsValid() && !expectNetContains(policy.src, from.Addr()) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func expectNetContains(network *net.IPNet, address netip.Addr) bool {
+	if network == nil {
+		return true
+	}
+	return network.Contains(net.IP(address.AsSlice()))
 }
 
 // expectEvent는 실행 중에 한 줄로 보이는 일이다.
@@ -449,7 +535,13 @@ type expectSession struct {
 	forwarded    int
 	socketDrops  uint64
 	dropTrace    expectDropTrace
-	lastSweep    time.Time
+	// dropLost는 drop ring buffer가 넘쳐 읽지 못한 drop 수다. drop 추적이 끝난 뒤에 적힌다.
+	dropLost uint64
+	// untracked는 flowLimit이나 sourceLimit에 막혀 세지 않은 연결 시도 수다.
+	untracked   int
+	flowLimit   int
+	sourceLimit int
+	lastSweep   time.Time
 	// isLocal은 주소가 이 host의 것인지다. nil이면 모두 이 host의 것으로 본다. 다른 host로 넘겨주는 packet을 세지 않는다.
 	isLocal func(netip.Addr) bool
 	// returnPath는 답이 나갈 경로를 kernel에 묻는다. local이나 arrival이 비어 있을 수 있다.
@@ -468,6 +560,7 @@ func newExpectSession(port uint16, from netip.Prefix, emit func(expectEvent)) *e
 		port: port, from: from, emit: emit,
 		flows: map[expectFlowKey]*expectFlow{}, sources: map[expectSourceKey]*expectSource{}, routes: map[expectSourceKey]*expectReturnPath{},
 		pendingDrops: map[expectFlowKey]*expectPendingDrops{}, otherDrops: map[string]int{},
+		flowLimit: expectFlowTrackLimit, sourceLimit: expectSourceTrackLimit,
 	}
 }
 
@@ -516,6 +609,9 @@ func (session *expectSession) packet(packet expectPacket) {
 		}
 		if flow != nil {
 			session.finish(flow)
+		} else if len(session.flows) >= session.flowLimit {
+			session.untracked++
+			return
 		}
 		flow = &expectFlow{key: key, iface: packet.iface, isn: packet.seq, firstSYN: packet.at, lastSYN: packet.at, lastActivity: packet.at, synIn: 1}
 		session.flows[key] = flow
@@ -692,6 +788,11 @@ func (session *expectSession) releaseDrops(key expectFlowKey, pending *expectPen
 		sourceKey := expectSourceKey{remote: key.remote.Addr(), local: key.local.Addr()}
 		source := session.sources[sourceKey]
 		if source == nil {
+			if len(session.sources) >= session.sourceLimit {
+				// 출발지를 더 쥘 수 없으면 수는 버리지 않고 연결 시도 밖의 drop으로 남긴다.
+				session.otherDrops[reason] += count
+				continue
+			}
 			source = &expectSource{Address: sourceKey.remote.String(), Local: sourceKey.local.String(), Interface: "-"}
 			session.sources[sourceKey] = source
 		}
@@ -721,9 +822,22 @@ func (session *expectSession) lookupRoute(key expectSourceKey) *expectReturnPath
 // finish는 연결 시도 하나를 출발지 합계로 접는다.
 func (session *expectSession) finish(flow *expectFlow) {
 	delete(session.flows, flow.key)
+	if pending, ok := session.pendingDrops[flow.key]; ok {
+		if flow.drops == nil {
+			flow.drops = map[string]int{}
+		}
+		for reason, count := range pending.reasons {
+			flow.drops[reason] += count
+		}
+		delete(session.pendingDrops, flow.key)
+	}
 	key := expectSourceKey{remote: flow.key.remote.Addr(), local: flow.key.local.Addr(), iface: flow.iface}
 	source := session.sources[key]
 	if source == nil {
+		if len(session.sources) >= session.sourceLimit {
+			session.untracked++
+			return
+		}
 		source = &expectSource{Address: key.remote.String(), Local: key.local.String(), Interface: key.iface}
 		session.sources[key] = source
 	}
@@ -737,15 +851,6 @@ func (session *expectSession) finish(flow *expectFlow) {
 	source.expectCounts.add(counts)
 	for _, iface := range flow.outIfaces {
 		source.OutInterfaces = appendUnique(source.OutInterfaces, iface)
-	}
-	if pending, ok := session.pendingDrops[flow.key]; ok {
-		if flow.drops == nil {
-			flow.drops = map[string]int{}
-		}
-		for reason, count := range pending.reasons {
-			flow.drops[reason] += count
-		}
-		delete(session.pendingDrops, flow.key)
 	}
 	for reason, count := range flow.drops {
 		if source.DropReasons == nil {
@@ -850,11 +955,13 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	}
 	elapsed := time.Since(started)
 	verdict, lead := expectOverallVerdict(sources)
+	dropTrace := session.dropTrace
+	dropTrace.LostEvents = session.dropLost
 	metrics := map[string]interface{}{
 		"port": int(session.port), "duration_ms": elapsed.Milliseconds(), "stop_reason": stopReason, "verdict": verdict,
 		"attempts": totals.Attempts, "syn_in": totals.SYNIn, "syn_retransmits": totals.SYNRetransmits, "syn_ack_out": totals.SYNACKOut,
 		"syn_ack_retransmits": totals.SYNACKRetransmits, "rst_out": totals.RSTOut, "rst_in": totals.RSTIn, "handshakes": totals.Handshakes,
-		"drop_trace": session.dropTrace, "forwarded_packets": session.forwarded, "socket_drops": session.socketDrops,
+		"drop_trace": dropTrace, "forwarded_packets": session.forwarded, "socket_drops": session.socketDrops, "untracked_attempts": session.untracked,
 	}
 	metrics["observation_status"] = "observed"
 	if len(sources) == 0 {
@@ -879,7 +986,7 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 		metrics["from_return"] = fromRoute
 	}
 	result.Summary = expectSummary(verdict, lead, len(sources), session.port, elapsed)
-	result.Warnings = expectWarnings(sources, session.socketDrops)
+	result.Warnings = expectWarnings(sources, session.socketDrops, session.dropLost, session.untracked)
 	if (verdict == expectVerdictNoSYN || verdict == expectVerdictUnseen) && session.ipsecInbound != nil && session.ipsecInbound(session.from) {
 		result.Warnings = append(result.Warnings, T("expect.warning.ipsec_transport"))
 		// SYN이 왔어도 보이지 않았을 수 있으므로 오지 않았다고 단정하지 않는다.
@@ -946,7 +1053,7 @@ func expectSummary(verdict string, lead *expectSource, sourceCount int, port uin
 	return text
 }
 
-func expectWarnings(sources []expectSource, socketDrops uint64) []string {
+func expectWarnings(sources []expectSource, socketDrops, dropLost uint64, untracked int) []string {
 	var warnings []string
 	for _, source := range sources {
 		route := source.Return
@@ -968,6 +1075,12 @@ func expectWarnings(sources []expectSource, socketDrops uint64) []string {
 	}
 	if socketDrops > 0 {
 		warnings = append(warnings, T("expect.warning.socket_drops", socketDrops))
+	}
+	if dropLost > 0 {
+		warnings = append(warnings, T("expect.warning.drop_lost", dropLost))
+	}
+	if untracked > 0 {
+		warnings = append(warnings, T("expect.warning.untracked", untracked))
 	}
 	return warnings
 }

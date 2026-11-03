@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -73,8 +72,10 @@ func runExpectCapture(run expectRun) error {
 	session := run.session
 	locals := &expectLocalAddresses{entries: map[netip.Addr]expectLocalEntry{}}
 	session.isLocal = locals.contains
-	session.returnPath = expectReturnRoute
-	session.ipsecInbound = expectIPsecTransportInbound
+	session.returnPath = func(remote, local netip.Addr, arrival string) expectReturnPath {
+		return expectReturnRoute(remote, local, arrival, run.port)
+	}
+	session.ipsecInbound = func(from netip.Prefix) bool { return expectIPsecTransportInbound(from, run.port) }
 	names := expectInterfaceNames{}
 	drops := startExpectDropTrace(session)
 	defer drops.stop()
@@ -170,7 +171,7 @@ func (addresses *expectLocalAddresses) contains(address netip.Addr) bool {
 
 // expectReturnRoute는 ip route get <remote> from <local>과 같은 질문이다. 이 host가 SYN-ACK를 보낼 때 kernel이 하는 조회이고,
 // 정책 routing(tailscale의 table 52 같은)의 규칙도 따른다. fwmark나 UID로 나누는 규칙은 재현하지 않는다.
-func expectReturnRoute(remote, local netip.Addr, arrival string) expectReturnPath {
+func expectReturnRoute(remote, local netip.Addr, arrival string, port uint16) expectReturnPath {
 	options := &netlink.RouteGetOptions{}
 	if local.IsValid() {
 		options.SrcAddr = net.IP(local.AsSlice())
@@ -188,7 +189,7 @@ func expectReturnRoute(remote, local netip.Addr, arrival string) expectReturnPat
 	if arrival != "" && remote.Is4() {
 		path.RPFilter = readExpectRPFilter(arrival)
 	}
-	path.IPsecPolicy = expectIPsecPolicyCovers(remote, local)
+	path.IPsecPolicy = expectIPsecPolicyCovers(remote, local, port)
 	return path
 }
 
@@ -209,62 +210,44 @@ func readExpectRPFilter(iface string) *expectRPFilter {
 	return &expectRPFilter{Interface: own, All: all, Effective: max(all, own)}
 }
 
-// expectIPsecPolicyCovers는 답이 IPsec policy를 타고 암호화되어 나가는지 본다. 그러면 packet socket에는 평문 SYN-ACK가 아니라
-// ESP만 보인다. if_id나 mark가 있는 policy는 xfrm/VTI interface로 나가 평문이 그 interface에 보이므로 뺀다. 우선순위가
-// 가장 높은(숫자가 작은) 일치 policy가 정한다. 같은 대역을 우회(bypass)로 두는 policy가 먼저 맞을 수 있다.
-func expectIPsecPolicyCovers(remote, local netip.Addr) bool {
-	policies, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL)
-	if err != nil {
-		return false
-	}
-	var matched []netlink.XfrmPolicy
-	for _, policy := range policies {
-		if policy.Dir != netlink.XFRM_DIR_OUT || policy.Ifid != 0 || (policy.Mark != nil && policy.Mark.Value != 0) {
-			continue
-		}
-		if policy.Proto != 0 && policy.Proto != netlink.Proto(unix.IPPROTO_TCP) {
-			continue
-		}
-		if !expectNetContains(policy.Dst, remote) || (local.IsValid() && !expectNetContains(policy.Src, local)) {
-			continue
-		}
-		matched = append(matched, policy)
-	}
-	if len(matched) == 0 {
-		return false
-	}
-	sort.SliceStable(matched, func(i, j int) bool { return matched[i].Priority < matched[j].Priority })
-	return matched[0].Action == netlink.XFRM_POLICY_ALLOW && len(matched[0].Tmpls) > 0
+// expectIPsecPolicyCovers는 이 port의 답이 IPsec policy를 타고 암호화되어 나가는지 kernel의 xfrm policy로 본다.
+func expectIPsecPolicyCovers(remote, local netip.Addr, port uint16) bool {
+	return expectPolicyCoversReply(expectXfrmPolicies(), remote, local, port)
 }
 
-// expectIPsecTransportInbound는 from에서 오는 packet을 받는 transport mode IPsec policy가 있는지 본다. transport mode로 복호화한
-// packet은 packet socket에 다시 보이지 않는다(Linux 6.17에서 확인). tunnel mode는 복호화한 packet이 interface에 다시 보인다.
-func expectIPsecTransportInbound(from netip.Prefix) bool {
+// expectIPsecTransportInbound는 from에서 이 port로 오는 packet을 받는 transport mode IPsec policy가 있는지 본다. transport mode로
+// 복호화한 packet은 packet socket에 다시 보이지 않는다(Linux 6.17에서 확인). tunnel mode는 복호화한 packet이 interface에 다시 보인다.
+func expectIPsecTransportInbound(from netip.Prefix, port uint16) bool {
+	return expectPolicyTransportInbound(expectXfrmPolicies(), from, port)
+}
+
+// expectXfrmPolicies는 kernel의 xfrm policy를 판정에 쓰는 값으로 옮긴다. 읽지 못하면 policy가 없는 것으로 본다.
+func expectXfrmPolicies() []expectPolicy {
 	policies, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	if err != nil {
-		return false
+		return nil
 	}
+	converted := make([]expectPolicy, 0, len(policies))
 	for _, policy := range policies {
-		if policy.Dir != netlink.XFRM_DIR_IN || policy.Action != netlink.XFRM_POLICY_ALLOW || policy.Ifid != 0 {
+		if policy.Dir != netlink.XFRM_DIR_OUT && policy.Dir != netlink.XFRM_DIR_IN {
 			continue
 		}
-		if from.IsValid() && !expectNetContains(policy.Src, from.Addr()) {
-			continue
+		entry := expectPolicy{
+			inbound: policy.Dir == netlink.XFRM_DIR_IN, src: policy.Src, dst: policy.Dst, proto: int(policy.Proto),
+			srcPort: policy.SrcPort, dstPort: policy.DstPort, priority: policy.Priority, ifid: policy.Ifid,
+			allow: policy.Action == netlink.XFRM_POLICY_ALLOW, templates: len(policy.Tmpls),
+		}
+		if policy.Mark != nil {
+			entry.mark = policy.Mark.Value
 		}
 		for _, template := range policy.Tmpls {
 			if template.Mode == netlink.XFRM_MODE_TRANSPORT {
-				return true
+				entry.transport = true
 			}
 		}
+		converted = append(converted, entry)
 	}
-	return false
-}
-
-func expectNetContains(network *net.IPNet, address netip.Addr) bool {
-	if network == nil {
-		return true
-	}
-	return network.Contains(net.IP(address.AsSlice()))
+	return converted
 }
 
 // expectDropTracer는 tcp expect가 함께 돌리는 trace drop이다. 붙지 않아도 packet 관측은 계속한다.
@@ -286,10 +269,14 @@ func startExpectDropTrace(session *expectSession) *expectDropTracer {
 	tracer.halt = make(chan struct{})
 	tracer.done = make(chan error, 1)
 	go func() {
-		_, err := collectDropEvents(nil, 0, func(event captureEvent) error {
+		summary, err := collectDropEvents(nil, 0, func(event captureEvent) error {
 			session.drop(time.Unix(0, int64(event.TimestampNS)), event.Source, event.Destination, event.Reason, event.Location)
 			return nil
 		}, tracer.halt)
+		// stop()이 done을 기다리므로 그 전에 적어야 result()가 읽는다.
+		session.mu.Lock()
+		session.dropLost = summary.LostEvents
+		session.mu.Unlock()
 		tracer.done <- err
 	}()
 	select {

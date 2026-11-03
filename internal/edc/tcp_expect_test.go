@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/binary"
 	"encoding/json"
+	"net"
 	"net/netip"
 	"strings"
 	"testing"
@@ -482,5 +483,121 @@ func TestExpectRouteLookupsStopAtTheSourceLimit(t *testing.T) {
 	// 실행 중 조회와 끝에 남기는 줄의 조회가 각각 상한을 넘지 않는다.
 	if lookups > 2*expectSourceLimit || len(sources) != expectSourceLimit || result.Metrics["sources_omitted"] != 30 || sources[expectSourceLimit-1].Return == nil {
 		t.Fatalf("lookups=%d sources=%d omitted=%v", lookups, len(sources), result.Metrics["sources_omitted"])
+	}
+}
+
+func expectTestNet(cidr string) *net.IPNet {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(err)
+	}
+	return network
+}
+
+func TestExpectPolicyPortSelectors(t *testing.T) {
+	remote, local := netip.MustParseAddr("10.85.1.2"), netip.MustParseAddr("10.16.100.110")
+	out := func(srcPort, dstPort, priority int) expectPolicy {
+		return expectPolicy{src: expectTestNet("10.16.100.0/24"), dst: expectTestNet("10.85.0.0/16"), srcPort: srcPort, dstPort: dstPort, priority: priority, allow: true, templates: 1}
+	}
+	cases := []struct {
+		name     string
+		policies []expectPolicy
+		covered  bool
+	}{
+		{"all ports", []expectPolicy{out(0, 0, 100)}, true},
+		{"own port", []expectPolicy{out(expectTestPort, 0, 100)}, true},
+		{"another service", []expectPolicy{out(22, 0, 100)}, false},
+		{"pinned remote port", []expectPolicy{out(0, 443, 100)}, false},
+		// 다른 port의 bypass policy가 우선순위로 앞서도 이 port의 policy를 가리지 않는다.
+		{"port bypass does not mask", []expectPolicy{{src: expectTestNet("10.16.100.0/24"), dst: expectTestNet("10.85.0.0/16"), srcPort: 22, priority: 10}, out(0, 0, 100)}, true},
+		{"udp only", []expectPolicy{{dst: expectTestNet("10.85.0.0/16"), proto: 17, allow: true, templates: 1}}, false},
+		{"inbound only", []expectPolicy{{inbound: true, src: expectTestNet("10.85.0.0/16"), allow: true, templates: 1, transport: true}}, false},
+	}
+	for _, test := range cases {
+		if got := expectPolicyCoversReply(test.policies, remote, local, expectTestPort); got != test.covered {
+			t.Errorf("%s: covered=%v, want %v", test.name, got, test.covered)
+		}
+	}
+	from, _ := parseExpectFrom("10.85.1.2")
+	in := func(srcPort, dstPort int) expectPolicy {
+		return expectPolicy{inbound: true, src: expectTestNet("10.85.0.0/16"), allow: true, templates: 1, transport: true, srcPort: srcPort, dstPort: dstPort}
+	}
+	inbound := []struct {
+		name    string
+		policy  expectPolicy
+		covered bool
+	}{
+		{"all ports", in(0, 0), true},
+		{"own port", in(0, expectTestPort), true},
+		{"another service", in(0, 22), false},
+		{"pinned remote port", in(53122, 0), false},
+		{"tunnel mode", expectPolicy{inbound: true, src: expectTestNet("10.85.0.0/16"), allow: true, templates: 1}, false},
+		{"udp only", expectPolicy{inbound: true, allow: true, templates: 1, transport: true, proto: 17}, false},
+	}
+	for _, test := range inbound {
+		if got := expectPolicyTransportInbound([]expectPolicy{test.policy}, from, expectTestPort); got != test.covered {
+			t.Errorf("inbound %s: covered=%v, want %v", test.name, got, test.covered)
+		}
+	}
+}
+
+func TestExpectDropTraceLostEventsAreReported(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.returnPath = func(remote, local netip.Addr, arrival string) expectReturnPath {
+		return expectReturnPath{Device: "eth0"}
+	}
+	scenario.session.start(expectDropTrace{Status: StatusPass}, scenario.now)
+	scenario.in("eth0", "10.85.1.2", tcpFlagSYN, 7, 0)
+	scenario.session.dropLost = 12
+	result, _, _ := scenario.finish("duration")
+	trace, ok := result.Metrics["drop_trace"].(expectDropTrace)
+	if !ok || trace.Status != StatusPass || trace.LostEvents != 12 {
+		t.Fatalf("drop_trace = %+v", result.Metrics["drop_trace"])
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "12") {
+		t.Fatalf("warnings = %q", result.Warnings)
+	}
+}
+
+func TestExpectTrackingStopsAtTheLimits(t *testing.T) {
+	scenario := newExpectScenario("")
+	scenario.session.returnPath = func(remote, local netip.Addr, arrival string) expectReturnPath {
+		return expectReturnPath{Device: "eth0"}
+	}
+	scenario.session.flowLimit, scenario.session.sourceLimit = 3, 3
+	syn := func(remote string, port uint16) {
+		packet, _ := parseExpectPacket(expectTestIPv4(remote, "100.83.200.248", port, expectTestPort, tcpFlagSYN, 7, 0), expectTestPort, false)
+		packet.iface, packet.at = "eth0", scenario.now
+		scenario.session.packet(packet)
+	}
+	// 한 출발지에서 시도 5개: 3개만 따라간다.
+	for port := uint16(40000); port < 40005; port++ {
+		syn("10.85.1.2", port)
+	}
+	if len(scenario.session.flows) != 3 || scenario.session.untracked != 2 {
+		t.Fatalf("flows=%d untracked=%d", len(scenario.session.flows), scenario.session.untracked)
+	}
+	// 따라가던 시도가 쉬면 접히고, 빈 자리는 다시 쓴다. 출발지는 3개까지만 합계를 남긴다.
+	scenario.now = scenario.now.Add(expectFlowIdle + expectSweepInterval)
+	scenario.session.tick(scenario.now)
+	for _, remote := range []string{"10.85.1.3", "10.85.1.4", "10.85.1.5", "10.85.1.6"} {
+		syn(remote, 40000)
+	}
+	if len(scenario.session.flows) != 3 || scenario.session.untracked != 3 {
+		t.Fatalf("flows=%d untracked=%d", len(scenario.session.flows), scenario.session.untracked)
+	}
+	// SYN 없이 쌓인 drop도 출발지를 늘리지 못하고 연결 시도 밖의 drop으로 남는다.
+	scenario.session.drop(scenario.now, "10.85.9.9:1", "100.83.200.248:2142", "NO_SOCKET", "tcp_v4_rcv")
+	scenario.now = scenario.now.Add(expectSweepInterval)
+	result, sources, _ := scenario.finish("duration")
+	// 시도 3개와 출발지 3개를 남기고, 넘친 시도 2개와 출발지 자리가 없어 접지 못한 시도 1개는 센다.
+	if len(sources) != 3 || result.Metrics["untracked_attempts"] != 4 || result.Metrics["attempts"] != 5 {
+		t.Fatalf("sources=%d metrics=%+v", len(sources), result.Metrics)
+	}
+	if result.Metrics["other_drops"].(map[string]int)["NO_SOCKET"] != 1 {
+		t.Fatalf("other drops = %+v", result.Metrics["other_drops"])
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "4") {
+		t.Fatalf("warnings = %q", result.Warnings)
 	}
 }

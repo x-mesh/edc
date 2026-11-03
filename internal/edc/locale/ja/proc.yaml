@@ -1,0 +1,44 @@
+# proc コマンドの日本語メッセージ。
+proc:
+  many: "名前が %[2]s の process が %[1]d 個あります。PID で選んでください"
+  up: "%s 稼働"
+  state:
+    zombie: "zombie: 親が回収していません"
+    disk_wait: "D 状態: I/O 待ち"
+  field:
+    command: "コマンド %s"
+    ppid: "ppid     %d"
+    cwd: "cwd      %s"
+    threads: "thread   %d"
+  memory_with_rss: "%s (RSS %s)"
+  resources: "CPU %.1f%% · メモリ %s"
+  fd:
+    count: "開いている fd %d 個"
+    limit: "fd %d/%d 個使用 (%.0f%%)"
+    deleted: "、削除済みで開いたままのファイル %d 個 (%s)"
+  sockets:
+    summary: "待ち受け: %s · 接続 %d 個"
+    no_listen: "なし"
+    close_wait: "、CLOSE_WAIT %d 個: 相手が閉じた接続を process が閉じていません"
+  cgroup:
+    linux_only: "cgroup の上限は Linux でのみ読みます"
+    memory: "メモリ %s、この cgroup の上限なし"
+    memory_limit: "メモリ %s / %s (%.0f%%)"
+    oom_kill: "OOM kill %d 回"
+    throttled: "CPU 制限 %d 回"
+  source:
+    fd: "fd"
+    sockets: "ソケット"
+  skip:
+    needs_root: "他のアカウントの %s は root でないと読めません"
+    unreadable: "%s を読めませんでした: %s"
+  evidence:
+    candidates: "候補"
+    process: "process"
+    fd_types: "fd の種類"
+    deleted: "削除済みファイル"
+    states: "接続状態"
+    remotes: "相手"
+  error:
+    unreadable: "process 一覧を読めませんでした"
+    not_found: "%s に一致する process がありません"

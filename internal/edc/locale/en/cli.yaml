@@ -443,6 +443,7 @@ cli:
     description: "report reads snapshot JSON files and reports saved with --json by edc diagnostic commands.\nGeneral JSON, report diff output, and edc log text logs are unsupported."
     command_show: "show  — view a saved edc diagnostic result"
     command_diff: "diff  — compare two saved edc diagnostic results"
+    command_join: "join  — name the broken segment from a tcp diagnose and a tcp expect result"
     command_list: "list  — list saved edc diagnostic results"
     enter_path: "Enter another edc diagnostic result file path…"
     path_label: "%s file path (.json)"

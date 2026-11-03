@@ -31,7 +31,10 @@ const (
 )
 
 // checkIDs는 evaluateCheck가 내는 점검의 순서다. 표의 열이 이 순서를 따른다.
-var checkIDs = []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot", "thermal", "backup"}
+var checkIDs = []string{"service", "process", "memory", "disk", "storage", "cert", "kernel", "time", "network", "container", "filehandles", "reboot", "thermal", "backup"}
+
+// checkConfiguredIDs는 설정에 대상을 적었을 때만 결과에 나오는 점검이다. 표의 열에는 넣지 않고 아래 상세에만 적는다.
+var checkConfiguredIDs = []string{"endpoint"}
 
 // checkPlatformIDs는 한 OS에만 원천이 있는 점검이다. 원천이 없는 OS에서는 skip 줄을 남기지 않고 결과에서 뺀다.
 var checkPlatformIDs = []string{"thermal", "backup"}

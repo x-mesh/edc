@@ -16,6 +16,8 @@
 | 지금 고장 난 곳 찾기 | `edc check`, `edc check --group <group>` | [상태 점검](docs/host.ko.md#상태-점검-linux와-macos), [점검 루틴](docs/host.ko.md#점검-루틴) |
 | 디스크를 차지하는 항목 찾기 | `edc du /var`, `edc clean` | [디렉터리 사용량](docs/disk-usage.ko.md#디렉터리-디스크-사용량-linux와-macos), [알려진 캐시](docs/disk-usage.ko.md#알려진-개발-캐시-사용량-linux와-macos) |
 | 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux와-macos) |
+| process 하나 들여다보기 | `edc proc <pid\|이름>` | [Process 보기](docs/host.ko.md#process-보기-linux와-macos) |
+| 예약 작업과 마지막 결과 보기 | `edc jobs` | [예약 작업](docs/host.ko.md#예약-작업-linux와-macos) |
 | 연결 문제 확인 | `edc dns lookup example.com`, `edc tcp check example.com:443` | [네트워크 점검](docs/network.ko.md#네트워크-점검), [종합 진단](docs/network.ko.md#doctor-실시간-화면) |
 | 애플리케이션과 커널 동작 추적 | `edc trace` | [추적과 패킷 캡처](#동작-추적과-패킷-캡처) — trace별 지원 조건 참고 |
 | 실행 기록과 비교 | `edc top -w`, `edc history`, `edc log -- <command>` | [자원 사용 이력](docs/history.ko.md#top-저장과-이력-조회), [명령 로그](docs/history.ko.md#cron과-애플리케이션-로그) |
@@ -230,6 +232,7 @@ edc remote --dry-run --group <group> --recipe <recipe.yaml>
 ```bash
 edc dns lookup example.com
 edc tcp check example.com:443
+edc tcp scan --ports 22,80,443 example.com
 edc doctor https://example.com
 ```
 

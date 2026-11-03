@@ -548,6 +548,12 @@ func collectDisks() ([]diskDetails, error) {
 			disks[index].FSType = types[disks[index].Mount]
 		}
 	}
+	// hdiutil이 실패하면 이미지를 숨기지 않고 지금처럼 모두 보인다.
+	ctx, cancel := context.WithTimeout(context.Background(), diskImageReadTimeout)
+	defer cancel()
+	if images, err := readDiskImages(ctx); err == nil {
+		markDiskImages(disks, images)
+	}
 	return disks, nil
 }
 func commandValue(path string, args ...string) string {

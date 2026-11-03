@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -76,6 +77,7 @@ type edcConfig struct {
 	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
 	Audit    auditConfig    `yaml:"audit,omitempty" toml:"audit,omitempty"`
 	Check    checkConfig    `yaml:"check,omitempty" toml:"check,omitempty"`
+	Notify   notifyConfig   `yaml:"notify,omitempty" toml:"notify,omitempty"`
 	// commandSafety는 읽은 설정 파일로 check 루틴의 셸 명령을 실행해도 되는지다. 파일을 열 때 정하고 파일에는 쓰지 않는다.
 	commandSafety error
 }
@@ -85,11 +87,15 @@ type checkConfig struct {
 	// Accept는 점검 하나를 통째로 받아들인다. 이름은 check. 뒤의 점검 이름이다.
 	Accept []string `yaml:"accept,omitempty" toml:"accept,omitempty"`
 	// AcceptUnits, AcceptContainers, AcceptMounts는 그 점검 안에서 판정하지 않을 이름이다. path.Match의 glob을 쓴다.
-	AcceptUnits      []string          `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
-	AcceptContainers []string          `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
-	AcceptMounts     []string          `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
-	RequireUnits     []string          `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
-	Limits           checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
+	AcceptUnits      []string `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
+	AcceptContainers []string `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
+	AcceptMounts     []string `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
+	RequireUnits     []string `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	// RequireEndpoints는 check.endpoint가 TCP로 접속해 볼 host:port다. 비어 있으면 그 점검은 결과에 나오지 않는다.
+	RequireEndpoints []string `yaml:"require_endpoints,omitempty" toml:"require_endpoints,omitempty"`
+	// CertPaths는 check.cert가 기본 위치에 더해 읽을 인증서 파일의 glob이다.
+	CertPaths []string          `yaml:"cert_paths,omitempty" toml:"cert_paths,omitempty"`
+	Limits    checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
 	// Routines는 edc check <이름>으로 고르는 묶음이다. 위의 값에 더해지고, limits는 루틴에 적은 값만 바꾼다.
 	Routines map[string]checkRoutineConfig `yaml:"routines,omitempty" toml:"routines,omitempty"`
 }
@@ -102,6 +108,8 @@ type checkRoutineConfig struct {
 	AcceptContainers []string             `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
 	AcceptMounts     []string             `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
 	RequireUnits     []string             `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	RequireEndpoints []string             `yaml:"require_endpoints,omitempty" toml:"require_endpoints,omitempty"`
+	CertPaths        []string             `yaml:"cert_paths,omitempty" toml:"cert_paths,omitempty"`
 	Limits           checkLimitsConfig    `yaml:"limits,omitempty" toml:"limits,omitempty"`
 	Commands         []checkCommandConfig `yaml:"commands,omitempty" toml:"commands,omitempty"`
 }
@@ -378,13 +386,19 @@ func validateCheckConfig(config checkConfig) error {
 	if err := validateCheckRules("check", config.Accept, config.AcceptUnits, config.AcceptContainers, config.AcceptMounts, config.RequireUnits, config.Limits, nil); err != nil {
 		return err
 	}
+	if err := validateCertPaths("check", config.CertPaths); err != nil {
+		return err
+	}
+	if err := validateCheckEndpoints("check", config.RequireEndpoints); err != nil {
+		return err
+	}
 	for name, routine := range config.Routines {
 		prefix := "check.routines." + name
 		if !checkNamePattern.MatchString(name) {
 			return invalidConfig(prefix, "a routine name must use only a-z, 0-9, _ and -")
 		}
 		for _, id := range routine.Checks {
-			if !slices.Contains(checkIDs, id) {
+			if !slices.Contains(checkIDs, id) && !slices.Contains(checkConfiguredIDs, id) {
 				return invalidConfig(prefix+".checks", fmt.Sprintf("%q is not a check name", id))
 			}
 		}
@@ -408,6 +422,33 @@ func validateCheckConfig(config checkConfig) error {
 		if err := validateCheckRules(prefix, routine.Accept, routine.AcceptUnits, routine.AcceptContainers, routine.AcceptMounts, routine.RequireUnits, routine.Limits, commands); err != nil {
 			return err
 		}
+		if err := validateCertPaths(prefix, routine.CertPaths); err != nil {
+			return err
+		}
+		if err := validateCheckEndpoints(prefix, routine.RequireEndpoints); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateCheckEndpoints는 require_endpoints가 host:port인지 본다. IPv6 주소는 [::1]:443처럼 대괄호가 있어야 port와 갈린다.
+func validateCheckEndpoints(prefix string, endpoints []string) error {
+	for _, endpoint := range endpoints {
+		host, port, err := net.SplitHostPort(endpoint)
+		if err != nil || host == "" || port == "" {
+			return invalidConfig(prefix+".require_endpoints", fmt.Sprintf("%q is not host:port", endpoint))
+		}
+	}
+	return nil
+}
+
+// validateCertPaths는 cert_paths가 절대 경로의 glob인지 본다. check는 어느 디렉터리에서든 실행하므로 상대 경로는 뜻이 바뀐다.
+func validateCertPaths(prefix string, patterns []string) error {
+	for _, pattern := range patterns {
+		if _, err := filepath.Match(pattern, ""); err != nil || !filepath.IsAbs(pattern) {
+			return invalidConfig(prefix+".cert_paths", fmt.Sprintf("%q is not an absolute glob", pattern))
+		}
 	}
 	return nil
 }
@@ -416,7 +457,7 @@ func validateCheckConfig(config checkConfig) error {
 func validateCheckRules(prefix string, accept, units, containers, mounts, require []string, limits checkLimitsConfig, commands map[string]bool) error {
 	for _, id := range accept {
 		command, isCommand := strings.CutPrefix(id, "cmd.")
-		if !slices.Contains(checkIDs, id) && !(isCommand && commands[command]) {
+		if !slices.Contains(checkIDs, id) && !slices.Contains(checkConfiguredIDs, id) && !(isCommand && commands[command]) {
 			return invalidConfig(prefix+".accept", fmt.Sprintf("%q is not a check name", id))
 		}
 	}
@@ -603,6 +644,9 @@ func validateConfig(config edcConfig) error {
 		if port < 1 || port > 65535 {
 			return invalidConfig("audit.allow_ports", fmt.Sprintf("%d must be between 1 and 65535", port))
 		}
+	}
+	if err := validateNotifyConfig(config.Notify); err != nil {
+		return err
 	}
 	if err := validateCheckConfig(config.Check); err != nil {
 		return err

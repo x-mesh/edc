@@ -53,6 +53,148 @@ edc report diff before.json after.json
 
 wildcard의 모든 인터페이스는 관측한 주소 계열의 바인딩을 뜻합니다. 외부 접근 가능 여부, 방화벽 규칙, IPv6 dual-stack 동작을 판단하는 값은 아닙니다.
 
+### Port scan
+
+`edc tcp scan`은 host 하나의 여러 port에 연결해 어느 port가 응답하는지 보여 줍니다.
+
+```bash
+edc tcp scan example.com
+edc tcp scan --ports 22,80,443,8000-8100 example.com
+edc tcp scan --ports 1-1024 --parallel 64 --timeout 2m 10.0.0.5
+```
+
+대상은 port 없는 host입니다. `--ports`에는 port 번호와 범위를 쉼표로 구분해 적습니다. `--ports`가 없으면 `edc audit`이 지켜보는 민감 port와 원격 접속·웹·메일에 흔히 쓰는 port를 확인합니다. 이름은 한 번만 풀고 IPv4 주소를 우선해 그 주소로만 연결하며, 요약에 그 주소를 적습니다.
+
+port마다 TCP connect를 한 번 하고 2초까지 기다립니다. 결과는 port마다 다음 중 하나입니다.
+
+| 상태 | edc가 본 것 |
+| --- | --- |
+| `열림` | handshake가 끝남 |
+| `거부` | host가 RST로 답함. host는 살아 있고 그 port에서 듣는 것이 없음 |
+| `응답 없음` | 2초 안에 답이 없음. 방화벽이 SYN을 버렸거나, host가 닫힌 port에 RST를 보내지 않음 |
+| `오류` | 응답을 받기 전에 connect가 실패함. 예: `no route to host` |
+| `미확인` | `--timeout`이 먼저 끝나 확인하지 못함 |
+
+`응답 없음`은 닫힘과 같지 않습니다. edc는 조용한 방화벽과 닫힌 port를 추측으로 가르지 않습니다.
+
+`--parallel`은 동시에 여는 연결 수이며 기본 32, 최대 256입니다. `--timeout`은 scan 전체의 예산이며 기본 60초입니다. 예산이 먼저 끝나면 결과는 WARN이 되고, evidence에 확인하지 못한 port를 적고, warning에서 `--timeout`이나 `--parallel`을 올리라고 알립니다. 65535개 port를 모두 보려면 기본값보다 큰 예산이 필요합니다.
+
+handshake나 RST로 답한 port가 하나라도 있으면 PASS입니다. 아무 port도 답하지 않으면 WARN이고, `next` 줄에 그 중 한 port를 넣은 `edc tcp check --diagnose`를 보여 줍니다. 이름을 풀지 못하거나 모든 connect가 응답 전에 실패하면 FAIL입니다. port 목록은 `-v` 없이도 보입니다. `--json`은 `ports` metric에 모든 port의 상태와 연결 시간을 남깁니다. JSON의 상태 이름은 영어에 밑줄을 쓴 `open`, `refused`, `no_reply`, `error`, `not_scanned`입니다.
+
+edc는 port마다 TCP connect 하나를 열고 데이터는 보내지 않습니다. 직접 운영하거나 점검 허가를 받은 host만 scan하세요.
+
+### 두 host 사이의 끊긴 구간 찾기
+
+tunnel이나 firewall 너머로 TCP 연결이 안 될 때는 명령 두 개를 같이 실행합니다. client host에서 `edc tcp check --diagnose`를, 대상 host에서 같은 시간에 `edc tcp expect`를 실행합니다. 앞의 명령은 client에서 무엇이 나갔는지, 뒤의 명령은 대상에 무엇이 도착했고 대상이 어떻게 답했는지 보여 줍니다. 둘을 합치면 어느 구간이 packet을 버리는지 드러납니다.
+
+| client 판정 | 대상 판정 | 먼저 의심할 곳 |
+|---|---|---|
+| `no_reply` | `no_syn` | 두 host 사이의 경로: tunnel selector, firewall 정책, NAT |
+| `no_reply` | `synack_no_ack` | 돌아오는 경로: 역방향 route, 역방향 selector, client 쪽 rp_filter |
+| `no_reply` | `syn_no_reply` 또는 `dropped_unseen` | 대상 host: host firewall, rp_filter, 가득 찬 listen queue |
+| `refused` | `rst` | 대상 host: listener가 없거나 host firewall이 port를 거부 |
+| `local_drop` | 무엇이든 | client host: 자기 firewall |
+| `degraded` | `completed` | 경로 품질: `edc net mtu`로 확인 |
+| `connected` | `completed` | 경로는 동작합니다. 다음은 TLS와 애플리케이션입니다 |
+
+두 결과를 `--json`으로 저장해 네트워크 장비 담당자에게 넘기면, 장비 설정 전체 대신 판정된 구간의 policy, selector, NAT 규칙만 보면 됩니다.
+
+### 두 report 합치기
+
+`edc report join`은 저장한 두 report를 읽어 구간을 이름 짓습니다. 두 파일의 순서는 상관없습니다.
+
+```bash
+edc report join [--json <path|->] [--redact] client.json target.json
+```
+
+client의 출발지 주소를 대상 report의 `sources`와 맞춘 뒤 위 표를 두 판정에 적용하고, 실제 주소를 채운 장비 담당자용 확인 목록을 출력합니다.
+
+| 구간 | 뜻 | status |
+|---|---|---|
+| `between_hosts` | 두 host 사이의 경로가 SYN을 버립니다 | fail |
+| `return_path` | 대상의 응답이 돌아오지 않습니다. `no_reply`와 `rst`의 조합도 여기에 듭니다 | fail |
+| `target_host` | 대상 host가 잘못 답하거나 답하지 않습니다 | fail |
+| `client_host` | client host가 자기 packet을 버립니다 | fail |
+| `path_quality` | 경로는 동작하지만 packet을 잃습니다. `intermittent`와 `completed`의 조합도 여기에 듭니다 | warn |
+| `works` | 경로가 동작합니다 | pass |
+| `inconsistent` | 두 report가 같은 흐름을 담고 있지 않습니다 | warn |
+| `undetermined` | 구간을 정하지 못했습니다. `reply_hidden_ipsec`, `dns_failed` 등이 해당합니다 | warn |
+
+`refused`와 `no_syn`의 조합은 경로 위의 장비가 RST를 보낸 것이므로 `between_hosts`입니다.
+
+다음 세 경우에는 경고를 붙이고 판정이 약해집니다: client와 대상의 port가 다를 때, client 출발지가 대상의 출발지 목록에 없거나 `--from`이 걸러 냈을 때, 두 실행의 시간이 겹치지 않을 때. 출력에는 두 report의 시작 시각 차이가 보입니다.
+
+client report의 `basis`가 `phases`면 client host 자신의 drop을 배제하지 못하므로 그 사실을 함께 알립니다.
+
+`--json`은 `inputs`, `segment`, `status`, `summary`, `warnings`, `checklist`, `client`, `target`, `time`을 담은 객체 하나를 씁니다. `--redact`는 주소와 host 이름을 가립니다. exit code는 경로가 동작하면 `0`, 다른 구간이면 `1`, usage 오류나 edc report가 아닌 파일이면 `2`입니다.
+
+### TCP 경로 진단
+
+연결을 여러 번 시도하고 의심 구간을 판정합니다.
+
+```bash
+edc tcp check --diagnose example.internal:443
+sudo edc tcp check --diagnose --count 10 --interval 2s --timeout 5s 10.0.0.9:5432
+```
+
+먼저 경로(interface, gateway, source 주소)를 보여 주고, 연결을 `--count`번(기본 5) 시도하며 시도마다 한 줄을 출력합니다. `--timeout`은 시도 하나의 connect 제한이고, `--interval`은 시도가 끝난 뒤 기다리는 시간(기본 1s)입니다. 전체 시간은 count×timeout에 간격과 추적 시작 시간(약 2초)을 더한 값을 넘지 않습니다.
+
+Linux에서 root로 실행하면 이 흐름의 TCP 이벤트와 kernel drop을 함께 추적합니다. 시도마다 SYN 재전송, RST, RTT, drop을 세고, 추적 중에는 시도마다 300ms를 더 기다립니다. macOS이거나 root가 아니면 추적을 건너뛰고 연결 phase만으로 판정하며, 경고로 그 사실을 알립니다.
+
+| 판정 | 뜻 | 다음 명령 |
+|---|---|---|
+| `local_drop` | 이 host가 이 흐름의 packet을 버렸습니다 | `sudo nft list ruleset` |
+| `refused` | 바로 RST를 받았습니다 | 대상에서 `edc listen --tcp` |
+| `no_reply` | SYN에 응답이 없고 이 host의 drop도 없습니다 | 대상에서 `edc tcp expect --from <source> <port>` |
+| `intermittent` | 일부만 연결됐습니다 | 대상에서 `edc tcp expect --from <source> <port>` |
+| `degraded` | 연결은 됐지만 재전송이 있거나 느립니다 | `edc net mtu <host>` |
+| `connected` | 모두 정상으로 연결됐습니다. 다음은 TLS와 애플리케이션입니다 | `edc tls check <host:port>` |
+
+경로 중간의 firewall도 RST를 보낼 수 있습니다. 판정에는 `NETFILTER_DROP`, `XFRM_POLICY`처럼 흐름을 막는 drop 이유만 쓰고, 나머지는 `other_drops`로 남깁니다.
+
+`--json`은 `tcp.diagnose` 결과 하나를 씁니다. metrics에는 `attempts`, `totals`, `drops`, `trace`, `verdict`, `basis`가 있고, 추적하지 않은 값은 key가 빠집니다.
+
+network namespace에서 시험할 때는 `nsenter --net=/run/netns/<이름>`을 씁니다. `ip netns exec`를 쓰면 tracefs가 가려져 추적을 건너뜁니다.
+
+### 대상 host에서 도착 확인
+
+목적지 host에서 `edc tcp expect`를 실행하면 SYN이 이 host에 도착하는지, host가 어떻게 답하는지 보입니다.
+
+```bash
+sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--json <path|->] [--redact] [-v] <port>
+```
+
+- Linux에서만 실행하며 root나 `CAP_NET_RAW`가 필요합니다. 없으면 exit code `3`으로 멈춥니다.
+- 모든 interface의 TCP header만 읽고 payload는 남기지 않습니다.
+- `--duration`을 생략하면 Ctrl-C까지 기다립니다. 최대 1h입니다.
+- `--from`은 주소 하나나 CIDR 대역에서 온 packet만 셉니다.
+
+실행 중에는 `SYN in`, `SYN-ACK out`, `RST out`, `ESTABLISHED`, `DROP`, `ROUTE`를 한 줄씩 보입니다. 같은 연결 시도에서 SYN-ACK가 다시 나가면 재전송 번호가 붙고, 돌아가는 경로가 끊긴 신호입니다. 끝나면 출발지와 도착 interface별 표, 돌아가는 경로, 판정을 보입니다.
+
+| 판정 | 뜻 | 상태 | exit code |
+|---|---|---|---|
+| `completed` | client가 마지막 ACK를 보냈습니다. 경로가 동작합니다. | pass | `0` |
+| `rst` | host가 RST를 보냈습니다. listener가 없거나 host firewall이 거부합니다. | fail | `1` |
+| `synack_no_ack` | SYN-ACK를 보냈지만 ACK가 돌아오지 않았습니다. 역방향 route와 역방향 IPsec selector를 확인하세요. | fail | `1` |
+| `syn_no_reply` | SYN은 왔지만 host가 답하지 않았습니다. firewall, rp_filter, 가득 찬 listen queue 중 하나가 버립니다. | fail | `1` |
+| `dropped_unseen` | packet socket에는 SYN이 보이지 않았지만 kernel이 그 port의 packet을 버렸습니다. | fail | `1` |
+| `reply_hidden_ipsec` | 답이 IPsec policy를 타고 ESP로 나가 edc가 볼 수 없습니다. | warn | `1` |
+| `no_syn` | SYN이 오지 않았습니다. | fail | 관측 시간이 끝나면 `2`, Ctrl-C면 `4` |
+
+출발지가 여럿이면 모든 출발지가 한 번 이상 연결되어야 exit code가 `0`입니다.
+
+돌아가는 경로는 `ip route get <출발지> from <SYN을 받은 주소>`와 같은 조회입니다. 나가는 interface가 도착 interface와 다르고 rp_filter가 `1`(strict)이면 kernel이 SYN을 버린다고 경고합니다. rp_filter는 도착 interface 값과 `all` 값 중 큰 값을 쓰며, IPv4에만 적용합니다.
+
+eBPF와 `skb/kfree_skb` tracepoint를 쓸 수 있으면 `NO_SOCKET`, `IP_RPFILTER`, `NETFILTER_DROP` 같은 kernel drop 이유를 붙입니다. 쓸 수 없으면 이 부분만 `skip`과 이유를 보이고 관측은 계속합니다. `ip netns exec` 안에서는 tracefs가 없으므로 `nsenter --net`을 쓰세요.
+
+이 host가 IPsec 종단이면 다음을 참고하세요.
+- tunnel mode: 복호화한 SYN은 보이지만 SYN-ACK와 RST는 ESP로 나가 보이지 않습니다. edc는 client의 ACK와 drop 이유로 판정합니다.
+- transport mode: 복호화한 SYN도 보이지 않습니다. edc는 drop 이유로 판정하고 경고를 보입니다. `ip -s xfrm state`의 counter를 확인하세요.
+
+`--json`은 probe `tcp.expect` 하나를 담은 report를 씁니다. `--json -`이면 실시간 줄은 stderr로 갑니다. 저장한 파일은 `edc report show`로 다시 볼 수 있습니다.
+
+한계: 마지막 ACK에 data를 실은 client의 handshake는 보지 못합니다. IPv6 확장 header와 IPv4의 두 번째 이후 fragment는 읽지 않습니다. 경로 조회는 fwmark와 UID 규칙을 재현하지 않습니다.
+
 ### 파일 감시와 action (Linux·macOS)
 
 `edc watch fs`는 기본으로 현재 디렉터리 바로 아래의 변경을 감시하고 출력합니다. `-r`이나 `--recursive`로 하위 디렉터리까지 감시하며, 새로 생성되거나 들어온 디렉터리도 등록합니다. 시작할 때 이미 있던 파일은 create 이벤트로 출력하지 않습니다. 디렉터리 symlink는 따라가지 않습니다.
@@ -145,6 +287,33 @@ action의 stdin은 연결하지 않습니다. 기본 timeout은 30s이며 `--deb
 ### 경로와 interface
 
 ![edc net interfaces, edc net route example.com, edc net ping example.com이 각각 PASS와 결과 한 줄을 출력하는 화면](media/net.gif)
+
+### 경로 MTU
+
+`edc net mtu`는 조각나지 않고 host까지 가는 가장 큰 packet 크기를 잽니다.
+
+```bash
+edc net mtu example.com
+edc net mtu --max 1400 10.0.0.5
+```
+
+`edc`는 Don't Fragment를 켠 ICMP echo를 보냅니다. 576 bytes(IPv6는 1280)에서 시작해 경로 interface의 MTU까지 이분 탐색합니다.
+
+결과에는 경로 MTU, interface MTU, 둘의 차이, 그 경로에 맞는 TCP MSS가 나옵니다.
+
+- `PASS`: 경로 MTU가 interface MTU와 같습니다.
+- `WARN`: 경로 MTU가 interface MTU보다 작거나, 큰 packet이 ICMP 응답 없이 사라집니다.
+- `SKIP`: 가장 작은 크기에서도 ICMP echo 응답이 없습니다. TCP로 점검합니다.
+
+큰 packet이 ICMP "fragmentation needed" 없이 사라지면 `edc`는 PMTU 블랙홀로 보고합니다. 이때 TCP handshake는 되지만 큰 응답이 멈춥니다.
+
+차이 값은 원인을 짚는 힌트일 뿐 판정이 아닙니다. 50~80 bytes 차이는 IPsec ESP, WireGuard, VXLAN 같은 tunnel 오버헤드에서 흔합니다.
+
+더 작은 크기까지만 시도하려면 `--max N`을 줍니다. interface MTU보다 큰 크기는 시도하지 않습니다.
+
+블랙홀이 있으면 실패하는 크기마다 약 2초가 걸립니다. 결과가 범위로 나오면 `--timeout`을 늘려 다시 실행합니다.
+
+macOS에서 IPv6를 재려면 root가 필요합니다. `sudo edc net mtu <host>`로 실행합니다.
 
 ## 어디에 있는가
 

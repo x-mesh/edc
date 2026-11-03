@@ -1,0 +1,32 @@
+# English messages for tcp scan.
+scan:
+  error:
+    ports_empty: "--ports needs at least one port"
+    ports_invalid: "--ports has an entry that is not a port or a range: %s"
+    ports_range: "--ports takes ports from 1 to 65535, and a range must go up: %s"
+    parallel_range: "--parallel must be between 1 and %d"
+    host_only: "tcp scan takes a host without a port; choose the ports with --ports: %s"
+    host_empty: "tcp scan needs a host"
+    all_errors: "every connect failed before an answer: %s"
+  progress: "%d/%d ports · open %d"
+  summary:
+    open: "%d open"
+    open_list: "%d open (%s)"
+    refused: "%d refused"
+    no_reply: "%d no reply"
+    error: "%d errors"
+    not_scanned: "%d not scanned"
+    total: "%d ports in %s"
+    silent: "no port answered within %s"
+  evidence:
+    open: "open"
+    refused: "refused"
+    no_reply: "no reply"
+    error: "errors"
+    not_scanned: "not scanned"
+  warning:
+    none_checked: "no port was checked within --timeout %s. Raise --timeout or --parallel."
+    errors: "%d connects failed before an answer: %s"
+    no_reply: "%d ports gave no answer within %s. A firewall may drop the SYN, or the host sends no RST for a closed port. No reply is not the same as closed."
+    partial: "edc checked %d of %d ports before --timeout %s ended. Raise --timeout or --parallel."
+  more: "+%d more"

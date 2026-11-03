@@ -1,0 +1,7 @@
+# English messages for the webhook notifications of check and jobs.
+notify:
+  error:
+    none: "--notify needs a [[notify.webhooks]] entry in config.toml"
+    unsafe: "not sending: %v"
+    send: "notify %v"
+    group: "--notify works with a local check only, not with --group"

@@ -45,7 +45,7 @@ On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory page
 
 ## Health check (Linux and macOS)
 
-`edc check` looks for what is broken on a Linux or macOS host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
+`edc check` looks for what is broken on a Linux or macOS host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. The one exception is `endpoint`, which runs only when the config file lists `require_endpoints`. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
 
 ```bash
 edc check
@@ -59,14 +59,17 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `process` | | a defunct process, or a process in D state |
 | `memory` | less than 5% of memory is available | less than 10% of memory is available |
 | `disk` | a mount has 95% or more use, or 95% or more inode use | the same at 90%, or a mount is read-only |
+| `cert` | a certificate file has expired | a certificate file expires in less than 30 days |
+| `storage` | SMART reports a failing disk, the NVMe available spare is below its threshold, 100% or more of the rated write endurance is used, or an md RAID array is degraded or inactive | 90% or more of the rated write endurance is used, an NVMe disk has media errors, an ATA disk has reallocated, pending, or uncorrectable sectors, or an md array is in recovery, resync, or reshape |
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
-| `network` | no default route, or 90% or more use of conntrack or TCP memory | no `/etc/resolv.conf`, no nameserver, or the same use at 80% |
+| `network` | no default route, the route interface is down or has no carrier, or 90% or more use of conntrack, TCP memory, or `tcp_max_orphans` | no `/etc/resolv.conf`, no nameserver, the same use at 80%, the neighbor entry of the gateway is `FAILED` or `INCOMPLETE`, or a drop counter grew in 1 second |
+| `endpoint` | an address in `require_endpoints` refused the TCP connection, did not answer in 5 seconds, or did not resolve | the TCP connection took more than 1 second |
 | `container` | a container with a restart policy stopped with a nonzero code or for memory, or an `always` or `unless-stopped` container stopped with code 0 | a container without a restart policy stopped with an error in the last 24 hours, or a container restarts, pauses, or is unhealthy |
 | `filehandles` | 90% or more of `fs.file-max` is in use | 80% or more of `fs.file-max` is in use |
 | `reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
 
-A `fail` makes the exit code 1. edc does not judge counters that only grow after boot, such as NIC drops. One reading cannot show when they changed.
+A `fail` makes the exit code 1. Some counters, such as NIC drops, only grow after boot. One reading cannot show when they changed. Thus on Linux, `network` reads the drop counters two times, 1 second apart. If a counter grew, the check warns. The counters are listen overflows and drops, softnet drops, NIC missed and FIFO errors, conntrack drops and insert failures, UDP receive buffer errors, and TCP memory pressure and aborts. If `--timeout` ends before the second reading, edc does not judge the counters, and the summary tells you. A virtual interface, such as tun, WireGuard, or Tailscale, reports the link state `unknown`. edc does not judge that state. For the gateway, edc reads only the neighbor table and sends no packets. If the table has no entry for the gateway, the host did not send to it yet, and edc does not warn.
 
 On macOS, the checks read other sources:
 
@@ -76,11 +79,14 @@ On macOS, the checks read other sources:
 | `process` | `ps` | Only defunct processes count. macOS has no D state with the Linux meaning. |
 | `memory` | `kern.memorystatus_vm_pressure_level` | The pressure level decides: `warn` warns and `critical` fails. Free memory is low on macOS by design. |
 | `disk` | `df` and `statfs` | Read-only mounts are not judged. They are the sealed system volume or a disk image, such as a mounted installer, that is full by design. |
-| `network` | `route -n get default`, `/etc/resolv.conf` | conntrack and TCP memory are not checked. |
+| `storage` | `diskutil list physical`, `diskutil info` | edc reads the SMART status and the NVMe values of each physical disk. It does not need root or `smartctl`. macOS has no md RAID. |
+| `network` | `route -n get default`, `ifconfig <interface>`, the neighbor table, `/etc/resolv.conf` | conntrack, TCP memory, orphan sockets, and drop counters are not checked. An interface without a `status` line, such as `utun`, has the link state `unknown`. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | A report written in the last hour counts. A kernel panic and a `JetsamEvent`, which means that the kernel ended processes for memory, fail. An app crash report or a hang report warns. CPU and wakeup reports do not count. |
 | `container`, `filehandles` | Docker socket, `kern.num_files` and `kern.maxfiles` | Same as Linux. |
 | `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS only. `heavy` warns, and `trapping` or `sleeping` fails. `moderate` is common under load and does not warn. |
 | `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS only. A latest Time Machine backup older than seven days warns. Without a destination, it shows `skip`. |
+
+On Linux, `storage` reads `/proc/mdstat` and `smartctl --json`. If `smartctl` is not installed, the SMART part shows `skip`. Install `smartmontools` to check it. `smartctl` needs root. Without root, edc judges only the md arrays and adds a warning line. A disk behind a MegaRAID controller shows its `-d` type, for example `/dev/bus/0 [megaraid,1]`.
 
 `time` and `reboot` show `skip` on macOS. Linux results do not include `thermal` and `backup`.
 
@@ -95,6 +101,7 @@ accept_units = ["systemd-networkd-wait-online.service"]
 accept_containers = ["job-*"]
 accept_mounts = ["/media/*"]
 require_units = ["nginx.service"]
+cert_paths = ["/etc/myapp/tls/*.crt"]
 
 [check.limits]
 disk = [90, 95]
@@ -102,9 +109,13 @@ memory_available = [10, 5]
 usage = [80, 90]
 ```
 
+`endpoint` is the only check that sends packets. It appears only when `require_endpoints` holds at least one `host:port`, in `[check]` or in a routine. edc opens one TCP connection to each address at the same time, waits up to 5 seconds for each, and closes the connection. It sends no data. The fail line names the address and the cause, and `next` gives the `edc tcp check` command for the first failed address.
+
 `accept` holds check names from the table above. An accepted check shows as `skip`, and its summary starts with `accepted (warn)` or `accepted (fail)`. In JSON, `metrics.accepted_status` holds the original status.
 
 `accept_units`, `accept_containers`, and `accept_mounts` hold glob patterns. The check does not judge a name that matches a pattern. The summary ends with the number of accepted names, and `metrics.accepted` holds the names.
+
+`cert` reads the first certificate of each file. It looks in these places: `/etc/letsencrypt/live/*/cert.pem`, the Kubernetes and etcd files in `/etc/kubernetes/pki`, the kubelet files in `/var/lib/kubelet/pki`, and the absolute paths of `ssl_certificate` and `SSLCertificateFile` in the nginx and Apache configs. `cert_paths` adds absolute glob patterns. A file without a certificate, for example a key file, is skipped. The CA bundle in `/etc/ssl/certs` is not read, because it always holds some expired roots. Without root, the files that need root are listed in a warning line. If no file can be read, the check shows `skip`.
 
 Each value in `[check.limits]` is `[warn, fail]` in percent. `usage` applies to conntrack, TCP memory, and file handles. `memory_available` is the share that is left, so its warn value must be at least its fail value.
 
@@ -116,8 +127,9 @@ A routine is a named set of rules in `config.toml`. Run it with `edc check <rout
 
 ```toml
 [check.routines.web]
-checks = ["service", "disk", "kernel", "network"]
+checks = ["service", "disk", "kernel", "network", "endpoint"]
 require_units = ["nginx.service", "app-api.service"]
+require_endpoints = ["db.internal:5432", "cache.internal:6379"]
 
 [[check.routines.web.commands]]
 name = "app-health"
@@ -126,13 +138,34 @@ timeout = "5s"
 level = "fail"
 ```
 
-`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists and `require_units` add to the values in `[check]`. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
+`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists, `require_units`, `require_endpoints`, and `cert_paths` add to the values in `[check]`. If `checks` is not empty and does not hold `endpoint`, the routine does not connect to the endpoints. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
 
 Each command runs with `sh -c`, and its result is `check.cmd.<name>`. Exit code 0 is `pass`. Another exit code is `fail`, or `warn` if `level = "warn"`. A command that does not end in `timeout` (default 10s) is `fail`, and edc stops the command and its child processes. The result keeps the last ten lines of output, up to 4 KiB. Add `cmd.<name>` to `accept` to accept the result of a command.
 
 edc runs the commands only if other users cannot change the config file. edc checks the file that it read and each parent directory. If the group or others can write one of them, or another user owns one of them, each command shows `skip`. A directory with the sticky bit, such as `/tmp`, can be writable by others. `sudo edc check` reads the config file of root, so this rule stops other users from running commands as root.
 
 Routine and command names use only `a-z`, `0-9`, `_`, and `-`.
+
+### Webhook notifications
+
+`edc check --notify` and `edc jobs --notify` send the result to the webhooks in `config.toml`. Run them from cron or a systemd timer to get a message when a host breaks.
+
+```toml
+[[notify.webhooks]]
+name = "ops"
+url = "https://hooks.slack.com/services/T000/B000/XXXX"
+format = "slack"   # json (default), slack, or discord
+on = "warn"        # fail (default), warn, or always
+```
+
+```bash
+edc check --notify
+edc jobs --notify
+```
+
+`format = "slack"` sends `{"text": ...}`, which Slack, Mattermost, and Rocket.Chat accept. `format = "discord"` sends `{"content": ...}`. `format = "json"` sends the host, the command, the summary, and the results that are not `pass`. The message starts with the host, the command, and the counts, and lists up to 10 `fail` and `warn` results with their `next` command. A webhook sends only when the result reaches its `on` level.
+
+If a webhook does not answer with a 2xx status, edc writes the reason to stderr and the exit code is 1, also when the check passed. The error shows only the scheme and the host of the URL, because the path of a Slack or Discord URL is a secret. edc does not send when `config.toml` or a directory above it can be changed by another user. It uses the same rule as the routine commands. `--notify` does not work with `--group`. edc sends a message on every run. It does not remember the last result.
 
 ## Host audit (Linux)
 
@@ -235,6 +268,62 @@ In a pipe or with `--json`, edc prints one `svc.list` result and a table. A fail
 
 <a id="container-view-linux"></a>
 <a id="container-view-linux-and-macos"></a>
+
+### launchd jobs (macOS)
+
+On macOS, `edc svc` reads launchd jobs instead of systemd units.
+
+```bash
+edc svc                          # running jobs and failed jobs, failed first
+edc svc --all                    # also the Apple jobs, the open apps, and the idle jobs
+edc svc com.example.sync         # one job
+sudo edc svc com.example.daemon  # a system daemon
+```
+
+The list comes from `launchctl list`. A job that is not running and ended with a positive exit code is failed, as in `check`. A job that ended by a signal is not failed. By default the list leaves out the `com.apple.*` jobs, the open apps (`application.*`), and the jobs that are not running and ended with code 0. A failed job always shows.
+
+For one job, edc looks in the `gui/<uid>`, `user/<uid>`, and `system` domains, and starts with `system` when you run it as root. It shows three results:
+
+- `svc.state`: the state, PID, run count, and last exit from `launchctl print`, with the plist, the program, and the arguments. Secret arguments are hidden. A job that is not running and ended with a positive exit code fails.
+- `svc.process`: CPU, memory, open fds, and listening ports of the running process. `next` is `edc proc <pid>`.
+- `svc.log`: the last 20 lines of the file in `StandardErrorPath`, or else `StandardOutPath`. If the job sets neither, `next` is a `log show` command for the unified log.
+
+## Process view (Linux and macOS)
+
+`edc proc <pid|name>` shows one process on one screen. It reads only and changes nothing.
+
+```bash
+edc proc 1234
+sudo edc proc nginx      # if several processes are named nginx, edc lists them by PID
+edc proc -v 1234         # the full command line
+```
+
+| Result | Shows | Warns when |
+|---|---|---|
+| `proc.process` | PID, name, user, uptime, command line, parent, working directory, threads | the process is a zombie (`next` points at its parent) or waits for I/O in D state |
+| `proc.resources` | CPU over 0.5 seconds, memory and RSS | |
+| `proc.fd` | open fds by type, against the soft limit on Linux, and deleted files that the process still holds | 80% or more of the fd limit is in use |
+| `proc.sockets` | listening ports, connections by state, and the peers with the most connections | 10 or more connections are in `CLOSE_WAIT` |
+| `proc.cgroup` | the cgroup v2 path, memory use against `memory.max`, OOM kills, and CPU throttling. Linux only. | memory use is 80% or more of `memory.max`, or the cgroup had an OOM kill |
+
+The command line hides secret options and URL credentials with the same rule as `edc listen`. Without `-v`, it is cut to one line of 200 characters. Peers of a connection to a listening port of the process are grouped by address, and the peers of an outgoing connection by address and port. On Linux, edc reads `/proc/<pid>` and the TCP table of the network namespace of the process, so a container process shows its own connections. On macOS, edc reads the fds and sockets with `lsof`. Without root, the fds and sockets of another account show `skip`. A deleted file keeps its disk space until the process closes it. The memfd and `/dev/shm` files are not counted.
+
+## Scheduled jobs (Linux and macOS)
+
+`edc jobs` lists the scheduled jobs and the result of their last run. It changes nothing.
+
+```bash
+edc jobs
+sudo edc jobs -v   # every job, also the user crontabs and the launchd daemons
+```
+
+| Source | Read from | Result of the last run |
+|---|---|---|
+| `jobs.timers` (Linux) | the active systemd timers, and `systemctl show` of each timer and its service | The `Result` of the service. A result other than `success` fails, and `next` is `journalctl -u <service>`. A service that never ran has no result. |
+| `jobs.cron` (Linux) | `/etc/crontab`, `/etc/cron.d`, the user crontabs in `/var/spool/cron`, and `/etc/cron.{hourly,daily,weekly,monthly}` | None. cron does not record it. |
+| `jobs.launchd` (macOS) | the plists with `StartInterval` or `StartCalendarInterval` in `/Library/LaunchDaemons`, `/Library/LaunchAgents`, and `~/Library/LaunchAgents` | The last exit status from `launchctl list`. A positive exit code fails. A job that ended by a signal does not fail, as in `check`. |
+
+A failed job comes first and makes the exit code 1. If a job failed, the default output shows only the failed jobs. Use `-v` to see all jobs. Without root, the user crontabs are not read, and `launchctl list` shows only the agents of your session.
 
 ## Container view (Linux and macOS)
 

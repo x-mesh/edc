@@ -47,8 +47,23 @@ command:
       - "compare は --resolver がなければ 1.1.1.1 を使います。"
   tcp:
     summary: "TCP 接続の確認"
+    option:
+      diagnose: "接続を繰り返しながら TCP イベントと kernel drop を追跡し、疑わしい区間を示します"
+      count: "--diagnose: 試行回数 (既定 5)"
+      interval: "--diagnose: 試行間隔 (既定 1s)"
+      from: "expect: このアドレスや範囲から来た packet だけを数えます"
+      duration: "expect: 待つ時間、省略すると Ctrl-C まで"
+      ports: "scan: 確認する port と範囲、カンマ区切り (既定: audit の要注意 port と一般的なサービス port)"
+      parallel: "scan: 同時に開く接続数 (既定 32、最大 256)"
     notes:
       - "接続できないと phase と cause を残し、exit code 1 を返します。"
+      - "--diagnose のイベント追跡は Linux で root として実行したときだけ行います。それ以外は接続だけを繰り返し、追跡は skip です。"
+      - "expect はすべての interface でこのホストに届いた SYN と、ホストが返した SYN-ACK や RST を数えます (Linux, root)。"
+      - "expect は packet header だけを読み、payload は残しません。"
+      - "scan は port ごとに 1 回接続します。open は handshake 成功、refused は RST、no reply は 2s 以内に応答なしで、closed と同じではありません。"
+      - "scan は --timeout を scan 全体の予算として使います (既定 60s)。確認できなかった port は not scanned として残します。"
+      - "--diagnose は追跡中、試行ごとに 300ms 待つため、試行間隔はそれより短くなりません。"
+      - "IPsec transport mode では expect は復号した SYN を見られず、kernel の drop 理由で判定します。"
   tls:
     summary: "証明書と handshake の確認"
     option:
@@ -92,12 +107,13 @@ command:
       routine: "config.toml の [check.routines] にあるルーチンを実行"
       group: "edc remote グループのホストごとに check を実行"
       inventory: "--group で使う inventory ファイル"
+      notify: "結果を [notify] の webhook に送る"
     notes:
-      - "service、process、メモリ、ディスク、カーネルログ、時刻、ネットワーク、container、ファイルハンドル、再起動の要否を見ます。"
-      - "標準の点検は何も変更せず、外部に何も送りません。"
+      - "service、process、メモリ、ディスク、ディスクの健全性、証明書ファイル、カーネルログ、時刻、ネットワーク、container、ファイルハンドル、再起動の要否を見ます。"
+      - "標準の点検は何も変更しません。--notify を付けなければ外部に何も送りません。"
       - "問題ごとに続けて見る edc コマンドを next で示します。"
       - "root でなければ一部の点検は pass ではなく skip です。"
-      - "macOS では launchd、memory pressure、ディスク、ネットワーク、container、ファイルハンドル、診断レポート、thermal pressure、Time Machine を見て、time と reboot は skip です。"
+      - "macOS では launchd、memory pressure、ディスク、ディスクの健全性、証明書ファイル、ネットワーク、container、ファイルハンドル、診断レポート、thermal pressure、Time Machine を見て、time と reboot は skip です。"
       - "--group は SSH でホストごとに edc check を実行します。各ホストに check を含む edc が必要です。"
       - "ルーチンは config.toml の unit ルール、基準値、シェルコマンドを加えます。コマンドは 0 で終われば pass です。"
   events:
@@ -116,6 +132,9 @@ command:
       route: "ホストへ向かう interface と gateway"
       ping: "ホストへ ping"
       trace: "ホストまでの経路、traceroute か tracepath を使用"
+      mtu: "分割されずにホストまで届く最大の packet"
+    option:
+      max: "mtu: 試す最大の packet サイズ (既定: 経路 interface の MTU)"
   route:
     summary: "gateway VM の default route を点検・切り替え・ロールバック"
     sub:
@@ -129,15 +148,17 @@ command:
       - "check は経路を変更しません。switch はまずタイマーを武装します。"
       - "status は /run/edc を読み、rollback --state は 1 件を再実行します。"
   disk:
-    summary: "ディスク増設後にパーティションとファイルシステムを拡張"
+    summary: "ディスク増設後に拡張、残ったディスクイメージを整理"
     sub:
-      check: "拡張できる mount を表示、変更なし"
+      check: "拡張できる mount か残ったイメージを表示、変更なし"
       grow: "パーティションとファイルシステムを拡張"
+      detach: "残った読み取り専用ディスクイメージを取り外し (macOS)"
     notes:
       - "check は層を読むだけで何も変更しません。"
       - "root で実行するとすべての層のサイズが見えます。"
       - "grow には root 権限が必要です。sudo は付けません。"
       - "grow は元に戻せません。先にボリュームのスナップショットを作成してください。"
+      - "detach は macOS でのみ動作します。インストール用 DMG のように /Volumes に接続された読み取り専用ディスクイメージを取り外します。"
   change:
     summary: "自動ロールバック付きのホスト変更"
     sub:
@@ -260,7 +281,7 @@ command:
       - "edc search は自然言語の質問の後にファイルまたはディレクトリを 0 個以上受け取ります。"
       - "最初の positional 引数が引用した質問全体で、その後の positional 引数はすべて path です。ダッシュで始まる質問や path には -- を使います。"
       - "edc search はローカル MiniLM index を共有し、モデルの導入後は cloud service を呼びません。"
-      - "edc search index status、files、clear は directory を省略できます。共有 model と runtime は edc search model clear で削除します。status、files、clear も通常の query として検索できます。"
+      - "edc search index status、files、clear は directory を省略できます。共有 model と runtime は edc search model clear で削除します。status、files、clear も通常の query として検索できます。index や model だけを指定すると使い方を表示します。その単語を検索するには edc search -- model のように指定します。"
   du:
     summary: "ディレクトリ以下のディスク使用量、大きい順 (Linux と macOS)"
     option:
@@ -342,16 +363,33 @@ command:
       - "--password や --token などのオプションの値と URL のパスワードは *** で隠します。"
       - "edc listen --json は読める process の args と cwd を含めます。--full は --watch と併用できません。"
   svc:
-    summary: "systemd service の一覧、または service 一つを一画面に (Linux)"
+    summary: "service の一覧、または service 一つを一画面に (systemd と launchd)"
     notes:
       - "unit なしで実行すると service の一覧を表示します。失敗したものが先です。"
       - "端末では Enter で service を一つ開き、Esc で戻ります。"
       - "状態、稼働時間、再起動、process、fd、ソケット、journal のエラーを表示します。"
       - "読むだけです。unit の起動・停止・reload はしません。"
-      - "systemd のある Linux でのみ動作し、他のホストでは skip です。"
+      - "Linux では systemd を読みます。systemd のない Linux ホストでは skip です。"
+      - "macOS では launchd job の状態、前回の終了、process、job のログファイルの末尾を見ます。"
       - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
     option:
       all: "動いていない service も一覧に含める"
+  proc:
+    summary: "process 1 つのコマンドライン、リソース、fd、ソケット、cgroup"
+    notes:
+      - "PID かコマンド名を指定します。同じ名前の process が複数あれば一覧を表示します。"
+      - "コマンドラインの秘密のオプションと URL の認証情報は listen と同じく隠します。"
+      - "削除済みでも process が開いたままのファイルは、process が閉じるまでディスク容量を使います。"
+      - "root でなければ他のアカウントの fd とソケットは skip です。"
+  jobs:
+    summary: "予約ジョブと前回の実行結果"
+    option:
+      notify: "結果を [notify] の webhook に送る"
+    notes:
+      - "Linux では systemd timer とその service の前回の結果、cron の項目を見ます。"
+      - "macOS では StartInterval か StartCalendarInterval を持つ launchd job と前回の終了状態を見ます。"
+      - "前回の実行が失敗したジョブは先頭に出て、終了コードを 1 にします。"
+      - "root でなければユーザーの crontab と launchd daemon の結果は見えません。"
   ctr:
     summary: "Unix socket で Docker container を確認 (Linux、macOS)"
     notes:
@@ -601,6 +639,8 @@ command:
       - "terminal ではビューアを開きます。f 絞り込み、e 詳細、q 終了。"
       - "diff は probe ごとの status の変化と metric の差を示します。"
       - "悪化した probe があれば exit code 1 を返します。"
+      - "join は tcp check --diagnose の report と tcp expect の report を順不同で読み、切れている区間を特定します。"
+      - "join は機器担当者が確認する項目を出力します。経路が動く場合のみ exit code 0 です。"
   log:
     summary: "コマンド出力と終了状態を記録"
     sub:

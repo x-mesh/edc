@@ -67,6 +67,163 @@ The SCOPE column and watch events identify the socket's bound address: loopback,
 
 For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
 
+### Port scan
+
+`edc tcp scan` connects to many ports of one host and reports which ports answer.
+
+```bash
+edc tcp scan example.com
+edc tcp scan --ports 22,80,443,8000-8100 example.com
+edc tcp scan --ports 1-1024 --parallel 64 --timeout 2m 10.0.0.5
+```
+
+The target is a host without a port. `--ports` takes port numbers and ranges, with commas between them. Without `--ports`, edc checks the sensitive ports that `edc audit` watches and the common ports for remote access, web, and mail. edc resolves the name once, prefers an IPv4 address, and connects to that address only. The summary names the address.
+
+Each port gets one TCP connect with a limit of 2 seconds. The result puts each port in one of these states:
+
+| state | what edc saw |
+| --- | --- |
+| `open` | the handshake completed |
+| `refused` | the host answered with an RST, so the host is up and nothing listens on the port |
+| `no reply` | no answer in 2 seconds: a firewall dropped the SYN, or the host sends no RST for a closed port |
+| `error` | the connect failed before an answer, for example `no route to host` |
+| `not scanned` | `--timeout` ended before edc checked the port |
+
+`no reply` is not the same as closed. edc does not guess between a silent firewall and a closed port.
+
+`--parallel` sets the number of connects at one time. The default is 32, and the maximum is 256. `--timeout` is the budget of the whole scan, 60 seconds by default. If the budget ends first, the result is WARN, the evidence lists the ports that edc did not check, and the warning tells you to raise `--timeout` or `--parallel`. A scan of all 65535 ports needs a larger budget than the default.
+
+The result is PASS when at least one port answered with a handshake or an RST. It is WARN when no port answered, and the `next` line names `edc tcp check --diagnose` for one of the ports. It is FAIL when the name does not resolve, or when every connect failed before an answer. The port list shows without `-v`. `--json` keeps every port with its state and connect time in the `ports` metric. The JSON state names use an underscore: `no_reply` and `not_scanned`.
+
+edc opens one TCP connect to each port and sends no data. Scan only hosts that you operate or have permission to test.
+
+### Find the broken segment between two hosts
+
+When a TCP connection fails across a tunnel or a firewall, run two commands. Run `edc tcp check --diagnose` on the client host. Run `edc tcp expect` on the target host at the same time. The first command shows what leaves the client. The second command shows what reaches the target and what the target answers. Together, they show which segment drops the packets.
+
+| Client verdict | Target verdict | First suspect |
+|---|---|---|
+| `no_reply` | `no_syn` | The path between the hosts: tunnel selector, firewall policy, or NAT |
+| `no_reply` | `synack_no_ack` | The return path: reverse route, reverse selector, or rp_filter on the client side |
+| `no_reply` | `syn_no_reply` or `dropped_unseen` | The target host: host firewall, rp_filter, or a full listen queue |
+| `refused` | `rst` | The target host: no listener, or the host firewall rejects the port |
+| `local_drop` | any | The client host: its own firewall |
+| `degraded` | `completed` | Path quality: run `edc net mtu` |
+| `connected` | `completed` | The path works. Check TLS and the application next. |
+
+Save both results with `--json` and give them to the network engineer. The reports name the segment, so the engineer can read one policy, selector, or NAT rule instead of the whole device configuration.
+
+### Join the two reports
+
+`edc report join` reads the two saved reports and names the segment. The order of the two files does not matter.
+
+```bash
+edc report join [--json <path|->] [--redact] client.json target.json
+```
+
+The command matches the client source address with the `sources` of the target report. It applies the table above to the two verdicts. Then it prints a checklist with the real addresses for the device engineer.
+
+| Segment | Meaning | Status |
+|---|---|---|
+| `between_hosts` | The path between the hosts drops the SYN. | fail |
+| `return_path` | The answer of the target does not come back. This includes `no_reply` with `rst`. | fail |
+| `target_host` | The target host answers wrong or not at all. | fail |
+| `client_host` | The client host drops its own packets. | fail |
+| `path_quality` | The path works but loses packets. This includes `intermittent` with `completed`. | warn |
+| `works` | The path works. | pass |
+| `inconsistent` | The two reports do not describe the same flow. | warn |
+| `undetermined` | edc cannot name a segment, for example `reply_hidden_ipsec` or `dns_failed`. | warn |
+
+`refused` with `no_syn` gives `between_hosts`, because a device on the path sent the RST.
+
+The command adds a warning in three cases. The client port and the target port differ. The client source is not in the target sources, or `--from` excludes it. The two runs do not overlap in time. The verdict is then weaker. The output shows the start time skew between the two reports.
+
+If the client report has `basis: phases`, a drop on the client host is not excluded. The command says so.
+
+`--json` writes one object with `inputs`, `segment`, `status`, `summary`, `warnings`, `checklist`, `client`, `target`, and `time`. `--redact` hides addresses and host names. The exit code is `0` if the path works, `1` for any other segment, and `2` for a usage error or a file that is not an edc report.
+
+### Diagnose a TCP path
+
+Run the check several times and get a verdict:
+
+```bash
+edc tcp check --diagnose example.internal:443
+sudo edc tcp check --diagnose --count 10 --interval 2s --timeout 5s 10.0.0.9:5432
+```
+
+The command shows the route first: the interface, the gateway, and the source address. Then it connects `--count` times (default 5). It prints one line for each attempt.
+
+`--timeout` limits each connect attempt. `--interval` sets the wait after each attempt (default 1s). The total time is at most count × timeout plus the intervals and about 2s to start the trace.
+
+On Linux as root, edc also traces TCP events and kernel drops for this flow. It counts SYN retransmits, resets, RTT, and drops for each attempt. This trace adds a 300ms wait after each attempt. On macOS, or without root, edc skips the trace. Then the verdict uses the connect phases only, and a warning tells you so.
+
+| Verdict | Meaning | Next command |
+|---|---|---|
+| `local_drop` | This host dropped packets of the flow. | `sudo nft list ruleset` |
+| `refused` | The connect got an RST at once. | `edc listen --tcp` on the target |
+| `no_reply` | SYNs got no answer, and this host did not drop them. | `edc tcp expect --from <source> <port>` on the target |
+| `intermittent` | Some attempts connected and some failed. | `edc tcp expect --from <source> <port>` on the target |
+| `degraded` | All attempts connected with retransmits or a slow connect. | `edc net mtu <host>` |
+| `connected` | All attempts connected cleanly. Check TLS and the application next. | `edc tls check <host:port>` |
+
+A firewall on the path can also send the RST. Only drop reasons that block a flow change the verdict, such as `NETFILTER_DROP` and `XFRM_POLICY`. Other drop reasons go to `other_drops`.
+
+`--json` writes one `tcp.diagnose` result. Its metrics include `attempts`, `totals`, `drops`, `trace`, `verdict`, and `basis`. If edc does not trace a value, the key is not in the JSON.
+
+If you test in a network namespace, use `nsenter --net=/run/netns/<name>`. `ip netns exec` hides tracefs, so edc skips the trace.
+
+### Watch arrivals on the target host
+
+Run `edc tcp expect` on the destination host. It shows if a SYN arrives and how this host answers.
+
+```bash
+sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--json <path|->] [--redact] [-v] <port>
+```
+
+- The command runs on Linux only. It needs root or `CAP_NET_RAW`. If not, the exit code is `3`.
+- The command reads TCP headers on all interfaces. It does not keep payload.
+- If you do not set `--duration`, the command runs until you push Ctrl-C. The maximum is 1h.
+- `--from` counts only packets from one address or from one CIDR range.
+
+Each event shows on one line: `SYN in`, `SYN-ACK out`, `RST out`, `ESTABLISHED`, `DROP`, and `ROUTE`.
+A second SYN-ACK for the same attempt shows as a retransmit. This is a sign of a broken return path.
+At the end, the command shows a table for each source and arrival interface, the route back, and a verdict.
+
+| Verdict | Meaning | Status | Exit code |
+|---|---|---|---|
+| `completed` | The client sent the last ACK. The path works. | pass | `0` |
+| `rst` | This host sent RST. No process listens on the port, or a host firewall rejects the SYN. | fail | `1` |
+| `synack_no_ack` | This host sent SYN-ACK, but no ACK came back. Examine the reverse route and the reverse IPsec selector. | fail | `1` |
+| `syn_no_reply` | The SYN arrived, but this host sent no reply. A firewall, rp_filter, or a full listen queue drops it. | fail | `1` |
+| `dropped_unseen` | The packet socket saw no SYN, but the kernel dropped packets for the port. | fail | `1` |
+| `reply_hidden_ipsec` | The reply goes out through an IPsec policy as ESP. edc cannot see it. | warn | `1` |
+| `no_syn` | No SYN arrived. | fail | `2` after `--duration`, `4` after Ctrl-C |
+
+If a source has one or more completed handshakes, its verdict is `completed`.
+The exit code is `0` only if each source has a completed handshake.
+
+The route back is the same lookup as `ip route get <source> from <local address>`.
+If the route uses a different interface than the arrival interface and rp_filter is `1`, edc shows a warning.
+The kernel drops these SYNs. edc uses the larger rp_filter value of the arrival interface and `all`.
+This check is for IPv4 only.
+
+If eBPF and the `skb/kfree_skb` tracepoint are available, edc adds kernel drop reasons.
+Examples are `NO_SOCKET`, `IP_RPFILTER`, and `NETFILTER_DROP`.
+If they are not available, this part shows `skip` and the reason. The command continues.
+In `ip netns exec`, tracefs is not mounted. Use `nsenter --net` to keep the drop reasons.
+
+If this host is an IPsec endpoint, read these notes:
+- Tunnel mode: the decrypted SYN is visible. The SYN-ACK and the RST go out as ESP. edc uses the client ACK and the drop reasons.
+- Transport mode: the decrypted SYN is not visible. edc uses the drop reasons and shows a warning. Read the counters of `ip -s xfrm state`.
+
+`--json` writes one report with the probe `tcp.expect`. With `--json -`, the live lines go to stderr.
+`edc report show` shows the saved file.
+
+Limits:
+- edc finds the handshake from a last ACK without payload. If the client puts data in that ACK, edc does not see the handshake.
+- edc does not read IPv6 extension headers or IPv4 fragments after the first fragment.
+- The route lookup does not use fwmark or UID rules.
+
 ### File watching and actions (Linux and macOS)
 
 `edc watch fs` observes changes directly below the current directory by default. Use `-r` or `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
@@ -159,6 +316,33 @@ JSON Lines uses `ready`, `event`, `action_start`, `action_result`, and `summary`
 ### Route and interfaces
 
 ![edc net interfaces, edc net route example.com, and edc net ping example.com each print PASS and one result line](media/net.gif)
+
+### Path MTU
+
+`edc net mtu` measures the largest packet that reaches a host without fragmentation.
+
+```bash
+edc net mtu example.com
+edc net mtu --max 1400 10.0.0.5
+```
+
+`edc` sends ICMP echo with the Don't Fragment bit set. It starts at 576 bytes (1280 for IPv6) and stops at the MTU of the route interface. Between these sizes, it uses a binary search.
+
+The result shows the path MTU, the interface MTU, the gap, and the TCP MSS that fits.
+
+- `PASS`: the path MTU is equal to the interface MTU.
+- `WARN`: the path MTU is smaller than the interface MTU, or large packets disappear without an ICMP reply.
+- `SKIP`: the host does not reply to ICMP echo at the smallest size. Use a TCP-based check instead.
+
+If large packets disappear without an ICMP "fragmentation needed" reply, `edc` reports a PMTU black hole. In this case, the TCP handshake succeeds, but large responses stall.
+
+The gap is a hint, not a finding. A gap of 50 to 80 bytes is typical of tunnel overhead, such as IPsec ESP, WireGuard, or VXLAN.
+
+To try smaller sizes only, set `--max N`. `edc` does not try sizes above the interface MTU.
+
+In a black hole, each failed size takes about two seconds. If the result shows a range, run the command again with a longer `--timeout`.
+
+On macOS, IPv6 measurement needs root. Run `sudo edc net mtu <host>`.
 
 ## Where am I
 

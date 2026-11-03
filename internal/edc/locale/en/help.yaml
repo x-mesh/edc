@@ -47,8 +47,23 @@ command:
       - "compare uses 1.1.1.1 unless --resolver is given."
   tcp:
     summary: "TCP connection check"
+    option:
+      diagnose: "repeat the check while tracing TCP events and kernel drops, then name the likely segment"
+      count: "--diagnose: number of attempts (default 5)"
+      interval: "--diagnose: time between attempts (default 1s)"
+      from: "expect: count only packets from this address or range"
+      duration: "expect: how long to wait; omit it to wait until Ctrl-C"
+      ports: "scan: ports and ranges to check, with commas between them (default: the sensitive ports of audit and the common service ports)"
+      parallel: "scan: connects at one time (default 32, max 256)"
     notes:
       - "A failure keeps the phase and the cause, and returns exit code 1."
+      - "--diagnose traces events only on Linux as root. Elsewhere it repeats the check and skips the trace."
+      - "expect counts SYNs that reach this host on every interface, and the SYN-ACK or RST that it sends back (Linux, root)."
+      - "expect reads packet headers only. It does not keep payload."
+      - "scan connects once to each port: open is a handshake, refused is an RST, and no reply is no answer in 2s, which is not the same as closed."
+      - "scan uses --timeout as the budget of the whole scan (default 60s). A port that it did not reach shows as not scanned."
+      - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
+      - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
   tls:
     summary: "Certificate and handshake check"
     option:
@@ -92,12 +107,13 @@ command:
       routine: "run a routine from [check.routines] in config.toml"
       group: "run check on each host of an edc remote group"
       inventory: "inventory file for --group"
+      notify: "send the result to the webhooks in [notify]"
     notes:
-      - "It checks services, processes, memory, disks, the kernel log, time, network, containers, file handles, and reboot."
-      - "The built-in checks change nothing and send nothing over the network."
+      - "It checks services, processes, memory, disks, disk health, certificate files, the kernel log, time, network, containers, file handles, and reboot."
+      - "The built-in checks change nothing. They send nothing over the network unless you give --notify."
       - "Each finding names the edc command that shows more."
       - "Without root, some checks show skip, not pass."
-      - "macOS reads launchd, memory pressure, disks, network, containers, file handles, diagnostic reports, thermal pressure, and Time Machine. time and reboot show skip."
+      - "macOS reads launchd, memory pressure, disks, disk health, certificate files, network, containers, file handles, diagnostic reports, thermal pressure, and Time Machine. time and reboot show skip."
       - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
       - "A routine adds unit rules, limits, and shell commands from config.toml. A command passes when it exits with 0."
   events:
@@ -116,6 +132,9 @@ command:
       route: "the interface and gateway toward a host"
       ping: "ping a host"
       trace: "the path to a host, with traceroute or tracepath"
+      mtu: "the largest packet that reaches a host without fragmentation"
+    option:
+      max: "mtu: largest packet size to try (default: MTU of the route interface)"
   route:
     summary: "Check, switch, and roll back the default route on a gateway VM"
     sub:
@@ -129,15 +148,17 @@ command:
       - "check never changes a route. switch arms a rollback timer first."
       - "status reads /run/edc. rollback --state repeats one state file."
   disk:
-    summary: "Grow a partition and file system after a disk resize"
+    summary: "Grow disks after a resize, detach leftover disk images"
     sub:
-      check: "show the mounts that can grow, change nothing"
+      check: "show growable mounts or leftover images, change nothing"
       grow: "grow a partition and its file system"
+      detach: "detach leftover read-only disk images (macOS)"
     notes:
       - "check reads the layers and changes nothing."
       - "Run check as root to see the size of every layer."
       - "grow needs root. edc does not add sudo itself."
       - "grow cannot be undone. Take a snapshot of the volume first."
+      - "detach works on macOS only. It detaches read-only disk images under /Volumes, for example installer DMGs."
   change:
     summary: "Protected host changes with automatic rollback"
     sub:
@@ -260,7 +281,7 @@ command:
       - "edc search accepts a natural-language query followed by zero or more files or directories."
       - "The first positional argument is the complete quoted query; every following positional argument is a path. Use -- when a query or path begins with a dash."
       - "It uses a local MiniLM index and never calls a cloud service after model installation."
-      - "Use edc search index status, files, and clear with an optional directory. Use edc search model clear to remove the shared model and runtime. Words such as status remain ordinary queries."
+      - "Use edc search index status, files, and clear with an optional directory. Use edc search model clear to remove the shared model and runtime. Words such as status remain ordinary queries. index or model alone prints its usage; run edc search -- model to search for that word."
   du:
     summary: "Disk usage under a directory, largest first (Linux and macOS)"
     option:
@@ -342,16 +363,33 @@ command:
       - "Values of options such as --password and --token and URL passwords show as ***."
       - "With --json, edc listen includes args and cwd when edc can read them. --full does not work with --watch."
   svc:
-    summary: "systemd services, or one service on one screen (Linux)"
+    summary: "Services, or one service on one screen (systemd and launchd)"
     notes:
       - "Without a unit, it lists the services. Failed ones come first."
       - "In a terminal, Enter opens one service and Esc goes back."
       - "It shows state, uptime, restarts, processes, fds, sockets, and journal errors."
       - "It reads only. It does not start, stop, or reload the unit."
-      - "It needs Linux with systemd. On other hosts it shows skip."
+      - "On Linux it reads systemd. A Linux host without systemd shows skip."
+      - "On macOS it reads launchd jobs: the state, the last exit, the process, and the end of the job log file."
       - "Run it as root. Without root, fds, socket owners, and the journal show skip."
     option:
       all: "also list the services that are not running"
+  proc:
+    summary: "Command line, resources, fds, sockets, and cgroup of one process"
+    notes:
+      - "Give a PID or a command name. If several processes have the name, edc lists them."
+      - "The command line hides secret options and URL credentials, as listen does."
+      - "Deleted files that the process still holds keep their disk space until the process closes them."
+      - "Without root, the fds and sockets of another account show skip."
+  jobs:
+    summary: "Scheduled jobs and their last result"
+    option:
+      notify: "send the result to the webhooks in [notify]"
+    notes:
+      - "Linux: systemd timers with the last result of their service, and cron entries."
+      - "macOS: launchd jobs with StartInterval or StartCalendarInterval, and their last exit status."
+      - "A job whose last run failed is listed first and makes the exit code 1."
+      - "Without root, user crontabs and the results of launchd daemons are not shown."
   ctr:
     summary: "Docker containers over a Unix socket (Linux, macOS)"
     notes:
@@ -601,6 +639,8 @@ command:
       - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
+      - "join reads one tcp check --diagnose report and one tcp expect report, in either order, and names the broken segment."
+      - "join prints a checklist for the device engineer. Exit code 0 only if the path works."
   log:
     summary: "Record command output and exit status"
     sub:

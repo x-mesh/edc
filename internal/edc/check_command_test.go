@@ -246,7 +246,7 @@ func checkTestSources() checkSources {
 		disks:       func() ([]checkDisk, error) { return nil, nil },
 		kernel:      func(context.Context, time.Duration) eventsFacts { return eventsFacts{} },
 		clock:       func() *infoClock { return nil },
-		network:     func() checkNetwork { return checkNetwork{} },
+		network:     func(context.Context) checkNetwork { return checkNetwork{} },
 		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
 		fileHandles: func() (*infoFileHandles, error) { return nil, nil },
 		reboot:      func() checkReboot { return checkReboot{} },

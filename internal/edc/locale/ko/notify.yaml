@@ -1,0 +1,7 @@
+# check와 jobs의 webhook 알림 메시지.
+notify:
+  error:
+    none: "--notify를 쓰려면 config.toml에 [[notify.webhooks]] 항목이 있어야 합니다"
+    unsafe: "보내지 않았습니다: %v"
+    send: "알림 %v"
+    group: "--notify는 로컬 check에만 쓸 수 있고 --group과 함께 쓸 수 없습니다"

@@ -1,0 +1,32 @@
+# tcp scan の日本語メッセージ。欠けたキーは en に下がる。
+scan:
+  error:
+    ports_empty: "--ports には port が 1 つ以上必要です"
+    ports_invalid: "--ports に port でも範囲でもない項目があります: %s"
+    ports_range: "--ports の port は 1 から 65535 の間で、範囲は昇順でなければなりません: %s"
+    parallel_range: "--parallel は 1 から %d の間でなければなりません"
+    host_only: "tcp scan は port なしの host を受け取ります。port は --ports で選びます: %s"
+    host_empty: "tcp scan には host が必要です"
+    all_errors: "すべての接続が応答を受け取る前に失敗しました: %s"
+  progress: "port %d/%d · open %d"
+  summary:
+    open: "open %d"
+    open_list: "open %d (%s)"
+    refused: "拒否 %d"
+    no_reply: "応答なし %d"
+    error: "エラー %d"
+    not_scanned: "未確認 %d"
+    total: "port %d 個、%s"
+    silent: "%s 以内に応答した port はありません"
+  evidence:
+    open: "open"
+    refused: "拒否"
+    no_reply: "応答なし"
+    error: "エラー"
+    not_scanned: "未確認"
+  warning:
+    none_checked: "--timeout %s 以内に確認した port がありません。--timeout か --parallel を上げてください。"
+    errors: "接続 %d 件が応答を受け取る前に失敗しました: %s"
+    no_reply: "port %d 個が %s 以内に応答しませんでした。firewall が SYN を捨てたか、host が閉じた port に RST を返さない場合です。応答なしは closed と同じではありません。"
+    partial: "--timeout %[3]s が終わる前に port %[2]d 個のうち %[1]d 個だけを確認しました。--timeout か --parallel を上げてください。"
+  more: "+%d 個"

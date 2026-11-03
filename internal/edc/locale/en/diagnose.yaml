@@ -1,0 +1,53 @@
+# English messages for tcp check --diagnose.
+diagnose:
+  error:
+    count_range: "--count must be between 1 and %d"
+    interval_range: "--interval must be between 0s and %s"
+    timeout_range: "--timeout must be more than 0s"
+  route:
+    failed: "route lookup failed: %s"
+  attempt:
+    connected: "connected in %s"
+    refused: "refused (RST) in %s"
+    timeout: "no answer in %s"
+    other: "%s: %s"
+    local_port: "local port %d"
+  fact:
+    syn_retransmits: "SYN retransmits %d"
+    retransmits: "retransmits %d"
+    slow_connects: "%d connects over %s"
+    refused: "refused %d"
+    timeouts: "no answer %d"
+    other: "other errors %d"
+    resets_received: "RST received %d"
+    rtt: "rtt %s"
+    drops: "local drop %s"
+  trace:
+    skipped: "skipped: %s"
+    tcp_counts: "SYN retransmits %d, retransmits %d, RST received %d, RST sent %d"
+    tcp_skipped: "TCP events skipped"
+    drop_counts: "blocking drops %d, other drops %d"
+    drop_skipped: "drops skipped"
+    lost: "the trace lost %d events, so the counts can be low"
+    overflow: "the trace kept only the first %d events and left %d uncounted, so the counts can be low"
+    failed: "the event trace stopped: %v"
+    not_ready: "the event trace did not start within %s"
+    linux_only: "the event trace needs eBPF on Linux, and this host runs %s"
+    stopped_early: "the event trace stopped before it started"
+  basis:
+    phases: "The verdict uses the connect phases only, because edc skipped the event trace: %s"
+    partial: "The verdict uses part of the event trace: %s"
+  verdict:
+    connected: "all %d attempts connected without retransmits or delay. The TCP path and IPsec work. Check TLS, the application, or the LB backend next"
+    degraded: "all %d attempts connected, but with trouble (%s). Suspect tunnel quality, MTU/MSS, or an asymmetric path"
+    intermittent: "%d of %d attempts connected (%s). Suspect an LB backend that fails, or a path that changes between attempts"
+    local_drop: "this host dropped packets of this flow (%s). Suspect this host first: its firewall for NETFILTER_DROP, otherwise the kernel step that the reason names"
+    refused: "%d of %d attempts were refused at once (RST). Suspect the target listener, the target host firewall, or an LB policy. A firewall on the path can also send the RST"
+    no_reply: "%d of %d attempts got no answer: SYN retransmits %d, no handshake, no drop on this host. The cause is outside this host: the IPsec selector, an external firewall, the path in front of the VPN device, or the return path"
+    no_reply_untraced: "%d of %d attempts got no answer and no handshake. Without the event trace, a drop on this host is not ruled out. Otherwise suspect the IPsec selector, an external firewall, the path in front of the VPN device, or the return path"
+    unreachable: "the connection failed before an answer: %s. Check the route and the path"
+    no_attempt: "no attempt finished, so there is no verdict"
+  evidence:
+    attempts: "attempts"
+  next:
+    on_host: "run on %s"

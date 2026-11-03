@@ -1,0 +1,15 @@
+# English messages for the jobs command.
+jobs:
+  summary: "%d scheduled jobs"
+  failed: "%d of %d scheduled jobs failed last time: %s"
+  unreadable: "%d paths need root to read: %s"
+  next: "next in %s"
+  last: "last %s ago"
+  skip:
+    unsupported: "edc jobs reads systemd timers and cron on Linux and launchd on macOS"
+  cron:
+    none: "no crontab found"
+    note: "cron does not record the result of a run. Read the cron log for it."
+  launchd:
+    interval: "every %s"
+    not_loaded: "not loaded in this domain"

@@ -34,6 +34,9 @@ func hostCheckSources() (checkSources, bool) {
 		kernel:         readDarwinDiagnosticReports,
 		thermal:        readDarwinThermal,
 		backup:         readDarwinBackup,
+		storage:        readDarwinStorage,
+		certs:          readCheckCerts,
+		endpoints:      probeCheckEndpoints,
 		kernelNext:     "ls -lt /Library/Logs/DiagnosticReports ~/Library/Logs/DiagnosticReports",
 		// 사용자로 실행하면 gui domain의 agent를, sudo로 실행하면 system domain의 daemon을 본다.
 		serviceNext: "launchctl list %s",
@@ -93,14 +96,29 @@ func readDarwinCheckDisks() ([]checkDisk, error) {
 	return result, nil
 }
 
-func readDarwinCheckNetwork() checkNetwork {
+func readDarwinCheckNetwork(ctx context.Context) checkNetwork {
 	network := checkNetwork{DNS: readInfoDNS("/")}
-	ctx := context.Background()
 	stdout, stderr, err := runDarwinCheckTool(ctx, "/sbin/route", "-n", "get", "default")
 	network.Route, network.RouteErr = parseCheckRouteGet(stdout, stderr, err)
 	if network.Route == "" && network.RouteErr == nil {
 		stdout, stderr, err = runDarwinCheckTool(ctx, "/sbin/route", "-n", "get", "-inet6", "default")
 		network.Route, network.RouteErr = parseCheckRouteGet(stdout, stderr, err)
+	}
+	gateway, iface := checkRouteParts(network.Route)
+	if iface == "" {
+		return network
+	}
+	if stdout, _, err := runDarwinCheckTool(ctx, "/sbin/ifconfig", iface); err == nil {
+		network.Link = parseIfconfigLink(stdout)
+	}
+	if address, ok := checkGatewayAddress(gateway); ok {
+		family := byte(darwinAFInet)
+		if address.Is6() {
+			family = darwinAFInet6
+		}
+		if neighbors, err := readDarwinNeighborTable(family, neighborInterfaceNames{}); err == nil {
+			network.GatewayNeighbor = neighbors[neighborKey{iface: iface, ip: address.String()}].state
+		}
 	}
 	return network
 }
@@ -186,4 +204,43 @@ func readDarwinBackup() checkBackup {
 	}
 	latest, _, _ := runDarwinCheckTool(context.Background(), "/usr/bin/tmutil", "latestbackup")
 	return parseBackup(destinations, latest)
+}
+
+// readDarwinStorage는 물리 디스크마다 diskutil이 알려 주는 SMART 상태와 NVMe 값을 읽는다. root가 필요 없다.
+func readDarwinStorage(ctx context.Context) checkStorage {
+	var storage checkStorage
+	readPlist := func(args ...string) (map[string]any, error) {
+		output, stderr, err := runDarwinCheckTool(ctx, "/usr/sbin/diskutil", args...)
+		if err != nil {
+			return nil, diskImageToolError("diskutil "+strings.Join(args, " "), output, stderr, err)
+		}
+		value, err := parsePlist(strings.NewReader(output))
+		if err != nil {
+			return nil, err
+		}
+		dict, _ := value.(map[string]any)
+		return dict, nil
+	}
+	list, err := readPlist("list", "-plist", "physical")
+	if err != nil {
+		storage.DevicesErr = err
+		return storage
+	}
+	disks, _ := list["WholeDisks"].([]any)
+	for _, item := range disks {
+		name, _ := item.(string)
+		if name == "" {
+			continue
+		}
+		info, err := readPlist("info", "-plist", name)
+		if err != nil {
+			storage.DevicesErr = err
+			continue
+		}
+		if device, ok := parseDiskutilSMART(info); ok {
+			device.Next = "diskutil info " + name
+			storage.Devices = append(storage.Devices, device)
+		}
+	}
+	return storage
 }

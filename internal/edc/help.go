@@ -115,7 +115,21 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "tcp", group: "diagnose",
-		usage:      []string{"edc tcp check [options] <host:port>"},
+		usage: []string{
+			"edc tcp check [options] <host:port>",
+			"edc tcp check --diagnose [--count N] [--interval 1s] [options] <host:port>",
+			"edc tcp expect [--from <ip|cidr>] [--duration 30s] [options] <port>",
+			"edc tcp scan [--ports 22,80,443,8000-8100] [--parallel 32] [options] <host>",
+		},
+		options: []optionDoc{
+			{"--diagnose", "command.tcp.option.diagnose"},
+			{"--count N", "command.tcp.option.count"},
+			{"--interval 1s", "command.tcp.option.interval"},
+			{"--from <ip|cidr>", "command.tcp.option.from"},
+			{"--duration 30s", "command.tcp.option.duration"},
+			{"--ports <list>", "command.tcp.option.ports"},
+			{"--parallel N", "command.tcp.option.parallel"},
+		},
 		usesCommon: true,
 	},
 	{
@@ -144,13 +158,16 @@ var commandDocs = []commandDoc{
 			"edc net route [options] <host>",
 			"edc net ping [options] <host>",
 			"edc net trace [options] <host>",
+			"edc net mtu [--max N] [options] <host>",
 		},
+		options:    []optionDoc{{"--max N", "command.net.option.max"}},
 		usesCommon: true,
 		subcommands: []subcommandDoc{
 			{"interfaces", "edc net interfaces"},
 			{"route", "edc net route <host>"},
 			{"ping", "edc net ping <host>"},
 			{"trace", "edc net trace <host>"},
+			{"mtu", "edc net mtu <host>"},
 		},
 	},
 	{
@@ -165,6 +182,7 @@ var commandDocs = []commandDoc{
 			{"--routine NAME", "command.check.option.routine"},
 			{"--group NAME", "command.check.option.group"},
 			{"--inventory FILE", "command.check.option.inventory"},
+			{"--notify", "command.check.option.notify"},
 		},
 		usesCommon: true,
 	},
@@ -204,6 +222,7 @@ var commandDocs = []commandDoc{
 		usage: []string{
 			"edc disk check [mount]",
 			"edc disk grow <mount> [options]",
+			"edc disk detach [mount...] [options]",
 		},
 		options: []optionDoc{
 			{"-n, --dry-run", "disk.flag.dry_run"},
@@ -213,6 +232,7 @@ var commandDocs = []commandDoc{
 		subcommands: []subcommandDoc{
 			{"check", "edc disk check [mount]"},
 			{"grow", "edc disk grow <mount>"},
+			{"detach", "edc disk detach [mount...]"},
 		},
 	},
 	{
@@ -451,6 +471,17 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "proc", group: "observe",
+		usage:      []string{"edc proc <pid|name> [options]"},
+		usesCommon: true,
+	},
+	{
+		name: "jobs", group: "observe",
+		usage:      []string{"edc jobs [--notify] [options]"},
+		options:    []optionDoc{{"--notify", "command.jobs.option.notify"}},
+		usesCommon: true,
+	},
+	{
 		name: "ctr", group: "observe",
 		usage: []string{"edc ctr [options] [--all]", "edc ctr [options] <container>"},
 		options: []optionDoc{
@@ -561,6 +592,7 @@ var commandDocs = []commandDoc{
 			"edc report list [directory]",
 			"edc report show <file>",
 			"edc report diff [--json <path|->] <before> <after>",
+			reportJoinUsage,
 		},
 	},
 	{

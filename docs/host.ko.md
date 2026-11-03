@@ -35,7 +35,7 @@ Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, 
 
 ## 상태 점검 (Linux와 macOS)
 
-`edc check`는 Linux나 macOS 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
+`edc check`는 Linux나 macOS 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. 예외는 `endpoint` 하나이며, 설정 파일에 `require_endpoints`를 적었을 때만 돕니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
 
 ```bash
 edc check
@@ -49,14 +49,17 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `process` | | defunct process나 D 상태 process가 있음 |
 | `memory` | 가용 메모리가 5% 미만 | 가용 메모리가 10% 미만 |
 | `disk` | mount의 사용률이나 inode 사용률이 95% 이상 | 같은 값이 90% 이상이거나 mount가 읽기 전용 |
+| `cert` | 인증서 파일이 만료됨 | 인증서 파일이 30일 안에 만료됨 |
+| `storage` | SMART가 디스크 실패를 알리거나, NVMe의 남은 예비 블록이 기준보다 적거나, 보증 쓰기 수명을 100% 이상 썼거나, md RAID가 degraded 또는 inactive | 보증 쓰기 수명을 90% 이상 썼거나, NVMe에 미디어 오류가 있거나, ATA 디스크에 재할당·대기·복구 불가 섹터가 있거나, md 배열이 recovery, resync, reshape 중 |
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
-| `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
+| `network` | default route가 없거나, route interface가 내려갔거나 carrier가 없거나, conntrack·TCP 메모리·`tcp_max_orphans` 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나, 같은 사용률이 80% 이상이거나, gateway의 neighbor 항목이 `FAILED`나 `INCOMPLETE`이거나, drop 카운터가 1초 사이에 늘어남 |
+| `endpoint` | `require_endpoints`의 주소가 TCP 연결을 거부했거나, 5초 안에 응답하지 않았거나, 이름을 찾지 못함 | TCP 연결에 1초 넘게 걸림 |
 | `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤, 또는 `always`나 `unless-stopped` container가 코드 0으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
 | `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
 | `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
 
-fail이 하나라도 있으면 종료 코드가 1입니다. NIC drop처럼 부팅 뒤 늘어나기만 하는 카운터는 판정하지 않습니다. 한 번 읽어서는 언제 늘었는지 알 수 없기 때문입니다.
+fail이 하나라도 있으면 종료 코드가 1입니다. NIC drop처럼 부팅 뒤 늘어나기만 하는 카운터는 한 번 읽어서는 언제 늘었는지 알 수 없습니다. 그래서 Linux의 `network`는 drop 카운터를 1초 간격으로 두 번 읽고, 늘어난 카운터가 있으면 warn입니다. 보는 카운터는 listen 대기열의 overflow와 drop, softnet drop, NIC의 missed·FIFO 오류, conntrack drop과 insert 실패, UDP 수신 buffer 오류, TCP 메모리 pressure와 abort입니다. 두 번째로 읽기 전에 `--timeout`이 끝나면 카운터는 판정하지 않고 요약에 그렇게 적습니다. tun, WireGuard, Tailscale 같은 가상 interface는 link 상태를 `unknown`으로 알리므로 판정하지 않습니다. gateway는 neighbor table만 읽고 패킷을 보내지 않습니다. table에 gateway 항목이 없으면 아직 gateway로 보낸 적이 없는 것이라 경고하지 않습니다.
 
 macOS에서는 다음 원천을 읽습니다.
 
@@ -66,11 +69,14 @@ macOS에서는 다음 원천을 읽습니다.
 | `process` | `ps` | defunct process만 셉니다. macOS에는 Linux와 같은 뜻의 D 상태가 없습니다. |
 | `memory` | `kern.memorystatus_vm_pressure_level` | pressure 단계로 판정합니다. `warn`이면 warn, `critical`이면 fail입니다. macOS는 원래 가용 메모리가 적게 보입니다. |
 | `disk` | `df`와 `statfs` | 읽기 전용 mount는 판정하지 않습니다. 서명된 system volume이나, mount한 설치 파일처럼 원래 가득 찬 disk image이기 때문입니다. |
-| `network` | `route -n get default`, `/etc/resolv.conf` | conntrack과 TCP 메모리는 보지 않습니다. |
+| `storage` | `diskutil list physical`, `diskutil info` | 물리 디스크마다 SMART 상태와 NVMe 값을 읽습니다. root와 `smartctl`이 필요 없습니다. macOS에는 md RAID가 없습니다. |
+| `network` | `route -n get default`, `ifconfig <interface>`, neighbor table, `/etc/resolv.conf` | conntrack, TCP 메모리, orphan socket, drop 카운터는 보지 않습니다. `utun`처럼 `status` 줄이 없는 interface는 link 상태를 `unknown`으로 봅니다. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | 최근 1시간에 쓰인 보고서를 셉니다. kernel panic과 `JetsamEvent`(메모리가 모자라 커널이 process를 끝냄)는 fail, 앱 crash와 hang 보고서는 warn입니다. CPU·wakeup 보고서는 세지 않습니다. |
 | `container`, `filehandles` | Docker socket, `kern.num_files`와 `kern.maxfiles` | Linux와 같습니다. |
 | `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS에만 있습니다. `heavy`는 warn, `trapping`과 `sleeping`은 fail입니다. `moderate`는 부하가 걸리면 흔히 나오는 단계라 경고하지 않습니다. |
 | `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS에만 있습니다. 마지막 Time Machine 백업이 7일보다 오래되면 warn입니다. 백업 대상이 없으면 `skip`입니다. |
+
+Linux의 `storage`는 `/proc/mdstat`과 `smartctl --json`을 읽습니다. `smartctl`이 없으면 SMART 쪽은 `skip`이고, `smartmontools`를 설치하면 확인할 수 있습니다. `smartctl`은 root가 필요합니다. root가 아니면 md 배열만 판정하고 경고 줄을 남깁니다. MegaRAID 컨트롤러 뒤의 디스크는 `/dev/bus/0 [megaraid,1]`처럼 `-d` 종류를 함께 보여 줍니다.
 
 macOS에서 `time`과 `reboot`은 `skip`입니다. Linux 결과에는 `thermal`과 `backup`이 없습니다.
 
@@ -85,6 +91,7 @@ accept_units = ["systemd-networkd-wait-online.service"]
 accept_containers = ["job-*"]
 accept_mounts = ["/media/*"]
 require_units = ["nginx.service"]
+cert_paths = ["/etc/myapp/tls/*.crt"]
 
 [check.limits]
 disk = [90, 95]
@@ -92,9 +99,13 @@ memory_available = [10, 5]
 usage = [80, 90]
 ```
 
+`endpoint`는 점검 중 유일하게 패킷을 보냅니다. `[check]`나 루틴의 `require_endpoints`에 `host:port`를 하나라도 적었을 때만 결과에 나옵니다. edc는 주소마다 TCP 연결을 하나씩 동시에 열어 최대 5초 기다린 뒤 닫고, 데이터는 보내지 않습니다. fail 줄에는 주소와 원인이 적히고, `next`에는 처음 실패한 주소를 보는 `edc tcp check` 명령이 옵니다.
+
 `accept`에는 위 표의 점검 이름을 씁니다. 받아들인 점검은 `skip`으로 나오고 요약 앞에 `받아들임 (warn)` 같은 표시가 붙습니다. JSON의 `metrics.accepted_status`에는 원래 상태가 남습니다.
 
 `accept_units`, `accept_containers`, `accept_mounts`에는 glob 패턴을 씁니다. 패턴에 맞는 이름은 판정하지 않습니다. 대신 요약 끝에 받아들인 개수가 붙고, `metrics.accepted`에 이름이 남습니다.
+
+`cert`는 파일마다 첫 인증서를 읽습니다. 읽는 위치는 `/etc/letsencrypt/live/*/cert.pem`, `/etc/kubernetes/pki`의 Kubernetes와 etcd 파일, `/var/lib/kubelet/pki`의 kubelet 파일, nginx와 Apache 설정에서 `ssl_certificate`와 `SSLCertificateFile`이 가리키는 절대 경로입니다. `cert_paths`로 절대 경로 glob을 더할 수 있습니다. key 파일처럼 인증서가 없는 파일은 건너뜁니다. `/etc/ssl/certs`의 CA 묶음은 만료된 루트가 늘 섞여 있어 읽지 않습니다. root가 아니면 root가 필요한 파일을 경고 줄에 적고, 하나도 읽지 못하면 `skip`입니다.
 
 `[check.limits]`의 값은 모두 `[warn, fail]` 백분율입니다. `usage`는 conntrack, TCP 메모리, 파일 핸들에 적용됩니다. `memory_available`은 남은 비율이므로 warn 값이 fail 값보다 크거나 같아야 합니다.
 
@@ -106,8 +117,9 @@ usage = [80, 90]
 
 ```toml
 [check.routines.web]
-checks = ["service", "disk", "kernel", "network"]
+checks = ["service", "disk", "kernel", "network", "endpoint"]
 require_units = ["nginx.service", "app-api.service"]
+require_endpoints = ["db.internal:5432", "cache.internal:6379"]
 
 [[check.routines.web.commands]]
 name = "app-health"
@@ -116,13 +128,34 @@ timeout = "5s"
 level = "fail"
 ```
 
-`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록과 `require_units`는 `[check]`의 값에 더해집니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
+`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록, `require_units`, `require_endpoints`, `cert_paths`는 `[check]`의 값에 더해집니다. `checks`가 비어 있지 않은데 `endpoint`가 없으면 그 루틴은 endpoint에 접속하지 않습니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
 
 명령은 `sh -c`로 실행하고, 결과 이름은 `check.cmd.<name>`입니다. 종료 코드가 0이면 `pass`이고, 다른 코드면 `fail`입니다. `level = "warn"`이면 `warn`이 됩니다. `timeout`(기본 10s) 안에 끝나지 않으면 `fail`이고, edc가 명령과 그 자식 process를 멈춥니다. 결과에는 출력의 마지막 10줄이 4 KiB까지 남습니다. 명령의 결과를 받아들이려면 `accept`에 `cmd.<name>`을 넣으세요.
 
 다른 사용자가 설정 파일을 바꿀 수 없을 때만 명령을 실행합니다. 읽은 설정 파일과 그 상위 디렉터리를 모두 검사해서, 그중 하나라도 그룹이나 다른 사용자가 쓸 수 있거나 주인이 다른 사용자이면 명령마다 `skip`으로 나옵니다. `/tmp`처럼 sticky bit가 있는 디렉터리는 다른 사용자가 쓸 수 있어도 괜찮습니다. `sudo edc check`는 root의 설정 파일을 읽으므로, 이 규칙이 다른 사용자가 root 권한으로 명령을 실행하는 것을 막습니다.
 
 루틴과 명령의 이름에는 `a-z`, `0-9`, `_`, `-`만 씁니다.
+
+### Webhook 알림
+
+`edc check --notify`와 `edc jobs --notify`는 결과를 `config.toml`에 적은 webhook으로 보냅니다. cron이나 systemd timer로 실행하면 호스트에 문제가 생겼을 때 메시지를 받을 수 있습니다.
+
+```toml
+[[notify.webhooks]]
+name = "ops"
+url = "https://hooks.slack.com/services/T000/B000/XXXX"
+format = "slack"   # json(기본), slack, discord
+on = "warn"        # fail(기본), warn, always
+```
+
+```bash
+edc check --notify
+edc jobs --notify
+```
+
+`format = "slack"`은 `{"text": ...}`를 보내고 Slack, Mattermost, Rocket.Chat이 받습니다. `format = "discord"`는 `{"content": ...}`를 보냅니다. `format = "json"`은 호스트, 명령, 판정 수, `pass`가 아닌 결과를 보냅니다. 메시지 첫 줄에는 호스트, 명령, 판정 수가 오고, 그 아래에 `fail`과 `warn` 결과를 `next` 명령과 함께 10개까지 적습니다. webhook은 결과가 `on` 기준에 닿을 때만 보냅니다.
+
+webhook이 2xx로 답하지 않으면 edc는 이유를 stderr에 적고, 점검이 통과했어도 종료 코드를 1로 만듭니다. Slack과 Discord URL은 경로가 비밀이므로 오류에는 URL의 scheme과 host만 적습니다. `config.toml`이나 그 위의 디렉터리를 다른 사용자가 바꿀 수 있으면 보내지 않습니다. 루틴의 셸 명령과 같은 규칙입니다. `--notify`는 `--group`과 함께 쓸 수 없습니다. 실행할 때마다 보내며, 지난 결과를 기억하지 않습니다.
 
 ## 호스트 점검 (Linux)
 
@@ -225,6 +258,62 @@ pipe나 `--json`에서는 `svc.list` 결과 하나와 표를 출력합니다. �
 
 <a id="container-보기-linux"></a>
 <a id="container-보기-linux와-macos"></a>
+
+### launchd job (macOS)
+
+macOS에서 `edc svc`는 systemd unit 대신 launchd job을 읽습니다.
+
+```bash
+edc svc                          # 실행 중인 job과 실패한 job, 실패한 것이 먼저
+edc svc --all                    # Apple job, 열린 앱, 쉬는 job까지
+edc svc com.example.sync         # job 하나
+sudo edc svc com.example.daemon  # system daemon
+```
+
+목록은 `launchctl list`에서 읽습니다. 돌고 있지 않으면서 양수 종료 코드로 끝난 job은 `check`와 같이 실패입니다. 신호로 끝난 job은 실패가 아닙니다. 기본 목록은 `com.apple.*` job, 열린 앱(`application.*`), 돌지 않고 0으로 끝난 job을 뺍니다. 실패한 job은 늘 보입니다.
+
+job 하나를 볼 때는 `gui/<uid>`, `user/<uid>`, `system` domain에서 찾고, root로 실행하면 `system`부터 찾습니다. 결과는 세 가지입니다.
+
+- `svc.state`: `launchctl print`의 상태, PID, 실행 횟수, 마지막 종료와 함께 plist, 프로그램, 인자를 보여 줍니다. 비밀 인자는 가립니다. 돌고 있지 않으면서 양수 종료 코드로 끝난 job은 실패입니다.
+- `svc.process`: 실행 중인 process의 CPU, 메모리, 열린 fd, 대기 포트입니다. `next`는 `edc proc <pid>`입니다.
+- `svc.log`: `StandardErrorPath` 파일의 마지막 20줄입니다. 없으면 `StandardOutPath`를 읽습니다. 둘 다 없으면 `next`로 unified log를 보는 `log show` 명령을 알려 줍니다.
+
+## Process 보기 (Linux와 macOS)
+
+`edc proc <pid|이름>`은 process 하나를 한 화면에 보여 줍니다. 읽기만 하고 아무것도 바꾸지 않습니다.
+
+```bash
+edc proc 1234
+sudo edc proc nginx      # 이름이 nginx인 process가 여럿이면 PID 목록을 보여 줍니다
+edc proc -v 1234         # 명령행 전체
+```
+
+| 결과 | 보여 주는 것 | 경고 조건 |
+|---|---|---|
+| `proc.process` | PID, 이름, 사용자, 실행 시간, 명령행, 부모, 작업 디렉터리, thread 수 | zombie이거나(`next`는 부모를 가리킵니다) D 상태로 I/O를 기다릴 때 |
+| `proc.resources` | 0.5초 동안의 CPU, 메모리와 RSS | |
+| `proc.fd` | 종류별 열린 fd 수, Linux에서는 soft limit 대비 사용률, 지워졌지만 아직 열린 파일 | fd 한도의 80% 이상을 쓸 때 |
+| `proc.sockets` | 대기 포트, 상태별 연결 수, 연결이 많은 상대 | `CLOSE_WAIT` 연결이 10개 이상일 때 |
+| `proc.cgroup` | cgroup v2 경로, `memory.max` 대비 메모리 사용량, OOM kill, CPU 제한 횟수. Linux에서만 읽습니다. | 메모리가 `memory.max`의 80% 이상이거나 OOM kill이 있었을 때 |
+
+명령행의 비밀 옵션과 URL 인증 정보는 `edc listen`과 같은 규칙으로 가립니다. `-v`가 없으면 명령행을 200자 한 줄로 자릅니다. process의 대기 포트로 들어온 연결은 상대 주소로, 나간 연결은 상대 주소와 포트로 묶습니다. Linux에서는 `/proc/<pid>`와 그 process의 network namespace에서 본 TCP 표를 읽으므로 container process는 자기 연결이 보입니다. macOS에서는 `lsof`로 fd와 소켓을 읽습니다. root가 아니면 다른 계정의 fd와 소켓은 `skip`입니다. 지워진 파일은 process가 닫을 때까지 디스크 공간을 차지합니다. memfd와 `/dev/shm` 파일은 세지 않습니다.
+
+## 예약 작업 (Linux와 macOS)
+
+`edc jobs`는 예약 작업과 마지막 실행 결과를 보여 줍니다. 아무것도 바꾸지 않습니다.
+
+```bash
+edc jobs
+sudo edc jobs -v   # 모든 작업, 사용자 crontab과 launchd daemon까지
+```
+
+| 원천 | 읽는 곳 | 마지막 실행 결과 |
+|---|---|---|
+| `jobs.timers` (Linux) | 켜진 systemd timer, timer와 그 service의 `systemctl show` | service의 `Result`입니다. `success`가 아니면 실패이고, `next`는 `journalctl -u <service>`입니다. 한 번도 돌지 않은 service는 결과가 없습니다. |
+| `jobs.cron` (Linux) | `/etc/crontab`, `/etc/cron.d`, `/var/spool/cron`의 사용자 crontab, `/etc/cron.{hourly,daily,weekly,monthly}` | 없습니다. cron은 결과를 남기지 않습니다. |
+| `jobs.launchd` (macOS) | `/Library/LaunchDaemons`, `/Library/LaunchAgents`, `~/Library/LaunchAgents`에서 `StartInterval`이나 `StartCalendarInterval`이 있는 plist | `launchctl list`의 마지막 종료 상태입니다. 양수 종료 코드는 실패입니다. 신호로 끝난 job은 `check`와 같이 실패로 보지 않습니다. |
+
+실패한 작업은 맨 위에 나오고 종료 코드를 1로 만듭니다. 실패한 작업이 있으면 기본 출력은 실패한 작업만 보여 줍니다. 모든 작업은 `-v`로 봅니다. root가 아니면 사용자 crontab을 읽지 못하고, `launchctl list`는 현재 세션의 agent만 알려 줍니다.
 
 ## Container 보기 (Linux와 macOS)
 

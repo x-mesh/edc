@@ -1,7 +1,7 @@
-# disk コマンド群(check, grow)の日本語メッセージ。
+# disk コマンド群(check, grow, detach)の日本語メッセージ。
 disk:
   skip:
-    linux_only: "ディスクの読み取りと拡張は Linux でのみ動作します"
+    linux_only: "ディスクの拡張は Linux でのみ動作します"
   flag:
     dry_run: "何も変更せずに計画だけを表示"
     yes: "確認を省略"
@@ -51,3 +51,18 @@ disk:
       unchanged: "%s を実行しましたがサイズが変わりませんでした"
       resume: "同じコマンドをもう一度実行すると、失敗した手順から続行します。"
       interrupted: "シグナルを受けたため %s の後で停止しました"
+  image:
+    skip:
+      macos_only: "ディスクイメージの取り外しは macOS でのみ動作します"
+    check:
+      none: "/Volumes に接続された読み取り専用ディスクイメージはありません"
+      found: "/Volumes に読み取り専用ディスクイメージが %d 個接続されています。取り外してもディスク容量は増えません"
+    error:
+      not_image: "%s は /Volumes に接続された読み取り専用ディスクイメージではありません"
+    detach:
+      dry_run: "計画のみ出力、変更なし: ディスクイメージ %d 個を取り外します"
+      question: "ディスクイメージ %d 個を取り外しますか?"
+      done: "取り外し済み"
+      failed: "失敗: %v"
+      summary: "ディスクイメージ %d/%d 個を取り外しました"
+      busy: "使用中のイメージは接続されたまま残ります。そのイメージを使うファイルを閉じて、同じコマンドを再実行してください。"

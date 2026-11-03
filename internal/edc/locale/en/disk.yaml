@@ -1,7 +1,7 @@
-# English messages for the disk command group (check, grow).
+# English messages for the disk command group (check, grow, detach).
 disk:
   skip:
-    linux_only: "edc reads and grows disks on Linux only"
+    linux_only: "edc grows disks on Linux only"
   flag:
     dry_run: "print the plan and exit, changing nothing"
     yes: "skip the confirmation"
@@ -51,3 +51,18 @@ disk:
       unchanged: "%s did not change the size"
       resume: "Run the same command again to continue from the failed step."
       interrupted: "stopped after %s because of a signal"
+  image:
+    skip:
+      macos_only: "edc detaches disk images on macOS only"
+    check:
+      none: "no read-only disk image is attached under /Volumes"
+      found: "read-only disk images under /Volumes: %d. Detaching them frees no disk space"
+    error:
+      not_image: "%s is not a read-only disk image under /Volumes"
+    detach:
+      dry_run: "plan only, nothing changed: disk images to detach: %d"
+      question: "Detach these disk images (%d)?"
+      done: "detached"
+      failed: "failed: %v"
+      summary: "detached %d of %d disk images"
+      busy: "A busy image stays attached. Close the files that use it and run the command again."

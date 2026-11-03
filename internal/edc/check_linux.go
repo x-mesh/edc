@@ -4,13 +4,20 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func hostCheckSources() (checkSources, bool) {
@@ -33,6 +40,9 @@ func hostCheckSources() (checkSources, bool) {
 		containers:  readCheckContainers,
 		fileHandles: readCheckFileHandles,
 		reboot:      readCheckReboot,
+		storage:     readLinuxStorage,
+		certs:       readCheckCerts,
+		endpoints:   probeCheckEndpoints,
 		configSafe:  func() error { return activeConfig.commandSafety },
 		runCommand:  runCheckCommand,
 	}, true
@@ -98,7 +108,8 @@ func readCheckDisks() ([]checkDisk, error) {
 	return result, nil
 }
 
-func readCheckNetwork() checkNetwork {
+func readCheckNetwork(ctx context.Context) checkNetwork {
+	first, sampledAt := collectNetworkHealth(), time.Now()
 	network := checkNetwork{DNS: readInfoDNS("/")}
 	// collectDefaultRoute는 파일을 읽지 못해도 빈 값을 준다. route가 없다는 판정과 섞이지 않게 먼저 읽어 본다.
 	if _, err := os.ReadFile("/proc/net/route"); err != nil {
@@ -113,10 +124,60 @@ func readCheckNetwork() checkNetwork {
 			}
 		}
 	}
-	health := collectNetworkHealth()
+	if gateway, iface := checkRouteParts(network.Route); iface != "" {
+		network.Link = readLinuxCheckLink("/sys/class/net", iface)
+		if address, ok := checkGatewayAddress(gateway); ok {
+			network.GatewayNeighbor = readLinuxGatewayNeighbor(iface, address)
+		}
+	}
+	health := first
+	if waitCheckCounterSample(ctx, sampledAt, checkCounterInterval) {
+		health = collectNetworkHealth()
+		network.CountersGrown = checkCounterGrowth(first, health)
+	} else {
+		network.CountersSkipped = true
+	}
 	network.Conntrack, network.ConntrackOK = networkConntrackUsage(health)
 	network.TCPMemory, network.TCPMemoryOK = networkTCPMemoryUsage(health)
+	if data, err := os.ReadFile("/proc/sys/net/ipv4/tcp_max_orphans"); err == nil {
+		limit, ok := parseNetworkUint(strings.TrimSpace(string(data)), 10)
+		if orphans := health.Gauges["tcp_orphans"].Value; ok && limit > 0 && orphans != nil {
+			network.Orphans, network.OrphansOK = float64(*orphans)/float64(limit)*100, true
+		}
+	}
 	return network
+}
+
+func readLinuxCheckLink(classNet, iface string) checkNetworkLink {
+	read := func(name string) string {
+		data, _ := os.ReadFile(filepath.Join(classNet, iface, name))
+		return strings.TrimSpace(string(data))
+	}
+	return checkNetworkLink{State: read("operstate"), Carrier: read("carrier")}
+}
+
+// readLinuxGatewayNeighbor는 kernel neighbor table에서 gateway 항목의 NUD 상태를 읽는다. root가 필요 없다. 항목이 없거나
+// table을 읽지 못하면 빈 문자열이다.
+func readLinuxGatewayNeighbor(iface string, gateway netip.Addr) string {
+	family := byte(unix.AF_INET)
+	if gateway.Is6() {
+		family = unix.AF_INET6
+	}
+	table, err := syscall.NetlinkRIB(unix.RTM_GETNEIGH, int(family))
+	if err != nil {
+		return ""
+	}
+	messages, err := syscall.ParseNetlinkMessage(table)
+	if err != nil {
+		return ""
+	}
+	names := neighborInterfaceNames{}
+	for _, message := range messages {
+		if neighbor, ok := parseNeighborMessage(message, family, names); ok && neighbor.iface == iface && neighbor.ip == gateway.String() && !neighbor.deleted {
+			return neighbor.state
+		}
+	}
+	return ""
 }
 
 func readCheckFileHandles() (*infoFileHandles, error) {
@@ -148,4 +209,76 @@ func readCheckReboot() checkReboot {
 		}
 	}
 	return reboot
+}
+
+// smartctlTimeout은 장치 하나를 읽는 제한이다. 잠든 HDD는 깨어나는 데 몇 초가 걸린다.
+const smartctlTimeout = 10 * time.Second
+
+func readLinuxStorage(ctx context.Context) checkStorage {
+	var storage checkStorage
+	// md 모듈이 없는 커널에는 파일이 없다. RAID가 없는 것이고 읽기 실패가 아니다.
+	data, err := os.ReadFile("/proc/mdstat")
+	switch {
+	case err == nil:
+		storage.Arrays = parseMdstat(string(data))
+	case !errors.Is(err, fs.ErrNotExist):
+		storage.ArraysErr = err
+	}
+	storage.Devices, storage.DevicesErr = readSmartctlDevices(ctx)
+	return storage
+}
+
+// readSmartctlDevices는 smartctl이 찾은 장치마다 SMART 판정과 속성을 읽는다. 장치를 열려면 root가 필요하다.
+func readSmartctlDevices(ctx context.Context) ([]checkStorageDevice, error) {
+	path, err := exec.LookPath("smartctl")
+	if err != nil {
+		return nil, errCheckNoSmartctl
+	}
+	if os.Geteuid() != 0 {
+		return nil, fmt.Errorf("smartctl: %w", fs.ErrPermission)
+	}
+	run := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, smartctlTimeout)
+		defer cancel()
+		output, err := exec.CommandContext(ctx, path, args...).Output()
+		// smartctl의 exit status는 판정 bit를 담으므로 출력이 있으면 오류로 보지 않는다.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(output) > 0 {
+			return output, nil
+		}
+		return output, err
+	}
+	output, err := run("--scan", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("smartctl --scan: %w", err)
+	}
+	var scan smartctlScan
+	if err := json.Unmarshal(output, &scan); err != nil {
+		return nil, fmt.Errorf("smartctl --scan: %w", err)
+	}
+	var devices []checkStorageDevice
+	var failures []string
+	for _, entry := range scan.Devices {
+		output, err := run("--json", "-H", "-A", "-d", entry.Type, entry.Name)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", entry.Name, err))
+			continue
+		}
+		name := entry.Name
+		// megaraid,N나 cciss,N처럼 한 경로 뒤에 여러 디스크가 있으면 종류까지 붙여야 줄이 구분된다.
+		if strings.Contains(entry.Type, ",") {
+			name += " [" + entry.Type + "]"
+		}
+		device, err := parseSmartctlReport(name, output)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		device.Next = "smartctl -a -d " + entry.Type + " " + entry.Name
+		devices = append(devices, device)
+	}
+	if len(failures) > 0 {
+		return devices, errors.New(strings.Join(failures, "; "))
+	}
+	return devices, nil
 }

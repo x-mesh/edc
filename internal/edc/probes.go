@@ -12,6 +12,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,11 +152,26 @@ func httpStatusVerdict(code, expected int) (Status, *DiagnosticError) {
 	}
 	switch {
 	case code >= 500:
-		return StatusFail, nil
+		return StatusFail, &DiagnosticError{Kind: "status", Message: httpServerErrorMessage(code)}
 	case code >= 400:
 		return StatusWarn, nil
 	}
 	return StatusPass, nil
+}
+
+// httpServerErrorMessage는 5xx가 어디서 실패했는지 알린다. 502와 504는 proxy가 backend 대신 답한 것이다.
+func httpServerErrorMessage(code int) string {
+	status := strconv.Itoa(code)
+	if text := http.StatusText(code); text != "" {
+		status += " " + text
+	}
+	switch code {
+	case http.StatusBadGateway, http.StatusGatewayTimeout:
+		return T("observe.probe.server_error_gateway", status)
+	case http.StatusServiceUnavailable:
+		return T("observe.probe.server_error_unavailable", status)
+	}
+	return T("observe.probe.server_error", status)
 }
 
 func probeHTTP(ctx context.Context, rawURL string) Result {
@@ -367,7 +383,8 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	metrics["redirects"] = redirects
 	metrics["timing_scope"] = "final_request"
 	summary := fmt.Sprintf("HTTP %d, %s, %d bytes", response.StatusCode, total.Round(time.Millisecond), bytesRead)
-	if diagnostic != nil {
+	// 기대 status와 다르면 기대값을 요약줄에 보인다. 5xx 설명은 길어서 실패 상자에만 둔다.
+	if diagnostic != nil && options.expectStatus > 0 {
 		summary = fmt.Sprintf("%s, %s, %d bytes", diagnostic.Message, total.Round(time.Millisecond), bytesRead)
 	}
 	// hop 목록을 그리면 peer와 시간 값은 hop마다 그 아래에 있으므로 요약줄에서 뺀다.

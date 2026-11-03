@@ -54,6 +54,31 @@ func TestProbeHTTP(t *testing.T) {
 	}
 }
 
+// 5xx는 실패 상자에 원인을 남긴다. 요약줄은 status 번호만 보여 짧게 둔다.
+func TestProbeHTTPServerErrorFillsTheFailureBox(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	result := probeHTTP(context.Background(), server.URL)
+	if result.Status != StatusFail || !strings.HasPrefix(result.Summary, "HTTP 502, ") {
+		t.Fatalf("status = %s, summary = %q", result.Status, result.Summary)
+	}
+	var output strings.Builder
+	printResultDetail(&output, result, false, false)
+	for _, want := range []string{"phase   status", "cause   HTTP 502 Bad Gateway: a proxy or load balancer answered", "proxy error log"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("failure box misses %q:\n%s", want, output.String())
+		}
+	}
+	if got := httpServerErrorMessage(599); !strings.HasPrefix(got, "HTTP 599: ") {
+		t.Errorf("unknown 5xx = %q", got)
+	}
+}
+
 func TestProbeHTTPRedirectShowsFinalURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/start" {

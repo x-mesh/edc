@@ -31,6 +31,8 @@ expect:
     asymmetric: "%[1]s로 가는 답은 SYN이 도착한 %[3]s가 아니라 %[2]s로 나갑니다"
     ipsec_transport: "이 host에 이 출발지를 받는 IPsec transport mode policy가 있습니다. kernel은 복호화한 packet을 packet socket에 보여 주지 않으므로, 도착한 SYN을 edc가 놓칠 수 있습니다. ip -s xfrm state의 counter를 확인하세요"
     socket_drops: "packet socket이 packet %d개를 놓쳤습니다. 개수가 실제보다 적을 수 있습니다"
+    drop_lost: "drop 추적이 이벤트 %d개를 놓쳐서 이 port의 kernel drop이 빠져 있을 수 있습니다"
+    untracked: "연결 시도나 출발지가 너무 많아 연결 시도 %d개를 세지 않았습니다. --from으로 관측 범위를 좁히세요"
   evidence:
     sources: "출발지"
     return: "돌아가는 경로"

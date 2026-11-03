@@ -31,6 +31,8 @@ expect:
     asymmetric: "the reply to %[1]s leaves through %[2]s, not through %[3]s where the SYN arrived"
     ipsec_transport: "this host has IPsec transport mode policies for this source. The kernel does not show their decrypted packets to the packet socket, so edc can miss a SYN that arrives. Check the counters of ip -s xfrm state"
     socket_drops: "the packet socket dropped %d packets. The counts can be low"
+    drop_lost: "the drop trace lost %d events, so kernel drops for this port can be missing"
+    untracked: "%d connection attempts were not tracked because too many attempts or sources were live. Narrow the observation with --from"
   evidence:
     sources: "sources"
     return: "return path"

@@ -31,6 +31,8 @@ expect:
     asymmetric: "%[1]s への応答は SYN が届いた %[3]s ではなく %[2]s から出ます"
     ipsec_transport: "このホストにはこの送信元を受ける IPsec transport mode policy があります。kernel は復号した packet を packet socket に見せないため、届いた SYN を edc が見逃すことがあります。ip -s xfrm state の counter を確認してください"
     socket_drops: "packet socket が packet %d 件を取りこぼしました。件数は実際より少ない可能性があります"
+    drop_lost: "drop の追跡がイベントを %d 件取りこぼしたため、この port の kernel drop が欠けている可能性があります"
+    untracked: "接続試行か送信元が多すぎたため、接続試行 %d 件を数えませんでした。--from で観測範囲を絞ってください"
   evidence:
     sources: "送信元"
     return: "戻り経路"

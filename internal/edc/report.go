@@ -130,6 +130,7 @@ func promptReportCommand() (string, bool) {
 	items := []selectItem{
 		{label: T("cli.report.command_show"), value: "show"},
 		{label: T("cli.report.command_diff"), value: "diff"},
+		{label: T("cli.report.command_join"), value: "join"},
 		{label: T("cli.report.command_list"), value: "list"},
 	}
 	value, err := runSelect(file, os.Stdout, newSelectModel("cli.prompt.subcommand_title", "cli.prompt.subcommand_label", items))

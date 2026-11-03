@@ -223,9 +223,16 @@ func TestScanResultStatusRules(t *testing.T) {
 		t.Errorf("partial = %s %v, want warn with the partial note", partial.Status, partial.Warnings)
 	}
 
+	// 예산이 먼저 끝나 아무 port도 보지 못한 scan은 실패가 아니라 미확인이다.
 	nothing := scanResult(time.Now(), "example.test", "192.0.2.10", []portResult{port(22, portNotScanned)}, options, 2*time.Second)
-	if nothing.Status != StatusFail || nothing.Error == nil || nothing.Error.Kind != "timeout" {
-		t.Errorf("nothing scanned = %s %+v, want fail in the timeout phase", nothing.Status, nothing.Error)
+	if nothing.Status != StatusWarn || nothing.Error != nil || len(nothing.Warnings) != 1 || !strings.Contains(nothing.Warnings[0], "no port was checked") {
+		t.Errorf("nothing scanned = %s %+v %v, want warn with the none-checked note", nothing.Status, nothing.Error, nothing.Warnings)
+	}
+
+	// 일부 port만 오류를 냈고 나머지는 예산으로 보지 못했으면 모두 실패했다고 단정하지 않는다.
+	cut := scanResult(time.Now(), "example.test", "192.0.2.10", []portResult{{Port: 22, State: portError, Error: "no route to host"}, port(23, portNotScanned)}, options, 2*time.Second)
+	if cut.Status != StatusWarn || cut.Error != nil || len(cut.Warnings) != 2 || !strings.Contains(cut.Warnings[0], "no route to host") || !strings.Contains(cut.Warnings[1], "1 of 2 ports") {
+		t.Errorf("cut = %s %+v %v, want warn with the error and partial notes", cut.Status, cut.Error, cut.Warnings)
 	}
 
 	broken := scanResult(time.Now(), "example.test", "192.0.2.10", []portResult{{Port: 22, State: portError, Error: "no route to host"}}, options, 2*time.Second)

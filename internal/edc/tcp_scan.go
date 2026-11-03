@@ -361,8 +361,9 @@ func countPorts(results []portResult) portCounts {
 
 func (counts portCounts) answered() int { return counts.open + counts.refused }
 
-// scanResult는 scan 하나를 Result 하나로 만든다. 상태 규칙: 확인한 port가 없으면 FAIL, 응답 전에 모두 오류면 FAIL,
-// 아무 port도 답하지 않았거나 예산이 먼저 끝났으면 WARN, 그 밖에는 PASS다. 응답 없음은 닫힘으로 적지 않는다.
+// scanResult는 scan 하나를 Result 하나로 만든다. 상태 규칙: 모든 port를 확인했는데 응답 전에 모두 오류면 FAIL,
+// 아무 port도 답하지 않았거나 예산이 먼저 끝났으면 WARN, 그 밖에는 PASS다. 예산이 먼저 끝난 scan은 보지 못한 port가
+// 있으므로 모두 실패했다고 단정하지 않는다. 응답 없음은 닫힘으로 적지 않는다.
 func scanResult(started time.Time, host, address string, results []portResult, options tcpScanOptions, dialTimeout time.Duration) Result {
 	counts := countPorts(results)
 	total := len(results)
@@ -375,9 +376,7 @@ func scanResult(started time.Time, host, address string, results []portResult, o
 	evidence := scanEvidence(counts, results)
 	var result Result
 	switch {
-	case scanned == 0:
-		result = resultFromError(tcpScanProbeID, started, "timeout", errors.New(T("scan.error.none_checked", options.common.timeout)))
-	case counts.answered()+counts.noReply == 0:
+	case counts.notScanned == 0 && counts.answered()+counts.noReply == 0:
 		result = resultFromError(tcpScanProbeID, started, "network", errors.New(T("scan.error.all_errors", counts.firstError)))
 	default:
 		elapsed := time.Since(started)
@@ -395,7 +394,13 @@ func scanResult(started time.Time, host, address string, results []portResult, o
 		if counts.noReply > 0 {
 			result.Warnings = append(result.Warnings, T("scan.warning.no_reply", counts.noReply, dialTimeout))
 		}
-		if counts.notScanned > 0 {
+		if counts.errors > 0 && counts.answered()+counts.noReply == 0 {
+			result.Warnings = append(result.Warnings, T("scan.warning.errors", counts.errors, counts.firstError))
+		}
+		switch {
+		case scanned == 0:
+			result.Warnings = append(result.Warnings, T("scan.warning.none_checked", options.common.timeout))
+		case counts.notScanned > 0:
 			result.Warnings = append(result.Warnings, T("scan.warning.partial", scanned, total, options.common.timeout))
 		}
 	}

@@ -7,7 +7,6 @@ scan:
     parallel_range: "--parallel は 1 から %d の間でなければなりません"
     host_only: "tcp scan は port なしの host を受け取ります。port は --ports で選びます: %s"
     host_empty: "tcp scan には host が必要です"
-    none_checked: "--timeout %s 以内に確認した port がありません"
     all_errors: "すべての接続が応答を受け取る前に失敗しました: %s"
   progress: "port %d/%d · open %d"
   summary:
@@ -26,6 +25,8 @@ scan:
     error: "エラー"
     not_scanned: "未確認"
   warning:
+    none_checked: "--timeout %s 以内に確認した port がありません。--timeout か --parallel を上げてください。"
+    errors: "接続 %d 件が応答を受け取る前に失敗しました: %s"
     no_reply: "port %d 個が %s 以内に応答しませんでした。firewall が SYN を捨てたか、host が閉じた port に RST を返さない場合です。応答なしは closed と同じではありません。"
     partial: "--timeout %[3]s が終わる前に port %[2]d 個のうち %[1]d 個だけを確認しました。--timeout か --parallel を上げてください。"
   more: "+%d 個"

@@ -161,7 +161,7 @@ _edc() {
           _arguments $common '--resolver[비교할 DNS 서버]:IP' '1:subcommand:(lookup compare config)' '2:host:_hosts'
           ;;
         tcp)
-          _arguments $common '1:subcommand:(check)' '2:host\:port'
+          _arguments $common '--diagnose[이벤트 추적과 함께 반복 시도]' '--count[--diagnose 시도 횟수]:count' '--interval[--diagnose 시도 간격]:duration' '--from[expect: 출발 주소나 대역]:address' '--duration[expect: 기다릴 시간]:duration' '1:subcommand:(check expect)' '2:host\:port or port'
           ;;
         tls)
           _arguments $common '--min-days[인증서 남은 일수 하한, 미만이면 fail]:days' '1:subcommand:(check)' '2:host\:port'
@@ -170,7 +170,7 @@ _edc() {
           _arguments $common '--expect-status[기대 HTTP status code]:code' '1:subcommand:(check)' '2:URL'
           ;;
         net)
-          _arguments $common '1:subcommand:(interfaces route ping trace)' '2:host:_hosts'
+          _arguments $common '--max[mtu: 시도할 가장 큰 packet 크기]:bytes' '1:subcommand:(interfaces route ping trace mtu)' '2:host:_hosts'
           ;;
         route)
           case $words[2] in
@@ -270,7 +270,7 @@ _edc() {
           _arguments -S '--stream[capture할 stream]:stream:(stdout stderr)' '--output[append log 경로]:path:_files' '--command-display[marker에 기록할 command 범위]:mode:(full name none)' '1:separator:(--)' '2:command:_command_names -e' '*::command argument'
           ;;
         report)
-          _arguments '--json[JSON 출력 경로]:path:_files' '1:subcommand:(list show diff)' '*:report file:_files -g "*.json"'
+          _arguments '--json[JSON 출력 경로]:path:_files' '--redact[민감정보 redaction]' '1:subcommand:(list show diff join)' '*:report file:_files -g "*.json"'
           ;;
         remote)
           _arguments $common \
@@ -391,13 +391,13 @@ _edc() {
     dns)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "lookup compare config" -- "$cur")); else COMPREPLY=($(compgen -W "$common --resolver" -- "$cur")); fi ;;
     tcp)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check expect" -- "$cur")); else COMPREPLY=($(compgen -W "$common --diagnose --count --interval --from --duration" -- "$cur")); fi ;;
     tls)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check" -- "$cur")); else COMPREPLY=($(compgen -W "$common --min-days" -- "$cur")); fi ;;
     http)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check" -- "$cur")); else COMPREPLY=($(compgen -W "$common --expect-status" -- "$cur")); fi ;;
     net)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "interfaces route ping trace" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "interfaces route ping trace mtu" -- "$cur")); else COMPREPLY=($(compgen -W "$common --max" -- "$cur")); fi ;;
     route)
       if [[ $COMP_CWORD -eq 2 ]]; then
         COMPREPLY=($(compgen -W "check switch status rollback" -- "$cur"))
@@ -492,8 +492,8 @@ _edc() {
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--stream --output --command-display --" -- "$cur")); fi ;;
     update) COMPREPLY=($(compgen -W "--check --yes --timeout" -- "$cur")) ;;
     report)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list show diff" -- "$cur"))
-      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--json" -- "$cur"))
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list show diff join" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--json --redact" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     remote)
       case "$prev" in

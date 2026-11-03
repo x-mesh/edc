@@ -47,8 +47,19 @@ command:
       - "compare は --resolver がなければ 1.1.1.1 を使います。"
   tcp:
     summary: "TCP 接続の確認"
+    option:
+      diagnose: "接続を繰り返しながら TCP イベントと kernel drop を追跡し、疑わしい区間を示します"
+      count: "--diagnose: 試行回数 (既定 5)"
+      interval: "--diagnose: 試行間隔 (既定 1s)"
+      from: "expect: このアドレスや範囲から来た packet だけを数えます"
+      duration: "expect: 待つ時間、省略すると Ctrl-C まで"
     notes:
       - "接続できないと phase と cause を残し、exit code 1 を返します。"
+      - "--diagnose のイベント追跡は Linux で root として実行したときだけ行います。それ以外は接続だけを繰り返し、追跡は skip です。"
+      - "expect はすべての interface でこのホストに届いた SYN と、ホストが返した SYN-ACK や RST を数えます (Linux, root)。"
+      - "expect は packet header だけを読み、payload は残しません。"
+      - "--diagnose は追跡中、試行ごとに 300ms 待つため、試行間隔はそれより短くなりません。"
+      - "IPsec transport mode では expect は復号した SYN を見られず、kernel の drop 理由で判定します。"
   tls:
     summary: "証明書と handshake の確認"
     option:
@@ -117,6 +128,9 @@ command:
       route: "ホストへ向かう interface と gateway"
       ping: "ホストへ ping"
       trace: "ホストまでの経路、traceroute か tracepath を使用"
+      mtu: "分割されずにホストまで届く最大の packet"
+    option:
+      max: "mtu: 試す最大の packet サイズ (既定: 経路 interface の MTU)"
   route:
     summary: "gateway VM の default route を点検・切り替え・ロールバック"
     sub:
@@ -621,6 +635,8 @@ command:
       - "terminal ではビューアを開きます。f 絞り込み、e 詳細、q 終了。"
       - "diff は probe ごとの status の変化と metric の差を示します。"
       - "悪化した probe があれば exit code 1 を返します。"
+      - "join は tcp check --diagnose の report と tcp expect の report を順不同で読み、切れている区間を特定します。"
+      - "join は機器担当者が確認する項目を出力します。経路が動く場合のみ exit code 0 です。"
   log:
     summary: "コマンド出力と終了状態を記録"
     sub:

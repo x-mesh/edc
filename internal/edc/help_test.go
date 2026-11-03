@@ -377,7 +377,7 @@ func TestPlainCommandBriefLabelsTheForms(t *testing.T) {
 func TestSubcommandUsageKeepsTheOldText(t *testing.T) {
 	for name, want := range map[string]string{
 		"dns":        "edc dns <lookup|compare|config>",
-		"net":        "edc net <interfaces|route|ping|trace>",
+		"net":        "edc net <interfaces|route|ping|trace|mtu>",
 		"route":      "edc route <check|switch|status|rollback>",
 		"disk":       "edc disk <check|grow|detach>",
 		"change":     "edc change <apply|status|confirm|rollback>",

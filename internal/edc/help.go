@@ -115,7 +115,18 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "tcp", group: "diagnose",
-		usage:      []string{"edc tcp check [options] <host:port>"},
+		usage: []string{
+			"edc tcp check [options] <host:port>",
+			"edc tcp check --diagnose [--count N] [--interval 1s] [options] <host:port>",
+			"edc tcp expect [--from <ip|cidr>] [--duration 30s] [options] <port>",
+		},
+		options: []optionDoc{
+			{"--diagnose", "command.tcp.option.diagnose"},
+			{"--count N", "command.tcp.option.count"},
+			{"--interval 1s", "command.tcp.option.interval"},
+			{"--from <ip|cidr>", "command.tcp.option.from"},
+			{"--duration 30s", "command.tcp.option.duration"},
+		},
 		usesCommon: true,
 	},
 	{
@@ -144,13 +155,16 @@ var commandDocs = []commandDoc{
 			"edc net route [options] <host>",
 			"edc net ping [options] <host>",
 			"edc net trace [options] <host>",
+			"edc net mtu [--max N] [options] <host>",
 		},
+		options:    []optionDoc{{"--max N", "command.net.option.max"}},
 		usesCommon: true,
 		subcommands: []subcommandDoc{
 			{"interfaces", "edc net interfaces"},
 			{"route", "edc net route <host>"},
 			{"ping", "edc net ping <host>"},
 			{"trace", "edc net trace <host>"},
+			{"mtu", "edc net mtu <host>"},
 		},
 	},
 	{
@@ -575,6 +589,7 @@ var commandDocs = []commandDoc{
 			"edc report list [directory]",
 			"edc report show <file>",
 			"edc report diff [--json <path|->] <before> <after>",
+			reportJoinUsage,
 		},
 	},
 	{

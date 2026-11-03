@@ -47,8 +47,19 @@ command:
       - "compare uses 1.1.1.1 unless --resolver is given."
   tcp:
     summary: "TCP connection check"
+    option:
+      diagnose: "repeat the check while tracing TCP events and kernel drops, then name the likely segment"
+      count: "--diagnose: number of attempts (default 5)"
+      interval: "--diagnose: time between attempts (default 1s)"
+      from: "expect: count only packets from this address or range"
+      duration: "expect: how long to wait; omit it to wait until Ctrl-C"
     notes:
       - "A failure keeps the phase and the cause, and returns exit code 1."
+      - "--diagnose traces events only on Linux as root. Elsewhere it repeats the check and skips the trace."
+      - "expect counts SYNs that reach this host on every interface, and the SYN-ACK or RST that it sends back (Linux, root)."
+      - "expect reads packet headers only. It does not keep payload."
+      - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
+      - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
   tls:
     summary: "Certificate and handshake check"
     option:
@@ -117,6 +128,9 @@ command:
       route: "the interface and gateway toward a host"
       ping: "ping a host"
       trace: "the path to a host, with traceroute or tracepath"
+      mtu: "the largest packet that reaches a host without fragmentation"
+    option:
+      max: "mtu: largest packet size to try (default: MTU of the route interface)"
   route:
     summary: "Check, switch, and roll back the default route on a gateway VM"
     sub:
@@ -621,6 +635,8 @@ command:
       - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
+      - "join reads one tcp check --diagnose report and one tcp expect report, in either order, and names the broken segment."
+      - "join prints a checklist for the device engineer. Exit code 0 only if the path works."
   log:
     summary: "Record command output and exit status"
     sub:

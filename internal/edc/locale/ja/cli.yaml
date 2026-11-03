@@ -443,6 +443,7 @@ cli:
     description: "reportはsnapshotのJSONファイルとedc診断コマンドが--jsonで保存したレポートを読みます。\n一般JSON、report diffの結果、edc logテキストログは未対応です。"
     command_show: "show  — 保存した edc 診断結果を表示"
     command_diff: "diff  — 保存した edc 診断結果を二つ比較"
+    command_join: "join  — tcp diagnose と tcp expect の結果から切れた区間を判定"
     command_list: "list  — 保存した edc 診断結果の一覧"
     enter_path: "別の edc 診断結果ファイルパスを入力…"
     path_label: "%s ファイルパス (.json)"

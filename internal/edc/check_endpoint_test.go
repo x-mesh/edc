@@ -133,10 +133,16 @@ func TestProbeCheckEndpointsConnectsAndClassifiesFailures(t *testing.T) {
 	if outcomes[1].Kind != "connection_refused" || outcomes[1].Err == nil {
 		t.Fatalf("closed port = %+v", outcomes[1])
 	}
-	// --timeout이 endpoint 시간보다 짧으면 그쪽을 따른다.
-	short, cancelShort := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// --timeout이 endpoint 시간보다 짧으면 결과를 넘길 여유를 뺀 남은 시간을 쓴다.
+	short, cancelShort := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelShort()
-	if outcome := probeCheckEndpoint(short, listener.Addr().String()); outcome.Timeout > 50*time.Millisecond {
+	if outcome := probeCheckEndpoint(short, listener.Addr().String()); outcome.Timeout > 2*time.Second-checkCounterMargin || outcome.Timeout < time.Second {
+		t.Fatalf("timeout = %s", outcome.Timeout)
+	}
+	// 남은 시간이 여유보다 짧아도 최소 시간은 접속해 본다. 부모 ctx의 deadline은 그대로 적용된다.
+	tiny, cancelTiny := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelTiny()
+	if outcome := probeCheckEndpoint(tiny, listener.Addr().String()); outcome.Timeout != checkEndpointMinTimeout {
 		t.Fatalf("timeout = %s", outcome.Timeout)
 	}
 }

@@ -353,10 +353,14 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 		}
 	}
 	// endpoint는 설정에 대상이 있을 때만 접속한다. 대상이 없으면 결과에도 나오지 않는다.
-	if len(sources.requireEndpoints) > 0 && sources.endpoints != nil {
-		jobs["endpoint"] = func() func(*checkFacts) {
-			endpoints := sources.endpoints(ctx, sources.requireEndpoints)
-			return func(facts *checkFacts) { facts.Endpoints = endpoints }
+	if len(sources.requireEndpoints) > 0 {
+		if sources.endpoints == nil {
+			facts.Unsupported = append(facts.Unsupported, "endpoint")
+		} else {
+			jobs["endpoint"] = func() func(*checkFacts) {
+				endpoints := sources.endpoints(ctx, sources.requireEndpoints)
+				return func(facts *checkFacts) { facts.Endpoints = endpoints }
+			}
 		}
 	}
 	// 사용자 명령도 같은 방식으로 기다린다. 설정 파일이 안전하지 않으면 실행하지 않는다.

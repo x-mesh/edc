@@ -13,6 +13,9 @@ import (
 // checkEndpointTimeout은 endpoint 하나에 쓰는 접속 시간이다. --timeout이 더 짧으면 그쪽을 따른다.
 const checkEndpointTimeout = 5 * time.Second
 
+// checkEndpointMinTimeout은 --timeout이 아주 짧을 때도 접속에 쓰는 최소 시간이다.
+const checkEndpointMinTimeout time.Duration = 100 * time.Millisecond
+
 type checkEndpointOutcome struct {
 	Address string
 	// Connect는 접속에 걸린 시간이다. Err가 있으면 Kind는 classifyNetworkError의 분류이고 Timeout은 기다린 시간이다.
@@ -41,7 +44,15 @@ func probeCheckEndpoints(ctx context.Context, addresses []string) []checkEndpoin
 func probeCheckEndpoint(parent context.Context, address string) checkEndpointOutcome {
 	timeout := checkEndpointTimeout
 	if deadline, ok := parent.Deadline(); ok {
-		timeout = min(timeout, time.Until(deadline))
+		// 응답 없는 endpoint의 timeout이 collectCheckFacts의 deadline과 같은 순간에 끝나면 결과가 버려져 fail 대신 skip이
+		// 된다. 결과를 넘길 시간을 남기고, 남은 시간이 그보다 짧아도 한 번은 접속해 본다.
+		remaining := time.Until(deadline) - checkCounterMargin
+		if remaining < checkEndpointMinTimeout {
+			remaining = checkEndpointMinTimeout
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()

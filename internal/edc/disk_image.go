@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -273,7 +274,10 @@ func selectDiskImages(images []diskImage, mounts []string) ([]diskImage, error) 
 		found := false
 		for _, image := range leftover {
 			if image.volumeMount() == mount {
-				result = append(result, image)
+				// 같은 이미지를 두 번 떼면 두 번째 hdiutil이 실패해 이미 뗀 결과를 실패로 보인다.
+				if !slices.ContainsFunc(result, func(chosen diskImage) bool { return chosen.Device == image.Device }) {
+					result = append(result, image)
+				}
 				found = true
 				break
 			}

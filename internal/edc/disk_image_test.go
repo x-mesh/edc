@@ -160,3 +160,15 @@ func TestExecuteDiskDetachRefusesAMountThatIsNotALeftoverImage(t *testing.T) {
 		t.Fatalf("calls = %v, outcome = %+v", fake.calls, outcome)
 	}
 }
+
+func TestExecuteDiskDetachDetachesARepeatedMountOnce(t *testing.T) {
+	fake := &fakeDetach{}
+	mounts := []string{"/Volumes/Kiro CLI", "/Volumes/Kiro CLI/"}
+	outcome := executeDiskDetach(context.Background(), loadDiskImageFixture(t), diskDetachInput{mounts: mounts, confirm: diskAutoConfirm, run: fake.run})
+	if want := []string{"detach /dev/disk8"}; !slices.Equal(fake.calls, want) {
+		t.Fatalf("calls = %v, want %v", fake.calls, want)
+	}
+	if outcome.Result.Status != StatusPass || outcome.Result.Summary != T("disk.image.detach.summary", 1, 1) {
+		t.Fatalf("result = %+v", outcome.Result)
+	}
+}

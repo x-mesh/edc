@@ -51,8 +51,12 @@ command:
       diagnose: "接続を繰り返しながら TCP イベントと kernel drop を追跡し、疑わしい区間を示します"
       count: "試行回数 (既定 5)、指定すると --diagnose で実行"
       interval: "試行間隔 (既定 1s)、指定すると --diagnose で実行"
+      peer: "この host で ssh 経由で tcp expect を同時に実行し、両方の結果を結合します。指定すると --diagnose で実行"
       from: "expect: このアドレスや範囲から来た packet だけを数えます"
       duration: "expect: 待つ時間、省略すると Ctrl-C まで"
+      until: "expect: 最初の SYN (syn) か最初の handshake 完了 (handshake) で止まります"
+      stop_after: "expect: 接続試行を N 件見たら止まります"
+      listen: "expect: port に listener がなければ一時 listener を開き、handshake を完了させます"
       ports: "scan: 確認する port と範囲、カンマ区切り (既定: audit の要注意 port と一般的なサービス port)"
       parallel: "scan: 同時に開く接続数 (既定 32、最大 256)"
     notes:

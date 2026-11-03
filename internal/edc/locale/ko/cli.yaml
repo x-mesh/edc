@@ -443,6 +443,7 @@ cli:
     description: "report는 snapshot JSON 파일과 edc 진단 명령이 --json으로 저장한 보고서를 읽습니다.\n일반 JSON, report diff 결과, edc log 텍스트 로그는 지원하지 않습니다."
     command_show: "show  — 저장한 edc 진단 결과 보기"
     command_diff: "diff  — 저장한 edc 진단 결과 두 개 비교"
+    command_join: "join  — tcp diagnose와 tcp expect 결과로 끊긴 구간 판정"
     command_list: "list  — 저장한 edc 진단 결과 목록"
     enter_path: "다른 edc 진단 결과 파일 경로 직접 입력…"
     path_label: "%s 파일 경로 (.json)"

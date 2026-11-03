@@ -36,6 +36,7 @@ func hostCheckSources() (checkSources, bool) {
 		backup:         readDarwinBackup,
 		storage:        readDarwinStorage,
 		certs:          readCheckCerts,
+		endpoints:      probeCheckEndpoints,
 		kernelNext:     "ls -lt /Library/Logs/DiagnosticReports ~/Library/Logs/DiagnosticReports",
 		// 사용자로 실행하면 gui domain의 agent를, sudo로 실행하면 system domain의 daemon을 본다.
 		serviceNext: "launchctl list %s",
@@ -95,14 +96,29 @@ func readDarwinCheckDisks() ([]checkDisk, error) {
 	return result, nil
 }
 
-func readDarwinCheckNetwork() checkNetwork {
+func readDarwinCheckNetwork(ctx context.Context) checkNetwork {
 	network := checkNetwork{DNS: readInfoDNS("/")}
-	ctx := context.Background()
 	stdout, stderr, err := runDarwinCheckTool(ctx, "/sbin/route", "-n", "get", "default")
 	network.Route, network.RouteErr = parseCheckRouteGet(stdout, stderr, err)
 	if network.Route == "" && network.RouteErr == nil {
 		stdout, stderr, err = runDarwinCheckTool(ctx, "/sbin/route", "-n", "get", "-inet6", "default")
 		network.Route, network.RouteErr = parseCheckRouteGet(stdout, stderr, err)
+	}
+	gateway, iface := checkRouteParts(network.Route)
+	if iface == "" {
+		return network
+	}
+	if stdout, _, err := runDarwinCheckTool(ctx, "/sbin/ifconfig", iface); err == nil {
+		network.Link = parseIfconfigLink(stdout)
+	}
+	if address, ok := checkGatewayAddress(gateway); ok {
+		family := byte(darwinAFInet)
+		if address.Is6() {
+			family = darwinAFInet6
+		}
+		if neighbors, err := readDarwinNeighborTable(family, neighborInterfaceNames{}); err == nil {
+			network.GatewayNeighbor = neighbors[neighborKey{iface: iface, ip: address.String()}].state
+		}
 	}
 	return network
 }

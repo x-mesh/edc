@@ -1,0 +1,41 @@
+# edc net mtu の日本語メッセージ。
+mtu:
+  error:
+    max_range: "--max は 0 (interface の MTU) か %d から %d の間で指定してください"
+    no_interface: "%s への route interface が見つかりませんでした"
+    ping: "ping が失敗しました: %s"
+  progress:
+    first: "%d bytes を試行"
+    open: "%d bytes を試行 · %d 応答"
+    range: "%d bytes を試行 · %d 応答 · %d 失敗"
+  outcome:
+    reply: "応答"
+    too_big: "大きすぎる (ローカル)"
+    frag_needed: "fragmentation needed"
+    timeout: "応答なし"
+    denied: "権限なし"
+    error: "エラー"
+  evidence:
+    attempts: "試行"
+    reported: "通知された MTU %d"
+  summary:
+    measured: "経路 MTU %d, %s MTU %d, 差 %d, TCP MSS %d"
+    at_least: "経路 MTU %d 以上 (--max), %s MTU %d, TCP MSS %d"
+    incomplete: "経路 MTU %d から %d の間 (探索中断), %s MTU %d"
+  skip:
+    no_time: "timeout が短く probe を送る時間がありません"
+    denied: "ping の実行が許可されませんでした: %s"
+    blocked: "%d bytes でも ICMP echo の応答がないため、経路 MTU を測れません"
+  hint:
+    ipv6_root: "macOS の ping6 は root でないと Don't Fragment を設定できません。sudo で実行してください。"
+    tcp: "経路で ICMP echo が遮断されている可能性があります。edc tcp check %s のように TCP で確認してください。"
+    gap_small: "ヒント: %d bytes の差はよく PPPoE (8) や GRE、IP-in-IP (20–24) のオーバーヘッドです。"
+    gap_tunnel: "ヒント: %d bytes の差は IPsec ESP、WireGuard、VXLAN などの tunnel のオーバーヘッド (50–80 bytes) によく見られます。"
+    gap_large: "ヒント: %d bytes の差は tunnel の多重化か、経路上の MTU が小さい link を示します。"
+  warning:
+    incomplete: "timeout で探索を止めました。経路 MTU は %d から %d の間です"
+    stopped: "%d bytes で探索を止めました: %s"
+    kernel: "kernel が %d bytes を拒否しました。この host に対してより小さい経路 MTU をすでに保持しています"
+    icmp: "経路上の router が packet が大きすぎると通知しました (MTU %d)"
+    mss: "TCP は MSS が %d 以下なら収まります。TCP MSS を clamp するか、interface の MTU を %d にしてください。"
+    black_hole: "%d bytes より大きい packet が ICMP fragmentation needed なしに消えました。PMTU ブラックホールです。TCP handshake は成功しますが、大きな応答が止まります。"

@@ -630,7 +630,7 @@ func runParallelWith(ctx context.Context, probes []func(context.Context) Result,
 }
 
 func runReport(args []string) int {
-	usage := T("cli.usage", "edc report list [directory] | edc report show <file> | edc report diff [--json <path|->] <before> <after>")
+	usage := T("cli.usage", "edc report list [directory] | edc report show <file> | edc report diff [--json <path|->] <before> <after> | "+reportJoinUsage)
 	if len(args) == 0 {
 		choice, ok := promptReportCommand()
 		if !ok {
@@ -671,6 +671,8 @@ func runReport(args []string) int {
 		return runReportShow(args[1])
 	case "diff":
 		return runReportDiff(args[1:])
+	case "join":
+		return runReportJoin(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2

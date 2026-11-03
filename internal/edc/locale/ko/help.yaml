@@ -62,6 +62,8 @@ command:
       - "expect는 packet header만 읽고 payload는 남기지 않습니다."
       - "scan은 port마다 한 번 연결합니다. open은 handshake 성공, refused는 RST, no reply는 2s 안에 응답 없음이며 닫힘과 같지 않습니다."
       - "scan은 --timeout을 scan 전체의 예산으로 씁니다 (기본 60s). 확인하지 못한 port는 not scanned로 남깁니다."
+      - "--diagnose는 추적하는 동안 시도마다 300ms를 기다리므로 시도 간격이 그보다 짧아지지 않습니다."
+      - "IPsec transport mode에서는 expect가 복호화한 SYN을 보지 못하고 kernel drop 이유로 판정합니다."
   tls:
     summary: "인증서와 handshake 확인"
     option:
@@ -637,6 +639,8 @@ command:
       - "terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료."
       - "diff는 probe별 status 변화와 metric 차이를 보여 줍니다."
       - "악화된 probe가 있으면 exit code 1을 돌려줍니다."
+      - "join은 tcp check --diagnose report와 tcp expect report를 순서에 상관없이 읽어 끊긴 구간을 이름 짓습니다."
+      - "join은 장비 담당자가 볼 항목을 출력합니다. 경로가 동작할 때만 exit code 0입니다."
   log:
     summary: "명령 출력과 종료 상태 기록"
     sub:

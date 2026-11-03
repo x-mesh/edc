@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -88,6 +89,28 @@ func parseCheckRouteGet(output, stderr string, err error) (string, error) {
 		return "dev " + iface, nil
 	}
 	return gateway + " dev " + iface, nil
+}
+
+// parseIfconfigLink는 ifconfig 출력의 flag와 status를 operstate 이름으로 옮긴다. Ethernet과 Wi-Fi만 status 줄을 내고, utun처럼
+// status 줄이 없는 interface는 Linux의 가상 interface처럼 unknown이다.
+func parseIfconfigLink(output string) checkNetworkLink {
+	link := checkNetworkLink{State: "unknown"}
+	for index, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		switch {
+		case index == 0 && len(fields) >= 2:
+			_, flags, _ := strings.Cut(fields[1], "<")
+			flags, _, _ = strings.Cut(flags, ">")
+			if !slices.Contains(strings.Split(flags, ","), "UP") {
+				return checkNetworkLink{State: "down"}
+			}
+		case len(fields) == 2 && fields[0] == "status:" && fields[1] == "active":
+			link = checkNetworkLink{State: "up", Carrier: "1"}
+		case len(fields) == 2 && fields[0] == "status:" && fields[1] == "inactive":
+			link = checkNetworkLink{State: "down", Carrier: "0"}
+		}
+	}
+	return link
 }
 
 // readCheckContainers는 Linux와 macOS가 함께 쓴다. edc ctr과 같은 Docker Engine socket을 읽는다.

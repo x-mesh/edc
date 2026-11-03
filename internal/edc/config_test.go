@@ -523,9 +523,9 @@ func TestLookbackAndLimitFlagsFollowConfigThenFlag(t *testing.T) {
 }
 
 func TestConfigCheckTableLoadsAndValidates(t *testing.T) {
-	const table = "[check]\naccept = [\"reboot\"]\naccept_units = [\"systemd-networkd-wait-online.service\"]\nrequire_units = [\"nginx.service\"]\n\n[check.limits]\ndisk = [85, 95]\nmemory_available = [15, 5]\n"
+	const table = "[check]\naccept = [\"reboot\"]\naccept_units = [\"systemd-networkd-wait-online.service\"]\nrequire_units = [\"nginx.service\"]\nrequire_endpoints = [\"db.internal:5432\"]\n\n[check.limits]\ndisk = [85, 95]\nmemory_available = [15, 5]\n"
 	config, err := loadConfigAt(writeTOMLFixture(t, table))
-	want := checkConfig{Accept: []string{"reboot"}, AcceptUnits: []string{"systemd-networkd-wait-online.service"}, RequireUnits: []string{"nginx.service"},
+	want := checkConfig{Accept: []string{"reboot"}, AcceptUnits: []string{"systemd-networkd-wait-online.service"}, RequireUnits: []string{"nginx.service"}, RequireEndpoints: []string{"db.internal:5432"},
 		Limits: checkLimitsConfig{Disk: []float64{85, 95}, MemoryAvailable: []float64{15, 5}}}
 	if err != nil || !reflect.DeepEqual(config.Check, want) {
 		t.Fatalf("TOML check = %#v, error = %v", config.Check, err)
@@ -534,6 +534,7 @@ func TestConfigCheckTableLoadsAndValidates(t *testing.T) {
 		"[check]\naccept = [\"check.reboot\"]\n":                    "check.accept",
 		"[check]\naccept_units = [\"[bad\"]\n":                      "check.accept_units",
 		"[check]\nrequire_units = [\"\"]\n":                         "check.require_units",
+		"[check]\nrequire_endpoints = [\"db.internal\"]\n":          "check.require_endpoints",
 		"[check.limits]\ndisk = [95]\n":                             "check.limits.disk",
 		"[check.limits]\ndisk = [95, 90]\n":                         "check.limits.disk",
 		"[check.limits]\nusage = [nan, 90]\n":                       "check.limits.usage",
@@ -545,8 +546,8 @@ func TestConfigCheckTableLoadsAndValidates(t *testing.T) {
 			t.Errorf("config %q error = %v, want %s", content, err, field)
 		}
 	}
-	legacy, err := loadConfigAt(writeConfigFixture(t, "check:\n  accept_mounts: [/media/*]\n  limits:\n    usage: [70, 85]\n"))
-	if err != nil || !reflect.DeepEqual(legacy.Check, checkConfig{AcceptMounts: []string{"/media/*"}, Limits: checkLimitsConfig{Usage: []float64{70, 85}}}) {
+	legacy, err := loadConfigAt(writeConfigFixture(t, "check:\n  accept_mounts: [/media/*]\n  require_endpoints: [\"[::1]:22\"]\n  limits:\n    usage: [70, 85]\n"))
+	if err != nil || !reflect.DeepEqual(legacy.Check, checkConfig{AcceptMounts: []string{"/media/*"}, RequireEndpoints: []string{"[::1]:22"}, Limits: checkLimitsConfig{Usage: []float64{70, 85}}}) {
 		t.Fatalf("YAML check = %#v, error = %v", legacy.Check, err)
 	}
 
@@ -562,13 +563,13 @@ func TestConfigCheckTableLoadsAndValidates(t *testing.T) {
 }
 
 func TestConfigCheckRoutinesLoadAndValidate(t *testing.T) {
-	const table = "[check.routines.web]\nchecks = [\"service\", \"disk\"]\naccept = [\"cmd.health\"]\n\n[[check.routines.web.commands]]\nname = \"health\"\nrun = \"curl -fsS http://localhost:8080/health\"\ntimeout = \"5s\"\nlevel = \"warn\"\n"
+	const table = "[check.routines.web]\nchecks = [\"service\", \"disk\", \"endpoint\"]\naccept = [\"cmd.health\", \"endpoint\"]\nrequire_endpoints = [\"127.0.0.1:8080\"]\n\n[[check.routines.web.commands]]\nname = \"health\"\nrun = \"curl -fsS http://localhost:8080/health\"\ntimeout = \"5s\"\nlevel = \"warn\"\n"
 	config, err := loadConfigAt(writeTOMLFixture(t, table))
 	if err != nil {
 		t.Fatal(err)
 	}
 	routine := config.Check.Routines["web"]
-	if len(routine.Commands) != 1 || routine.Commands[0].Timeout.Duration != 5*time.Second || routine.Commands[0].Level != "warn" || len(routine.Checks) != 2 {
+	if len(routine.Commands) != 1 || routine.Commands[0].Timeout.Duration != 5*time.Second || routine.Commands[0].Level != "warn" || len(routine.Checks) != 3 || len(routine.RequireEndpoints) != 1 {
 		t.Fatalf("routine = %#v", routine)
 	}
 	command := "[[check.routines.web.commands]]\nname = \"%s\"\nrun = \"%s\"\n"
@@ -583,6 +584,7 @@ func TestConfigCheckRoutinesLoadAndValidate(t *testing.T) {
 		fmt.Sprintf(command, "a", "true") + "timeout = \"0s\"\n":                                 "commands[0].timeout",
 		fmt.Sprintf(command, "a", "true") + "level = \"info\"\n":                                 "commands[0].level",
 		"[check.routines.web.limits]\ndisk = [99, 90]\n":                                         "check.routines.web.limits.disk",
+		"[check.routines.web]\nrequire_endpoints = [\":443\"]\n":                                 "check.routines.web.require_endpoints",
 	} {
 		if _, err := loadConfigAt(writeTOMLFixture(t, content)); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("config %q error = %v, want %s", content, err, field)

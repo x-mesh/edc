@@ -62,6 +62,8 @@ command:
       - "expect reads packet headers only. It does not keep payload."
       - "scan connects once to each port: open is a handshake, refused is an RST, and no reply is no answer in 2s, which is not the same as closed."
       - "scan uses --timeout as the budget of the whole scan (default 60s). A port that it did not reach shows as not scanned."
+      - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
+      - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
   tls:
     summary: "Certificate and handshake check"
     option:
@@ -637,6 +639,8 @@ command:
       - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
+      - "join reads one tcp check --diagnose report and one tcp expect report, in either order, and names the broken segment."
+      - "join prints a checklist for the device engineer. Exit code 0 only if the path works."
   log:
     summary: "Record command output and exit status"
     sub:

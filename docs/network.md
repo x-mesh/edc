@@ -83,6 +83,35 @@ When a TCP connection fails across a tunnel or a firewall, run two commands. Run
 
 Save both results with `--json` and give them to the network engineer. The reports name the segment, so the engineer can read one policy, selector, or NAT rule instead of the whole device configuration.
 
+### Join the two reports
+
+`edc report join` reads the two saved reports and names the segment. The order of the two files does not matter.
+
+```bash
+edc report join [--json <path|->] [--redact] client.json target.json
+```
+
+The command matches the client source address with the `sources` of the target report. It applies the table above to the two verdicts. Then it prints a checklist with the real addresses for the device engineer.
+
+| Segment | Meaning | Status |
+|---|---|---|
+| `between_hosts` | The path between the hosts drops the SYN. | fail |
+| `return_path` | The answer of the target does not come back. This includes `no_reply` with `rst`. | fail |
+| `target_host` | The target host answers wrong or not at all. | fail |
+| `client_host` | The client host drops its own packets. | fail |
+| `path_quality` | The path works but loses packets. This includes `intermittent` with `completed`. | warn |
+| `works` | The path works. | pass |
+| `inconsistent` | The two reports do not describe the same flow. | warn |
+| `undetermined` | edc cannot name a segment, for example `reply_hidden_ipsec` or `dns_failed`. | warn |
+
+`refused` with `no_syn` gives `between_hosts`, because a device on the path sent the RST.
+
+The command adds a warning in three cases. The client port and the target port differ. The client source is not in the target sources, or `--from` excludes it. The two runs do not overlap in time. The verdict is then weaker. The output shows the start time skew between the two reports.
+
+If the client report has `basis: phases`, a drop on the client host is not excluded. The command says so.
+
+`--json` writes one object with `inputs`, `segment`, `status`, `summary`, `warnings`, `checklist`, `client`, `target`, and `time`. `--redact` hides addresses and host names. The exit code is `0` if the path works, `1` for any other segment, and `2` for a usage error or a file that is not an edc report.
+
 ### Diagnose a TCP path
 
 Run the check several times and get a verdict:

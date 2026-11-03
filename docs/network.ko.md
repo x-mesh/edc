@@ -69,6 +69,35 @@ tunnel이나 firewall 너머로 TCP 연결이 안 될 때는 명령 두 개를 �
 
 두 결과를 `--json`으로 저장해 네트워크 장비 담당자에게 넘기면, 장비 설정 전체 대신 판정된 구간의 policy, selector, NAT 규칙만 보면 됩니다.
 
+### 두 report 합치기
+
+`edc report join`은 저장한 두 report를 읽어 구간을 이름 짓습니다. 두 파일의 순서는 상관없습니다.
+
+```bash
+edc report join [--json <path|->] [--redact] client.json target.json
+```
+
+client의 출발지 주소를 대상 report의 `sources`와 맞춘 뒤 위 표를 두 판정에 적용하고, 실제 주소를 채운 장비 담당자용 확인 목록을 출력합니다.
+
+| 구간 | 뜻 | status |
+|---|---|---|
+| `between_hosts` | 두 host 사이의 경로가 SYN을 버립니다 | fail |
+| `return_path` | 대상의 응답이 돌아오지 않습니다. `no_reply`와 `rst`의 조합도 여기에 듭니다 | fail |
+| `target_host` | 대상 host가 잘못 답하거나 답하지 않습니다 | fail |
+| `client_host` | client host가 자기 packet을 버립니다 | fail |
+| `path_quality` | 경로는 동작하지만 packet을 잃습니다. `intermittent`와 `completed`의 조합도 여기에 듭니다 | warn |
+| `works` | 경로가 동작합니다 | pass |
+| `inconsistent` | 두 report가 같은 흐름을 담고 있지 않습니다 | warn |
+| `undetermined` | 구간을 정하지 못했습니다. `reply_hidden_ipsec`, `dns_failed` 등이 해당합니다 | warn |
+
+`refused`와 `no_syn`의 조합은 경로 위의 장비가 RST를 보낸 것이므로 `between_hosts`입니다.
+
+다음 세 경우에는 경고를 붙이고 판정이 약해집니다: client와 대상의 port가 다를 때, client 출발지가 대상의 출발지 목록에 없거나 `--from`이 걸러 냈을 때, 두 실행의 시간이 겹치지 않을 때. 출력에는 두 report의 시작 시각 차이가 보입니다.
+
+client report의 `basis`가 `phases`면 client host 자신의 drop을 배제하지 못하므로 그 사실을 함께 알립니다.
+
+`--json`은 `inputs`, `segment`, `status`, `summary`, `warnings`, `checklist`, `client`, `target`, `time`을 담은 객체 하나를 씁니다. `--redact`는 주소와 host 이름을 가립니다. exit code는 경로가 동작하면 `0`, 다른 구간이면 `1`, usage 오류나 edc report가 아닌 파일이면 `2`입니다.
+
 ### TCP 경로 진단
 
 연결을 여러 번 시도하고 의심 구간을 판정합니다.

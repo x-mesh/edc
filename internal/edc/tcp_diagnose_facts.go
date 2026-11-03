@@ -430,6 +430,19 @@ type diagnoseTarget struct {
 	source  string
 }
 
+// plainHTTPPorts는 흔히 평문 HTTP로 쓰는 port다. TCP 경로가 정상이면 다음은 서비스인데, 이 port에 TLS 점검을 권하면
+// handshake가 실패해 경로 문제로 오해하게 된다.
+var plainHTTPPorts = map[string]bool{"80": true, "3000": true, "5000": true, "8000": true, "8008": true, "8080": true, "8888": true}
+
+// serviceCheckCommand는 TCP 경로가 정상일 때 이어서 볼 명령이다. 평문 HTTP로 흔한 port면 http check를, 그 밖에는 TLS를 권한다.
+func serviceCheckCommand(host, port string) string {
+	address := net.JoinHostPort(host, port)
+	if plainHTTPPorts[port] {
+		return "edc http check http://" + address
+	}
+	return "edc tls check " + address
+}
+
 // diagnoseNext는 판정마다 이어서 볼 명령이다. 대상 host에서 실행할 명령은 shell 주석으로 실행할 곳을 붙여, 복사해도 그대로 돈다.
 func diagnoseNext(code string, target diagnoseTarget, totals diagnoseTotals) string {
 	onTarget := func(command string) string { return command + "  # " + T("diagnose.next.on_host", target.host) }
@@ -442,7 +455,7 @@ func diagnoseNext(code string, target diagnoseTarget, totals diagnoseTotals) str
 	}
 	switch code {
 	case diagnoseVerdictConnected:
-		return "edc tls check " + target.input
+		return serviceCheckCommand(target.host, target.port)
 	case diagnoseVerdictDegraded:
 		return "edc net mtu " + target.host
 	case diagnoseVerdictIntermittent, diagnoseVerdictNoReply:

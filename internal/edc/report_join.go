@@ -44,6 +44,9 @@ type joinClient struct {
 	Totals   joinTotals     `json:"totals"`
 	Drops    map[string]int `json:"drops,omitempty"`
 	Trace    string         `json:"trace,omitempty"`
+	// ConnectMS와 RTTUS는 연결된 시도의 connect 시간과 RTT다. 화면의 지연 줄에만 쓰고, join JSON의 키는 바꾸지 않는다.
+	ConnectMS []int `json:"-"`
+	RTTUS     []int `json:"-"`
 }
 
 type joinTotals struct {
@@ -342,7 +345,8 @@ func joinSummary(segment string, client joinClient, target joinTarget) string {
 	case joinSegmentPathQuality:
 		return T("join.segment.path_quality", source, destination)
 	case joinSegmentWorks:
-		return T("join.segment.works", source, destination)
+		// 주소는 머리말에 있고, 어떤 서비스를 볼지는 다음 단계가 port에 맞춰 알린다.
+		return T("join.segment.works")
 	case joinSegmentInconsistent:
 		return T("join.segment.inconsistent", client.Verdict, target.Verdict)
 	default:
@@ -397,7 +401,11 @@ func joinChecklist(segment string, client joinClient, target joinTarget) []strin
 			T("join.check.attempt_counts", client.Attempts, client.Totals.Connected, target.Counts.Attempts, target.Counts.Handshakes),
 		}
 	case joinSegmentWorks:
-		items = []string{T("join.check.tls", destination), T("join.check.application")}
+		host := client.Host
+		if host == "" {
+			host = targetIP
+		}
+		items = []string{serviceCheckCommand(host, port), T("join.check.application")}
 	case joinSegmentInconsistent:
 		items = []string{
 			T("join.check.same_port", joinValue(client.Port), target.Port),
@@ -504,6 +512,16 @@ func extractJoinClient(metrics map[string]interface{}) joinClient {
 	}
 	if attempts, ok := metrics["attempts"].([]interface{}); ok {
 		client.Attempts = len(attempts)
+		for _, raw := range attempts {
+			attempt, ok := raw.(map[string]interface{})
+			if !ok || attempt["outcome"] != diagnoseOutcomeConnected {
+				continue
+			}
+			client.ConnectMS = append(client.ConnectMS, joinInt(attempt["connect_ms"]))
+			if rtt, ok := attempt["rtt_us"]; ok {
+				client.RTTUS = append(client.RTTUS, joinInt(rtt))
+			}
+		}
 	}
 	if totals, ok := metrics["totals"].(map[string]interface{}); ok {
 		client.Totals = joinTotals{
@@ -690,35 +708,110 @@ func redactJoin(join reportJoin, client, target Report) reportJoin {
 }
 
 func printReportJoin(writer io.Writer, join reportJoin) {
-	fmt.Fprintf(writer, "join  %s + %s\n", join.Inputs.Client.Path, join.Inputs.Target.Path)
-	fmt.Fprintf(writer, "run   %s %s → %s %s\n\n", joinValue(join.Inputs.Client.Hostname), join.Inputs.Client.StartedAt.Format(time.RFC3339), joinValue(join.Inputs.Target.Hostname), join.Inputs.Target.StartedAt.Format(time.RFC3339))
 	client, target := join.Client, join.Target
 	// 한글 이름표는 byte 수와 표시 폭이 다르므로 표시 폭으로 열을 맞춘다.
 	label := func(key string) string { return liveCell(T(key), joinLabelWidth) }
-	fmt.Fprintf(writer, "%s %s  %s → %s  verdict %s (basis %s)\n", label("join.label.client"), tcpDiagnoseProbeID, joinValue(client.Source), joinValue(client.Target), joinValue(client.Verdict), joinValue(client.Basis))
-	fmt.Fprintf(writer, "         %s\n", T("join.line.client_counts", client.Totals.Connected, client.Attempts, client.Totals.Refused, client.Totals.Timeouts, client.Totals.SYNRetransmits, joinDropList(client.Drops)))
-	sourceText := T("join.line.target_overall", joinValue(target.OverallVerdict))
+	targetName := join.Inputs.Target.Hostname
+	if targetName == "" {
+		targetName = client.Host
+	}
+	fmt.Fprintln(writer, T("join.line.headline", joinEndpoint(join.Inputs.Client.Hostname, client.Source), joinEndpoint(targetName, joinTargetIP(client, target)), joinPort(client, target)))
+	// --peer의 client report는 파일이 아니라 "client"다. 파일에서 합쳤을 때만 어느 파일인지 보인다.
+	if join.Inputs.Client.Path != joinPeerClientLabel {
+		fmt.Fprintln(writer, T("join.line.reports", join.Inputs.Client.Path, join.Inputs.Target.Path))
+	}
+	fmt.Fprintln(writer)
+	clientLine := T("join.line.client_counts", client.Totals.Connected, client.Attempts, client.Totals.Refused, client.Totals.Timeouts, client.Totals.SYNRetransmits, joinDropList(client.Drops))
+	if client.Basis != "" {
+		clientLine += "  " + T("join.basis."+client.Basis)
+	}
+	fmt.Fprintf(writer, "%s %s\n", label("join.label.client"), clientLine)
+	arrival := T("join.line.target_overall", joinValue(target.OverallVerdict))
 	if target.SourceMatched {
-		sourceText = T("join.line.target_source", target.Source, joinValue(target.SourceInterface))
+		arrival = T("join.line.arrived_on", joinValue(target.SourceInterface))
 	}
-	fmt.Fprintf(writer, "%s %s  port %d  %s  verdict %s\n", label("join.label.target"), expectProbeID, target.Port, sourceText, joinValue(target.Verdict))
-	fmt.Fprintf(writer, "         %s\n", T("join.line.target_counts", target.Counts.SYNIn, target.Counts.SYNACKOut, target.Counts.RSTOut, target.Counts.Handshakes, joinDropList(target.DropReasons)))
+	fmt.Fprintf(writer, "%s %s · %s\n", label("join.label.target"), arrival, T("join.line.target_counts", target.Counts.SYNIn, target.Counts.SYNACKOut, target.Counts.RSTOut, target.Counts.Handshakes, joinDropList(target.DropReasons)))
 	if target.Return != nil {
-		fmt.Fprintf(writer, "         %s %s\n", T("expect.evidence.return"), joinReturnText(target.Return))
+		fmt.Fprintf(writer, "%s %s\n", strings.Repeat(" ", joinLabelWidth), joinReturnLine(target))
 	}
-	overlap := T("join.line.overlap_yes")
+	if latency := joinLatency(client); latency != "" {
+		fmt.Fprintf(writer, "%s %s\n", label("join.label.latency"), latency)
+	}
+	// 두 실행이 겹치면 시작 시각 차이는 원격이 준비되는 데 걸린 시간일 뿐이다. 겹치지 않을 때만 판정이 약해지므로 보인다.
 	if !join.Time.Overlap {
-		overlap = T("join.line.overlap_no", join.Time.Gap)
+		fmt.Fprintf(writer, "%s %s\n", label("join.label.time"), T("join.line.time", join.Time.Skew, T("join.line.overlap_no", join.Time.Gap)))
 	}
-	fmt.Fprintf(writer, "%s %s\n\n", label("join.label.time"), T("join.line.time", join.Time.Skew, overlap))
-	fmt.Fprintf(writer, "%s  %s  %s\n", T("join.label.verdict"), join.Segment, join.Summary)
+	fmt.Fprintf(writer, "\n%s  %s  %s\n", T("join.label.verdict"), join.Segment, join.Summary)
 	for _, warning := range join.Warnings {
 		fmt.Fprintf(writer, "%s %s\n", T("join.label.warning"), warning)
 	}
 	if len(join.Checklist) > 0 {
-		fmt.Fprintf(writer, "\n%s\n", T("join.label.checklist"))
+		heading := T("join.label.next")
+		// 장비 담당자가 볼 것은 두 host 사이의 장비가 의심될 때뿐이다. 그 밖에는 host에서 사용자가 이어서 볼 항목이다.
+		if join.Segment == joinSegmentBetweenHosts || join.Segment == joinSegmentReturnPath {
+			heading = T("join.label.checklist")
+		}
+		fmt.Fprintf(writer, "\n%s\n", heading)
 		for _, item := range join.Checklist {
 			fmt.Fprintf(writer, "  - %s\n", item)
 		}
 	}
+}
+
+// joinPeerClientLabel은 --peer가 파일 없이 합칠 때 client report에 붙이는 이름이다.
+const joinPeerClientLabel = "client"
+
+// joinEndpoint는 "jw-server (100.83.200.248)"다. 이름이 없거나 주소와 같으면 주소만 쓴다.
+func joinEndpoint(name, address string) string {
+	switch {
+	case address == "":
+		return joinValue(name)
+	case name == "" || name == address:
+		return address
+	}
+	return name + " (" + address + ")"
+}
+
+// joinReturnLine은 답이 도착 interface로 나가고 IPsec policy도 없으면 그 사실만 쓴다. rp_filter 값은 경로가 갈릴 때만
+// 의미가 있어, 그때 자세한 경로와 함께 보인다.
+func joinReturnLine(target joinTarget) string {
+	route := target.Return
+	if route.Error == "" && !route.IPsecPolicy && route.MatchesArrival != nil && *route.MatchesArrival {
+		return T("join.line.return_same", joinValue(route.Device))
+	}
+	return T("expect.evidence.return") + " " + joinReturnText(route)
+}
+
+// joinLatency는 연결된 시도의 RTT를 쓴다. RTT는 trace가 있을 때만 있으므로, 없으면 ms 단위의 connect 시간을 쓴다.
+func joinLatency(client joinClient) string {
+	if len(client.RTTUS) > 0 {
+		low, high, average := joinSpread(client.RTTUS)
+		return T("join.line.latency_rtt", joinMicros(low)+joinRangeEnd(low, high, joinMicros), joinMicros(average), len(client.RTTUS))
+	}
+	if len(client.ConnectMS) > 0 {
+		low, high, _ := joinSpread(client.ConnectMS)
+		millis := func(value int) string { return (time.Duration(value) * time.Millisecond).String() }
+		return T("join.line.latency_connect", millis(low)+joinRangeEnd(low, high, millis), len(client.ConnectMS))
+	}
+	return ""
+}
+
+func joinSpread(values []int) (low, high, average int) {
+	low, high = values[0], values[0]
+	total := 0
+	for _, value := range values {
+		low, high, total = min(low, value), max(high, value), total+value
+	}
+	return low, high, total / len(values)
+}
+
+func joinRangeEnd(low, high int, format func(int) string) string {
+	if low == high {
+		return ""
+	}
+	return "–" + format(high)
+}
+
+func joinMicros(value int) string {
+	return (time.Duration(value) * time.Microsecond).Round(10 * time.Microsecond).String()
 }

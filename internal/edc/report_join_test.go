@@ -148,7 +148,11 @@ func TestJoinReportsMatchesTheClientSourceAndFillsTheChecklist(t *testing.T) {
 	var output bytes.Buffer
 	printReportJoin(&output, join)
 	text := output.String()
-	for _, want := range []string{"join  c.json + t.json", T("join.label.verdict") + "  " + joinSegmentTargetHost, "10.8.0.2 → 10.9.0.5:5432", "verdict rst", "dev eth0"} {
+	for _, want := range []string{
+		"client-host (10.8.0.2) → target-host (10.9.0.5) port 5432", "reports  c.json + t.json",
+		T("join.label.verdict") + "  " + joinSegmentTargetHost, "arrived on eth0", "replies leave by the arrival interface (eth0)",
+		T("join.label.next"),
+	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output misses %q:\n%s", want, text)
 		}
@@ -235,7 +239,7 @@ func TestJoinReportsToleratesADNSFailureWithoutRoute(t *testing.T) {
 	}
 	var output bytes.Buffer
 	printReportJoin(&output, join)
-	if !strings.Contains(output.String(), T("join.value.unknown")+" → 10.9.0.5:5432") && !strings.Contains(output.String(), T("join.value.unknown")) {
+	if !strings.Contains(output.String(), "client-host → target-host port 5432") {
 		t.Fatalf("output:\n%s", output.String())
 	}
 }

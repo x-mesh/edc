@@ -718,15 +718,17 @@ func (run peerRun) finish(clientRaw, targetRaw Report) int {
 
 func (run peerRun) printSummary(client, target Report, join reportJoin) {
 	verbose := run.options.common.verbose
-	local := withoutEvidence(joinFindResult(client, tcpDiagnoseProbeID))
-	remote := withoutEvidence(joinFindResult(target, expectProbeID))
+	local := joinFindResult(client, tcpDiagnoseProbeID)
+	remote := joinFindResult(target, expectProbeID)
+	// 두 결과의 판정, 오류 상자, next는 아래 join 블록이 한 번에 보인다. 따로 보이면 같은 결론을 세 번 읽게 된다.
+	// 판정을 바꾸지 않는 경고(추적을 건너뛴 이유 같은)는 join에 없으므로 남긴다.
 	fmt.Fprintln(run.stdout)
-	fmt.Fprint(run.stdout, formatResultLine(local, run.color))
-	printResultDetail(run.stdout, local, verbose, run.color)
-	fmt.Fprint(run.stdout, formatPeerLine(newTextStyle(run.color).dim("["+run.name+"]")+" ", formatResultLine(remote, run.color), run.options.common.redact))
-	// expect의 실패에는 Error가 없어 실패 상자가 비므로 warning만 보인다. 원격의 next는 이 host의 next와 join 확인 항목이
-	// 이미 다루고, 어느 host에서 실행할지도 적혀 있지 않아 두 번 보이면 헷갈린다.
-	printResultDetail(run.stdout, Result{Probe: remote.Probe, Warnings: remote.Warnings}, verbose, run.color)
-	fmt.Fprintln(run.stdout)
+	printResultDetail(run.stdout, Result{Probe: local.Probe, Warnings: local.Warnings}, verbose, run.color)
+	if len(remote.Warnings) > 0 {
+		prefix := newTextStyle(run.color).dim("[" + run.name + "]")
+		for _, warning := range remote.Warnings {
+			fmt.Fprint(run.stdout, formatPeerLine(prefix+" ", T("join.label.warning")+" "+warning+"\n", run.options.common.redact))
+		}
+	}
 	printReportJoin(run.stdout, join)
 }

@@ -57,7 +57,7 @@ type joinTotals struct {
 }
 
 // joinTarget은 tcp.expect 결과에서 join이 읽는 값이다. Source는 client 출발지와 맞는 줄 하나이고, 맞는 줄이 없으면
-// SourceMatched가 false이고 Verdict는 전체 판정이다.
+// SourceMatched가 false다. 그때 Verdict는 대상이 다른 출발지만 봤으면 no_syn이고, 아무 출발지도 못 봤으면 전체 판정이다.
 type joinTarget struct {
 	Verdict           string            `json:"verdict"`
 	OverallVerdict    string            `json:"overall_verdict"`
@@ -215,7 +215,7 @@ func joinReports(clientSaved, targetSaved savedReport) reportJoin {
 		join.Warnings = append(join.Warnings, T("join.warning.from_excludes", target.From, client.Source))
 	}
 	if client.Source != "" && !target.SourceMatched && len(sources) > 0 {
-		join.Warnings = append(join.Warnings, T("join.warning.source_missing", client.Source, strings.Join(joinSourceAddresses(sources), ", "), target.Verdict))
+		join.Warnings = append(join.Warnings, T("join.warning.source_missing", client.Source, strings.Join(joinSourceAddresses(sources), ", ")))
 	}
 	segment, reasonKey := joinSegment(client.Verdict, client.Basis, target.Verdict)
 	// --from이 client 출발지를 걸러 냈으면 대상은 그 SYN을 볼 수 없었으므로 no_syn은 증거가 아니다.
@@ -556,6 +556,10 @@ func joinMatchSource(target joinTarget, sources []expectSource, clientSource str
 	if len(sources) > 0 {
 		lead := sources[0]
 		target.Source, target.Local, target.SourceInterface = lead.Address, lead.Local, lead.Interface
+		// 전체 판정은 다른 출발지의 결과다. 대상이 이 client의 SYN을 못 봤다는 것이 이 client에 대한 증거다.
+		if clientSource != "" {
+			target.Verdict = expectVerdictNoSYN
+		}
 	}
 	return target
 }

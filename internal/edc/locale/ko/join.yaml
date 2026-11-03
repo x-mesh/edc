@@ -25,7 +25,7 @@ join:
     no_overlap: "두 실행의 시간이 겹치지 않습니다: client %s, 대상 %s, 간격 %s. client가 보내는 동안 대상이 보고 있지 않았으므로 판정이 약합니다"
     port_mismatch: "client는 port %s에 연결했는데 대상은 port %d를 보았습니다"
     from_excludes: "대상은 --from %s만 보았는데, client 출발지 %s는 그 범위에 없습니다"
-    source_missing: "client 출발지 %s가 대상의 출발지 목록(%s)에 없습니다. 대상의 전체 판정 %s로 판정합니다"
+    source_missing: "client 출발지 %s가 대상의 출발지 목록(%s)에 없습니다. 대상이 이 client의 SYN을 보지 못했으므로 no_syn으로 판정합니다. 경로의 NAT가 출발지 주소를 바꿨을 수 있습니다"
   reason:
     basis_phases: "client는 이벤트 추적 없이 연결 phase만으로 판정했습니다. client host 자신의 drop을 배제하지 못합니다"
     rst_lost: "대상은 RST를 보냈는데 client는 응답을 받지 못했습니다. RST가 돌아오지 않았으므로 돌아오는 경로를 의심합니다"

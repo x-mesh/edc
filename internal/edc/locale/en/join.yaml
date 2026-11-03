@@ -25,7 +25,7 @@ join:
     no_overlap: "the two runs do not overlap in time: client %s, target %s, gap %s. The target did not watch while the client sent, so the verdict is weaker"
     port_mismatch: "the client connected to port %s, but the target watched port %d"
     from_excludes: "the target watched only --from %s, which does not include the client source %s"
-    source_missing: "the client source %s is not among the target sources (%s). The verdict uses the target's overall verdict %s"
+    source_missing: "the client source %s is not among the target sources (%s). The target saw no SYN from this client, so it is judged as no_syn. NAT on the path may have changed the source address"
   reason:
     basis_phases: "the client judged from connect phases only, without the event trace. A drop on the client host itself is not excluded"
     rst_lost: "the target sent RST, but the client saw no answer. The RST did not come back, which points at the return path"

@@ -182,14 +182,19 @@ func TestJoinReportsWarnsOnPortSourceAndFromMismatch(t *testing.T) {
 	started := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
 	client := joinTestSaved("c.json", started, 12000, "client-host", joinTestClient(diagnoseVerdictNoReply, diagnoseBasisTrace, started))
 
+	// 대상이 다른 출발지의 SYN만 봤으면 이 client의 SYN은 닿지 않은 것이다. 다른 출발지의 no_ack로 return_path를 판정하지 않는다.
 	other := joinTestTarget(expectVerdictNoACK, started, []expectSource{joinTestSource("10.8.0.9", expectVerdictNoACK)})
 	other.Metrics["port"] = float64(5433)
 	join := joinReports(client, joinTestSaved("t.json", started, 30000, "target-host", other))
-	if join.Segment != joinSegmentReturnPath || join.Target.SourceMatched || join.Target.Verdict != expectVerdictNoACK {
+	if join.Segment != joinSegmentBetweenHosts || join.Status != StatusFail || join.Target.SourceMatched || join.Target.Verdict != expectVerdictNoSYN || join.Target.OverallVerdict != expectVerdictNoACK {
 		t.Fatalf("fallback segment = %q target = %#v", join.Segment, join.Target)
 	}
-	if len(join.Warnings) != 2 || !strings.Contains(join.Warnings[0], "5433") || !strings.Contains(join.Warnings[1], "10.8.0.9") {
+	if len(join.Warnings) != 2 || !strings.Contains(join.Warnings[0], "5433") || !strings.Contains(join.Warnings[1], "10.8.0.9") || !strings.Contains(join.Warnings[1], "NAT") {
 		t.Fatalf("warnings = %v", join.Warnings)
+	}
+	checklist := strings.Join(join.Checklist, "\n")
+	if !strings.Contains(checklist, T("join.check.nat_exemption", "10.8.0.2", "10.9.0.5")) || strings.Contains(checklist, T("join.check.reverse_route", "10.9.0.5", "10.8.0.2")) {
+		t.Fatalf("checklist = %v", join.Checklist)
 	}
 
 	filtered := joinTestTarget(expectVerdictNoSYN, started, nil)

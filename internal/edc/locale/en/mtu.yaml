@@ -1,0 +1,40 @@
+# English messages for edc net mtu.
+mtu:
+  error:
+    max_range: "--max must be 0 (the interface MTU) or between %d and %d"
+    no_interface: "edc did not find the route interface for %s"
+    ping: "ping failed: %s"
+  progress:
+    first: "probing %d bytes"
+    open: "probing %d bytes · %d replied"
+    range: "probing %d bytes · %d replied · %d failed"
+  outcome:
+    reply: "reply"
+    too_big: "too big (local)"
+    frag_needed: "fragmentation needed"
+    timeout: "no reply"
+    denied: "not permitted"
+    error: "error"
+  evidence:
+    attempts: "attempts"
+    reported: "reported MTU %d"
+  summary:
+    measured: "path MTU %d, %s MTU %d, gap %d, TCP MSS %d"
+    at_least: "path MTU at least %d (--max), %s MTU %d, TCP MSS %d"
+  skip:
+    no_time: "the timeout left no time to send a probe"
+    denied: "ping cannot set Don't Fragment: %s"
+    blocked: "no ICMP echo reply at %d bytes, so edc cannot measure the path MTU"
+  hint:
+    ipv6_root: "macOS ping6 needs root to set Don't Fragment. Run with sudo."
+    tcp: "ICMP echo can be filtered on the path. Use a TCP-based check, such as edc tcp check %s."
+    gap_small: "Hint: a gap of %d bytes is often PPPoE (8) or GRE and IP-in-IP (20–24) overhead."
+    gap_tunnel: "Hint: a gap of %d bytes is typical of tunnel overhead such as IPsec ESP, WireGuard, or VXLAN (50–80 bytes)."
+    gap_large: "Hint: a gap of %d bytes points to nested tunnels or a link with a lower MTU on the path."
+  warning:
+    incomplete: "the search stopped at the timeout: the path MTU is between %d and %d"
+    stopped: "the search stopped at %d bytes: %s"
+    kernel: "the kernel refused %d bytes: it already holds a smaller path MTU for this host"
+    icmp: "a router on the path reported that the packet is too big (MTU %d)"
+    mss: "TCP fits when the MSS is %d or less. Clamp the TCP MSS or set the interface MTU to %d."
+    black_hole: "packets larger than %d bytes vanished without an ICMP fragmentation-needed reply: a PMTU black hole. TCP handshakes succeed, but large responses stall."

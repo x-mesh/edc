@@ -1,0 +1,40 @@
+# edc net mtu의 한국어 메시지.
+mtu:
+  error:
+    max_range: "--max는 0(interface MTU)이거나 %d에서 %d 사이여야 합니다"
+    no_interface: "%s로 가는 route interface를 찾지 못했습니다"
+    ping: "ping이 실패했습니다: %s"
+  progress:
+    first: "%d bytes 시도"
+    open: "%d bytes 시도 · %d 응답"
+    range: "%d bytes 시도 · %d 응답 · %d 실패"
+  outcome:
+    reply: "응답"
+    too_big: "너무 큼 (로컬)"
+    frag_needed: "fragmentation needed"
+    timeout: "응답 없음"
+    denied: "권한 없음"
+    error: "오류"
+  evidence:
+    attempts: "시도"
+    reported: "알려 준 MTU %d"
+  summary:
+    measured: "경로 MTU %d, %s MTU %d, 차이 %d, TCP MSS %d"
+    at_least: "경로 MTU %d 이상 (--max), %s MTU %d, TCP MSS %d"
+  skip:
+    no_time: "timeout이 짧아 probe를 보낼 시간이 없습니다"
+    denied: "ping이 Don't Fragment를 켜지 못했습니다: %s"
+    blocked: "%d bytes에서도 ICMP echo 응답이 없어 경로 MTU를 잴 수 없습니다"
+  hint:
+    ipv6_root: "macOS ping6은 root여야 Don't Fragment를 켤 수 있습니다. sudo로 실행하세요."
+    tcp: "경로에서 ICMP echo를 걸러 낼 수 있습니다. edc tcp check %s처럼 TCP로 점검하세요."
+    gap_small: "힌트: %d bytes 차이는 흔히 PPPoE(8)나 GRE, IP-in-IP(20–24)의 오버헤드입니다."
+    gap_tunnel: "힌트: %d bytes 차이는 IPsec ESP, WireGuard, VXLAN 같은 tunnel 오버헤드(50–80 bytes)에서 흔합니다."
+    gap_large: "힌트: %d bytes 차이는 tunnel이 겹쳤거나 경로에 MTU가 더 작은 link가 있음을 뜻합니다."
+  warning:
+    incomplete: "timeout에 걸려 탐색을 멈췄습니다. 경로 MTU는 %d에서 %d 사이입니다"
+    stopped: "%d bytes에서 탐색을 멈췄습니다: %s"
+    kernel: "kernel이 %d bytes를 거절했습니다. 이 host에 대해 더 작은 경로 MTU를 이미 알고 있습니다"
+    icmp: "경로의 router가 packet이 너무 크다고 알려 왔습니다 (MTU %d)"
+    mss: "TCP MSS가 %d 이하여야 맞습니다. TCP MSS를 clamp하거나 interface MTU를 %d에 맞추세요."
+    black_hole: "%d bytes보다 큰 packet이 ICMP fragmentation needed 없이 사라졌습니다. PMTU 블랙홀입니다. TCP handshake는 되지만 큰 응답이 멈춥니다."

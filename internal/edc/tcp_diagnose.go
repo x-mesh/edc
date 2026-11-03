@@ -56,7 +56,7 @@ func runTCPDiagnose(args []string, version string) int {
 	// runTCP가 이 flag를 보고 여기로 넘긴다. 값은 쓰지 않지만 정의해야 parse가 받는다.
 	set.Bool("diagnose", true, T("command.tcp.option.diagnose"))
 	set.IntVar(&options.count, "count", options.count, T("command.tcp.option.count"))
-	set.DurationVar(&options.interval, "interval", options.interval, T("command.tcp.option.interval"))
+	durationFlagVar(set, &options.interval, "interval", options.interval, T("command.tcp.option.interval"))
 	positional, err := parseInterspersed(set, args)
 	if err != nil {
 		return 2

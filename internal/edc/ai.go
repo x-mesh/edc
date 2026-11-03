@@ -48,7 +48,7 @@ func runAI(args []string, version string) int {
 	}
 	set := newFlagSet("ai")
 	set.SetOutput(os.Stderr)
-	poll := set.Duration("poll", aiDefaultPoll, T("command.ai.option.poll"))
+	poll := durationFlag(set, "poll", aiDefaultPoll, T("command.ai.option.poll"))
 	count := set.Int("count", 0, T("command.ai.option.count"))
 	jsonPath := set.String("json", configuredStringFallback(nil, activeConfig.Defaults.Common.JSON, ""), T("option.json"))
 	if err := set.Parse(args); err != nil {

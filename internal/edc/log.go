@@ -192,9 +192,9 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 	set.IntVar(&options.keepFiles, "keep-files", options.keepFiles, T("command.log.option.keep_files"))
 	set.StringVar(&options.restart, "restart", options.restart, T("command.log.option.restart"))
 	set.IntVar(&options.maxRestarts, "max-restarts", options.maxRestarts, T("command.log.option.max_restarts"))
-	set.DurationVar(&options.restartDelay, "restart-delay", options.restartDelay, T("command.log.option.restart_delay"))
-	set.DurationVar(&options.timeout, "timeout", options.timeout, T("command.log.option.timeout"))
-	set.DurationVar(&options.killAfter, "kill-after", options.killAfter, T("command.log.option.kill_after"))
+	durationFlagVar(set, &options.restartDelay, "restart-delay", options.restartDelay, T("command.log.option.restart_delay"))
+	durationFlagVar(set, &options.timeout, "timeout", options.timeout, T("command.log.option.timeout"))
+	durationFlagVar(set, &options.killAfter, "kill-after", options.killAfter, T("command.log.option.kill_after"))
 	if err := set.Parse(args[:separator]); err != nil {
 		return logOptions{}, false
 	}

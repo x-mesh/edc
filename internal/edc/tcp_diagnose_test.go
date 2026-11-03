@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -115,16 +116,25 @@ func TestCorrelateDiagnoseEventsByLocalPort(t *testing.T) {
 	}
 }
 
-func TestDiagnoseTraceRunKeepsOnlyTheTargetFlow(t *testing.T) {
+// 등록한 local port의 흐름만 남는다. 같은 대상에 연결한 다른 process의 흐름은 시도에 붙지 않으므로 처음부터 버린다.
+func TestDiagnoseTraceRunKeepsOnlyTheAttemptFlows(t *testing.T) {
 	run := newDiagnoseTraceRun("10.0.0.9:443")
+	run.expectPort(40001)
 	run.observe(captureEvent{SocketID: 7, Event: "tcp_state", Source: "10.0.0.5:40001", Destination: "10.0.0.9:443"})
 	run.observe(captureEvent{SocketID: 7, Event: "tcp_destroy"})
 	run.observe(captureEvent{SocketID: 8, Event: "tcp_state", Source: "10.0.0.5:40002", Destination: "10.0.0.9:80"})
 	run.observe(captureEvent{SocketID: 8, Event: "tcp_destroy"})
 	run.observe(captureEvent{Protocol: "drop", Source: "10.0.0.9:443", Destination: "10.0.0.5:40001"})
 	run.observe(captureEvent{Protocol: "drop", Source: "127.0.0.1:5000", Destination: "127.0.0.1:6000"})
+	// 같은 대상이라도 등록하지 않은 port의 event는 다른 process의 것이다.
+	run.observe(captureEvent{SocketID: 9, Event: "tcp_retransmit", Source: "10.0.0.5:50000", Destination: "10.0.0.9:443"})
+	run.observe(captureEvent{SocketID: 9, Event: "tcp_destroy"})
+	run.observe(captureEvent{Protocol: "drop", Source: "10.0.0.5:50000", Destination: "10.0.0.9:443"})
 	if got := len(run.snapshot()); got != 3 {
 		t.Fatalf("kept %d events, want 3: %+v", got, run.snapshot())
+	}
+	if status := run.status(); status.overflow != 0 {
+		t.Fatalf("filtered events counted as overflow: %d", status.overflow)
 	}
 }
 
@@ -227,8 +237,59 @@ func TestDiagnoseDialKnowsTheLocalPortOfAFailedConnect(t *testing.T) {
 	}
 	address := listener.Addr().String()
 	listener.Close()
-	attempt := diagnoseDial(context.Background(), address, time.Second, 1)
+	trace := newDiagnoseTraceRun(address)
+	attempt := diagnoseDial(context.Background(), address, time.Second, 1, trace)
 	if attempt.Outcome != diagnoseOutcomeRefused || attempt.Phase != "connection_refused" || attempt.LocalPort == 0 {
 		t.Fatalf("attempt = %+v", attempt)
+	}
+	// 시도가 bind한 port는 connect 전에 trace에 등록되어야 그 port의 event가 남는다.
+	trace.observe(captureEvent{SocketID: 1, Event: "tcp_state", Source: net.JoinHostPort("127.0.0.1", strconv.Itoa(attempt.LocalPort)), Destination: address})
+	if got := len(trace.snapshot()); got != 1 {
+		t.Fatalf("kept %d events for the dialed port, want 1", got)
+	}
+}
+
+// 상한을 넘은 event는 세기만 하고 남기지 않아서, 오래 도는 진단에서도 memory가 host의 흐름만큼 늘지 않는다.
+func TestDiagnoseTraceRunCapsRetainedEvents(t *testing.T) {
+	run := newDiagnoseTraceRun("10.0.0.9:443")
+	run.limit = 2
+	run.expectPort(40001)
+	for stamp := uint64(1); stamp <= 5; stamp++ {
+		run.observe(captureEvent{SocketID: 7, TimestampNS: stamp, Event: "tcp_retransmit", Source: "10.0.0.5:40001", Destination: "10.0.0.9:443"})
+	}
+	status := run.status()
+	if got := len(run.snapshot()); got != 2 || status.overflow != 3 {
+		t.Fatalf("kept %d events with overflow %d, want 2 and 3", got, status.overflow)
+	}
+	row := diagnoseTraceRow(status, diagnoseTotals{})
+	if row.Status != StatusWarn {
+		t.Fatalf("trace row with overflow = %s, want %s", row.Status, StatusWarn)
+	}
+}
+
+// skip 이유는 collector가 멈추면 뒤늦게 바뀌므로, 줄을 그리는 goroutine과 같은 mutex 아래에서 읽고 써야 한다.
+func TestDiagnoseTraceRunGuardsSkipReasons(t *testing.T) {
+	run := newDiagnoseTraceRun("10.0.0.9:443")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 1000; index++ {
+			run.setTCPSkip("stopped")
+			run.setDropSkip("")
+			run.warn("late")
+		}
+	}()
+	for index := 0; index < 1000; index++ {
+		_ = run.tcpTraced()
+		_ = run.dropTraced()
+		_ = diagnoseTraceRow(run.status(), diagnoseTotals{})
+	}
+	<-done
+	status := run.status()
+	if status.tcpSkip != "stopped" || status.dropSkip != "" || len(status.warnings) != 1000 {
+		t.Fatalf("status = %+v", status)
+	}
+	if run.tcpTraced() || !run.dropTraced() {
+		t.Fatal("tcpTraced and dropTraced should follow the skip reasons")
 	}
 }

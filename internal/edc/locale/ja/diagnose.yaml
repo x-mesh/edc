@@ -29,6 +29,7 @@ diagnose:
     drop_counts: "フローを止めた drop %d、その他の drop %d"
     drop_skipped: "drop は skip"
     lost: "追跡がイベントを %d 件取りこぼしたため、件数は実際より少ないことがあります"
+    overflow: "追跡はイベントを最初の %d 件までしか残さず %d 件を数えなかったため、件数は実際より少ないことがあります"
     failed: "イベント追跡が止まりました: %v"
     not_ready: "イベント追跡が %s 以内に始まりませんでした"
     linux_only: "イベント追跡には Linux の eBPF が必要ですが、この host は %s です"

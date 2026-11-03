@@ -205,7 +205,7 @@ func diagnoseTCP(ctx context.Context, target diagnoseTarget, options tcpDiagnose
 	traced := trace.tcpTraced() || trace.dropTraced()
 	var attempts []diagnoseAttempt
 	for index := 1; index <= options.count && ctx.Err() == nil; index++ {
-		attempt := diagnoseDial(ctx, target.address, options.common.timeout, index)
+		attempt := diagnoseDial(ctx, target.address, options.common.timeout, index, trace)
 		// Ctrl-C로 끊긴 시도는 대상의 응답이 아니므로 세지 않는다.
 		if ctx.Err() != nil && attempt.Outcome != diagnoseOutcomeConnected {
 			break
@@ -223,10 +223,11 @@ func diagnoseTCP(ctx context.Context, target diagnoseTarget, options tcpDiagnose
 		}
 	}
 	trace.finish()
-	facts := diagnoseFacts{attempts: correlateDiagnoseEvents(attempts, trace.snapshot(), target.address), tcpTraced: trace.tcpTraced(), dropTraced: trace.dropTraced()}
+	status := trace.status()
+	facts := diagnoseFacts{attempts: correlateDiagnoseEvents(attempts, trace.snapshot(), target.address), tcpTraced: status.tcpSkip == "", dropTraced: status.dropSkip == ""}
 	totals := facts.totals()
-	show(diagnoseTraceRow(trace, totals))
-	return diagnoseResult(started, target, options, routeRow, routeMetrics, trace, facts, totals)
+	show(diagnoseTraceRow(status, totals))
+	return diagnoseResult(started, target, options, routeRow, routeMetrics, status, facts, totals)
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) {
@@ -285,12 +286,14 @@ func diagnoseRoute(ctx context.Context, address string, timeout time.Duration) (
 }
 
 // diagnoseDial은 tcp check와 같은 dialer로 한 번 연결한다. connect 전에 port 0으로 bind해 local port를 먼저 정하므로,
-// 응답이 없거나 거부된 시도의 SYN, RST, drop event도 port로 이 시도에 붙일 수 있다.
-func diagnoseDial(ctx context.Context, address string, timeout time.Duration, index int) diagnoseAttempt {
+// 응답이 없거나 거부된 시도의 SYN, RST, drop event도 port로 이 시도에 붙일 수 있다. port는 connect 전에 trace에 등록해 첫
+// SYN event부터 남긴다.
+func diagnoseDial(ctx context.Context, address string, timeout time.Duration, index int, trace *diagnoseTraceRun) diagnoseAttempt {
 	attempt := diagnoseAttempt{Index: index}
 	dialer := &net.Dialer{Control: func(network, _ string, raw syscall.RawConn) error {
 		port, err := bindEphemeralPort(network, raw)
 		attempt.LocalPort = port
+		trace.expectPort(port)
 		return err
 	}}
 	started := time.Now()
@@ -345,32 +348,33 @@ func diagnoseAttemptRow(attempt diagnoseAttempt, options tcpDiagnoseOptions, tra
 	}
 }
 
-func diagnoseTraceRow(trace *diagnoseTraceRun, totals diagnoseTotals) Result {
+func diagnoseTraceRow(trace diagnoseTraceStatus, totals diagnoseTotals) Result {
 	row := Result{Probe: diagnoseRowTrace, Status: StatusPass}
-	if !trace.tcpTraced() && !trace.dropTraced() {
+	tcpTraced, dropTraced := trace.tcpSkip == "", trace.dropSkip == ""
+	if !tcpTraced && !dropTraced {
 		row.Status = StatusSkip
 		row.Summary = T("diagnose.trace.skipped", trace.tcpSkip)
 		return row
 	}
 	var parts []string
-	if trace.tcpTraced() {
+	if tcpTraced {
 		parts = append(parts, T("diagnose.trace.tcp_counts", totals.SYNRetransmits, totals.Retransmits, totals.ResetsReceived, totals.ResetsSent))
 	} else {
 		parts = append(parts, T("diagnose.trace.tcp_skipped"))
 	}
-	if trace.dropTraced() {
+	if dropTraced {
 		parts = append(parts, T("diagnose.trace.drop_counts", totals.dropCount(), totals.otherDropCount()))
 	} else {
 		parts = append(parts, T("diagnose.trace.drop_skipped"))
 	}
-	if len(trace.warnings) > 0 || trace.lost > 0 || !trace.tcpTraced() || !trace.dropTraced() {
+	if len(trace.warnings) > 0 || trace.lost > 0 || trace.overflow > 0 || !tcpTraced || !dropTraced {
 		row.Status = StatusWarn
 	}
 	row.Summary = strings.Join(parts, ", ")
 	return row
 }
 
-func diagnoseResult(started time.Time, target diagnoseTarget, options tcpDiagnoseOptions, routeRow Result, routeMetrics map[string]interface{}, trace *diagnoseTraceRun, facts diagnoseFacts, totals diagnoseTotals) Result {
+func diagnoseResult(started time.Time, target diagnoseTarget, options tcpDiagnoseOptions, routeRow Result, routeMetrics map[string]interface{}, trace diagnoseTraceStatus, facts diagnoseFacts, totals diagnoseTotals) Result {
 	code, status := diagnoseVerdict(facts)
 	message := diagnoseVerdictMessage(code, facts, totals)
 	result := Result{
@@ -394,7 +398,13 @@ func diagnoseResult(started time.Time, target diagnoseTarget, options tcpDiagnos
 	if trace.lost > 0 {
 		result.Warnings = append(result.Warnings, T("diagnose.trace.lost", trace.lost))
 	}
-	traceMetrics := map[string]interface{}{"tcp": diagnoseTraceState(trace.tcpSkip), "drop": diagnoseTraceState(trace.dropSkip), "lost_events": trace.lost}
+	if trace.overflow > 0 {
+		result.Warnings = append(result.Warnings, T("diagnose.trace.overflow", diagnoseTraceEventLimit, trace.overflow))
+	}
+	traceMetrics := map[string]interface{}{
+		"tcp": diagnoseTraceState(trace.tcpSkip), "drop": diagnoseTraceState(trace.dropSkip),
+		"lost_events": trace.lost, "overflow_events": trace.overflow,
+	}
 	if trace.tcpSkip != "" {
 		traceMetrics["tcp_skip_reason"] = trace.tcpSkip
 	}

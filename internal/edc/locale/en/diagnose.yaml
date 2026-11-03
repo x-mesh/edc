@@ -29,6 +29,7 @@ diagnose:
     drop_counts: "blocking drops %d, other drops %d"
     drop_skipped: "drops skipped"
     lost: "the trace lost %d events, so the counts can be low"
+    overflow: "the trace kept only the first %d events and left %d uncounted, so the counts can be low"
     failed: "the event trace stopped: %v"
     not_ready: "the event trace did not start within %s"
     linux_only: "the event trace needs eBPF on Linux, and this host runs %s"

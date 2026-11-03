@@ -11,6 +11,7 @@ import (
 func startDiagnoseTrace(_ context.Context, destination string) *diagnoseTraceRun {
 	run := newDiagnoseTraceRun(destination)
 	reason := T("diagnose.trace.linux_only", runtime.GOOS)
-	run.tcpSkip, run.dropSkip = reason, reason
+	run.setTCPSkip(reason)
+	run.setDropSkip(reason)
 	return run
 }

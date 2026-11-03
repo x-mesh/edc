@@ -193,7 +193,7 @@ func joinReports(clientSaved, targetSaved savedReport) reportJoin {
 	targetResult := joinFindResult(targetSaved.report, expectProbeID)
 	client := extractJoinClient(clientResult.Metrics)
 	target, sources := extractJoinTarget(targetResult.Metrics)
-	target = joinMatchSource(target, sources, client.Source)
+	target = joinMatchSource(target, sources, client.Source, joinClientReached(client.Verdict))
 	join := reportJoin{
 		SchemaVersion: "1.0",
 		Inputs: reportJoinInputs{
@@ -540,7 +540,13 @@ func extractJoinTarget(metrics map[string]interface{}) (joinTarget, []expectSour
 
 // joinMatchSource는 client 출발지와 주소가 같은 대상 줄을 고른다. sources는 시도 수 내림차순이라 여러 interface에
 // 같은 출발지가 보이면 첫 줄을 쓴다.
-func joinMatchSource(target joinTarget, sources []expectSource, clientSource string) joinTarget {
+// joinClientReached는 client가 한 번이라도 연결된 판정이다. 이때 대상이 client 출발지를 못 봤다면 SYN이 안 온 것이 아니라
+// 경로의 NAT가 출발지를 바꾼 것이므로, 다른 출발지의 결과를 그대로 쓰고 경고만 남긴다.
+func joinClientReached(verdict string) bool {
+	return verdict == diagnoseVerdictConnected || verdict == diagnoseVerdictDegraded || verdict == diagnoseVerdictIntermittent
+}
+
+func joinMatchSource(target joinTarget, sources []expectSource, clientSource string, clientReached bool) joinTarget {
 	for _, source := range sources {
 		if clientSource == "" || source.Address != clientSource {
 			continue
@@ -556,8 +562,9 @@ func joinMatchSource(target joinTarget, sources []expectSource, clientSource str
 	if len(sources) > 0 {
 		lead := sources[0]
 		target.Source, target.Local, target.SourceInterface = lead.Address, lead.Local, lead.Interface
-		// 전체 판정은 다른 출발지의 결과다. 대상이 이 client의 SYN을 못 봤다는 것이 이 client에 대한 증거다.
-		if clientSource != "" {
+		// 전체 판정은 다른 출발지의 결과다. client가 연결되지 않았다면 대상이 이 client의 SYN을 못 봤다는 것이 이 client에
+		// 대한 증거다.
+		if clientSource != "" && !clientReached {
 			target.Verdict = expectVerdictNoSYN
 		}
 	}

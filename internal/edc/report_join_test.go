@@ -197,6 +197,14 @@ func TestJoinReportsWarnsOnPortSourceAndFromMismatch(t *testing.T) {
 		t.Fatalf("checklist = %v", join.Checklist)
 	}
 
+	// NAT 뒤의 client가 연결됐고 대상이 변환된 출발지만 봤으면 경로는 동작한 것이다. 경고만 남긴다.
+	connected := joinTestSaved("c.json", started, 12000, "client-host", joinTestClient(diagnoseVerdictConnected, diagnoseBasisPhases, started))
+	natted := joinTestTarget(expectVerdictCompleted, started, []expectSource{joinTestSource("10.8.0.9", expectVerdictCompleted)})
+	join = joinReports(connected, joinTestSaved("t.json", started, 30000, "target-host", natted))
+	if join.Segment != joinSegmentWorks || join.Target.Verdict != expectVerdictCompleted || len(join.Warnings) != 1 || !strings.Contains(join.Warnings[0], "NAT") {
+		t.Fatalf("natted segment = %q target = %#v warnings = %v", join.Segment, join.Target, join.Warnings)
+	}
+
 	filtered := joinTestTarget(expectVerdictNoSYN, started, nil)
 	filtered.Metrics["from"] = "10.8.1.0/24"
 	join = joinReports(client, joinTestSaved("t.json", started, 30000, "target-host", filtered))

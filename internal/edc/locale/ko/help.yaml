@@ -47,8 +47,17 @@ command:
       - "compare는 --resolver가 없으면 1.1.1.1을 사용합니다."
   tcp:
     summary: "TCP 연결 확인"
+    option:
+      diagnose: "연결을 여러 번 시도하면서 TCP 이벤트와 kernel drop을 함께 추적하고, 의심 구간을 알려 줍니다"
+      count: "--diagnose: 시도 횟수 (기본 5)"
+      interval: "--diagnose: 시도 간격 (기본 1s)"
+      from: "expect: 이 주소나 대역에서 온 packet만 셉니다"
+      duration: "expect: 기다릴 시간, 생략하면 Ctrl-C까지"
     notes:
       - "연결하지 못하면 phase와 cause를 남기고 exit code 1을 돌려줍니다."
+      - "--diagnose의 이벤트 추적은 Linux에서 root로 실행할 때만 합니다. 그 밖에는 연결만 반복하고 추적은 skip입니다."
+      - "expect는 모든 interface에서 이 host에 도착한 SYN과, host가 돌려보낸 SYN-ACK나 RST를 셉니다 (Linux, root)."
+      - "expect는 packet header만 읽고 payload는 남기지 않습니다."
   tls:
     summary: "인증서와 handshake 확인"
     option:
@@ -117,6 +126,9 @@ command:
       route: "host로 가는 interface와 gateway"
       ping: "host에 ping"
       trace: "host까지의 경로, traceroute나 tracepath 사용"
+      mtu: "조각나지 않고 host까지 가는 가장 큰 packet"
+    option:
+      max: "mtu: 시도할 가장 큰 packet 크기 (기본: 경로 interface의 MTU)"
   route:
     summary: "gateway VM의 default route를 점검·전환·원복"
     sub:

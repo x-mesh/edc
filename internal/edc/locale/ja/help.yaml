@@ -47,8 +47,17 @@ command:
       - "compare は --resolver がなければ 1.1.1.1 を使います。"
   tcp:
     summary: "TCP 接続の確認"
+    option:
+      diagnose: "接続を繰り返しながら TCP イベントと kernel drop を追跡し、疑わしい区間を示します"
+      count: "--diagnose: 試行回数 (既定 5)"
+      interval: "--diagnose: 試行間隔 (既定 1s)"
+      from: "expect: このアドレスや範囲から来た packet だけを数えます"
+      duration: "expect: 待つ時間、省略すると Ctrl-C まで"
     notes:
       - "接続できないと phase と cause を残し、exit code 1 を返します。"
+      - "--diagnose のイベント追跡は Linux で root として実行したときだけ行います。それ以外は接続だけを繰り返し、追跡は skip です。"
+      - "expect はすべての interface でこのホストに届いた SYN と、ホストが返した SYN-ACK や RST を数えます (Linux, root)。"
+      - "expect は packet header だけを読み、payload は残しません。"
   tls:
     summary: "証明書と handshake の確認"
     option:
@@ -117,6 +126,9 @@ command:
       route: "ホストへ向かう interface と gateway"
       ping: "ホストへ ping"
       trace: "ホストまでの経路、traceroute か tracepath を使用"
+      mtu: "分割されずにホストまで届く最大の packet"
+    option:
+      max: "mtu: 試す最大の packet サイズ (既定: 経路 interface の MTU)"
   route:
     summary: "gateway VM の default route を点検・切り替え・ロールバック"
     sub:

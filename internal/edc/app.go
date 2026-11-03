@@ -273,16 +273,21 @@ func runDNS(args []string, version string) int {
 
 func runTCP(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc tcp", []string{"check"})
+		choice, ok := promptMissingChoice("edc tcp", []string{"check", "expect"})
 		if !ok {
-			fmt.Fprintln(os.Stderr, T("cli.usage", "edc tcp check <host:port>"))
+			fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 			return 2
 		}
 		args = []string{choice}
 	}
-	if args[0] != "check" {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc tcp check <host:port>"))
+	switch {
+	case args[0] == "expect":
+		return runTCPExpect(args[1:], version)
+	case args[0] != "check":
+		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
+	case hasBoolFlag(args[1:], "diagnose"):
+		return runTCPDiagnose(args[1:], version)
 	}
 	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", T("cli.prompt.host_port"), func(ctx context.Context, target string) Result {
 		if _, _, err := net.SplitHostPort(target); err != nil {
@@ -290,6 +295,25 @@ func runTCP(args []string, version string) int {
 		}
 		return probeTCP(ctx, target)
 	})
+}
+
+const tcpUsage = "edc tcp <check|expect>"
+
+// hasBoolFlag는 flag 해석 전에 bool flag가 켜졌는지 본다. 켜지면 flag 묶음이 다른 명령으로 넘기기 때문이다.
+func hasBoolFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		trimmed := strings.TrimLeft(arg, "-")
+		if len(trimmed) == len(arg) || len(arg)-len(trimmed) > 2 {
+			continue
+		}
+		if trimmed == name || trimmed == name+"=true" || trimmed == name+"=1" {
+			return true
+		}
+	}
+	return false
 }
 
 func runTLS(args []string, version string) int {
@@ -392,6 +416,8 @@ func runNet(args []string, version string) int {
 		return runTargetProbe(args[1:], version, "net ping", "net.ping", T("cli.prompt.host"), probePing)
 	case "trace":
 		return runTargetProbe(args[1:], version, "net trace", "net.trace", T("cli.prompt.host"), probeTrace)
+	case "mtu":
+		return runNetMTU(args[1:], version)
 	default:
 		fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("net")))
 		return 2

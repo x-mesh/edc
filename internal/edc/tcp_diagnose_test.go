@@ -138,10 +138,38 @@ func TestDiagnoseTraceRunKeepsOnlyTheAttemptFlows(t *testing.T) {
 	}
 }
 
+func TestDiagnoseConnectedNextChecksOnlyTheServiceThePortImplies(t *testing.T) {
+	for port, want := range map[string]string{
+		"443":  "edc tls check example.com:443",
+		"8443": "edc tls check example.com:8443",
+		"993":  "edc tls check example.com:993",
+		"80":   "edc http check http://example.com:80",
+		"8080": "edc http check http://example.com:8080",
+		"22":   "",
+		"5432": "",
+		"25":   "",
+	} {
+		target := diagnoseTarget{input: "example.com:" + port, host: "example.com", port: port}
+		if got := diagnoseNext(diagnoseVerdictConnected, target, diagnoseTotals{}); got != want {
+			t.Errorf("port %s next = %q, want %q", port, got, want)
+		}
+	}
+}
+
+func TestJoinChecklistForAWorkingPathSkipsTLSOnAPlainPort(t *testing.T) {
+	ssh := joinChecklist(joinSegmentWorks, joinClient{Target: "10.0.0.9:22", Port: "22"}, joinTarget{Port: 22})
+	if len(ssh) != 1 || ssh[0] != T("join.check.application") {
+		t.Fatalf("port 22 checklist = %q", ssh)
+	}
+	https := joinChecklist(joinSegmentWorks, joinClient{Target: "10.0.0.9:443", Port: "443"}, joinTarget{Port: 443})
+	if len(https) != 2 || https[0] != "edc tls check 10.0.0.9:443" {
+		t.Fatalf("port 443 checklist = %q", https)
+	}
+}
+
 func TestDiagnoseNextNamesTheCommandAndWhereToRunIt(t *testing.T) {
 	target := diagnoseTarget{input: "db.internal:5432", host: "db.internal", port: "5432", address: "10.0.0.9:5432", source: "10.0.0.5"}
 	tests := map[string]string{
-		diagnoseVerdictConnected:    "edc tls check db.internal:5432",
 		diagnoseVerdictDegraded:     "edc net mtu db.internal",
 		diagnoseVerdictNoReply:      "edc tcp expect --from 10.0.0.5 5432  # ",
 		diagnoseVerdictIntermittent: "edc tcp expect --from 10.0.0.5 5432  # ",

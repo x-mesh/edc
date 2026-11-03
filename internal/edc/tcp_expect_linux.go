@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,6 +25,10 @@ const (
 	expectPollTimeout = 250
 	// expectReadBatch는 한 번 깨어나 읽는 packet의 상한이다. packet이 쏟아져도 Ctrl-C를 늦지 않게 본다.
 	expectReadBatch = 1024
+	// expectOtherReadBatch는 다른 port의 SYN을 한 번에 읽는 상한이다. 세기만 하는 값이라 이 port의 packet보다 적게 읽는다.
+	expectOtherReadBatch = 256
+	// expectOtherReceiveBuffer는 다른 port의 SYN을 받는 socket의 buffer다. 넘치면 그만큼 덜 셀 뿐이다.
+	expectOtherReceiveBuffer = 1 << 20
 	// expectDropStartWait는 drop 추적이 붙기를 기다리는 시간이다. 그 안에 실패하면 시작 줄에 skip으로 알린다.
 	expectDropStartWait = time.Second
 	// expectLocalCacheTTL 동안 주소가 이 host의 것인지 다시 묻지 않는다. 주소가 바뀌는 host(DHCP, VIP 이동)를 따라간다.
@@ -44,31 +49,26 @@ func expectPrerequisites() error {
 // runExpectCapture는 interface에 묶지 않은 AF_PACKET socket으로 모든 interface의 packet을 본다. SOCK_DGRAM이라 data가
 // IP header부터 시작해 ethernet과 tun(tailscale0 같은) interface를 같은 방식으로 읽는다.
 func runExpectCapture(run expectRun) error {
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(expectHostToNetwork(unix.ETH_P_ALL)))
-	if err != nil {
-		return fmt.Errorf("open packet socket: %w", err)
-	}
-	defer unix.Close(fd)
 	program, err := expectFilter(run.port)
 	if err != nil {
 		return err
 	}
-	filters := make([]unix.SockFilter, len(program))
-	for index, instruction := range program {
-		filters[index] = unix.SockFilter{Code: instruction.Op, Jt: instruction.Jt, Jf: instruction.Jf, K: instruction.K}
+	fd, err := openExpectPacketSocket(program, expectReceiveBuffer)
+	if err != nil {
+		return err
 	}
-	if err := unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}); err != nil {
-		return fmt.Errorf("attach packet filter: %w", err)
-	}
-	// buffer를 키우지 못해도 기본 크기로 동작한다. 넘친 packet 수는 끝에 PACKET_STATISTICS로 알린다.
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, expectReceiveBuffer)
-	buffer := make([]byte, 2*expectSnapLength)
-	// filter를 붙이기 전에 들어온 packet은 거르지 않은 것이라 버린다.
-	for {
-		if _, _, err := unix.Recvfrom(fd, buffer, unix.MSG_DONTWAIT); err != nil {
-			break
+	defer unix.Close(fd)
+	// 다른 port로 온 SYN은 따로 연 socket으로 센다. 같은 socket에 받으면 다른 port의 SYN이 몰릴 때 receive buffer가 차서
+	// 이 port의 packet을 잃는다. 열지 못하면 세지 않고 관측은 계속한다.
+	otherFD := -1
+	if otherProgram, err := expectOtherSYNFilter(run.port); err == nil {
+		if opened, err := openExpectPacketSocket(otherProgram, expectOtherReceiveBuffer); err == nil {
+			otherFD = opened
+			defer unix.Close(otherFD)
+			run.session.countOtherPorts()
 		}
 	}
+	buffer := make([]byte, 2*expectSnapLength)
 	session := run.session
 	locals := &expectLocalAddresses{entries: map[netip.Addr]expectLocalEntry{}}
 	session.isLocal = locals.contains
@@ -81,6 +81,9 @@ func runExpectCapture(run expectRun) error {
 	defer drops.stop()
 	run.ready(drops.status)
 	polls := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	if otherFD >= 0 {
+		polls = append(polls, unix.PollFd{Fd: int32(otherFD), Events: unix.POLLIN})
+	}
 	for run.ctx.Err() == nil {
 		ready, err := unix.Poll(polls, expectPollTimeout)
 		if err != nil && !errors.Is(err, unix.EINTR) {
@@ -114,8 +117,15 @@ func runExpectCapture(run expectRun) error {
 			packet.iface = names.name(link.Ifindex)
 			session.packet(packet)
 		}
+		if otherFD >= 0 && ready > 0 {
+			readExpectOtherSYNs(otherFD, buffer, run.port, session)
+		}
 		drops.poll()
-		session.tick(time.Now())
+		now := time.Now()
+		session.tick(now)
+		if session.stopDue(now) {
+			break
+		}
 	}
 	if stats, err := unix.GetsockoptTpacketStats(fd, unix.SOL_PACKET, unix.PACKET_STATISTICS); err == nil {
 		session.mu.Lock()
@@ -123,6 +133,49 @@ func runExpectCapture(run expectRun) error {
 		session.mu.Unlock()
 	}
 	return nil
+}
+
+// openExpectPacketSocket은 모든 interface의 packet을 보는 AF_PACKET socket을 열고 filter를 붙인다.
+func openExpectPacketSocket(program []bpf.RawInstruction, receiveBuffer int) (int, error) {
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(expectHostToNetwork(unix.ETH_P_ALL)))
+	if err != nil {
+		return -1, fmt.Errorf("open packet socket: %w", err)
+	}
+	filters := make([]unix.SockFilter, len(program))
+	for index, instruction := range program {
+		filters[index] = unix.SockFilter{Code: instruction.Op, Jt: instruction.Jt, Jf: instruction.Jf, K: instruction.K}
+	}
+	if err := unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}); err != nil {
+		unix.Close(fd)
+		return -1, fmt.Errorf("attach packet filter: %w", err)
+	}
+	// buffer를 키우지 못해도 기본 크기로 동작한다. 넘친 packet 수는 끝에 PACKET_STATISTICS로 알린다.
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, receiveBuffer)
+	buffer := make([]byte, 2*expectSnapLength)
+	// filter를 붙이기 전에 들어온 packet은 거르지 않은 것이라 버린다.
+	for {
+		if _, _, err := unix.Recvfrom(fd, buffer, unix.MSG_DONTWAIT); err != nil {
+			break
+		}
+	}
+	return fd, nil
+}
+
+// readExpectOtherSYNs는 다른 port로 들어온 SYN을 읽어 port별로 센다. 이 host가 밖으로 여는 연결의 SYN은 세지 않는다.
+func readExpectOtherSYNs(fd int, buffer []byte, port uint16, session *expectSession) {
+	for read := 0; read < expectOtherReadBatch; read++ {
+		size, from, err := unix.Recvfrom(fd, buffer, unix.MSG_DONTWAIT)
+		if err != nil {
+			return
+		}
+		link, ok := from.(*unix.SockaddrLinklayer)
+		if !ok || link.Pkttype != unix.PACKET_HOST {
+			continue
+		}
+		if remote, local, destinationPort, ok := parseExpectOtherSYN(buffer[:min(size, len(buffer))], port); ok {
+			session.otherSYN(remote, local, destinationPort)
+		}
+	}
 }
 
 func expectHostToNetwork(value uint16) uint16 {

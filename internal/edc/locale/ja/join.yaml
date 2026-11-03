@@ -26,6 +26,8 @@ join:
     port_mismatch: "client は port %s に接続しましたが、対象は port %d を観測しました"
     from_excludes: "対象は --from %s のみを観測し、client の送信元 %s はその範囲にありません"
     source_missing: "client の送信元 %s が対象の送信元一覧 (%s) にありません。client が接続できていなければ、この client については no_syn と判定します。経路上の NAT が送信元アドレスを変えた可能性があります"
+    temporary_listener_works: "経路は動作しています。対象が tcp expect --listen で実行したため、サービス自体は試していません"
+    temporary_listener: "対象が tcp expect --listen で実行したため、サービスではなく edc の一時 listener が応答しました。サービス自体は試していません"
   reason:
     basis_phases: "client はイベント追跡なしに接続 phase だけで判定しました。client ホスト自身の drop を除外できません"
     rst_lost: "対象は RST を送りましたが、client には応答が届いていません。RST が戻らなかったため、戻り経路を疑います"

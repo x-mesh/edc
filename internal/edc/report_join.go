@@ -72,6 +72,8 @@ type joinTarget struct {
 	DropReasons       map[string]int    `json:"drop_reasons,omitempty"`
 	Return            *expectReturnPath `json:"return,omitempty"`
 	SourceCount       int               `json:"source_count"`
+	// Listener는 대상이 시작할 때 본 port의 listener다. temporary면 tcp expect --listen의 임시 listener가 답했다.
+	Listener *expectListener `json:"listener,omitempty"`
 }
 
 type reportJoinInput struct {
@@ -224,6 +226,14 @@ func joinReports(clientSaved, targetSaved savedReport) reportJoin {
 	}
 	if reasonKey != "" {
 		join.Warnings = append(join.Warnings, T(reasonKey))
+	}
+	// 임시 listener가 답한 handshake는 경로만 증명한다. 구간 판정은 그대로 두고 서비스는 시험하지 않았다고 남긴다.
+	if target.Listener != nil && target.Listener.State == expectListenerTemporary {
+		if segment == joinSegmentWorks || segment == joinSegmentPathQuality {
+			join.Warnings = append(join.Warnings, T("join.warning.temporary_listener_works"))
+		} else {
+			join.Warnings = append(join.Warnings, T("join.warning.temporary_listener"))
+		}
 	}
 	join.Segment = segment
 	join.Status = joinStatus(segment)
@@ -527,6 +537,14 @@ func extractJoinTarget(metrics map[string]interface{}) (joinTarget, []expectSour
 		}
 	}
 	target.SourceCount = len(sources) + joinInt(metrics["sources_omitted"])
+	if raw, ok := metrics["listener"]; ok && raw != nil {
+		if data, err := json.Marshal(raw); err == nil {
+			var listener expectListener
+			if json.Unmarshal(data, &listener) == nil && listener.State != "" {
+				target.Listener = &listener
+			}
+		}
+	}
 	if route, ok := metrics["from_return"]; ok && route != nil {
 		if data, err := json.Marshal(route); err == nil {
 			var parsed expectReturnPath

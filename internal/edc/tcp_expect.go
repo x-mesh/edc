@@ -1338,11 +1338,15 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 
 // expectNextSteps는 결과 뒤에 보이는 다음 할 일이다. 첫 줄은 판정마다 볼 곳이고, 둘째 줄은 client의 tcp check --diagnose
 // report와 합치는 명령이다. --json으로 파일을 남겼으면 그 파일 이름을 넣고, 아니면 파일을 남겨 다시 실행하라고 한다.
-func expectNextSteps(verdict string, temporary bool, jsonPath string) []string {
+func expectNextSteps(verdict string, temporary, ipsecHidden bool, jsonPath string) []string {
 	key := "expect.next." + verdict
+	switch {
 	// 임시 listener가 handshake를 끝냈으면 경로만 확인한 것이다.
-	if verdict == expectVerdictCompleted && temporary {
+	case verdict == expectVerdictCompleted && temporary:
 		key = "expect.next.completed_temporary"
+	// IPsec transport mode는 도착한 SYN을 가릴 수 있으므로 오지 않았다고 단정하지 않는다. 요약과 같은 말을 한다.
+	case verdict == expectVerdictNoSYN && ipsecHidden:
+		key = "expect.next.no_syn_ipsec"
 	}
 	steps := []string{T("expect.next.step", T(key))}
 	if jsonPath != "" && jsonPath != "-" {
@@ -1773,7 +1777,8 @@ func runTCPExpect(args []string, version string) int {
 	}
 	verdict, _ := result.Metrics["verdict"].(string)
 	printer.writer = liveOutput
-	for _, step := range expectNextSteps(verdict, options.listen, options.common.jsonPath) {
+	ipsecHidden := verdict == expectVerdictNoSYN && result.Status == StatusWarn
+	for _, step := range expectNextSteps(verdict, options.listen, ipsecHidden, options.common.jsonPath) {
 		printer.println(printer.style.dim(step))
 	}
 	return exit

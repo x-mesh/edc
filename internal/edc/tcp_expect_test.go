@@ -828,21 +828,21 @@ func TestExpectNextSteps(t *testing.T) {
 	for _, language := range []string{"en", "ko", "ja"} {
 		setLanguage(language)
 		for _, verdict := range append([]string{expectVerdictNoSYN}, expectVerdictOrder...) {
-			steps := expectNextSteps(verdict, false, "")
+			steps := expectNextSteps(verdict, false, false, "")
 			if len(steps) != 2 || strings.Contains(steps[0], "expect.next") || strings.Contains(steps[1], "expect.next") {
 				t.Errorf("%s %s: %q", language, verdict, steps)
 			}
 		}
 	}
 	setLanguage("en")
-	if steps := expectNextSteps(expectVerdictNoSYN, false, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
+	if steps := expectNextSteps(expectVerdictNoSYN, false, false, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
 		t.Errorf("file = %q", steps)
 	}
-	if steps := expectNextSteps(expectVerdictRST, false, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
+	if steps := expectNextSteps(expectVerdictRST, false, false, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
 		t.Errorf("quoted file = %q", steps)
 	}
 	for _, jsonPath := range []string{"", "-"} {
-		if steps := expectNextSteps(expectVerdictCompleted, false, jsonPath); !strings.Contains(steps[1], "--json target.json") {
+		if steps := expectNextSteps(expectVerdictCompleted, false, false, jsonPath); !strings.Contains(steps[1], "--json target.json") {
 			t.Errorf("%q: %q", jsonPath, steps)
 		}
 	}
@@ -891,10 +891,14 @@ func TestExpectNextStepWithTemporaryListener(t *testing.T) {
 	restore := currentLanguage()
 	defer setLanguage(restore)
 	setLanguage("en")
-	if steps := expectNextSteps(expectVerdictCompleted, true, ""); !strings.Contains(steps[0], "service itself was not tested") {
+	if steps := expectNextSteps(expectVerdictCompleted, true, false, ""); !strings.Contains(steps[0], "service itself was not tested") {
 		t.Errorf("steps = %q", steps)
 	}
-	if steps := expectNextSteps(expectVerdictRST, true, ""); strings.Contains(steps[0], "not tested") {
+	if steps := expectNextSteps(expectVerdictRST, true, false, ""); strings.Contains(steps[0], "not tested") {
 		t.Errorf("rst steps = %q", steps)
+	}
+	// IPsec transport mode가 SYN을 가릴 수 있으면 다음 단계도 오지 않았다고 단정하지 않는다.
+	if steps := expectNextSteps(expectVerdictNoSYN, false, true, ""); !strings.Contains(steps[0], "ip -s xfrm state") || strings.Contains(steps[0], "does not reach") {
+		t.Errorf("ipsec steps = %q", steps)
 	}
 }

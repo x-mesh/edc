@@ -60,6 +60,7 @@ expect:
   next:
     step: "next step: %s"
     no_syn: "the SYN does not reach this host. Check the path: tunnel selector, firewall, NAT"
+    no_syn_ipsec: "IPsec transport mode can hide an arriving SYN. Compare the counters of ip -s xfrm state before and after a connect"
     rst: "nothing listens or the host firewall rejects. Run edc listen --tcp, or rerun with --listen to test the path only"
     synack_no_ack: "the reply does not get back. Check the reverse route and the reverse selector"
     syn_no_reply: "this host does not answer the SYN. Check the host firewall, rp_filter and the listen queue (edc trace drop)"

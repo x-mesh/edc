@@ -60,6 +60,7 @@ expect:
   next:
     step: "次の手順: %s"
     no_syn: "SYN がこの host まで届いていません。経路 (tunnel selector、firewall、NAT) を確認してください"
+    no_syn_ipsec: "IPsec transport mode は届いた SYN を隠すことがあります。接続の前後で ip -s xfrm state の counter を比べてください"
     rst: "listener がないか、host firewall が拒否しています。edc listen --tcp で確認するか、経路だけを試すには --listen を付けて再実行してください"
     synack_no_ack: "応答が client に戻りません。逆方向 route と逆方向 selector を確認してください"
     syn_no_reply: "この host が SYN に応答していません。host firewall、rp_filter、listen queue を確認してください (edc trace drop)"

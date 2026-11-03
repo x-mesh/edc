@@ -339,7 +339,7 @@ func TestExpectDropBeforeSYNAttachesToAttempt(t *testing.T) {
 		t.Fatalf("events = %s", got)
 	}
 	result, sources, _ := scenario.finish("duration")
-	if sources[0].DropReasons["NO_SOCKET"] != 2 || !strings.Contains(result.Summary, "NO_SOCKET 2") {
+	if sources[0].DropReasons["NO_SOCKET"] != 2 || !strings.Contains(result.Summary, "NO_SOCKET 2") || !strings.Contains(result.Evidence[len(result.Evidence)-1].Value, "10.85.1.2: NO_SOCKET 2") {
 		t.Fatalf("source=%+v summary=%q", sources[0], result.Summary)
 	}
 }
@@ -464,5 +464,23 @@ func TestExpectNoSYNBehindIPsecTransportIsNotAFailure(t *testing.T) {
 	result, _, code := scenario.finish("duration")
 	if code != 2 || result.Status != StatusWarn || !strings.Contains(result.Summary, "IPsec") || len(result.Warnings) != 1 {
 		t.Fatalf("code=%d status=%s summary=%q warnings=%q", code, result.Status, result.Summary, result.Warnings)
+	}
+}
+
+func TestExpectRouteLookupsStopAtTheSourceLimit(t *testing.T) {
+	scenario := newExpectScenario("")
+	lookups := 0
+	scenario.session.returnPath = func(remote, local netip.Addr, arrival string) expectReturnPath {
+		lookups++
+		return expectReturnPath{Device: "eth0"}
+	}
+	for index := 0; index < expectSourceLimit+30; index++ {
+		scenario.in("eth0", netip.AddrFrom4([4]byte{10, 85, byte(index / 250), byte(index%250 + 1)}).String(), tcpFlagSYN, 7, 0)
+	}
+	scenario.session.tick(scenario.now.Add(time.Second))
+	result, sources, _ := scenario.finish("duration")
+	// 실행 중 조회와 끝에 남기는 줄의 조회가 각각 상한을 넘지 않는다.
+	if lookups > 2*expectSourceLimit || len(sources) != expectSourceLimit || result.Metrics["sources_omitted"] != 30 || sources[expectSourceLimit-1].Return == nil {
+		t.Fatalf("lookups=%d sources=%d omitted=%v", lookups, len(sources), result.Metrics["sources_omitted"])
 	}
 }

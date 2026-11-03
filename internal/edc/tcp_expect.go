@@ -656,7 +656,8 @@ func (session *expectSession) tick(now time.Time) {
 		}
 		flow.routeShown = true
 		key := expectSourceKey{remote: flow.key.remote.Addr(), local: flow.key.local.Addr(), iface: flow.iface}
-		if _, known := session.routes[key]; known {
+		// 조회 한 번이 netlink dump 세 번이다. scanner가 출발지를 쏟아내도 packet 읽기가 멈추지 않게 상한을 둔다.
+		if _, known := session.routes[key]; known || len(session.routes) >= expectSourceLimit {
 			continue
 		}
 		route := session.lookupRoute(key)
@@ -824,20 +825,29 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	for key, pending := range session.pendingDrops {
 		session.releaseDrops(key, pending)
 	}
-	sources := make([]expectSource, 0, len(session.sources))
+	keys := make([]expectSourceKey, 0, len(session.sources))
 	var totals expectCounts
 	for key, source := range session.sources {
-		source.Return = session.lookupRoute(key)
-		source.Verdict = expectVerdict(source.expectCounts, source.DropReasons, source.Return != nil && source.Return.IPsecPolicy)
-		sources = append(sources, *source)
+		keys = append(keys, key)
 		totals.add(source.expectCounts)
 	}
-	sort.Slice(sources, func(i, j int) bool {
-		if sources[i].Attempts != sources[j].Attempts {
-			return sources[i].Attempts > sources[j].Attempts
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := session.sources[keys[i]], session.sources[keys[j]]
+		if left.Attempts != right.Attempts {
+			return left.Attempts > right.Attempts
 		}
-		return sources[i].Address+sources[i].Interface < sources[j].Address+sources[j].Interface
+		return left.Address+left.Interface < right.Address+right.Interface
 	})
+	sources := make([]expectSource, 0, len(keys))
+	for index, key := range keys {
+		source := *session.sources[key]
+		// 남기는 줄만 경로를 조회한다. 나머지는 IPsec 여부를 모르는 채로 판정한다.
+		if index < expectSourceLimit {
+			source.Return = session.lookupRoute(key)
+		}
+		source.Verdict = expectVerdict(source.expectCounts, source.DropReasons, source.Return != nil && source.Return.IPsecPolicy)
+		sources = append(sources, source)
+	}
 	elapsed := time.Since(started)
 	verdict, lead := expectOverallVerdict(sources)
 	metrics := map[string]interface{}{
@@ -993,6 +1003,14 @@ func expectEvidence(sources []expectSource, dropTrace expectDropTrace, otherDrop
 	drops := T("expect.evidence.drop_on")
 	if dropTrace.Status != StatusPass {
 		drops = T("expect.evidence.drop_skip", dropTrace.Reason)
+	}
+	for index, source := range sources {
+		if index == expectEvidenceLimit {
+			break
+		}
+		if reasons := formatExpectDrops(source.DropReasons); reasons != "" {
+			drops += "\n" + source.Address + ": " + reasons
+		}
 	}
 	if other := formatExpectDrops(otherDrops); other != "" {
 		drops += "\n" + T("expect.evidence.other_drops", other)

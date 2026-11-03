@@ -1286,6 +1286,16 @@ func (session *expectSession) result(started time.Time, stopReason string) (Resu
 	return result, expectExitCode(sources, stopReason)
 }
 
+// expectNextSteps는 결과 뒤에 보이는 다음 할 일이다. 첫 줄은 판정마다 볼 곳이고, 둘째 줄은 client의 tcp check --diagnose
+// report와 합치는 명령이다. --json으로 파일을 남겼으면 그 파일 이름을 넣고, 아니면 파일을 남겨 다시 실행하라고 한다.
+func expectNextSteps(verdict, jsonPath string) []string {
+	steps := []string{T("expect.next.step", T("expect.next."+verdict))}
+	if jsonPath != "" && jsonPath != "-" {
+		return append(steps, T("expect.next.join_file", "edc report join <client.json> "+quoteLocalShellWord(jsonPath)))
+	}
+	return append(steps, T("expect.next.join_rerun", "edc report join <client.json> target.json"))
+}
+
 // expectOverallVerdict는 여러 출발지 중 먼저 고칠 판정과 그 출발지다. 모두 연결되면 가장 많이 시도한 출발지다.
 func expectOverallVerdict(sources []expectSource) (string, *expectSource) {
 	if len(sources) == 0 {
@@ -1686,6 +1696,11 @@ func runTCPExpect(args []string, version string) int {
 	}
 	if code := emit(options.common, buildReport(version, started, target, []Result{result}, options.common.redact)); code == 2 {
 		return 2
+	}
+	verdict, _ := result.Metrics["verdict"].(string)
+	printer.writer = liveOutput
+	for _, step := range expectNextSteps(verdict, options.common.jsonPath) {
+		printer.println(printer.style.dim(step))
 	}
 	return exit
 }

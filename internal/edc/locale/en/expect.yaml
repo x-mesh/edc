@@ -55,6 +55,17 @@ expect:
     handshakes: "handshakes %d"
     drops: "drops %d"
     other_ports: "other ports: %s"
+  next:
+    step: "next step: %s"
+    no_syn: "the SYN does not reach this host. Check the path: tunnel selector, firewall, NAT"
+    rst: "nothing listens or the host firewall rejects. Run edc listen --tcp, or rerun with --listen to test the path only"
+    synack_no_ack: "the reply does not get back. Check the reverse route and the reverse selector"
+    syn_no_reply: "this host does not answer the SYN. Check the host firewall, rp_filter and the listen queue (edc trace drop)"
+    dropped_unseen: "the kernel drops the SYN on this host. Read the drop reasons above"
+    reply_hidden_ipsec: "the reply leaves as ESP. Run edc tcp check --diagnose on the client and join the two reports"
+    completed: "the path works. Check TLS and the application next"
+    join_file: "join with the client report: %s"
+    join_rerun: "to join with the client report, rerun with --json target.json: %s"
   evidence:
     sources: "sources"
     return: "return path"

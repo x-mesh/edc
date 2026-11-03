@@ -818,3 +818,30 @@ func TestExpectStopAfterCountsAttempts(t *testing.T) {
 		t.Fatalf("metrics = %v", result.Metrics)
 	}
 }
+
+// 끝난 뒤의 다음 단계는 판정마다 볼 곳과, client report와 합치는 정확한 명령이다.
+func TestExpectNextSteps(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		for _, verdict := range append([]string{expectVerdictNoSYN}, expectVerdictOrder...) {
+			steps := expectNextSteps(verdict, "")
+			if len(steps) != 2 || strings.Contains(steps[0], "expect.next") || strings.Contains(steps[1], "expect.next") {
+				t.Errorf("%s %s: %q", language, verdict, steps)
+			}
+		}
+	}
+	setLanguage("en")
+	if steps := expectNextSteps(expectVerdictNoSYN, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
+		t.Errorf("file = %q", steps)
+	}
+	if steps := expectNextSteps(expectVerdictRST, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
+		t.Errorf("quoted file = %q", steps)
+	}
+	for _, jsonPath := range []string{"", "-"} {
+		if steps := expectNextSteps(expectVerdictCompleted, jsonPath); !strings.Contains(steps[1], "--json target.json") {
+			t.Errorf("%q: %q", jsonPath, steps)
+		}
+	}
+}

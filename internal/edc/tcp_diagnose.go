@@ -57,6 +57,7 @@ func runTCPDiagnose(args []string, version string) int {
 	set.Bool("diagnose", true, T("command.tcp.option.diagnose"))
 	set.IntVar(&options.count, "count", options.count, T("command.tcp.option.count"))
 	durationFlagVar(set, &options.interval, "interval", options.interval, T("command.tcp.option.interval"))
+	peer := set.String("peer", "", T("command.tcp.option.peer"))
 	positional, err := parseInterspersed(set, args)
 	if err != nil {
 		return 2
@@ -89,6 +90,9 @@ func runTCPDiagnose(args []string, version string) int {
 	target, failed := resolveDiagnoseTarget(ctx, input, options.common.timeout)
 	if failed != nil {
 		return finishTCPDiagnose(ctx, options, buildReport(version, started, targetInfo, []Result{*failed}, options.common.redact), isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "", nil)
+	}
+	if *peer != "" {
+		return runTCPDiagnosePeer(ctx, target, options, *peer, version, started, targetInfo)
 	}
 	if options.common.jsonPath == "" && liveTerminal() {
 		if code, ok := runTCPDiagnoseLive(ctx, cancel, target, options, version, started, targetInfo); ok {
@@ -252,11 +256,8 @@ func diagnoseRoute(ctx context.Context, address string, timeout time.Duration) (
 			metrics[key] = value
 		}
 	}
-	if connection, err := net.Dial("udp", address); err == nil {
-		if local, ok := connection.LocalAddr().(*net.UDPAddr); ok {
-			metrics["source"] = local.IP.String()
-		}
-		connection.Close()
+	if source := diagnoseSource(address); source != "" {
+		metrics["source"] = source
 	}
 	row := Result{Probe: diagnoseRowRoute, Status: route.Status, StartedAt: route.StartedAt, DurationMS: route.DurationMS}
 	if route.Status != StatusPass {
@@ -283,6 +284,19 @@ func diagnoseRoute(ctx context.Context, address string, timeout time.Duration) (
 		row.Summary = firstLine(route.Summary)
 	}
 	return row, metrics
+}
+
+// diagnoseSource는 kernel이 address로 보낼 때 고르는 출발지 주소다. 모르면 빈 문자열이다.
+func diagnoseSource(address string) string {
+	connection, err := net.Dial("udp", address)
+	if err != nil {
+		return ""
+	}
+	defer connection.Close()
+	if local, ok := connection.LocalAddr().(*net.UDPAddr); ok {
+		return local.IP.String()
+	}
+	return ""
 }
 
 // diagnoseDial은 tcp check와 같은 dialer로 한 번 연결한다. connect 전에 port 0으로 bind해 local port를 먼저 정하므로,

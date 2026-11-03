@@ -51,8 +51,12 @@ command:
       diagnose: "repeat the check while tracing TCP events and kernel drops, then name the likely segment"
       count: "number of attempts (default 5); implies --diagnose"
       interval: "time between attempts (default 1s); implies --diagnose"
+      peer: "run tcp expect on this host over ssh at the same time and join both results; implies --diagnose"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
+      until: "expect: stop 1s after the first SYN (syn), so the reply is recorded, or at the first completed handshake (handshake)"
+      stop_after: "expect: stop 1s after the Nth connection attempt"
+      listen: "expect: open a temporary listener on the port when nothing listens, so a handshake can complete"
       ports: "scan: ports and ranges to check, with commas between them (default: the sensitive ports of audit and the common service ports)"
       parallel: "scan: connects at one time (default 32, max 256)"
     notes:

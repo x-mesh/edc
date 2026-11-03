@@ -721,9 +721,14 @@ func (run peerRun) printSummary(client, target Report, join reportJoin) {
 	local := joinFindResult(client, tcpDiagnoseProbeID)
 	remote := joinFindResult(target, expectProbeID)
 	// 두 결과의 판정, 오류 상자, next는 아래 join 블록이 한 번에 보인다. 따로 보이면 같은 결론을 세 번 읽게 된다.
-	// 판정을 바꾸지 않는 경고(추적을 건너뛴 이유 같은)는 join에 없으므로 남긴다.
+	// 판정을 바꾸지 않는 경고(추적을 건너뛴 이유 같은)는 join에 없으므로 남긴다. join이 구간을 정하지 못하면(이름을 풀지
+	// 못했거나 경로가 없을 때) client의 오류 상자가 유일한 원인 설명이므로 그때는 남긴다.
 	fmt.Fprintln(run.stdout)
-	printResultDetail(run.stdout, Result{Probe: local.Probe, Warnings: local.Warnings}, verbose, run.color)
+	detail := Result{Probe: local.Probe, Warnings: local.Warnings}
+	if join.Segment == joinSegmentUndetermined {
+		detail.Status, detail.Error = local.Status, local.Error
+	}
+	printResultDetail(run.stdout, detail, verbose, run.color)
 	if len(remote.Warnings) > 0 {
 		prefix := newTextStyle(run.color).dim("[" + run.name + "]")
 		for _, warning := range remote.Warnings {

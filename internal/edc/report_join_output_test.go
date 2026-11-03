@@ -33,16 +33,17 @@ func TestJoinLatencyUsesRTTThenConnectTime(t *testing.T) {
 	}
 }
 
-// 경로가 정상이면 다음은 서비스다. 평문 HTTP로 흔한 port에 TLS 점검을 권하면 경로 문제로 오해하게 된다.
-func TestServiceCheckCommandFollowsThePort(t *testing.T) {
-	for port, want := range map[string]string{
-		"8000": "edc http check http://jwserver69:8000",
-		"80":   "edc http check http://jwserver69:80",
-		"443":  "edc tls check jwserver69:443",
-		"2142": "edc tls check jwserver69:2142",
+// 경로가 정상이면 다음은 서비스다. port로 짐작할 수 없으면 명령을 권하지 않는다. IPv6 link-local 주소의 zone은 URL에서
+// %25로 써야 http check가 읽는다.
+func TestDiagnoseServiceNextFollowsThePort(t *testing.T) {
+	for _, test := range []struct{ hostPort, port, want string }{
+		{"jwserver69:80", "80", "edc http check http://jwserver69:80"},
+		{"jwserver69:443", "443", "edc tls check jwserver69:443"},
+		{"jwserver69:22", "22", ""},
+		{"[fe80::1%eth0]:8080", "8080", "edc http check http://[fe80::1%25eth0]:8080"},
 	} {
-		if got := serviceCheckCommand("jwserver69", port); got != want {
-			t.Errorf("port %s: %q, want %q", port, got, want)
+		if got := diagnoseServiceNext(test.hostPort, test.port); got != test.want {
+			t.Errorf("%s: %q, want %q", test.hostPort, got, test.want)
 		}
 	}
 }
@@ -87,5 +88,27 @@ func TestPeerSummaryShowsTheJoinOnly(t *testing.T) {
 	}
 	if !strings.Contains(text, T("join.label.verdict")+"  "+joinSegmentWorks) {
 		t.Errorf("the join verdict is missing:\n%s", text)
+	}
+}
+
+// join이 구간을 정하지 못하면 client 오류 상자가 유일한 원인 설명이다. 접지 않고 보인다.
+func TestPeerSummaryKeepsTheClientErrorWhenUndetermined(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.81.1 (schema 1.0)\n"
+	runner := &fakePeerRunner{preflight: preflight, header: true, report: peerTestTargetReport(t, expectVerdictNoSYN)}
+	run, stdout, _ := peerTestRun(t, runner, "")
+	run.diagnose = func(context.Context, func(Result)) Result {
+		return Result{
+			Probe: tcpDiagnoseProbeID, Status: StatusFail, Summary: "lookup failed",
+			Error:   &DiagnosticError{Kind: "dns", Message: "lookup db.internal: no such host"},
+			Metrics: map[string]interface{}{"input": "db.internal:2171", "verdict": diagnoseVerdictDNS},
+		}
+	}
+	run.execute(context.Background())
+	text := stdout.String()
+	if !strings.Contains(text, "no such host") || !strings.Contains(text, T("join.label.verdict")+"  "+joinSegmentUndetermined) {
+		t.Errorf("the client error must stay next to the undetermined join:\n%s", text)
 	}
 }

@@ -26,7 +26,7 @@ func TestParseFlagDurationTakesABareNumberAsSeconds(t *testing.T) {
 			t.Errorf("parseFlagDuration(%q) = %v, %v; want %v", input, got, err, want)
 		}
 	}
-	for _, input := range []string{"", "abc", "1x", "NaN", "Inf", "1e300", "1000000000000000000000h"} {
+	for _, input := range []string{"", "abc", "1x", "NaN", "Inf", "1e300", "9223372036.854775807", "1000000000000000000000h"} {
 		if got, err := parseFlagDuration(input); err == nil {
 			t.Errorf("parseFlagDuration(%q) = %v, want an error", input, got)
 		}
@@ -49,7 +49,7 @@ func TestDurationFlagParsesBareSecondsAndKeepsTheDefault(t *testing.T) {
 		t.Fatalf("parsed = %v, %v", *interval, duration)
 	}
 	err := set.Parse([]string{"--interval", "soon"})
-	if err == nil || !strings.Contains(err.Error(), `invalid value "soon" for flag -interval`) {
+	if err == nil || !strings.Contains(err.Error(), `invalid value "soon" for flag -interval: `+errFlagDuration.Error()) {
 		t.Fatalf("error = %v", err)
 	}
 }

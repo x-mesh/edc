@@ -17,7 +17,7 @@ func parseFlagDuration(text string) (time.Duration, error) {
 		return duration, nil
 	}
 	seconds, err := strconv.ParseFloat(text, 64)
-	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || math.Abs(seconds) > float64(math.MaxInt64)/float64(time.Second) {
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || math.Abs(seconds) >= float64(math.MaxInt64)/float64(time.Second) {
 		return 0, errFlagDuration
 	}
 	return time.Duration(math.Round(seconds * float64(time.Second))), nil

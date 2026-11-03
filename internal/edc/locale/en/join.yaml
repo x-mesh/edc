@@ -17,6 +17,7 @@ join:
     reports: "reports  %s + %s"
     arrived_on: "arrived on %s"
     return_same: "replies leave by the arrival interface (%s)"
+    return_other: "replies leave by %[1]s, not by the arrival interface %[2]s"
     latency_rtt: "RTT %s (avg %s, %d connections)"
     latency_connect: "connect %s (%d connections, no RTT without the trace)"
     client_counts: "connected %d of %d · refused %d · timeouts %d · SYN retransmits %d · drops on the client: %s"
@@ -24,6 +25,10 @@ join:
     target_counts: "SYN in %d · SYN-ACK out %d · RST out %d · handshakes %d · kernel drops: %s"
     time: "start skew %s (target minus client) · %s"
     overlap_no: "the runs do not overlap (gap %s)"
+  rp_filter:
+    off: "rp_filter 0 (off) accepts this"
+    loose: "rp_filter 2 (loose) accepts this"
+    strict: "rp_filter 1 (strict): the kernel drops these SYNs"
   basis:
     trace: "(eBPF trace)"
     partial: "(partial trace)"

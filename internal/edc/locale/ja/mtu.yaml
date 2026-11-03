@@ -23,7 +23,7 @@ mtu:
     at_least: "経路 MTU %d 以上 (--max), %s MTU %d, TCP MSS %d"
   skip:
     no_time: "timeout が短く probe を送る時間がありません"
-    denied: "ping が Don't Fragment を設定できませんでした: %s"
+    denied: "ping の実行が許可されませんでした: %s"
     blocked: "%d bytes でも ICMP echo の応答がないため、経路 MTU を測れません"
   hint:
     ipv6_root: "macOS の ping6 は root でないと Don't Fragment を設定できません。sudo で実行してください。"

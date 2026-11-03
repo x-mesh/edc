@@ -23,7 +23,7 @@ mtu:
     at_least: "경로 MTU %d 이상 (--max), %s MTU %d, TCP MSS %d"
   skip:
     no_time: "timeout이 짧아 probe를 보낼 시간이 없습니다"
-    denied: "ping이 Don't Fragment를 켜지 못했습니다: %s"
+    denied: "ping 실행이 허용되지 않았습니다: %s"
     blocked: "%d bytes에서도 ICMP echo 응답이 없어 경로 MTU를 잴 수 없습니다"
   hint:
     ipv6_root: "macOS ping6은 root여야 Don't Fragment를 켤 수 있습니다. sudo로 실행하세요."

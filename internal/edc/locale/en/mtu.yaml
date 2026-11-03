@@ -23,7 +23,7 @@ mtu:
     at_least: "path MTU at least %d (--max), %s MTU %d, TCP MSS %d"
   skip:
     no_time: "the timeout left no time to send a probe"
-    denied: "ping cannot set Don't Fragment: %s"
+    denied: "ping was not permitted: %s"
     blocked: "no ICMP echo reply at %d bytes, so edc cannot measure the path MTU"
   hint:
     ipv6_root: "macOS ping6 needs root to set Don't Fragment. Run with sudo."

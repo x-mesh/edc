@@ -447,3 +447,52 @@ func TestPeerLinesBoundsWhatTheyKeep(t *testing.T) {
 		t.Errorf("partial = %d bytes, want 0 after the limit", len(lines.partial))
 	}
 }
+
+// 원격 결과 줄 아래의 next:는 이 host의 판정과 겹친다. --peer 화면에는 한 번만 보인다.
+func TestPeerLineShownHidesTheRemoteNextLine(t *testing.T) {
+	if peerLineShown("      next: edc listen") {
+		t.Error("the remote next line is shown")
+	}
+	if !peerLineShown("FAIL  tcp.expect                10.0.0.5, eth0: SYN 3 arrived") {
+		t.Error("the remote result line is hidden")
+	}
+}
+
+// 원격 report에서 그리는 대상 결과 줄도 next를 보이지 않는다. 이 host의 next와 겹친다.
+func TestPeerSummaryShowsOneNextLine(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	report := peerTestTargetReport(t, expectVerdictRST)
+	var parsed Report
+	if err := json.Unmarshal(report, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	parsed.Results[0].Next = "edc listen"
+	report, _ = json.Marshal(parsed)
+	runner := &fakePeerRunner{preflight: preflight, header: true, report: report}
+	run, stdout, _ := peerTestRun(t, runner, "")
+	run.execute(context.Background())
+	if strings.Contains(stdout.String(), "next: edc listen\n") {
+		t.Errorf("the remote next line is shown:\n%s", stdout)
+	}
+}
+
+// 첫 연결 시도 전에 멈추면 취소 한 줄만으로는 무엇이 됐는지 알 수 없다. 판정할 결과가 없다고 알린다.
+func TestPeerRunSaysWhenItStopsBeforeTheFirstAttempt(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	preflight := "uid=0\nedc=/usr/local/bin/edc\nversion=edc 0.80.1 (schema 1.0)\n"
+	runner := &fakePeerRunner{preflight: preflight, header: true, report: peerTestTargetReport(t, expectVerdictCompleted)}
+	run, _, stderr := peerTestRun(t, runner, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if code := run.execute(ctx); code != 4 {
+		t.Fatalf("exit = %d, want 4", code)
+	}
+	if !strings.Contains(stderr.String(), T("diagnose.peer.cancelled_early")) {
+		t.Errorf("stderr lacks the early-stop note:\n%s", stderr)
+	}
+}

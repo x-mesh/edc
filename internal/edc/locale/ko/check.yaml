@@ -53,8 +53,8 @@ check:
     ok: "default route %s, nameserver %d개"
   endpoint:
     ok: "endpoint %d개 접속됨"
-    refused: "%s가 연결을 거부했습니다"
-    timeout: "%s가 %s 안에 응답하지 않았습니다"
+    refused: "%s: 연결을 거부했습니다"
+    timeout: "%s: %s 안에 응답하지 않았습니다"
     dns: "%s: 이름을 찾지 못했습니다"
     failed: "%s: %s"
     slow: "%s 접속에 %s 걸림"

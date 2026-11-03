@@ -38,7 +38,7 @@ diagnose:
     phases: "The verdict uses the connect phases only, because edc skipped the event trace: %s"
     partial: "The verdict uses part of the event trace: %s"
   verdict:
-    connected: "all %d attempts connected without retransmits or delay. The TCP path and IPsec work. Check TLS, the application, or the LB backend next"
+    connected: "all %d attempts connected without retransmits or delay. The TCP path works. Check TLS, the application, or the LB backend next"
     degraded: "all %d attempts connected, but with trouble (%s). Suspect tunnel quality, MTU/MSS, or an asymmetric path"
     intermittent: "%d of %d attempts connected (%s). Suspect an LB backend that fails, or a path that changes between attempts"
     local_drop: "this host dropped packets of this flow (%s). Suspect this host first: its firewall for NETFILTER_DROP, otherwise the kernel step that the reason names"
@@ -52,6 +52,7 @@ diagnose:
   next:
     on_host: "run on %s"
   peer:
+    cancelled_early: "stopped before the first connection attempt, so there is no result to judge"
     invalid: "--peer takes an ssh destination such as host or user@host, not %q"
     ssh_failed: "edc cannot connect to %s over ssh: %s"
     edc_missing: "edc is not installed on %s. Install it there, then run this command again: %s"

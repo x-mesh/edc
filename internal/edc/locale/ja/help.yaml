@@ -58,6 +58,8 @@ command:
       - "--diagnose のイベント追跡は Linux で root として実行したときだけ行います。それ以外は接続だけを繰り返し、追跡は skip です。"
       - "expect はすべての interface でこのホストに届いた SYN と、ホストが返した SYN-ACK や RST を数えます (Linux, root)。"
       - "expect は packet header だけを読み、payload は残しません。"
+      - "--diagnose は追跡中、試行ごとに 300ms 待つため、試行間隔はそれより短くなりません。"
+      - "IPsec transport mode では expect は復号した SYN を見られず、kernel の drop 理由で判定します。"
   tls:
     summary: "証明書と handshake の確認"
     option:

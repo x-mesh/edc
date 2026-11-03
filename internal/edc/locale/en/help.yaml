@@ -58,6 +58,8 @@ command:
       - "--diagnose traces events only on Linux as root. Elsewhere it repeats the check and skips the trace."
       - "expect counts SYNs that reach this host on every interface, and the SYN-ACK or RST that it sends back (Linux, root)."
       - "expect reads packet headers only. It does not keep payload."
+      - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
+      - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
   tls:
     summary: "Certificate and handshake check"
     option:

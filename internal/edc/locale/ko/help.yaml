@@ -58,6 +58,8 @@ command:
       - "--diagnose의 이벤트 추적은 Linux에서 root로 실행할 때만 합니다. 그 밖에는 연결만 반복하고 추적은 skip입니다."
       - "expect는 모든 interface에서 이 host에 도착한 SYN과, host가 돌려보낸 SYN-ACK나 RST를 셉니다 (Linux, root)."
       - "expect는 packet header만 읽고 payload는 남기지 않습니다."
+      - "--diagnose는 추적하는 동안 시도마다 300ms를 기다리므로 시도 간격이 그보다 짧아지지 않습니다."
+      - "IPsec transport mode에서는 expect가 복호화한 SYN을 보지 못하고 kernel drop 이유로 판정합니다."
   tls:
     summary: "인증서와 handshake 확인"
     option:

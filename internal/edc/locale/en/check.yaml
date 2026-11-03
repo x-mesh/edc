@@ -56,6 +56,20 @@ check:
     unlimited: "file handles %d in use, no system limit"
     unknown: "could not read the file handle limit"
     usage: "file handles %d of %d (%.0f%%)"
+  storage:
+    ok: "no failure signs on devices: %d, RAID arrays: %d"
+    none: "no SMART device or md RAID array found"
+    no_smartctl: "smartctl is not installed. Install smartmontools to check disk health"
+    devices_unread: "disk SMART was not checked: %s"
+    arrays_unread: "md RAID was not checked: %s"
+    failing: "%s: SMART health check failed"
+    spare_low: "%s: available spare is below the threshold"
+    wear: "%s: %d%% of the rated write endurance is used"
+    media_errors: "%s: %d media errors"
+    sectors: "%s: reallocated %d, pending %d, uncorrectable %d sectors"
+    array_inactive: "%s is inactive"
+    array_degraded: "%s (%s) is degraded, %d members missing"
+    array_sync: "%s: %s in progress"
   thermal:
     level: "thermal pressure %s"
   backup:

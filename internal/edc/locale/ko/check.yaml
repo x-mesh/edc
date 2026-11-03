@@ -56,6 +56,20 @@ check:
     unlimited: "파일 핸들 %d개 사용 중, 시스템 한도 없음"
     unknown: "파일 핸들 한도를 읽지 못했습니다"
     usage: "파일 핸들 %d / %d (%.0f%%)"
+  storage:
+    ok: "장치 %d개와 RAID %d개, 고장 신호 없음"
+    none: "SMART 장치와 md RAID가 없습니다"
+    no_smartctl: "smartctl이 없습니다. 디스크 건강을 보려면 smartmontools를 설치하세요"
+    devices_unread: "디스크 SMART를 확인하지 못했습니다: %s"
+    arrays_unread: "md RAID를 확인하지 못했습니다: %s"
+    failing: "%s: SMART 건강 판정 실패"
+    spare_low: "%s: 남은 예비 블록이 기준보다 적습니다"
+    wear: "%s: 보증 쓰기 수명의 %d%% 사용"
+    media_errors: "%s: 미디어 오류 %d건"
+    sectors: "%s: 재할당 %d, 대기 %d, 복구 불가 %d 섹터"
+    array_inactive: "%s가 inactive입니다"
+    array_degraded: "%s(%s)가 degraded입니다. 구성원 %d개가 빠졌습니다"
+    array_sync: "%s: %s 진행 중"
   thermal:
     level: "thermal pressure %s"
   backup:

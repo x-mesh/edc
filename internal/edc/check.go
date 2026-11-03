@@ -140,6 +140,7 @@ type checkSources struct {
 	containers  func(ctx context.Context) ([]ctrListItem, error)
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
+	storage     func(ctx context.Context) checkStorage
 	// thermal은 macOS의 thermal pressure 단계(0~4)이고 backup은 마지막 Time Machine 백업이다. Linux에는 없다.
 	thermal func() (int, error)
 	backup  func() checkBackup
@@ -169,6 +170,7 @@ type checkFacts struct {
 	FileHandles    *infoFileHandles
 	FileHandlesErr error
 	Reboot         checkReboot
+	Storage        checkStorage
 	// Commands는 policy.commands와 같은 순서다. CommandsErr가 있으면 명령을 실행하지 않은 이유다.
 	Commands    []checkCommandOutcome
 	CommandsErr error
@@ -292,6 +294,10 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			reboot := sources.reboot()
 			return func(facts *checkFacts) { facts.Reboot = reboot }
 		},
+		"storage": func() func(*checkFacts) {
+			storage := sources.storage(ctx)
+			return func(facts *checkFacts) { facts.Storage = storage }
+		},
 		"thermal": func() func(*checkFacts) {
 			level, err := sources.thermal()
 			return func(facts *checkFacts) { facts.Thermal, facts.ThermalErr = level, err }
@@ -306,7 +312,7 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 		"service": sources.services != nil, "process": sources.processes != nil, "memory": sources.memory != nil,
 		"disk": sources.disks != nil, "kernel": sources.kernel != nil, "time": sources.clock != nil, "network": sources.network != nil,
 		"container": sources.containers != nil, "filehandles": sources.fileHandles != nil, "reboot": sources.reboot != nil,
-		"thermal": sources.thermal != nil, "backup": sources.backup != nil,
+		"storage": sources.storage != nil, "thermal": sources.thermal != nil, "backup": sources.backup != nil,
 	} {
 		if !available {
 			delete(jobs, id)
@@ -361,6 +367,7 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkProcesses(facts),
 		checkMemory(facts, policy),
 		checkDisks(facts, policy),
+		checkStorageResult(facts),
 		checkKernel(facts),
 		checkTime(facts),
 		checkNetworkResult(facts, policy),

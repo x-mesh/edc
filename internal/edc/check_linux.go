@@ -4,9 +4,12 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +36,7 @@ func hostCheckSources() (checkSources, bool) {
 		containers:  readCheckContainers,
 		fileHandles: readCheckFileHandles,
 		reboot:      readCheckReboot,
+		storage:     readLinuxStorage,
 		configSafe:  func() error { return activeConfig.commandSafety },
 		runCommand:  runCheckCommand,
 	}, true
@@ -148,4 +152,76 @@ func readCheckReboot() checkReboot {
 		}
 	}
 	return reboot
+}
+
+// smartctlTimeout은 장치 하나를 읽는 제한이다. 잠든 HDD는 깨어나는 데 몇 초가 걸린다.
+const smartctlTimeout = 10 * time.Second
+
+func readLinuxStorage(ctx context.Context) checkStorage {
+	var storage checkStorage
+	// md 모듈이 없는 커널에는 파일이 없다. RAID가 없는 것이고 읽기 실패가 아니다.
+	data, err := os.ReadFile("/proc/mdstat")
+	switch {
+	case err == nil:
+		storage.Arrays = parseMdstat(string(data))
+	case !errors.Is(err, fs.ErrNotExist):
+		storage.ArraysErr = err
+	}
+	storage.Devices, storage.DevicesErr = readSmartctlDevices(ctx)
+	return storage
+}
+
+// readSmartctlDevices는 smartctl이 찾은 장치마다 SMART 판정과 속성을 읽는다. 장치를 열려면 root가 필요하다.
+func readSmartctlDevices(ctx context.Context) ([]checkStorageDevice, error) {
+	path, err := exec.LookPath("smartctl")
+	if err != nil {
+		return nil, errCheckNoSmartctl
+	}
+	if os.Geteuid() != 0 {
+		return nil, fmt.Errorf("smartctl: %w", fs.ErrPermission)
+	}
+	run := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, smartctlTimeout)
+		defer cancel()
+		output, err := exec.CommandContext(ctx, path, args...).Output()
+		// smartctl의 exit status는 판정 bit를 담으므로 출력이 있으면 오류로 보지 않는다.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(output) > 0 {
+			return output, nil
+		}
+		return output, err
+	}
+	output, err := run("--scan", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("smartctl --scan: %w", err)
+	}
+	var scan smartctlScan
+	if err := json.Unmarshal(output, &scan); err != nil {
+		return nil, fmt.Errorf("smartctl --scan: %w", err)
+	}
+	var devices []checkStorageDevice
+	var failures []string
+	for _, entry := range scan.Devices {
+		output, err := run("--json", "-H", "-A", "-d", entry.Type, entry.Name)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", entry.Name, err))
+			continue
+		}
+		name := entry.Name
+		// megaraid,N나 cciss,N처럼 한 경로 뒤에 여러 디스크가 있으면 종류까지 붙여야 줄이 구분된다.
+		if strings.Contains(entry.Type, ",") {
+			name += " [" + entry.Type + "]"
+		}
+		device, err := parseSmartctlReport(name, output)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		device.Next = "smartctl -a -d " + entry.Type + " " + entry.Name
+		devices = append(devices, device)
+	}
+	if len(failures) > 0 {
+		return devices, errors.New(strings.Join(failures, "; "))
+	}
+	return devices, nil
 }

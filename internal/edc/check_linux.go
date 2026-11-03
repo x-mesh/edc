@@ -42,6 +42,7 @@ func hostCheckSources() (checkSources, bool) {
 		reboot:      readCheckReboot,
 		storage:     readLinuxStorage,
 		certs:       readCheckCerts,
+		endpoints:   probeCheckEndpoints,
 		configSafe:  func() error { return activeConfig.commandSafety },
 		runCommand:  runCheckCommand,
 	}, true

@@ -45,7 +45,7 @@ On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory page
 
 ## Health check (Linux and macOS)
 
-`edc check` looks for what is broken on a Linux or macOS host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
+`edc check` looks for what is broken on a Linux or macOS host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. The one exception is `endpoint`, which runs only when the config file lists `require_endpoints`. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
 
 ```bash
 edc check
@@ -64,6 +64,7 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
 | `network` | no default route, the route interface is down or has no carrier, or 90% or more use of conntrack, TCP memory, or `tcp_max_orphans` | no `/etc/resolv.conf`, no nameserver, the same use at 80%, the neighbor entry of the gateway is `FAILED` or `INCOMPLETE`, or a drop counter grew in 1 second |
+| `endpoint` | an address in `require_endpoints` refused the TCP connection, did not answer in 5 seconds, or did not resolve | the TCP connection took more than 1 second |
 | `container` | a container with a restart policy stopped with a nonzero code or for memory, or an `always` or `unless-stopped` container stopped with code 0 | a container without a restart policy stopped with an error in the last 24 hours, or a container restarts, pauses, or is unhealthy |
 | `filehandles` | 90% or more of `fs.file-max` is in use | 80% or more of `fs.file-max` is in use |
 | `reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
@@ -108,6 +109,8 @@ memory_available = [10, 5]
 usage = [80, 90]
 ```
 
+`endpoint` is the only check that sends packets. It appears only when `require_endpoints` holds at least one `host:port`, in `[check]` or in a routine. edc opens one TCP connection to each address at the same time, waits up to 5 seconds for each, and closes the connection. It sends no data. The fail line names the address and the cause, and `next` gives the `edc tcp check` command for the first failed address.
+
 `accept` holds check names from the table above. An accepted check shows as `skip`, and its summary starts with `accepted (warn)` or `accepted (fail)`. In JSON, `metrics.accepted_status` holds the original status.
 
 `accept_units`, `accept_containers`, and `accept_mounts` hold glob patterns. The check does not judge a name that matches a pattern. The summary ends with the number of accepted names, and `metrics.accepted` holds the names.
@@ -124,8 +127,9 @@ A routine is a named set of rules in `config.toml`. Run it with `edc check <rout
 
 ```toml
 [check.routines.web]
-checks = ["service", "disk", "kernel", "network"]
+checks = ["service", "disk", "kernel", "network", "endpoint"]
 require_units = ["nginx.service", "app-api.service"]
+require_endpoints = ["db.internal:5432", "cache.internal:6379"]
 
 [[check.routines.web.commands]]
 name = "app-health"
@@ -134,7 +138,7 @@ timeout = "5s"
 level = "fail"
 ```
 
-`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists, `require_units`, and `cert_paths` add to the values in `[check]`. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
+`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists, `require_units`, `require_endpoints`, and `cert_paths` add to the values in `[check]`. If `checks` is not empty and does not hold `endpoint`, the routine does not connect to the endpoints. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
 
 Each command runs with `sh -c`, and its result is `check.cmd.<name>`. Exit code 0 is `pass`. Another exit code is `fail`, or `warn` if `level = "warn"`. A command that does not end in `timeout` (default 10s) is `fail`, and edc stops the command and its child processes. The result keeps the last ten lines of output, up to 4 KiB. Add `cmd.<name>` to `accept` to accept the result of a command.
 

@@ -35,7 +35,7 @@ Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, 
 
 ## 상태 점검 (Linux와 macOS)
 
-`edc check`는 Linux나 macOS 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
+`edc check`는 Linux나 macOS 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. 예외는 `endpoint` 하나이며, 설정 파일에 `require_endpoints`를 적었을 때만 돕니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
 
 ```bash
 edc check
@@ -54,6 +54,7 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
 | `network` | default route가 없거나, route interface가 내려갔거나 carrier가 없거나, conntrack·TCP 메모리·`tcp_max_orphans` 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나, 같은 사용률이 80% 이상이거나, gateway의 neighbor 항목이 `FAILED`나 `INCOMPLETE`이거나, drop 카운터가 1초 사이에 늘어남 |
+| `endpoint` | `require_endpoints`의 주소가 TCP 연결을 거부했거나, 5초 안에 응답하지 않았거나, 이름을 찾지 못함 | TCP 연결에 1초 넘게 걸림 |
 | `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤, 또는 `always`나 `unless-stopped` container가 코드 0으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
 | `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
 | `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
@@ -98,6 +99,8 @@ memory_available = [10, 5]
 usage = [80, 90]
 ```
 
+`endpoint`는 점검 중 유일하게 패킷을 보냅니다. `[check]`나 루틴의 `require_endpoints`에 `host:port`를 하나라도 적었을 때만 결과에 나옵니다. edc는 주소마다 TCP 연결을 하나씩 동시에 열어 최대 5초 기다린 뒤 닫고, 데이터는 보내지 않습니다. fail 줄에는 주소와 원인이 적히고, `next`에는 처음 실패한 주소를 보는 `edc tcp check` 명령이 옵니다.
+
 `accept`에는 위 표의 점검 이름을 씁니다. 받아들인 점검은 `skip`으로 나오고 요약 앞에 `받아들임 (warn)` 같은 표시가 붙습니다. JSON의 `metrics.accepted_status`에는 원래 상태가 남습니다.
 
 `accept_units`, `accept_containers`, `accept_mounts`에는 glob 패턴을 씁니다. 패턴에 맞는 이름은 판정하지 않습니다. 대신 요약 끝에 받아들인 개수가 붙고, `metrics.accepted`에 이름이 남습니다.
@@ -114,8 +117,9 @@ usage = [80, 90]
 
 ```toml
 [check.routines.web]
-checks = ["service", "disk", "kernel", "network"]
+checks = ["service", "disk", "kernel", "network", "endpoint"]
 require_units = ["nginx.service", "app-api.service"]
+require_endpoints = ["db.internal:5432", "cache.internal:6379"]
 
 [[check.routines.web.commands]]
 name = "app-health"
@@ -124,7 +128,7 @@ timeout = "5s"
 level = "fail"
 ```
 
-`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록, `require_units`, `cert_paths`는 `[check]`의 값에 더해집니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
+`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록, `require_units`, `require_endpoints`, `cert_paths`는 `[check]`의 값에 더해집니다. `checks`가 비어 있지 않은데 `endpoint`가 없으면 그 루틴은 endpoint에 접속하지 않습니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
 
 명령은 `sh -c`로 실행하고, 결과 이름은 `check.cmd.<name>`입니다. 종료 코드가 0이면 `pass`이고, 다른 코드면 `fail`입니다. `level = "warn"`이면 `warn`이 됩니다. `timeout`(기본 10s) 안에 끝나지 않으면 `fail`이고, edc가 명령과 그 자식 process를 멈춥니다. 결과에는 출력의 마지막 10줄이 4 KiB까지 남습니다. 명령의 결과를 받아들이려면 `accept`에 `cmd.<name>`을 넣으세요.
 

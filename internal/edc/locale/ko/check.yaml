@@ -51,6 +51,13 @@ check:
     counters_skipped: " (--timeout 안에 drop 카운터를 비교하지 못함)"
     route_unknown: "route 모름"
     ok: "default route %s, nameserver %d개"
+  endpoint:
+    ok: "endpoint %d개 접속됨"
+    refused: "%s가 연결을 거부했습니다"
+    timeout: "%s가 %s 안에 응답하지 않았습니다"
+    dns: "%s: 이름을 찾지 못했습니다"
+    failed: "%s: %s"
+    slow: "%s 접속에 %s 걸림"
   container:
     unreachable: "Docker에 연결하지 못했습니다: %s"
     failed: "돌아야 하는데 멈춘 container %d개: %s"

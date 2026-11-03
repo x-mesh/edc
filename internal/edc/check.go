@@ -50,6 +50,8 @@ type checkPolicy struct {
 	// checks가 비어 있으면 모든 점검을 낸다. commands는 루틴의 사용자 명령이다.
 	checks   []string
 	commands []checkCommandConfig
+	// requireEndpoints는 check.endpoint가 접속해 볼 host:port다. checks가 endpoint를 빼면 패킷을 보내지 않도록 여기서 비운다.
+	requireEndpoints []string
 }
 
 // newCheckPolicy는 전역 [check]에 루틴을 얹는다. 목록은 더하고, limits는 루틴에 적은 값만 바꾼다. routine이 비면 전역 값만 쓴다.
@@ -65,7 +67,7 @@ func newCheckPolicy(config checkConfig, routine string) checkPolicy {
 		return topThreshold{warn: values[0], danger: values[1]}
 	}
 	join := func(global, own []string) []string { return append(slices.Clone(global), own...) }
-	return checkPolicy{
+	policy := checkPolicy{
 		accept: join(config.Accept, selected.Accept), acceptUnits: join(config.AcceptUnits, selected.AcceptUnits),
 		acceptContainers: join(config.AcceptContainers, selected.AcceptContainers), acceptMounts: join(config.AcceptMounts, selected.AcceptMounts),
 		requireUnits: join(config.RequireUnits, selected.RequireUnits), certPaths: join(config.CertPaths, selected.CertPaths),
@@ -75,6 +77,10 @@ func newCheckPolicy(config checkConfig, routine string) checkPolicy {
 		checks:   selected.Checks,
 		commands: selected.Commands,
 	}
+	if len(policy.checks) == 0 || slices.Contains(policy.checks, "endpoint") {
+		policy.requireEndpoints = join(config.RequireEndpoints, selected.RequireEndpoints)
+	}
+	return policy
 }
 
 // checkMatches는 name이 glob 하나에라도 맞는지다. 설정을 읽을 때 glob을 검사하므로 여기서 오류는 나지 않는다.
@@ -151,6 +157,9 @@ type checkSources struct {
 	// certs는 인증서 파일을 읽는다. certPaths는 설정의 cert_paths이고 runCheck가 정책에서 채운다.
 	certs     func(extra []string) checkCerts
 	certPaths []string
+	// endpoints는 requireEndpoints에 TCP로 접속해 본다. 유일하게 패킷을 보내는 원천이라 대상이 있을 때만 부른다.
+	endpoints        func(ctx context.Context, addresses []string) []checkEndpointOutcome
+	requireEndpoints []string
 	// thermal은 macOS의 thermal pressure 단계(0~4)이고 backup은 마지막 Time Machine 백업이다. Linux에는 없다.
 	thermal func() (int, error)
 	backup  func() checkBackup
@@ -182,6 +191,8 @@ type checkFacts struct {
 	Reboot         checkReboot
 	Storage        checkStorage
 	Certs          checkCerts
+	// Endpoints는 policy.requireEndpoints와 같은 순서다.
+	Endpoints []checkEndpointOutcome
 	// Commands는 policy.commands와 같은 순서다. CommandsErr가 있으면 명령을 실행하지 않은 이유다.
 	Commands    []checkCommandOutcome
 	CommandsErr error
@@ -250,7 +261,7 @@ func runCheck(args []string, version string) int {
 	defer cancel()
 	defer deadline()
 	policy := newCheckPolicy(activeConfig.Check, *routine)
-	sources.certPaths = policy.certPaths
+	sources.certPaths, sources.requireEndpoints = policy.certPaths, policy.requireEndpoints
 	var target map[string]interface{}
 	if *routine != "" {
 		target = map[string]interface{}{"routine": *routine}
@@ -341,6 +352,13 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			facts.Unsupported = append(facts.Unsupported, id)
 		}
 	}
+	// endpoint는 설정에 대상이 있을 때만 접속한다. 대상이 없으면 결과에도 나오지 않는다.
+	if len(sources.requireEndpoints) > 0 && sources.endpoints != nil {
+		jobs["endpoint"] = func() func(*checkFacts) {
+			endpoints := sources.endpoints(ctx, sources.requireEndpoints)
+			return func(facts *checkFacts) { facts.Endpoints = endpoints }
+		}
+	}
 	// 사용자 명령도 같은 방식으로 기다린다. 설정 파일이 안전하지 않으면 실행하지 않는다.
 	if len(commands) > 0 {
 		facts.CommandsErr = sources.configSafe()
@@ -399,6 +417,9 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkRebootResult(facts),
 		checkThermal(facts),
 		checkBackupResult(facts),
+	}
+	if len(policy.requireEndpoints) > 0 {
+		results = append(results, checkEndpointResult(facts, policy))
 	}
 	results = slices.DeleteFunc(results, func(result Result) bool {
 		id := strings.TrimPrefix(result.Probe, "check.")

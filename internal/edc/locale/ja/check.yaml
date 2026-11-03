@@ -51,6 +51,13 @@ check:
     counters_skipped: " (--timeout 内に drop カウンタを比較できず)"
     route_unknown: "route 不明"
     ok: "default route %s、nameserver %d 個"
+  endpoint:
+    ok: "endpoint %d 件に接続できました"
+    refused: "%s が接続を拒否しました"
+    timeout: "%s が %s 以内に応答しませんでした"
+    dns: "%s: 名前を解決できませんでした"
+    failed: "%s: %s"
+    slow: "%s への接続に %s かかりました"
   container:
     unreachable: "Docker に接続できませんでした: %s"
     failed: "動いているべきなのに止まった container %d 個: %s"

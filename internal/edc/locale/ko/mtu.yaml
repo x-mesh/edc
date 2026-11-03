@@ -2,7 +2,7 @@
 mtu:
   error:
     max_range: "--max는 0(interface MTU)이거나 %d에서 %d 사이여야 합니다"
-    no_interface: "%s로 가는 route interface를 찾지 못했습니다"
+    no_interface: "route interface를 찾지 못했습니다 (대상 %s)"
     ping: "ping이 실패했습니다: %s"
   progress:
     first: "%d bytes 시도"

@@ -232,6 +232,7 @@ edc remote --dry-run --group <group> --recipe <recipe.yaml>
 ```bash
 edc dns lookup example.com
 edc tcp check example.com:443
+edc tcp scan --ports 22,80,443 example.com
 edc doctor https://example.com
 ```
 

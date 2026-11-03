@@ -53,6 +53,36 @@ edc report diff before.json after.json
 
 wildcard의 모든 인터페이스는 관측한 주소 계열의 바인딩을 뜻합니다. 외부 접근 가능 여부, 방화벽 규칙, IPv6 dual-stack 동작을 판단하는 값은 아닙니다.
 
+### Port scan
+
+`edc tcp scan`은 host 하나의 여러 port에 연결해 어느 port가 응답하는지 보여 줍니다.
+
+```bash
+edc tcp scan example.com
+edc tcp scan --ports 22,80,443,8000-8100 example.com
+edc tcp scan --ports 1-1024 --parallel 64 --timeout 2m 10.0.0.5
+```
+
+대상은 port 없는 host입니다. `--ports`에는 port 번호와 범위를 쉼표로 구분해 적습니다. `--ports`가 없으면 `edc audit`이 지켜보는 민감 port와 원격 접속·웹·메일에 흔히 쓰는 port를 확인합니다. 이름은 한 번만 풀고 IPv4 주소를 우선해 그 주소로만 연결하며, 요약에 그 주소를 적습니다.
+
+port마다 TCP connect를 한 번 하고 2초까지 기다립니다. 결과는 port마다 다음 중 하나입니다.
+
+| 상태 | edc가 본 것 |
+| --- | --- |
+| `열림` | handshake가 끝남 |
+| `거부` | host가 RST로 답함. host는 살아 있고 그 port에서 듣는 것이 없음 |
+| `응답 없음` | 2초 안에 답이 없음. 방화벽이 SYN을 버렸거나, host가 닫힌 port에 RST를 보내지 않음 |
+| `오류` | 응답을 받기 전에 connect가 실패함. 예: `no route to host` |
+| `미확인` | `--timeout`이 먼저 끝나 확인하지 못함 |
+
+`응답 없음`은 닫힘과 같지 않습니다. edc는 조용한 방화벽과 닫힌 port를 추측으로 가르지 않습니다.
+
+`--parallel`은 동시에 여는 연결 수이며 기본 32, 최대 256입니다. `--timeout`은 scan 전체의 예산이며 기본 60초입니다. 예산이 먼저 끝나면 결과는 WARN이 되고, evidence에 확인하지 못한 port를 적고, warning에서 `--timeout`이나 `--parallel`을 올리라고 알립니다. 65535개 port를 모두 보려면 기본값보다 큰 예산이 필요합니다.
+
+handshake나 RST로 답한 port가 하나라도 있으면 PASS입니다. 아무 port도 답하지 않으면 WARN이고, `next` 줄에 그 중 한 port를 넣은 `edc tcp check --diagnose`를 보여 줍니다. 이름을 풀지 못하거나 모든 connect가 응답 전에 실패하면 FAIL입니다. port 목록은 `-v` 없이도 보입니다. `--json`은 `ports` metric에 모든 port의 상태와 연결 시간을 남깁니다. JSON의 상태 이름은 영어에 밑줄을 쓴 `open`, `refused`, `no_reply`, `error`, `not_scanned`입니다.
+
+edc는 port마다 TCP connect 하나를 열고 데이터는 보내지 않습니다. 직접 운영하거나 점검 허가를 받은 host만 scan하세요.
+
 ### 파일 감시와 action (Linux·macOS)
 
 `edc watch fs`는 기본으로 현재 디렉터리 바로 아래의 변경을 감시하고 출력합니다. `-r`이나 `--recursive`로 하위 디렉터리까지 감시하며, 새로 생성되거나 들어온 디렉터리도 등록합니다. 시작할 때 이미 있던 파일은 create 이벤트로 출력하지 않습니다. 디렉터리 symlink는 따라가지 않습니다.

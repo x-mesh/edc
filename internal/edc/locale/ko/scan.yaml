@@ -1,0 +1,31 @@
+# tcp scan의 한국어 메시지. 빠진 키는 en으로 내려간다.
+scan:
+  error:
+    ports_empty: "--ports에 port가 하나 이상 필요합니다"
+    ports_invalid: "--ports에 port도 범위도 아닌 항목이 있습니다: %s"
+    ports_range: "--ports의 port는 1에서 65535 사이여야 하고, 범위는 올라가야 합니다: %s"
+    parallel_range: "--parallel은 1에서 %d 사이여야 합니다"
+    host_only: "tcp scan은 port 없는 host를 받습니다. port는 --ports로 고릅니다: %s"
+    host_empty: "tcp scan에는 host가 필요합니다"
+    none_checked: "--timeout %s 안에 확인한 port가 없습니다"
+    all_errors: "모든 연결이 응답을 받기 전에 실패했습니다: %s"
+  progress: "port %d/%d · 열림 %d"
+  summary:
+    open: "열림 %d"
+    open_list: "열림 %d (%s)"
+    refused: "거부 %d"
+    no_reply: "응답 없음 %d"
+    error: "오류 %d"
+    not_scanned: "미확인 %d"
+    total: "port %d개, %s"
+    silent: "%s 안에 응답한 port가 없습니다"
+  evidence:
+    open: "열림"
+    refused: "거부"
+    no_reply: "응답 없음"
+    error: "오류"
+    not_scanned: "미확인"
+  warning:
+    no_reply: "port %d개가 %s 안에 응답하지 않았습니다. 방화벽이 SYN을 버렸거나, host가 닫힌 port에 RST를 보내지 않는 경우입니다. 응답 없음은 닫힘과 같지 않습니다."
+    partial: "--timeout %[3]s이 끝나기 전에 port %[2]d개 중 %[1]d개만 확인했습니다. --timeout이나 --parallel을 올리세요."
+  more: "+%d개"

@@ -53,11 +53,15 @@ command:
       interval: "--diagnose: 시도 간격 (기본 1s)"
       from: "expect: 이 주소나 대역에서 온 packet만 셉니다"
       duration: "expect: 기다릴 시간, 생략하면 Ctrl-C까지"
+      ports: "scan: 확인할 port와 범위, 쉼표로 구분 (기본: audit의 민감 port와 흔한 서비스 port)"
+      parallel: "scan: 동시에 여는 연결 수 (기본 32, 최대 256)"
     notes:
       - "연결하지 못하면 phase와 cause를 남기고 exit code 1을 돌려줍니다."
       - "--diagnose의 이벤트 추적은 Linux에서 root로 실행할 때만 합니다. 그 밖에는 연결만 반복하고 추적은 skip입니다."
       - "expect는 모든 interface에서 이 host에 도착한 SYN과, host가 돌려보낸 SYN-ACK나 RST를 셉니다 (Linux, root)."
       - "expect는 packet header만 읽고 payload는 남기지 않습니다."
+      - "scan은 port마다 한 번 연결합니다. open은 handshake 성공, refused는 RST, no reply는 2s 안에 응답 없음이며 닫힘과 같지 않습니다."
+      - "scan은 --timeout을 scan 전체의 예산으로 씁니다 (기본 60s). 확인하지 못한 port는 not scanned로 남깁니다."
   tls:
     summary: "인증서와 handshake 확인"
     option:

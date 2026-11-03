@@ -67,6 +67,36 @@ The SCOPE column and watch events identify the socket's bound address: loopback,
 
 For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
 
+### Port scan
+
+`edc tcp scan` connects to many ports of one host and reports which ports answer.
+
+```bash
+edc tcp scan example.com
+edc tcp scan --ports 22,80,443,8000-8100 example.com
+edc tcp scan --ports 1-1024 --parallel 64 --timeout 2m 10.0.0.5
+```
+
+The target is a host without a port. `--ports` takes port numbers and ranges, with commas between them. Without `--ports`, edc checks the sensitive ports that `edc audit` watches and the common ports for remote access, web, and mail. edc resolves the name once, prefers an IPv4 address, and connects to that address only. The summary names the address.
+
+Each port gets one TCP connect with a limit of 2 seconds. The result puts each port in one of these states:
+
+| state | what edc saw |
+| --- | --- |
+| `open` | the handshake completed |
+| `refused` | the host answered with an RST, so the host is up and nothing listens on the port |
+| `no reply` | no answer in 2 seconds: a firewall dropped the SYN, or the host sends no RST for a closed port |
+| `error` | the connect failed before an answer, for example `no route to host` |
+| `not scanned` | `--timeout` ended before edc checked the port |
+
+`no reply` is not the same as closed. edc does not guess between a silent firewall and a closed port.
+
+`--parallel` sets the number of connects at one time. The default is 32, and the maximum is 256. `--timeout` is the budget of the whole scan, 60 seconds by default. If the budget ends first, the result is WARN, the evidence lists the ports that edc did not check, and the warning tells you to raise `--timeout` or `--parallel`. A scan of all 65535 ports needs a larger budget than the default.
+
+The result is PASS when at least one port answered with a handshake or an RST. It is WARN when no port answered, and the `next` line names `edc tcp check --diagnose` for one of the ports. It is FAIL when the name does not resolve, or when every connect failed before an answer. The port list shows without `-v`. `--json` keeps every port with its state and connect time in the `ports` metric. The JSON state names use an underscore: `no_reply` and `not_scanned`.
+
+edc opens one TCP connect to each port and sends no data. Scan only hosts that you operate or have permission to test.
+
 ### File watching and actions (Linux and macOS)
 
 `edc watch fs` observes changes directly below the current directory by default. Use `-r` or `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.

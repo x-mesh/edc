@@ -161,7 +161,7 @@ _edc() {
           _arguments $common '--resolver[비교할 DNS 서버]:IP' '1:subcommand:(lookup compare config)' '2:host:_hosts'
           ;;
         tcp)
-          _arguments $common '--diagnose[이벤트 추적과 함께 반복 시도]' '--count[--diagnose 시도 횟수]:count' '--interval[--diagnose 시도 간격]:duration' '--from[expect: 출발 주소나 대역]:address' '--duration[expect: 기다릴 시간]:duration' '1:subcommand:(check expect)' '2:host\:port or port'
+          _arguments $common '--diagnose[이벤트 추적과 함께 반복 시도]' '--count[--diagnose 시도 횟수]:count' '--interval[--diagnose 시도 간격]:duration' '--from[expect: 출발 주소나 대역]:address' '--duration[expect: 기다릴 시간]:duration' '--ports[scan: 확인할 port와 범위]:ports' '--parallel[scan: 동시 연결 수]:count' '1:subcommand:(check expect scan)' '2:host\:port, port, or host'
           ;;
         tls)
           _arguments $common '--min-days[인증서 남은 일수 하한, 미만이면 fail]:days' '1:subcommand:(check)' '2:host\:port'
@@ -391,7 +391,7 @@ _edc() {
     dns)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "lookup compare config" -- "$cur")); else COMPREPLY=($(compgen -W "$common --resolver" -- "$cur")); fi ;;
     tcp)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check expect" -- "$cur")); else COMPREPLY=($(compgen -W "$common --diagnose --count --interval --from --duration" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check expect scan" -- "$cur")); else COMPREPLY=($(compgen -W "$common --diagnose --count --interval --from --duration --ports --parallel" -- "$cur")); fi ;;
     tls)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check" -- "$cur")); else COMPREPLY=($(compgen -W "$common --min-days" -- "$cur")); fi ;;
     http)

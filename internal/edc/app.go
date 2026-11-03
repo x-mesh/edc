@@ -273,7 +273,7 @@ func runDNS(args []string, version string) int {
 
 func runTCP(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc tcp", []string{"check", "expect"})
+		choice, ok := promptMissingChoice("edc tcp", []string{"check", "expect", "scan"})
 		if !ok {
 			fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 			return 2
@@ -283,6 +283,8 @@ func runTCP(args []string, version string) int {
 	switch {
 	case args[0] == "expect":
 		return runTCPExpect(args[1:], version)
+	case args[0] == "scan":
+		return runTCPScan(args[1:], version)
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
@@ -297,7 +299,7 @@ func runTCP(args []string, version string) int {
 	})
 }
 
-const tcpUsage = "edc tcp <check|expect>"
+const tcpUsage = "edc tcp <check|expect|scan>"
 
 // hasBoolFlag는 flag 해석 전에 bool flag가 켜졌는지 본다. 켜지면 flag 묶음이 다른 명령으로 넘기기 때문이다.
 func hasBoolFlag(args []string, name string) bool {
@@ -441,7 +443,11 @@ func runTargetProbe(args []string, version, name, probeID, prompt string, probe 
 }
 
 func runTargetProbeWithFlags(args []string, version, name, probeID string, extra probeFlags, probe func(context.Context, string) Result) int {
-	options := configuredCommon(15 * time.Second)
+	return runTargetProbeWithOptions(args, version, name, probeID, configuredCommon(15*time.Second), extra, probe)
+}
+
+// runTargetProbeWithOptions는 공통 옵션의 기본값을 caller가 정하는 변형이다. tcp scan처럼 15s보다 긴 예산이 기본인 probe가 쓴다.
+func runTargetProbeWithOptions(args []string, version, name, probeID string, options commonOptions, extra probeFlags, probe func(context.Context, string) Result) int {
 	set := newFlagSet(name)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)

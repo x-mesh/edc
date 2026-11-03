@@ -76,6 +76,7 @@ type edcConfig struct {
 	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
 	Audit    auditConfig    `yaml:"audit,omitempty" toml:"audit,omitempty"`
 	Check    checkConfig    `yaml:"check,omitempty" toml:"check,omitempty"`
+	Notify   notifyConfig   `yaml:"notify,omitempty" toml:"notify,omitempty"`
 	// commandSafety는 읽은 설정 파일로 check 루틴의 셸 명령을 실행해도 되는지다. 파일을 열 때 정하고 파일에는 쓰지 않는다.
 	commandSafety error
 }
@@ -622,6 +623,9 @@ func validateConfig(config edcConfig) error {
 		if port < 1 || port > 65535 {
 			return invalidConfig("audit.allow_ports", fmt.Sprintf("%d must be between 1 and 65535", port))
 		}
+	}
+	if err := validateNotifyConfig(config.Notify); err != nil {
+		return err
 	}
 	if err := validateCheckConfig(config.Check); err != nil {
 		return err

@@ -142,6 +142,27 @@ edc runs the commands only if other users cannot change the config file. edc che
 
 Routine and command names use only `a-z`, `0-9`, `_`, and `-`.
 
+### Webhook notifications
+
+`edc check --notify` and `edc jobs --notify` send the result to the webhooks in `config.toml`. Run them from cron or a systemd timer to get a message when a host breaks.
+
+```toml
+[[notify.webhooks]]
+name = "ops"
+url = "https://hooks.slack.com/services/T000/B000/XXXX"
+format = "slack"   # json (default), slack, or discord
+on = "warn"        # fail (default), warn, or always
+```
+
+```bash
+edc check --notify
+edc jobs --notify
+```
+
+`format = "slack"` sends `{"text": ...}`, which Slack, Mattermost, and Rocket.Chat accept. `format = "discord"` sends `{"content": ...}`. `format = "json"` sends the host, the command, the summary, and the results that are not `pass`. The message starts with the host, the command, and the counts, and lists up to 10 `fail` and `warn` results with their `next` command. A webhook sends only when the result reaches its `on` level.
+
+If a webhook does not answer with a 2xx status, edc writes the reason to stderr and the exit code is 1, also when the check passed. The error shows only the scheme and the host of the URL, because the path of a Slack or Discord URL is a secret. edc does not send when `config.toml` or a directory above it can be changed by another user. It uses the same rule as the routine commands. `--notify` does not work with `--group`. edc sends a message on every run. It does not remember the last result.
+
 ## Host audit (Linux)
 
 `edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, and the listening sockets. It changes nothing, and it sends nothing over the network. It ends in less than one second.

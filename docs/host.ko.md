@@ -132,6 +132,27 @@ level = "fail"
 
 루틴과 명령의 이름에는 `a-z`, `0-9`, `_`, `-`만 씁니다.
 
+### Webhook 알림
+
+`edc check --notify`와 `edc jobs --notify`는 결과를 `config.toml`에 적은 webhook으로 보냅니다. cron이나 systemd timer로 실행하면 호스트에 문제가 생겼을 때 메시지를 받을 수 있습니다.
+
+```toml
+[[notify.webhooks]]
+name = "ops"
+url = "https://hooks.slack.com/services/T000/B000/XXXX"
+format = "slack"   # json(기본), slack, discord
+on = "warn"        # fail(기본), warn, always
+```
+
+```bash
+edc check --notify
+edc jobs --notify
+```
+
+`format = "slack"`은 `{"text": ...}`를 보내고 Slack, Mattermost, Rocket.Chat이 받습니다. `format = "discord"`는 `{"content": ...}`를 보냅니다. `format = "json"`은 호스트, 명령, 판정 수, `pass`가 아닌 결과를 보냅니다. 메시지 첫 줄에는 호스트, 명령, 판정 수가 오고, 그 아래에 `fail`과 `warn` 결과를 `next` 명령과 함께 10개까지 적습니다. webhook은 결과가 `on` 기준에 닿을 때만 보냅니다.
+
+webhook이 2xx로 답하지 않으면 edc는 이유를 stderr에 적고, 점검이 통과했어도 종료 코드를 1로 만듭니다. Slack과 Discord URL은 경로가 비밀이므로 오류에는 URL의 scheme과 host만 적습니다. `config.toml`이나 그 위의 디렉터리를 다른 사용자가 바꿀 수 있으면 보내지 않습니다. 루틴의 셸 명령과 같은 규칙입니다. `--notify`는 `--group`과 함께 쓸 수 없습니다. 실행할 때마다 보내며, 지난 결과를 기억하지 않습니다.
+
 ## 호스트 점검 (Linux)
 
 `edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.

@@ -165,6 +165,7 @@ var commandDocs = []commandDoc{
 			{"--routine NAME", "command.check.option.routine"},
 			{"--group NAME", "command.check.option.group"},
 			{"--inventory FILE", "command.check.option.inventory"},
+			{"--notify", "command.check.option.notify"},
 		},
 		usesCommon: true,
 	},
@@ -459,7 +460,8 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "jobs", group: "observe",
-		usage:      []string{"edc jobs [options]"},
+		usage:      []string{"edc jobs [--notify] [options]"},
+		options:    []optionDoc{{"--notify", "command.jobs.option.notify"}},
 		usesCommon: true,
 	},
 	{

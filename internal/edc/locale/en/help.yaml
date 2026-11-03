@@ -92,9 +92,10 @@ command:
       routine: "run a routine from [check.routines] in config.toml"
       group: "run check on each host of an edc remote group"
       inventory: "inventory file for --group"
+      notify: "send the result to the webhooks in [notify]"
     notes:
       - "It checks services, processes, memory, disks, disk health, certificate files, the kernel log, time, network, containers, file handles, and reboot."
-      - "The built-in checks change nothing and send nothing over the network."
+      - "The built-in checks change nothing. They send nothing over the network unless you give --notify."
       - "Each finding names the edc command that shows more."
       - "Without root, some checks show skip, not pass."
       - "macOS reads launchd, memory pressure, disks, disk health, certificate files, network, containers, file handles, diagnostic reports, thermal pressure, and Time Machine. time and reboot show skip."
@@ -364,6 +365,8 @@ command:
       - "Without root, the fds and sockets of another account show skip."
   jobs:
     summary: "Scheduled jobs and their last result"
+    option:
+      notify: "send the result to the webhooks in [notify]"
     notes:
       - "Linux: systemd timers with the last result of their service, and cron entries."
       - "macOS: launchd jobs with StartInterval or StartCalendarInterval, and their last exit status."

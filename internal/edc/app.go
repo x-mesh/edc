@@ -288,7 +288,8 @@ func runTCP(args []string, version string) int {
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
-	case hasBoolFlag(args[1:], "diagnose"):
+	// --count와 --interval은 반복 시도의 값이라 diagnose에만 있다. 주면 반복하라는 뜻이므로 diagnose로 실행한다.
+	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval"):
 		return runTCPDiagnose(args[1:], version)
 	}
 	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", T("cli.prompt.host_port"), func(ctx context.Context, target string) Result {
@@ -312,6 +313,23 @@ func hasBoolFlag(args []string, name string) bool {
 			continue
 		}
 		if trimmed == name || trimmed == name+"=true" || trimmed == name+"=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasValueFlag는 flag 해석 전에 값을 받는 flag가 있는지 본다. "--name value"와 "--name=value"를 모두 받는다.
+func hasValueFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		trimmed := strings.TrimLeft(arg, "-")
+		if len(trimmed) == len(arg) || len(arg)-len(trimmed) > 2 {
+			continue
+		}
+		if trimmed == name || strings.HasPrefix(trimmed, name+"=") {
 			return true
 		}
 	}

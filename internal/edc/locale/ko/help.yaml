@@ -49,8 +49,8 @@ command:
     summary: "TCP 연결 확인"
     option:
       diagnose: "연결을 여러 번 시도하면서 TCP 이벤트와 kernel drop을 함께 추적하고, 의심 구간을 알려 줍니다"
-      count: "--diagnose: 시도 횟수 (기본 5)"
-      interval: "--diagnose: 시도 간격 (기본 1s)"
+      count: "시도 횟수 (기본 5), 주면 --diagnose로 실행"
+      interval: "시도 간격 (기본 1s), 주면 --diagnose로 실행"
       from: "expect: 이 주소나 대역에서 온 packet만 셉니다"
       duration: "expect: 기다릴 시간, 생략하면 Ctrl-C까지"
       ports: "scan: 확인할 port와 범위, 쉼표로 구분 (기본: audit의 민감 port와 흔한 서비스 port)"

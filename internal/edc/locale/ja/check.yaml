@@ -61,6 +61,7 @@ check:
     none: "SMART デバイスと md RAID がありません"
     no_smartctl: "smartctl がありません。ディスクの健全性を見るには smartmontools をインストールしてください"
     devices_unread: "ディスクの SMART を確認できませんでした: %s"
+    arrays_unread: "md RAID を確認できませんでした: %s"
     failing: "%s: SMART 健全性判定が失敗"
     spare_low: "%s: 予備ブロックの残りがしきい値を下回っています"
     wear: "%s: 保証書き込み寿命の %d%% を使用"

@@ -142,3 +142,53 @@ func TestCheckStorageJudgesArraysWhenSMARTIsUnread(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestParseSmartctlReportRejectsAFailedSMARTCommand(t *testing.T) {
+	// bit 2는 SMART 명령 자체가 실패한 것이다. 판정 값이 없으면 정상으로 셀 근거가 없다.
+	failed := `{"smartctl":{"exit_status":4,"messages":[{"string":"SMART Status command failed"}]},"model_name":"X"}`
+	if _, err := parseSmartctlReport("/dev/sdc", []byte(failed)); err == nil || !strings.Contains(err.Error(), "SMART Status command failed") {
+		t.Fatalf("failed command = %v", err)
+	}
+	empty := `{"smartctl":{"exit_status":0},"model_name":"USB bridge"}`
+	if _, err := parseSmartctlReport("/dev/sdd", []byte(empty)); err == nil {
+		t.Fatal("a report without health data must not count as healthy")
+	}
+	// 판정 값이 있으면 bit 2가 함께 와도 그 값으로 판정한다. 일부 log page만 읽지 못한 경우다.
+	partial := `{"smartctl":{"exit_status":4},"smart_status":{"passed":true}}`
+	if device, err := parseSmartctlReport("/dev/sde", []byte(partial)); err != nil || device.Failing {
+		t.Fatalf("partial = %+v, %v", device, err)
+	}
+}
+
+func TestCheckStorageJudgesSpareAndWearBoundaries(t *testing.T) {
+	cases := []struct {
+		device checkStorageDevice
+		want   Status
+	}{
+		{checkStorageDevice{Name: "a", Wear: 89}, StatusPass},
+		{checkStorageDevice{Name: "a", Wear: 90}, StatusWarn},
+		{checkStorageDevice{Name: "a", Wear: 99}, StatusWarn},
+		{checkStorageDevice{Name: "a", Wear: 100}, StatusFail},
+		{checkStorageDevice{Name: "a", Wear: 4, SpareLow: true}, StatusFail},
+		{checkStorageDevice{Name: "a", Wear: -1}, StatusPass},
+	}
+	for _, test := range cases {
+		result := checkStorageResult(checkFacts{Storage: checkStorage{Devices: []checkStorageDevice{test.device}}})
+		if result.Status != test.want {
+			t.Errorf("%+v: status = %s, want %s (%s)", test.device, result.Status, test.want, result.Summary)
+		}
+	}
+}
+
+func TestCheckStorageReportsAnUnreadableMdstat(t *testing.T) {
+	unread := fmt.Errorf("/proc/mdstat: %w", fs.ErrPermission)
+	alone := checkStorageResult(checkFacts{Storage: checkStorage{ArraysErr: unread}})
+	if alone.Status != StatusSkip || alone.Summary != T("check.skip.needs_root", "/proc/mdstat") {
+		t.Fatalf("alone = %+v", alone)
+	}
+	// SMART를 판정했어도 RAID를 읽지 못했다는 것은 남긴다. 빈 RAID로 읽히면 안 된다.
+	withDevice := checkStorageResult(checkFacts{Storage: checkStorage{Devices: []checkStorageDevice{{Name: "a", Wear: -1}}, ArraysErr: unread}})
+	if withDevice.Status != StatusPass || len(withDevice.Warnings) != 1 || !strings.Contains(withDevice.Warnings[0], "/proc/mdstat") {
+		t.Fatalf("with device = %+v", withDevice)
+	}
+}

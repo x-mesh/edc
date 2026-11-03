@@ -61,6 +61,7 @@ check:
     none: "SMART 장치와 md RAID가 없습니다"
     no_smartctl: "smartctl이 없습니다. 디스크 건강을 보려면 smartmontools를 설치하세요"
     devices_unread: "디스크 SMART를 확인하지 못했습니다: %s"
+    arrays_unread: "md RAID를 확인하지 못했습니다: %s"
     failing: "%s: SMART 건강 판정 실패"
     spare_low: "%s: 남은 예비 블록이 기준보다 적습니다"
     wear: "%s: 보증 쓰기 수명의 %d%% 사용"

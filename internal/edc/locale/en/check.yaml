@@ -61,6 +61,7 @@ check:
     none: "no SMART device or md RAID array found"
     no_smartctl: "smartctl is not installed. Install smartmontools to check disk health"
     devices_unread: "disk SMART was not checked: %s"
+    arrays_unread: "md RAID was not checked: %s"
     failing: "%s: SMART health check failed"
     spare_low: "%s: available spare is below the threshold"
     wear: "%s: %d%% of the rated write endurance is used"

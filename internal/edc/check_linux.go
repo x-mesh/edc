@@ -159,8 +159,13 @@ const smartctlTimeout = 10 * time.Second
 
 func readLinuxStorage(ctx context.Context) checkStorage {
 	var storage checkStorage
-	if data, err := os.ReadFile("/proc/mdstat"); err == nil {
+	// md 모듈이 없는 커널에는 파일이 없다. RAID가 없는 것이고 읽기 실패가 아니다.
+	data, err := os.ReadFile("/proc/mdstat")
+	switch {
+	case err == nil:
 		storage.Arrays = parseMdstat(string(data))
+	case !errors.Is(err, fs.ErrNotExist):
+		storage.ArraysErr = err
 	}
 	storage.Devices, storage.DevicesErr = readSmartctlDevices(ctx)
 	return storage

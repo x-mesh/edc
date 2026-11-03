@@ -39,8 +39,8 @@ type checkArray struct {
 type checkStorage struct {
 	Devices []checkStorageDevice
 	Arrays  []checkArray
-	// DevicesErr는 SMART를 읽지 못한 이유다. RAID는 따로 읽으므로 그대로 판정한다.
-	DevicesErr error
+	// DevicesErr는 SMART를, ArraysErr는 /proc/mdstat을 읽지 못한 이유다. 한쪽만 읽었으면 그쪽은 판정한다.
+	DevicesErr, ArraysErr error
 }
 
 // errCheckNoSmartctl은 smartctl이 없는 Linux다. 장치 건강은 skip이고 설치 방법을 알린다.
@@ -50,13 +50,21 @@ func checkStorageResult(facts checkFacts) Result {
 	const id = "storage"
 	storage := facts.Storage
 	if len(storage.Devices) == 0 && len(storage.Arrays) == 0 {
+		var result Result
 		switch {
 		case errors.Is(storage.DevicesErr, errCheckNoSmartctl):
-			return checkResult(id, StatusSkip, storage.DevicesErr.Error())
+			result = checkResult(id, StatusSkip, storage.DevicesErr.Error())
 		case storage.DevicesErr != nil:
-			return checkSkip(id, "SMART", storage.DevicesErr)
+			result = checkSkip(id, "SMART", storage.DevicesErr)
+		case storage.ArraysErr != nil:
+			return checkSkip(id, "/proc/mdstat", storage.ArraysErr)
+		default:
+			return checkResult(id, StatusSkip, T("check.storage.none"))
 		}
-		return checkResult(id, StatusSkip, T("check.storage.none"))
+		if storage.ArraysErr != nil {
+			result.Warnings = append(result.Warnings, T("check.storage.arrays_unread", infoSingleLine(storage.ArraysErr.Error())))
+		}
+		return result
 	}
 	var issues checkIssues
 	next := ""
@@ -100,6 +108,9 @@ func checkStorageResult(facts checkFacts) Result {
 	// RAID만 읽고 SMART를 못 읽었으면 장치 쪽은 판정하지 않았다는 것을 남긴다. pass로 읽히면 안 된다.
 	if storage.DevicesErr != nil {
 		result.Warnings = append(result.Warnings, T("check.storage.devices_unread", infoSingleLine(storage.DevicesErr.Error())))
+	}
+	if storage.ArraysErr != nil {
+		result.Warnings = append(result.Warnings, T("check.storage.arrays_unread", infoSingleLine(storage.ArraysErr.Error())))
 	}
 	return result
 }
@@ -178,7 +189,11 @@ type smartctlReport struct {
 }
 
 // smartctlOpenFailed는 smartctl exit status의 bit 1이다. 장치를 열지 못했다는 뜻이고, root가 아닐 때 흔하다.
-const smartctlOpenFailed = 1 << 1
+// smartctlCommandFailed는 bit 2로, SMART 명령이 실패했거나 SMART 자료의 checksum이 맞지 않는다는 뜻이다.
+const (
+	smartctlOpenFailed    = 1 << 1
+	smartctlCommandFailed = 1 << 2
+)
 
 // parseSmartctlReport는 smartctl --json -H -A의 출력이다. exit status는 bit mask라 0이 아니어도 판정 값은 읽는다.
 func parseSmartctlReport(name string, data []byte) (checkStorageDevice, error) {
@@ -186,12 +201,21 @@ func parseSmartctlReport(name string, data []byte) (checkStorageDevice, error) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		return checkStorageDevice{}, fmt.Errorf("smartctl %s: %w", name, err)
 	}
-	if report.Smartctl.ExitStatus&smartctlOpenFailed != 0 {
-		message := "open failed"
+	message := func(fallback string) error {
 		if messages := report.Smartctl.Messages; len(messages) > 0 {
-			message = messages[0].String
+			fallback = messages[0].String
 		}
-		return checkStorageDevice{}, fmt.Errorf("smartctl %s: %s", name, message)
+		return fmt.Errorf("smartctl %s: %s", name, fallback)
+	}
+	if report.Smartctl.ExitStatus&smartctlOpenFailed != 0 {
+		return checkStorageDevice{}, message("open failed")
+	}
+	// 판정 값이 하나도 없으면 정상으로 셀 근거가 없다. bit 2가 함께 와도 판정 값이 있으면 일부 log만 읽지 못한 것이다.
+	if report.SmartStatus == nil && report.NVMe == nil && report.ATA == nil {
+		if report.Smartctl.ExitStatus&smartctlCommandFailed != 0 {
+			return checkStorageDevice{}, message("SMART command failed")
+		}
+		return checkStorageDevice{}, message("no SMART health data")
 	}
 	device := checkStorageDevice{Name: name, Model: report.ModelName, Wear: -1}
 	if report.SmartStatus != nil {

@@ -344,13 +344,14 @@ command:
       - "--password や --token などのオプションの値と URL のパスワードは *** で隠します。"
       - "edc listen --json は読める process の args と cwd を含めます。--full は --watch と併用できません。"
   svc:
-    summary: "systemd service の一覧、または service 一つを一画面に (Linux)"
+    summary: "service の一覧、または service 一つを一画面に (systemd と launchd)"
     notes:
       - "unit なしで実行すると service の一覧を表示します。失敗したものが先です。"
       - "端末では Enter で service を一つ開き、Esc で戻ります。"
       - "状態、稼働時間、再起動、process、fd、ソケット、journal のエラーを表示します。"
       - "読むだけです。unit の起動・停止・reload はしません。"
-      - "systemd のある Linux でのみ動作し、他のホストでは skip です。"
+      - "Linux では systemd を読みます。systemd のない Linux ホストでは skip です。"
+      - "macOS では launchd job の状態、前回の終了、process、job のログファイルの末尾を見ます。"
       - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
     option:
       all: "動いていない service も一覧に含める"

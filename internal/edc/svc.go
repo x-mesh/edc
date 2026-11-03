@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -104,6 +105,9 @@ type svcFacts struct {
 }
 
 func runSvc(args []string, version string) int {
+	if runtime.GOOS == "darwin" {
+		return runSvcLaunchd(args, version)
+	}
 	sources, ok := hostSvcSources()
 	return runSvcWith(args, version, sources, ok)
 }

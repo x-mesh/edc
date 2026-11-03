@@ -244,6 +244,25 @@ In a pipe or with `--json`, edc prints one `svc.list` result and a table. A fail
 <a id="container-view-linux"></a>
 <a id="container-view-linux-and-macos"></a>
 
+### launchd jobs (macOS)
+
+On macOS, `edc svc` reads launchd jobs instead of systemd units.
+
+```bash
+edc svc                          # running jobs and failed jobs, failed first
+edc svc --all                    # also the Apple jobs, the open apps, and the idle jobs
+edc svc com.example.sync         # one job
+sudo edc svc com.example.daemon  # a system daemon
+```
+
+The list comes from `launchctl list`. A job that is not running and ended with a positive exit code is failed, as in `check`. A job that ended by a signal is not failed. By default the list leaves out the `com.apple.*` jobs, the open apps (`application.*`), and the jobs that are not running and ended with code 0. A failed job always shows.
+
+For one job, edc looks in the `gui/<uid>`, `user/<uid>`, and `system` domains, and starts with `system` when you run it as root. It shows three results:
+
+- `svc.state`: the state, PID, run count, and last exit from `launchctl print`, with the plist, the program, and the arguments. Secret arguments are hidden. A job that is not running and ended with a positive exit code fails.
+- `svc.process`: CPU, memory, open fds, and listening ports of the running process. `next` is `edc proc <pid>`.
+- `svc.log`: the last 20 lines of the file in `StandardErrorPath`, or else `StandardOutPath`. If the job sets neither, `next` is a `log show` command for the unified log.
+
 ## Process view (Linux and macOS)
 
 `edc proc <pid|name>` shows one process on one screen. It reads only and changes nothing.

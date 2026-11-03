@@ -49,6 +49,7 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `process` | | defunct process나 D 상태 process가 있음 |
 | `memory` | 가용 메모리가 5% 미만 | 가용 메모리가 10% 미만 |
 | `disk` | mount의 사용률이나 inode 사용률이 95% 이상 | 같은 값이 90% 이상이거나 mount가 읽기 전용 |
+| `storage` | SMART가 디스크 실패를 알리거나, NVMe의 남은 예비 블록이 기준보다 적거나, 보증 쓰기 수명을 100% 이상 썼거나, md RAID가 degraded 또는 inactive | 보증 쓰기 수명을 90% 이상 썼거나, NVMe에 미디어 오류가 있거나, ATA 디스크에 재할당·대기·복구 불가 섹터가 있거나, md 배열이 recovery, resync, reshape 중 |
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
 | `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
@@ -66,11 +67,14 @@ macOS에서는 다음 원천을 읽습니다.
 | `process` | `ps` | defunct process만 셉니다. macOS에는 Linux와 같은 뜻의 D 상태가 없습니다. |
 | `memory` | `kern.memorystatus_vm_pressure_level` | pressure 단계로 판정합니다. `warn`이면 warn, `critical`이면 fail입니다. macOS는 원래 가용 메모리가 적게 보입니다. |
 | `disk` | `df`와 `statfs` | 읽기 전용 mount는 판정하지 않습니다. 서명된 system volume이나, mount한 설치 파일처럼 원래 가득 찬 disk image이기 때문입니다. |
+| `storage` | `diskutil list physical`, `diskutil info` | 물리 디스크마다 SMART 상태와 NVMe 값을 읽습니다. root와 `smartctl`이 필요 없습니다. macOS에는 md RAID가 없습니다. |
 | `network` | `route -n get default`, `/etc/resolv.conf` | conntrack과 TCP 메모리는 보지 않습니다. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | 최근 1시간에 쓰인 보고서를 셉니다. kernel panic과 `JetsamEvent`(메모리가 모자라 커널이 process를 끝냄)는 fail, 앱 crash와 hang 보고서는 warn입니다. CPU·wakeup 보고서는 세지 않습니다. |
 | `container`, `filehandles` | Docker socket, `kern.num_files`와 `kern.maxfiles` | Linux와 같습니다. |
 | `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS에만 있습니다. `heavy`는 warn, `trapping`과 `sleeping`은 fail입니다. `moderate`는 부하가 걸리면 흔히 나오는 단계라 경고하지 않습니다. |
 | `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS에만 있습니다. 마지막 Time Machine 백업이 7일보다 오래되면 warn입니다. 백업 대상이 없으면 `skip`입니다. |
+
+Linux의 `storage`는 `/proc/mdstat`과 `smartctl --json`을 읽습니다. `smartctl`이 없으면 SMART 쪽은 `skip`이고, `smartmontools`를 설치하면 확인할 수 있습니다. `smartctl`은 root가 필요합니다. root가 아니면 md 배열만 판정하고 경고 줄을 남깁니다. MegaRAID 컨트롤러 뒤의 디스크는 `/dev/bus/0 [megaraid,1]`처럼 `-d` 종류를 함께 보여 줍니다.
 
 macOS에서 `time`과 `reboot`은 `skip`입니다. Linux 결과에는 `thermal`과 `backup`이 없습니다.
 

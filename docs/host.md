@@ -59,6 +59,7 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `process` | | a defunct process, or a process in D state |
 | `memory` | less than 5% of memory is available | less than 10% of memory is available |
 | `disk` | a mount has 95% or more use, or 95% or more inode use | the same at 90%, or a mount is read-only |
+| `storage` | SMART reports a failing disk, the NVMe available spare is below its threshold, 100% or more of the rated write endurance is used, or an md RAID array is degraded or inactive | 90% or more of the rated write endurance is used, an NVMe disk has media errors, an ATA disk has reallocated, pending, or uncorrectable sectors, or an md array is in recovery, resync, or reshape |
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
 | `network` | no default route, or 90% or more use of conntrack or TCP memory | no `/etc/resolv.conf`, no nameserver, or the same use at 80% |
@@ -76,11 +77,14 @@ On macOS, the checks read other sources:
 | `process` | `ps` | Only defunct processes count. macOS has no D state with the Linux meaning. |
 | `memory` | `kern.memorystatus_vm_pressure_level` | The pressure level decides: `warn` warns and `critical` fails. Free memory is low on macOS by design. |
 | `disk` | `df` and `statfs` | Read-only mounts are not judged. They are the sealed system volume or a disk image, such as a mounted installer, that is full by design. |
+| `storage` | `diskutil list physical`, `diskutil info` | edc reads the SMART status and the NVMe values of each physical disk. It does not need root or `smartctl`. macOS has no md RAID. |
 | `network` | `route -n get default`, `/etc/resolv.conf` | conntrack and TCP memory are not checked. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | A report written in the last hour counts. A kernel panic and a `JetsamEvent`, which means that the kernel ended processes for memory, fail. An app crash report or a hang report warns. CPU and wakeup reports do not count. |
 | `container`, `filehandles` | Docker socket, `kern.num_files` and `kern.maxfiles` | Same as Linux. |
 | `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS only. `heavy` warns, and `trapping` or `sleeping` fails. `moderate` is common under load and does not warn. |
 | `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS only. A latest Time Machine backup older than seven days warns. Without a destination, it shows `skip`. |
+
+On Linux, `storage` reads `/proc/mdstat` and `smartctl --json`. If `smartctl` is not installed, the SMART part shows `skip`. Install `smartmontools` to check it. `smartctl` needs root. Without root, edc judges only the md arrays and adds a warning line. A disk behind a MegaRAID controller shows its `-d` type, for example `/dev/bus/0 [megaraid,1]`.
 
 `time` and `reboot` show `skip` on macOS. Linux results do not include `thermal` and `backup`.
 

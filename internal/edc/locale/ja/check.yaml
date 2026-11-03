@@ -56,6 +56,19 @@ check:
     unlimited: "ファイルハンドル %d 個使用中、システム上限なし"
     unknown: "ファイルハンドルの上限を読めませんでした"
     usage: "ファイルハンドル %d / %d (%.0f%%)"
+  storage:
+    ok: "デバイス %d 台と RAID %d 個、故障の兆候なし"
+    none: "SMART デバイスと md RAID がありません"
+    no_smartctl: "smartctl がありません。ディスクの健全性を見るには smartmontools をインストールしてください"
+    devices_unread: "ディスクの SMART を確認できませんでした: %s"
+    failing: "%s: SMART 健全性判定が失敗"
+    spare_low: "%s: 予備ブロックの残りがしきい値を下回っています"
+    wear: "%s: 保証書き込み寿命の %d%% を使用"
+    media_errors: "%s: メディアエラー %d 件"
+    sectors: "%s: 再割り当て %d、保留 %d、修復不能 %d セクタ"
+    array_inactive: "%s が inactive です"
+    array_degraded: "%s (%s) が degraded です。メンバー %d 台が欠けています"
+    array_sync: "%s: %s 進行中"
   thermal:
     level: "thermal pressure %s"
   backup:

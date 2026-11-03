@@ -265,9 +265,10 @@ func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
 		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
 		fileHandles: func() (*infoFileHandles, error) { return &infoFileHandles{Used: 1, Max: 100}, nil },
 		reboot:      func() checkReboot { return checkReboot{} },
+		storage:     func(context.Context) checkStorage { return checkStorage{DevicesErr: errCheckNoSmartctl} },
 	}
 	results := evaluateCheck(collectCheckFacts(context.Background(), sources, nil), checkTestPolicy)
-	want := []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot"}
+	want := []string{"service", "process", "memory", "disk", "storage", "kernel", "time", "network", "container", "filehandles", "reboot"}
 	if len(results) != len(want) {
 		t.Fatalf("results = %d", len(results))
 	}

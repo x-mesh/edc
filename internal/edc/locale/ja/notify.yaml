@@ -1,0 +1,7 @@
+# check と jobs の webhook 通知メッセージ。
+notify:
+  error:
+    none: "--notify を使うには config.toml に [[notify.webhooks]] の項目が必要です"
+    unsafe: "送信しませんでした: %v"
+    send: "通知 %v"
+    group: "--notify はローカルの check でのみ使え、--group とは併用できません"

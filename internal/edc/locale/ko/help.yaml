@@ -92,9 +92,10 @@ command:
       routine: "config.toml의 [check.routines]에 있는 루틴을 실행"
       group: "edc remote 그룹의 호스트마다 check를 실행"
       inventory: "--group에 쓸 inventory 파일"
+      notify: "결과를 [notify]의 webhook으로 보내기"
     notes:
       - "service, process, 메모리, 디스크, 디스크 건강, 인증서 파일, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 봅니다."
-      - "기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다."
+      - "기본 점검은 아무것도 바꾸지 않습니다. --notify를 주지 않으면 외부로 보내지 않습니다."
       - "문제마다 이어서 볼 edc 명령을 next로 알려 줍니다."
       - "root가 아니면 일부 점검은 통과가 아니라 skip입니다."
       - "macOS에서는 launchd, memory pressure, 디스크, 디스크 건강, 인증서 파일, 네트워크, container, 파일 핸들, 진단 보고서, thermal pressure, Time Machine을 보고 time과 reboot은 skip입니다."
@@ -364,6 +365,8 @@ command:
       - "root가 아니면 다른 계정의 fd와 소켓은 skip입니다."
   jobs:
     summary: "예약 작업과 마지막 실행 결과"
+    option:
+      notify: "결과를 [notify]의 webhook으로 보내기"
     notes:
       - "Linux에서는 systemd timer와 그 service의 마지막 결과, cron 항목을 봅니다."
       - "macOS에서는 StartInterval이나 StartCalendarInterval이 있는 launchd job과 마지막 종료 상태를 봅니다."

@@ -408,11 +408,12 @@ func runJobs(args []string, version string) int {
 	set := newFlagSet("jobs")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	notify := set.Bool("notify", false, T("command.jobs.option.notify"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc jobs [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc jobs [--notify] [options]"))
 		return 2
 	}
 	started := time.Now()
@@ -424,5 +425,5 @@ func runJobs(args []string, version string) int {
 	for _, source := range hostJobsSources(ctx) {
 		results = append(results, jobsResult(source, now, options.verbose))
 	}
-	return emit(options, buildReport(version, started, nil, results, options.redact))
+	return emitNotify(options, buildReport(version, started, nil, results, options.redact), "jobs", version, *notify)
 }

@@ -199,6 +199,7 @@ func runCheck(args []string, version string) int {
 	group := set.String("group", "", T("command.check.option.group"))
 	inventory := set.String("inventory", "", T("command.check.option.inventory"))
 	routine := set.String("routine", "", T("command.check.option.routine"))
+	notify := set.Bool("notify", false, T("command.check.option.notify"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -212,6 +213,11 @@ func runCheck(args []string, version string) int {
 	// 루틴 이름은 --group에서 원격 셸 명령에 그대로 들어간다.
 	if *routine != "" && !checkNamePattern.MatchString(*routine) {
 		fmt.Fprintln(os.Stderr, T("check.error.routine_name", *routine))
+		return 2
+	}
+	// --group은 호스트마다 표 한 줄만 받아 알림에 쓸 결과가 없다.
+	if *group != "" && *notify {
+		fmt.Fprintln(os.Stderr, T("notify.error.group"))
 		return 2
 	}
 	if *group == "" && *inventory != "" {
@@ -242,7 +248,7 @@ func runCheck(args []string, version string) int {
 	if *routine != "" {
 		target = map[string]interface{}{"routine": *routine}
 	}
-	return emit(options, buildReport(version, started, target, evaluateCheck(collectCheckFacts(ctx, sources, policy.commands), policy), options.redact))
+	return emitNotify(options, buildReport(version, started, target, evaluateCheck(collectCheckFacts(ctx, sources, policy.commands), policy), options.redact), "check", version, *notify)
 }
 
 // collectCheckFacts는 원천을 함께 읽는다. systemctl, journalctl, docker socket이 각각 외부 호출이라 차례로 읽으면 느리다.

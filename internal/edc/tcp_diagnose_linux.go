@@ -19,7 +19,7 @@ const (
 
 // diagnoseCollector는 시작을 기다리는 collector 하나다. err는 done이 닫힌 뒤에만 읽는다.
 type diagnoseCollector struct {
-	skip    *string
+	skip    func(string)
 	ready   chan struct{}
 	done    chan struct{}
 	err     error
@@ -32,16 +32,16 @@ type diagnoseCollector struct {
 func startDiagnoseTrace(ctx context.Context, destination string) *diagnoseTraceRun {
 	run := newDiagnoseTraceRun(destination)
 	if err := captureEventsPrerequisites(); err != nil {
-		run.tcpSkip = diagnoseSkipReason(err)
+		run.setTCPSkip(diagnoseSkipReason(err))
 	}
 	if err := dropTracePrerequisites(); err != nil {
-		run.dropSkip = diagnoseSkipReason(err)
+		run.setDropSkip(diagnoseSkipReason(err))
 	}
 	stop := make(chan struct{})
 	var group sync.WaitGroup
 	var collectors []*diagnoseCollector
-	start := func(skip *string, collect func(func(captureEvent) error, <-chan struct{}) (captureSummary, error)) {
-		if *skip != "" {
+	start := func(traced bool, skip func(string), collect func(func(captureEvent) error, <-chan struct{}) (captureSummary, error)) {
+		if !traced {
 			return
 		}
 		collector := &diagnoseCollector{skip: skip, ready: make(chan struct{}), done: make(chan struct{})}
@@ -69,10 +69,10 @@ func startDiagnoseTrace(ctx context.Context, destination string) *diagnoseTraceR
 			run.addLost(summary.LostEvents)
 		}()
 	}
-	start(&run.tcpSkip, func(onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	start(run.tcpTraced(), run.setTCPSkip, func(onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 		return collectCaptureEventsFor(traceScope{protocol: "tcp"}, 0, onEvent, stop)
 	})
-	start(&run.dropSkip, func(onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	start(run.dropTraced(), run.setDropSkip, func(onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 		return collectDropEvents(nil, 0, onEvent, stop)
 	})
 	if len(collectors) == 0 {
@@ -104,7 +104,7 @@ func waitDiagnoseCollectors(ctx context.Context, collectors []*diagnoseCollector
 				collector.settled = true
 			case <-collector.done:
 				collector.settled = true
-				*collector.skip = diagnoseSkipReason(collector.err)
+				collector.skip(diagnoseSkipReason(collector.err))
 			default:
 				pending = true
 			}
@@ -119,7 +119,7 @@ func waitDiagnoseCollectors(ctx context.Context, collectors []*diagnoseCollector
 		case <-limit.C:
 			for _, collector := range collectors {
 				if !collector.settled {
-					*collector.skip = T("diagnose.trace.not_ready", diagnoseTraceStartLimit)
+					collector.skip(T("diagnose.trace.not_ready", diagnoseTraceStartLimit))
 				}
 			}
 			return

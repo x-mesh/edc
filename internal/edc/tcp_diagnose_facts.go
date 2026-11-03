@@ -81,11 +81,20 @@ func diagnoseOutcome(phase string) string {
 	}
 }
 
+// diagnoseTraceEventLimit는 run이 남기는 event 상한이다. 시도 하나가 수십 개를 만들고 count 상한이 100이므로 정상 흐름은
+// 이 안에 든다. 넘치는 event는 세기만 해서 결과가 개수가 적을 수 있다고 알린다.
+const diagnoseTraceEventLimit = 4096
+
 // diagnoseTraceRun은 시도하는 동안 돈 event 수집이다. tcpSkip과 dropSkip이 비어 있으면 그 수집이 처음부터 돌았다.
+// startDiagnoseTrace는 어느 OS에서나 run을 돌려주므로 nil은 오지 않는다. collector goroutine이 observe와 warn을 부르는
+// 동안 main goroutine이 줄을 그리므로, 모든 field는 mu 아래에서만 읽고 쓴다.
 type diagnoseTraceRun struct {
 	destination string
 	mu          sync.Mutex
 	events      []captureEvent
+	limit       int
+	overflow    uint64
+	ports       map[int]bool
 	sockets     map[uint64]bool
 	tcpSkip     string
 	dropSkip    string
@@ -94,29 +103,49 @@ type diagnoseTraceRun struct {
 	stop        func()
 }
 
-func newDiagnoseTraceRun(destination string) *diagnoseTraceRun {
-	return &diagnoseTraceRun{destination: destination, sockets: map[uint64]bool{}}
+// diagnoseTraceStatus는 trace 줄과 결과를 그릴 때 읽는 run의 상태다. 한 번 잠그고 모두 읽어야 한 줄 안의 값이 섞이지 않는다.
+type diagnoseTraceStatus struct {
+	tcpSkip  string
+	dropSkip string
+	warnings []string
+	lost     uint64
+	overflow uint64
 }
 
-// observe는 대상 주소와 오간 event만 남긴다. collector는 host의 모든 TCP와 drop을 보내므로 나머지는 버린다.
-// 주소가 비어 오는 event는 같은 socket의 앞 event로 알아본다.
+func newDiagnoseTraceRun(destination string) *diagnoseTraceRun {
+	return &diagnoseTraceRun{destination: destination, limit: diagnoseTraceEventLimit, ports: map[int]bool{}, sockets: map[uint64]bool{}}
+}
+
+// expectPort는 시도가 bind한 local port를 등록한다. connect 전에 불러야 그 시도의 첫 SYN event부터 남는다.
+func (run *diagnoseTraceRun) expectPort(port int) {
+	if port <= 0 {
+		return
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	run.ports[port] = true
+}
+
+// observe는 등록한 local port로 대상 주소와 오간 event만 남긴다. collector는 host의 모든 TCP와 drop을 보내므로, 같은 대상에
+// 연결한 다른 process의 흐름도 여기서 버린다. 주소가 비어 오는 event는 같은 socket의 앞 event로 알아본다.
 func (run *diagnoseTraceRun) observe(event captureEvent) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	matches := event.Destination == run.destination || event.Source == run.destination
-	if !matches && (event.SocketID == 0 || !run.sockets[event.SocketID]) {
+	known := event.SocketID != 0 && run.sockets[event.SocketID]
+	if !known && !run.ports[diagnoseLocalPort(event, run.destination)] {
 		return
 	}
 	if event.SocketID != 0 && event.Protocol != "drop" {
 		run.sockets[event.SocketID] = true
 	}
+	if len(run.events) >= run.limit {
+		run.overflow++
+		return
+	}
 	run.events = append(run.events, event)
 }
 
 func (run *diagnoseTraceRun) snapshot() []captureEvent {
-	if run == nil {
-		return nil
-	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	return append([]captureEvent(nil), run.events...)
@@ -134,6 +163,27 @@ func (run *diagnoseTraceRun) addLost(lost uint64) {
 	run.lost += lost
 }
 
+func (run *diagnoseTraceRun) setTCPSkip(reason string) {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	run.tcpSkip = reason
+}
+
+func (run *diagnoseTraceRun) setDropSkip(reason string) {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	run.dropSkip = reason
+}
+
+func (run *diagnoseTraceRun) status() diagnoseTraceStatus {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return diagnoseTraceStatus{
+		tcpSkip: run.tcpSkip, dropSkip: run.dropSkip, warnings: append([]string(nil), run.warnings...),
+		lost: run.lost, overflow: run.overflow,
+	}
+}
+
 // diagnoseSkipReason은 prerequisite 오류를 한 줄로 만든다. 권한 안내는 sudo 명령을 다음 줄에 두는데, 시도 줄과 trace 줄은
 // 첫 줄만 그리므로 명령이 잘린다.
 func diagnoseSkipReason(err error) string {
@@ -147,11 +197,11 @@ func diagnoseSkipReason(err error) string {
 	return strings.Join(lines, " ")
 }
 
-func (run *diagnoseTraceRun) tcpTraced() bool  { return run != nil && run.tcpSkip == "" }
-func (run *diagnoseTraceRun) dropTraced() bool { return run != nil && run.dropSkip == "" }
+func (run *diagnoseTraceRun) tcpTraced() bool  { return run.status().tcpSkip == "" }
+func (run *diagnoseTraceRun) dropTraced() bool { return run.status().dropSkip == "" }
 
 func (run *diagnoseTraceRun) finish() {
-	if run != nil && run.stop != nil {
+	if run.stop != nil {
 		run.stop()
 		run.stop = nil
 	}
@@ -228,14 +278,7 @@ var diagnoseBlockingDrops = map[string]bool{
 func diagnoseBlockingDrop(reason string) bool { return diagnoseBlockingDrops[reason] }
 
 func diagnoseEventAttempt(event captureEvent, destination string, byPort map[int]int, bySocket map[uint64]int) (int, bool) {
-	local := ""
-	switch destination {
-	case event.Destination:
-		local = event.Source
-	case event.Source:
-		local = event.Destination
-	}
-	if index, ok := byPort[addressPort(local)]; ok {
+	if index, ok := byPort[diagnoseLocalPort(event, destination)]; ok {
 		return index, true
 	}
 	if event.SocketID != 0 && event.Protocol != "drop" {
@@ -243,6 +286,17 @@ func diagnoseEventAttempt(event captureEvent, destination string, byPort map[int
 		return index, ok
 	}
 	return 0, false
+}
+
+// diagnoseLocalPort는 대상과 오간 event의 이 host 쪽 port다. 대상과 무관한 event나 주소 없는 event는 0이다.
+func diagnoseLocalPort(event captureEvent, destination string) int {
+	switch destination {
+	case event.Destination:
+		return addressPort(event.Source)
+	case event.Source:
+		return addressPort(event.Destination)
+	}
+	return 0
 }
 
 func addressPort(address string) int {

@@ -92,6 +92,10 @@ func parseTCPExpectArgs(args []string) (expectOptions, int, bool) {
 		return options, 2, false
 	}
 	if len(positional) == 0 {
+		// 인자 없이 실행한 사람은 어느 host의 어떤 port를 넣을지 모른다. 묻기 전에 하는 일과 넣을 값을 알린다.
+		if _, ok := terminalInput(os.Stdin); ok {
+			fmt.Fprintln(os.Stdout, T("expect.prompt_hint"))
+		}
 		values, ok := promptMissingArgs("edc tcp expect", T("expect.prompt_port"))
 		if !ok {
 			fmt.Fprintln(os.Stderr, T("cli.usage", expectUsage))
@@ -1224,6 +1228,9 @@ func (printer expectLivePrinter) header(port uint16, from netip.Prefix, duration
 	}
 	printer.println(line)
 	printer.println(style.dim(drops))
+	// 시작한 뒤 SYN이 오기 전에는 화면이 멈춘 것처럼 보인다. 무엇을 기다리는지와 client에서 할 일을 알린다.
+	client := "edc tcp check --diagnose " + T("expect.live.this_host") + ":" + strconv.Itoa(int(port))
+	printer.println(T("expect.live.waiting", port, style.command(client)))
 }
 
 func (printer expectLivePrinter) event(event expectEvent) {

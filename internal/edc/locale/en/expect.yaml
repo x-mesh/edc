@@ -1,6 +1,7 @@
 # English messages for edc tcp expect.
 expect:
-  prompt_port: "port"
+  prompt_port: "port on this host that the client connects to"
+  prompt_hint: "tcp expect runs on the target host. It watches whether SYNs reach a TCP port on any interface and how this host answers.\nEnter the service port that the client connects to, for example 2142. Add --from <ip|cidr> to watch one source only."
   port_invalid: "the port must be a number from 1 to 65535: %s"
   from_invalid: "--from needs an IP address or a CIDR range: %s"
   duration_range: "--duration must be 0s or more and %s at most"
@@ -8,8 +9,10 @@ expect:
   live:
     from: "from %s"
     stop: "stop"
-    drop_on: "kernel drop reasons: on"
+    drop_on: "kernel drop reasons: on (a packet that the kernel drops shows as a DROP line with the reason)"
     drop_skip: "kernel drop reasons: skip (%s)"
+    waiting: "Waiting for SYNs to port %d. Connect from the client now, for example: %s"
+    this_host: "<this-host>"
     retransmit: "retransmit %d"
     duplicate: "same packet on another interface"
     handshake_time: "handshake %s"

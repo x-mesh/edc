@@ -1,0 +1,44 @@
+# English messages for the proc command.
+proc:
+  many: "%d processes are named %s. Pick one by PID"
+  up: "up %s"
+  state:
+    zombie: "zombie: the parent has not reaped it"
+    disk_wait: "D state: waiting for I/O"
+  field:
+    command: "command  %s"
+    ppid: "ppid     %d"
+    cwd: "cwd      %s"
+    threads: "threads  %d"
+  memory_with_rss: "%s (RSS %s)"
+  resources: "CPU %.1f%% · memory %s"
+  fd:
+    count: "%d open fds"
+    limit: "%d of %d fds open (%.0f%%)"
+    deleted: ", %d deleted files still open (%s)"
+  sockets:
+    summary: "listening: %s · %d connections"
+    no_listen: "none"
+    close_wait: ", %d in CLOSE_WAIT: the process does not close connections that the peer closed"
+  cgroup:
+    linux_only: "cgroup limits are read on Linux only"
+    memory: "memory %s, no local limit"
+    memory_limit: "memory %s of %s (%.0f%%)"
+    oom_kill: "%d OOM kills"
+    throttled: "CPU throttled in %d periods"
+  source:
+    fd: "fds"
+    sockets: "sockets"
+  skip:
+    needs_root: "needs root to read the %s of another account"
+    unreadable: "could not read %s: %s"
+  evidence:
+    candidates: "candidates"
+    process: "process"
+    fd_types: "fd types"
+    deleted: "deleted files"
+    states: "connection states"
+    remotes: "peers"
+  error:
+    unreadable: "could not read the process list"
+    not_found: "no process matches %s"

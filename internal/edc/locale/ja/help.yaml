@@ -354,6 +354,13 @@ command:
       - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
     option:
       all: "動いていない service も一覧に含める"
+  proc:
+    summary: "process 1 つのコマンドライン、リソース、fd、ソケット、cgroup"
+    notes:
+      - "PID かコマンド名を指定します。同じ名前の process が複数あれば一覧を表示します。"
+      - "コマンドラインの秘密のオプションと URL の認証情報は listen と同じく隠します。"
+      - "削除済みでも process が開いたままのファイルは、process が閉じるまでディスク容量を使います。"
+      - "root でなければ他のアカウントの fd とソケットは skip です。"
   jobs:
     summary: "予約ジョブと前回の実行結果"
     notes:

@@ -244,6 +244,26 @@ In a pipe or with `--json`, edc prints one `svc.list` result and a table. A fail
 <a id="container-view-linux"></a>
 <a id="container-view-linux-and-macos"></a>
 
+## Process view (Linux and macOS)
+
+`edc proc <pid|name>` shows one process on one screen. It reads only and changes nothing.
+
+```bash
+edc proc 1234
+sudo edc proc nginx      # if several processes are named nginx, edc lists them by PID
+edc proc -v 1234         # the full command line
+```
+
+| Result | Shows | Warns when |
+|---|---|---|
+| `proc.process` | PID, name, user, uptime, command line, parent, working directory, threads | the process is a zombie (`next` points at its parent) or waits for I/O in D state |
+| `proc.resources` | CPU over 0.5 seconds, memory and RSS | |
+| `proc.fd` | open fds by type, against the soft limit on Linux, and deleted files that the process still holds | 80% or more of the fd limit is in use |
+| `proc.sockets` | listening ports, connections by state, and the peers with the most connections | 10 or more connections are in `CLOSE_WAIT` |
+| `proc.cgroup` | the cgroup v2 path, memory use against `memory.max`, OOM kills, and CPU throttling. Linux only. | memory use is 80% or more of `memory.max`, or the cgroup had an OOM kill |
+
+The command line hides secret options and URL credentials with the same rule as `edc listen`. Without `-v`, it is cut to one line of 200 characters. Peers of a connection to a listening port of the process are grouped by address, and the peers of an outgoing connection by address and port. On Linux, edc reads `/proc/<pid>` and the TCP table of the network namespace of the process, so a container process shows its own connections. On macOS, edc reads the fds and sockets with `lsof`. Without root, the fds and sockets of another account show `skip`. A deleted file keeps its disk space until the process closes it. The memfd and `/dev/shm` files are not counted.
+
 ## Scheduled jobs (Linux and macOS)
 
 `edc jobs` lists the scheduled jobs and the result of their last run. It changes nothing.

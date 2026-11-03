@@ -1,0 +1,44 @@
+# proc 명령의 한국어 메시지.
+proc:
+  many: "이름이 %[2]s인 process가 %[1]d개입니다. PID로 고르세요"
+  up: "%s 동안 실행"
+  state:
+    zombie: "zombie: 부모가 회수하지 않았습니다"
+    disk_wait: "D 상태: I/O를 기다리는 중"
+  field:
+    command: "명령     %s"
+    ppid: "ppid     %d"
+    cwd: "cwd      %s"
+    threads: "thread   %d"
+  memory_with_rss: "%s (RSS %s)"
+  resources: "CPU %.1f%% · 메모리 %s"
+  fd:
+    count: "열린 fd %d개"
+    limit: "fd %d/%d개 사용 (%.0f%%)"
+    deleted: ", 지워진 채 열린 파일 %d개 (%s)"
+  sockets:
+    summary: "대기: %s · 연결 %d개"
+    no_listen: "없음"
+    close_wait: ", CLOSE_WAIT %d개: 상대가 닫은 연결을 process가 닫지 않습니다"
+  cgroup:
+    linux_only: "cgroup 한도는 Linux에서만 읽습니다"
+    memory: "메모리 %s, 이 cgroup의 한도 없음"
+    memory_limit: "메모리 %s / %s (%.0f%%)"
+    oom_kill: "OOM kill %d회"
+    throttled: "CPU 제한 %d회"
+  source:
+    fd: "fd"
+    sockets: "소켓"
+  skip:
+    needs_root: "다른 계정의 %s는 root가 있어야 읽을 수 있습니다"
+    unreadable: "%s를 읽지 못했습니다: %s"
+  evidence:
+    candidates: "후보"
+    process: "process"
+    fd_types: "fd 종류"
+    deleted: "지워진 파일"
+    states: "연결 상태"
+    remotes: "상대"
+  error:
+    unreadable: "process 목록을 읽지 못했습니다"
+    not_found: "%s에 맞는 process가 없습니다"

@@ -354,6 +354,13 @@ command:
       - "Run it as root. Without root, fds, socket owners, and the journal show skip."
     option:
       all: "also list the services that are not running"
+  proc:
+    summary: "Command line, resources, fds, sockets, and cgroup of one process"
+    notes:
+      - "Give a PID or a command name. If several processes have the name, edc lists them."
+      - "The command line hides secret options and URL credentials, as listen does."
+      - "Deleted files that the process still holds keep their disk space until the process closes them."
+      - "Without root, the fds and sockets of another account show skip."
   jobs:
     summary: "Scheduled jobs and their last result"
     notes:

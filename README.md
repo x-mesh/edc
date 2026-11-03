@@ -16,6 +16,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | Find what is broken now | `edc check`, `edc check --group <group>` | [Health check](docs/host.md#health-check-linux-and-macos), [check routines](docs/host.md#check-routines) |
 | Find where disk space goes | `edc du /var`, `edc clean` | [Directory usage](docs/disk-usage.md#disk-usage-of-a-directory-linux-and-macos), [known caches](docs/disk-usage.md#known-cache-sizes-linux-and-macos) |
 | Investigate a service or container | `edc svc`, `edc ctr` | [Services](docs/host.md#service-view-linux), [containers](docs/host.md#container-view-linux-and-macos) |
+| Look into one process | `edc proc <pid\|name>` | [Process view](docs/host.md#process-view-linux-and-macos) |
 | See scheduled jobs and their last result | `edc jobs` | [Scheduled jobs](docs/host.md#scheduled-jobs-linux-and-macos) |
 | Check a connection | `edc dns lookup example.com`, `edc tcp check example.com:443` | [Network checks](docs/network.md#network-checks), [combined diagnosis](docs/network.md#doctor-live-screen) |
 | Trace application and kernel activity | `edc trace` | [Tracing and packet capture](#tracing-and-packet-capture) — support varies by trace |

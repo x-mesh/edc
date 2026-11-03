@@ -44,8 +44,8 @@ var checkImageFileSystems = map[string]bool{"squashfs": true, "iso9660": true, "
 
 // checkPolicy는 설정의 [check] 표를 판정에 쓰는 모양으로 바꾼 것이다. 설정에 없는 기준은 기본값을 쓴다.
 type checkPolicy struct {
-	accept, acceptUnits, acceptContainers, acceptMounts, requireUnits []string
-	disk, memory, usage                                               topThreshold
+	accept, acceptUnits, acceptContainers, acceptMounts, requireUnits, certPaths []string
+	disk, memory, usage                                                          topThreshold
 	// checks가 비어 있으면 모든 점검을 낸다. commands는 루틴의 사용자 명령이다.
 	checks   []string
 	commands []checkCommandConfig
@@ -67,12 +67,12 @@ func newCheckPolicy(config checkConfig, routine string) checkPolicy {
 	return checkPolicy{
 		accept: join(config.Accept, selected.Accept), acceptUnits: join(config.AcceptUnits, selected.AcceptUnits),
 		acceptContainers: join(config.AcceptContainers, selected.AcceptContainers), acceptMounts: join(config.AcceptMounts, selected.AcceptMounts),
-		requireUnits: join(config.RequireUnits, selected.RequireUnits),
-		disk:         limits(selected.Limits.Disk, config.Limits.Disk, diskLimits),
-		memory:       limits(selected.Limits.MemoryAvailable, config.Limits.MemoryAvailable, checkMemoryLimits),
-		usage:        limits(selected.Limits.Usage, config.Limits.Usage, checkUsageLimits),
-		checks:       selected.Checks,
-		commands:     selected.Commands,
+		requireUnits: join(config.RequireUnits, selected.RequireUnits), certPaths: join(config.CertPaths, selected.CertPaths),
+		disk:     limits(selected.Limits.Disk, config.Limits.Disk, diskLimits),
+		memory:   limits(selected.Limits.MemoryAvailable, config.Limits.MemoryAvailable, checkMemoryLimits),
+		usage:    limits(selected.Limits.Usage, config.Limits.Usage, checkUsageLimits),
+		checks:   selected.Checks,
+		commands: selected.Commands,
 	}
 }
 
@@ -141,6 +141,9 @@ type checkSources struct {
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
 	storage     func(ctx context.Context) checkStorage
+	// certs는 인증서 파일을 읽는다. certPaths는 설정의 cert_paths이고 runCheck가 정책에서 채운다.
+	certs     func(extra []string) checkCerts
+	certPaths []string
 	// thermal은 macOS의 thermal pressure 단계(0~4)이고 backup은 마지막 Time Machine 백업이다. Linux에는 없다.
 	thermal func() (int, error)
 	backup  func() checkBackup
@@ -171,6 +174,7 @@ type checkFacts struct {
 	FileHandlesErr error
 	Reboot         checkReboot
 	Storage        checkStorage
+	Certs          checkCerts
 	// Commands는 policy.commands와 같은 순서다. CommandsErr가 있으면 명령을 실행하지 않은 이유다.
 	Commands    []checkCommandOutcome
 	CommandsErr error
@@ -233,6 +237,7 @@ func runCheck(args []string, version string) int {
 	defer cancel()
 	defer deadline()
 	policy := newCheckPolicy(activeConfig.Check, *routine)
+	sources.certPaths = policy.certPaths
 	var target map[string]interface{}
 	if *routine != "" {
 		target = map[string]interface{}{"routine": *routine}
@@ -294,6 +299,10 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			reboot := sources.reboot()
 			return func(facts *checkFacts) { facts.Reboot = reboot }
 		},
+		"cert": func() func(*checkFacts) {
+			certs := sources.certs(sources.certPaths)
+			return func(facts *checkFacts) { facts.Certs = certs }
+		},
 		"storage": func() func(*checkFacts) {
 			storage := sources.storage(ctx)
 			return func(facts *checkFacts) { facts.Storage = storage }
@@ -312,7 +321,7 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 		"service": sources.services != nil, "process": sources.processes != nil, "memory": sources.memory != nil,
 		"disk": sources.disks != nil, "kernel": sources.kernel != nil, "time": sources.clock != nil, "network": sources.network != nil,
 		"container": sources.containers != nil, "filehandles": sources.fileHandles != nil, "reboot": sources.reboot != nil,
-		"storage": sources.storage != nil, "thermal": sources.thermal != nil, "backup": sources.backup != nil,
+		"storage": sources.storage != nil, "cert": sources.certs != nil, "thermal": sources.thermal != nil, "backup": sources.backup != nil,
 	} {
 		if !available {
 			delete(jobs, id)
@@ -368,6 +377,7 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkMemory(facts, policy),
 		checkDisks(facts, policy),
 		checkStorageResult(facts),
+		checkCertResult(facts),
 		checkKernel(facts),
 		checkTime(facts),
 		checkNetworkResult(facts, policy),

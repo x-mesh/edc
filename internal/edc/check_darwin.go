@@ -35,6 +35,7 @@ func hostCheckSources() (checkSources, bool) {
 		thermal:        readDarwinThermal,
 		backup:         readDarwinBackup,
 		storage:        readDarwinStorage,
+		certs:          readCheckCerts,
 		kernelNext:     "ls -lt /Library/Logs/DiagnosticReports ~/Library/Logs/DiagnosticReports",
 		// 사용자로 실행하면 gui domain의 agent를, sudo로 실행하면 system domain의 daemon을 본다.
 		serviceNext: "launchctl list %s",

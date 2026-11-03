@@ -85,11 +85,13 @@ type checkConfig struct {
 	// Accept는 점검 하나를 통째로 받아들인다. 이름은 check. 뒤의 점검 이름이다.
 	Accept []string `yaml:"accept,omitempty" toml:"accept,omitempty"`
 	// AcceptUnits, AcceptContainers, AcceptMounts는 그 점검 안에서 판정하지 않을 이름이다. path.Match의 glob을 쓴다.
-	AcceptUnits      []string          `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
-	AcceptContainers []string          `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
-	AcceptMounts     []string          `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
-	RequireUnits     []string          `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
-	Limits           checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
+	AcceptUnits      []string `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
+	AcceptContainers []string `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
+	AcceptMounts     []string `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
+	RequireUnits     []string `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	// CertPaths는 check.cert가 기본 위치에 더해 읽을 인증서 파일의 glob이다.
+	CertPaths []string          `yaml:"cert_paths,omitempty" toml:"cert_paths,omitempty"`
+	Limits    checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
 	// Routines는 edc check <이름>으로 고르는 묶음이다. 위의 값에 더해지고, limits는 루틴에 적은 값만 바꾼다.
 	Routines map[string]checkRoutineConfig `yaml:"routines,omitempty" toml:"routines,omitempty"`
 }
@@ -102,6 +104,7 @@ type checkRoutineConfig struct {
 	AcceptContainers []string             `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
 	AcceptMounts     []string             `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
 	RequireUnits     []string             `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	CertPaths        []string             `yaml:"cert_paths,omitempty" toml:"cert_paths,omitempty"`
 	Limits           checkLimitsConfig    `yaml:"limits,omitempty" toml:"limits,omitempty"`
 	Commands         []checkCommandConfig `yaml:"commands,omitempty" toml:"commands,omitempty"`
 }
@@ -378,6 +381,9 @@ func validateCheckConfig(config checkConfig) error {
 	if err := validateCheckRules("check", config.Accept, config.AcceptUnits, config.AcceptContainers, config.AcceptMounts, config.RequireUnits, config.Limits, nil); err != nil {
 		return err
 	}
+	if err := validateCertPaths("check", config.CertPaths); err != nil {
+		return err
+	}
 	for name, routine := range config.Routines {
 		prefix := "check.routines." + name
 		if !checkNamePattern.MatchString(name) {
@@ -407,6 +413,19 @@ func validateCheckConfig(config checkConfig) error {
 		}
 		if err := validateCheckRules(prefix, routine.Accept, routine.AcceptUnits, routine.AcceptContainers, routine.AcceptMounts, routine.RequireUnits, routine.Limits, commands); err != nil {
 			return err
+		}
+		if err := validateCertPaths(prefix, routine.CertPaths); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateCertPaths는 cert_paths가 절대 경로의 glob인지 본다. check는 어느 디렉터리에서든 실행하므로 상대 경로는 뜻이 바뀐다.
+func validateCertPaths(prefix string, patterns []string) error {
+	for _, pattern := range patterns {
+		if _, err := filepath.Match(pattern, ""); err != nil || !filepath.IsAbs(pattern) {
+			return invalidConfig(prefix+".cert_paths", fmt.Sprintf("%q is not an absolute glob", pattern))
 		}
 	}
 	return nil

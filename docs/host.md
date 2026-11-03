@@ -59,6 +59,7 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `process` | | a defunct process, or a process in D state |
 | `memory` | less than 5% of memory is available | less than 10% of memory is available |
 | `disk` | a mount has 95% or more use, or 95% or more inode use | the same at 90%, or a mount is read-only |
+| `cert` | a certificate file has expired | a certificate file expires in less than 30 days |
 | `storage` | SMART reports a failing disk, the NVMe available spare is below its threshold, 100% or more of the rated write endurance is used, or an md RAID array is degraded or inactive | 90% or more of the rated write endurance is used, an NVMe disk has media errors, an ATA disk has reallocated, pending, or uncorrectable sectors, or an md array is in recovery, resync, or reshape |
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
@@ -99,6 +100,7 @@ accept_units = ["systemd-networkd-wait-online.service"]
 accept_containers = ["job-*"]
 accept_mounts = ["/media/*"]
 require_units = ["nginx.service"]
+cert_paths = ["/etc/myapp/tls/*.crt"]
 
 [check.limits]
 disk = [90, 95]
@@ -109,6 +111,8 @@ usage = [80, 90]
 `accept` holds check names from the table above. An accepted check shows as `skip`, and its summary starts with `accepted (warn)` or `accepted (fail)`. In JSON, `metrics.accepted_status` holds the original status.
 
 `accept_units`, `accept_containers`, and `accept_mounts` hold glob patterns. The check does not judge a name that matches a pattern. The summary ends with the number of accepted names, and `metrics.accepted` holds the names.
+
+`cert` reads the first certificate of each file. It looks in these places: `/etc/letsencrypt/live/*/cert.pem`, the Kubernetes and etcd files in `/etc/kubernetes/pki`, the kubelet files in `/var/lib/kubelet/pki`, and the absolute paths of `ssl_certificate` and `SSLCertificateFile` in the nginx and Apache configs. `cert_paths` adds absolute glob patterns. A file without a certificate, for example a key file, is skipped. The CA bundle in `/etc/ssl/certs` is not read, because it always holds some expired roots. Without root, the files that need root are listed in a warning line. If no file can be read, the check shows `skip`.
 
 Each value in `[check.limits]` is `[warn, fail]` in percent. `usage` applies to conntrack, TCP memory, and file handles. `memory_available` is the share that is left, so its warn value must be at least its fail value.
 
@@ -130,7 +134,7 @@ timeout = "5s"
 level = "fail"
 ```
 
-`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists and `require_units` add to the values in `[check]`. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
+`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists, `require_units`, and `cert_paths` add to the values in `[check]`. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
 
 Each command runs with `sh -c`, and its result is `check.cmd.<name>`. Exit code 0 is `pass`. Another exit code is `fail`, or `warn` if `level = "warn"`. A command that does not end in `timeout` (default 10s) is `fail`, and edc stops the command and its child processes. The result keeps the last ten lines of output, up to 4 KiB. Add `cmd.<name>` to `accept` to accept the result of a command.
 

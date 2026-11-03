@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -430,6 +431,24 @@ type diagnoseTarget struct {
 	source  string
 }
 
+// diagnoseTLSPorts는 연결하자마자 TLS를 시작하는 관례 port다. PostgreSQL이나 25번 SMTP처럼 자기 protocol 안에서
+// TLS로 바꾸는 서비스와 SSH 같은 평문 서비스에는 tls check가 실패하므로 제안하지 않는다.
+var diagnoseTLSPorts = map[string]bool{"443": true, "465": true, "636": true, "853": true, "990": true, "993": true, "995": true, "5061": true, "6443": true, "8443": true, "9443": true}
+
+var diagnoseHTTPPorts = map[string]bool{"80": true, "8080": true}
+
+// diagnoseServiceNext는 TCP가 동작할 때 port로 짐작할 수 있는 서비스 점검이다. 짐작할 수 없으면 빈 문자열이다.
+func diagnoseServiceNext(hostPort, port string) string {
+	switch {
+	case diagnoseTLSPorts[port]:
+		return "edc tls check " + hostPort
+	case diagnoseHTTPPorts[port]:
+		// URL은 IPv6 zone의 %를 %25로 써야 한다. 그대로 붙이면 http check가 URL을 읽지 못한다.
+		return "edc http check " + (&url.URL{Scheme: "http", Host: hostPort}).String()
+	}
+	return ""
+}
+
 // diagnoseNext는 판정마다 이어서 볼 명령이다. 대상 host에서 실행할 명령은 shell 주석으로 실행할 곳을 붙여, 복사해도 그대로 돈다.
 func diagnoseNext(code string, target diagnoseTarget, totals diagnoseTotals) string {
 	onTarget := func(command string) string { return command + "  # " + T("diagnose.next.on_host", target.host) }
@@ -442,7 +461,7 @@ func diagnoseNext(code string, target diagnoseTarget, totals diagnoseTotals) str
 	}
 	switch code {
 	case diagnoseVerdictConnected:
-		return "edc tls check " + target.input
+		return diagnoseServiceNext(target.input, target.port)
 	case diagnoseVerdictDegraded:
 		return "edc net mtu " + target.host
 	case diagnoseVerdictIntermittent, diagnoseVerdictNoReply:

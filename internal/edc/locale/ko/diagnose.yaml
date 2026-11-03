@@ -38,7 +38,7 @@ diagnose:
     phases: "이벤트 추적을 건너뛰어서 연결 phase만으로 판정했습니다: %s"
     partial: "이벤트 추적의 일부만으로 판정했습니다: %s"
   verdict:
-    connected: "%d번 모두 재전송이나 지연 없이 연결했습니다. TCP 경로는 정상입니다. 다음으로 TLS, 애플리케이션, LB backend를 확인합니다"
+    connected: "%d번 모두 재전송이나 지연 없이 연결했습니다. TCP 경로는 정상입니다. 다음으로 서비스, 애플리케이션, LB backend를 확인합니다"
     degraded: "%d번 모두 연결했지만 문제가 보였습니다 (%s). tunnel 품질, MTU/MSS, 비대칭 경로를 의심합니다"
     intermittent: "%d/%d번만 연결했습니다 (%s). 실패하는 LB backend나 시도마다 바뀌는 경로를 의심합니다"
     local_drop: "이 host가 이 흐름의 packet을 버렸습니다 (%s). 이 host를 먼저 의심합니다: NETFILTER_DROP이면 firewall, 그 밖에는 이유 이름이 가리키는 kernel 단계입니다"

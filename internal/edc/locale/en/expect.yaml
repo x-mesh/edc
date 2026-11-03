@@ -66,7 +66,7 @@ expect:
     syn_no_reply: "this host does not answer the SYN. Check the host firewall, rp_filter and the listen queue (edc trace drop)"
     dropped_unseen: "the kernel drops the SYN on this host. Read the drop reasons above"
     reply_hidden_ipsec: "the reply leaves as ESP. Run edc tcp check --diagnose on the client and join the two reports"
-    completed: "the path works. Check TLS and the application next"
+    completed: "the path works. Check the service and the application next"
     completed_temporary: "the path works. The service itself was not tested, because the temporary listener of --listen answered"
     join_file: "join with the client report: %s"
     join_rerun: "to join with the client report, rerun with --json target.json: %s"

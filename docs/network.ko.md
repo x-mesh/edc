@@ -180,7 +180,7 @@ Linux에서 root로 실행하면 이 흐름의 TCP 이벤트와 kernel drop을 �
 | `no_reply` | SYN에 응답이 없고 이 host의 drop도 없습니다 | 대상에서 `edc tcp expect --from <source> <port>` |
 | `intermittent` | 일부만 연결됐습니다 | 대상에서 `edc tcp expect --from <source> <port>` |
 | `degraded` | 연결은 됐지만 재전송이 있거나 느립니다 | `edc net mtu <host>` |
-| `connected` | 모두 정상으로 연결됐습니다. 다음은 TLS와 애플리케이션입니다 | `edc tls check <host:port>` |
+| `connected` | 모두 정상으로 연결됐습니다. 다음은 TLS와 애플리케이션입니다 | 443 같은 TLS port는 `edc tls check <host:port>`, 80과 8080은 `edc http check http://<host:port>`, 그 밖의 port는 없음 |
 
 경로 중간의 firewall도 RST를 보낼 수 있습니다. 판정에는 `NETFILTER_DROP`, `XFRM_POLICY`처럼 흐름을 막는 drop 이유만 쓰고, 나머지는 `other_drops`로 남깁니다.
 

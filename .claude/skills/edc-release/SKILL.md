@@ -33,6 +33,7 @@ These four must agree. If one changes, check the others.
    make check
    make dist VERSION=<version>
    ```
+   This build only checks the assets. Nothing is published, so the version stays free until the tag. The release workflow builds the published assets again from the tag.
 4. Check the assets. There must be four archives and one `checksums.txt`.
    ```bash
    ls -1 dist
@@ -50,9 +51,15 @@ These four must agree. If one changes, check the others.
    git push origin v<version>
    ```
 7. Watch the release run. `gh run watch` needs the run ID, so read it first.
+   The run appears in the list some seconds after the tag push, so wait for it. Find it by the tag: the workflow name is `Release`, the run title is the merge commit subject, and `headBranch` is the tag. An empty run ID makes `gh run watch` fail at once.
    ```bash
-   gh run list --limit 3
-   gh run watch <run-id> --exit-status --compact
+   for i in $(seq 1 30); do
+     run=$(gh run list --workflow Release --limit 5 --json databaseId,headBranch \
+       -q '.[] | select(.headBranch=="v<version>") | .databaseId' | head -1)
+     [ -n "$run" ] && break
+     sleep 10
+   done
+   gh run watch "$run" --exit-status --compact
    gh release view v<version>
    ```
 8. Write the release notes. See [Release notes](#release-notes) for the shape.

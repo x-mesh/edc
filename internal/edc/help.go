@@ -119,6 +119,7 @@ var commandDocs = []commandDoc{
 			"edc tcp check [options] <host:port>",
 			"edc tcp check --diagnose [--count N] [--interval 1s] [options] <host:port>",
 			"edc tcp expect [--from <ip|cidr>] [--duration 30s] [options] <port>",
+			"edc tcp scan [--ports 22,80,443,8000-8100] [--parallel 32] [options] <host>",
 		},
 		options: []optionDoc{
 			{"--diagnose", "command.tcp.option.diagnose"},
@@ -126,6 +127,8 @@ var commandDocs = []commandDoc{
 			{"--interval 1s", "command.tcp.option.interval"},
 			{"--from <ip|cidr>", "command.tcp.option.from"},
 			{"--duration 30s", "command.tcp.option.duration"},
+			{"--ports <list>", "command.tcp.option.ports"},
+			{"--parallel N", "command.tcp.option.parallel"},
 		},
 		usesCommon: true,
 	},

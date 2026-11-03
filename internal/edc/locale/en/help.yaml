@@ -53,11 +53,15 @@ command:
       interval: "--diagnose: time between attempts (default 1s)"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
+      ports: "scan: ports and ranges to check, with commas between them (default: the sensitive ports of audit and the common service ports)"
+      parallel: "scan: connects at one time (default 32, max 256)"
     notes:
       - "A failure keeps the phase and the cause, and returns exit code 1."
       - "--diagnose traces events only on Linux as root. Elsewhere it repeats the check and skips the trace."
       - "expect counts SYNs that reach this host on every interface, and the SYN-ACK or RST that it sends back (Linux, root)."
       - "expect reads packet headers only. It does not keep payload."
+      - "scan connects once to each port: open is a handshake, refused is an RST, and no reply is no answer in 2s, which is not the same as closed."
+      - "scan uses --timeout as the budget of the whole scan (default 60s). A port that it did not reach shows as not scanned."
       - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
       - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
   tls:

@@ -53,11 +53,15 @@ command:
       interval: "--diagnose: 試行間隔 (既定 1s)"
       from: "expect: このアドレスや範囲から来た packet だけを数えます"
       duration: "expect: 待つ時間、省略すると Ctrl-C まで"
+      ports: "scan: 確認する port と範囲、カンマ区切り (既定: audit の要注意 port と一般的なサービス port)"
+      parallel: "scan: 同時に開く接続数 (既定 32、最大 256)"
     notes:
       - "接続できないと phase と cause を残し、exit code 1 を返します。"
       - "--diagnose のイベント追跡は Linux で root として実行したときだけ行います。それ以外は接続だけを繰り返し、追跡は skip です。"
       - "expect はすべての interface でこのホストに届いた SYN と、ホストが返した SYN-ACK や RST を数えます (Linux, root)。"
       - "expect は packet header だけを読み、payload は残しません。"
+      - "scan は port ごとに 1 回接続します。open は handshake 成功、refused は RST、no reply は 2s 以内に応答なしで、closed と同じではありません。"
+      - "scan は --timeout を scan 全体の予算として使います (既定 60s)。確認できなかった port は not scanned として残します。"
       - "--diagnose は追跡中、試行ごとに 300ms 待つため、試行間隔はそれより短くなりません。"
       - "IPsec transport mode では expect は復号した SYN を見られず、kernel の drop 理由で判定します。"
   tls:

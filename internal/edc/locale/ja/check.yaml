@@ -44,6 +44,11 @@ check:
     resolv_unreadable: "/etc/resolv.conf を読めませんでした: %s"
     conntrack: "conntrack table %.0f%% 使用"
     tcp_memory: "TCP メモリが tcp_mem の %.0f%%"
+    link_down: "route interface %s がダウンしています (%s)"
+    gateway_neighbor: "gateway %s の neighbor エントリが %s です"
+    tcp_orphans: "orphan TCP socket が tcp_max_orphans の %.0f%%"
+    counters: "%s の間に増えた drop カウンタ: %s"
+    counters_skipped: " (--timeout 内に drop カウンタを比較できず)"
     route_unknown: "route 不明"
     ok: "default route %s、nameserver %d 個"
   container:

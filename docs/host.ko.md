@@ -53,12 +53,12 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `storage` | SMART가 디스크 실패를 알리거나, NVMe의 남은 예비 블록이 기준보다 적거나, 보증 쓰기 수명을 100% 이상 썼거나, md RAID가 degraded 또는 inactive | 보증 쓰기 수명을 90% 이상 썼거나, NVMe에 미디어 오류가 있거나, ATA 디스크에 재할당·대기·복구 불가 섹터가 있거나, md 배열이 recovery, resync, reshape 중 |
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
-| `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
+| `network` | default route가 없거나, route interface가 내려갔거나 carrier가 없거나, conntrack·TCP 메모리·`tcp_max_orphans` 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나, 같은 사용률이 80% 이상이거나, gateway의 neighbor 항목이 `FAILED`나 `INCOMPLETE`이거나, drop 카운터가 1초 사이에 늘어남 |
 | `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤, 또는 `always`나 `unless-stopped` container가 코드 0으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
 | `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
 | `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
 
-fail이 하나라도 있으면 종료 코드가 1입니다. NIC drop처럼 부팅 뒤 늘어나기만 하는 카운터는 판정하지 않습니다. 한 번 읽어서는 언제 늘었는지 알 수 없기 때문입니다.
+fail이 하나라도 있으면 종료 코드가 1입니다. NIC drop처럼 부팅 뒤 늘어나기만 하는 카운터는 한 번 읽어서는 언제 늘었는지 알 수 없습니다. 그래서 Linux의 `network`는 drop 카운터를 1초 간격으로 두 번 읽고, 늘어난 카운터가 있으면 warn입니다. 보는 카운터는 listen 대기열의 overflow와 drop, softnet drop, NIC의 missed·FIFO 오류, conntrack drop과 insert 실패, UDP 수신 buffer 오류, TCP 메모리 pressure와 abort입니다. 두 번째로 읽기 전에 `--timeout`이 끝나면 카운터는 판정하지 않고 요약에 그렇게 적습니다. tun, WireGuard, Tailscale 같은 가상 interface는 link 상태를 `unknown`으로 알리므로 판정하지 않습니다. gateway는 neighbor table만 읽고 패킷을 보내지 않습니다. table에 gateway 항목이 없으면 아직 gateway로 보낸 적이 없는 것이라 경고하지 않습니다.
 
 macOS에서는 다음 원천을 읽습니다.
 
@@ -69,7 +69,7 @@ macOS에서는 다음 원천을 읽습니다.
 | `memory` | `kern.memorystatus_vm_pressure_level` | pressure 단계로 판정합니다. `warn`이면 warn, `critical`이면 fail입니다. macOS는 원래 가용 메모리가 적게 보입니다. |
 | `disk` | `df`와 `statfs` | 읽기 전용 mount는 판정하지 않습니다. 서명된 system volume이나, mount한 설치 파일처럼 원래 가득 찬 disk image이기 때문입니다. |
 | `storage` | `diskutil list physical`, `diskutil info` | 물리 디스크마다 SMART 상태와 NVMe 값을 읽습니다. root와 `smartctl`이 필요 없습니다. macOS에는 md RAID가 없습니다. |
-| `network` | `route -n get default`, `/etc/resolv.conf` | conntrack과 TCP 메모리는 보지 않습니다. |
+| `network` | `route -n get default`, `ifconfig <interface>`, neighbor table, `/etc/resolv.conf` | conntrack, TCP 메모리, orphan socket, drop 카운터는 보지 않습니다. `utun`처럼 `status` 줄이 없는 interface는 link 상태를 `unknown`으로 봅니다. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | 최근 1시간에 쓰인 보고서를 셉니다. kernel panic과 `JetsamEvent`(메모리가 모자라 커널이 process를 끝냄)는 fail, 앱 crash와 hang 보고서는 warn입니다. CPU·wakeup 보고서는 세지 않습니다. |
 | `container`, `filehandles` | Docker socket, `kern.num_files`와 `kern.maxfiles` | Linux와 같습니다. |
 | `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS에만 있습니다. `heavy`는 warn, `trapping`과 `sleeping`은 fail입니다. `moderate`는 부하가 걸리면 흔히 나오는 단계라 경고하지 않습니다. |

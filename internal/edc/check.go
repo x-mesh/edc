@@ -15,7 +15,8 @@ import (
 )
 
 // check는 지금 고장 난 곳을 한 번에 훑는 읽기 전용 점검이다. 원천은 info, svc, ctr, events의 수집기를 그대로 쓰고
-// 판정만 여기서 한다. NIC drop처럼 부팅 뒤 누적된 카운터는 한 번 읽어서는 지금의 문제인지 알 수 없어 판정하지 않는다.
+// 판정만 여기서 한다. NIC drop처럼 부팅 뒤 누적된 카운터는 한 번 읽어서는 지금의 문제인지 알 수 없어, 1초 간격으로 두 번
+// 읽어 늘었는지만 본다.
 
 // checkKernelWindow는 커널 장애 신호를 찾는 범위다. 지금의 장애를 보려는 것이라 events의 기본 창보다 좁다.
 const checkKernelWindow = time.Hour
@@ -104,9 +105,15 @@ type checkNetwork struct {
 	Route    string
 	RouteErr error
 	DNS      infoDNS
-	// Conntrack과 TCPMemory는 한도 대비 사용률이다. OK가 false면 읽지 못했거나 이 커널에 없는 값이다.
-	Conntrack, TCPMemory     float64
-	ConntrackOK, TCPMemoryOK bool
+	// Conntrack, TCPMemory, Orphans는 한도 대비 사용률이다. OK가 false면 읽지 못했거나 이 커널에 없는 값이다.
+	Conntrack, TCPMemory, Orphans       float64
+	ConntrackOK, TCPMemoryOK, OrphansOK bool
+	// Link는 route interface의 상태이고 GatewayNeighbor는 gateway의 neighbor 상태다. 읽지 못했거나 항목이 없으면 비어 있다.
+	Link            checkNetworkLink
+	GatewayNeighbor string
+	// CountersGrown은 두 번 읽는 사이에 늘어난 drop 카운터다. CountersSkipped는 두 번째로 읽기 전에 deadline이 온 것이다.
+	CountersGrown   []string
+	CountersSkipped bool
 }
 
 // checkBackup은 마지막 Time Machine 백업이다. Configured가 false면 백업 대상이 없다.
@@ -136,7 +143,7 @@ type checkSources struct {
 	disks       func() ([]checkDisk, error)
 	kernel      func(ctx context.Context, since time.Duration) eventsFacts
 	clock       func() *infoClock
-	network     func() checkNetwork
+	network     func(ctx context.Context) checkNetwork
 	containers  func(ctx context.Context) ([]ctrListItem, error)
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
@@ -290,7 +297,7 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			return func(facts *checkFacts) { facts.Clock = clock }
 		},
 		"network": func() func(*checkFacts) {
-			network := sources.network()
+			network := sources.network(ctx)
 			return func(facts *checkFacts) { facts.Network = network }
 		},
 		"container": func() func(*checkFacts) {
@@ -793,10 +800,27 @@ func checkNetworkResult(facts checkFacts, policy checkPolicy) Result {
 	const id = "network"
 	network := facts.Network
 	var issues checkIssues
-	next := "edc info -v"
+	next := ""
+	suggest := func(command string) {
+		if next == "" {
+			next = command
+		}
+	}
 	if network.RouteErr == nil && network.Route == "" {
 		issues.add(StatusFail, T("check.network.no_route"))
-		next = "ip route"
+		suggest("ip route")
+	}
+	gateway, iface := checkRouteParts(network.Route)
+	if network.Link.down() {
+		issues.add(StatusFail, T("check.network.link_down", iface, network.Link.detail()))
+		suggest("edc net interfaces")
+	}
+	if checkNeighborProblem(network.GatewayNeighbor) {
+		issues.add(StatusWarn, T("check.network.gateway_neighbor", gateway, network.GatewayNeighbor))
+		if address, _ := checkGatewayAddress(gateway); address.Is6() {
+			suggest("edc trace ndp")
+		}
+		suggest("edc trace arp")
 	}
 	switch {
 	case errors.Is(network.DNS.Err, fs.ErrNotExist):
@@ -816,11 +840,26 @@ func checkNetworkResult(facts checkFacts, policy checkPolicy) Result {
 			issues.add(status, T("check.network.tcp_memory", network.TCPMemory))
 		}
 	}
+	if network.OrphansOK {
+		if status := checkUsageStatus(network.Orphans, policy.usage); status != StatusPass {
+			issues.add(status, T("check.network.tcp_orphans", network.Orphans))
+		}
+	}
+	if len(network.CountersGrown) > 0 {
+		issues.add(StatusWarn, T("check.network.counters", checkCounterInterval.String(), checkNames(network.CountersGrown)))
+		suggest(checkCounterNext(network.CountersGrown[0]))
+	}
+	suggest("edc info -v")
 	route := network.Route
 	if network.RouteErr != nil {
 		route = T("check.network.route_unknown")
 	}
-	return issues.result(id, T("check.network.ok", route, len(network.DNS.Config.Nameservers)), next)
+	result := issues.result(id, T("check.network.ok", route, len(network.DNS.Config.Nameservers)), next)
+	// 카운터를 비교하지 못했는데 통과로만 적으면 늘지 않았다고 읽힌다.
+	if network.CountersSkipped {
+		result.Summary += T("check.network.counters_skipped")
+	}
+	return result
 }
 
 func checkContainers(facts checkFacts, policy checkPolicy) Result {

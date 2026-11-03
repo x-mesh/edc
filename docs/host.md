@@ -63,12 +63,12 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `storage` | SMART reports a failing disk, the NVMe available spare is below its threshold, 100% or more of the rated write endurance is used, or an md RAID array is degraded or inactive | 90% or more of the rated write endurance is used, an NVMe disk has media errors, an ATA disk has reallocated, pending, or uncorrectable sectors, or an md array is in recovery, resync, or reshape |
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
-| `network` | no default route, or 90% or more use of conntrack or TCP memory | no `/etc/resolv.conf`, no nameserver, or the same use at 80% |
+| `network` | no default route, the route interface is down or has no carrier, or 90% or more use of conntrack, TCP memory, or `tcp_max_orphans` | no `/etc/resolv.conf`, no nameserver, the same use at 80%, the neighbor entry of the gateway is `FAILED` or `INCOMPLETE`, or a drop counter grew in 1 second |
 | `container` | a container with a restart policy stopped with a nonzero code or for memory, or an `always` or `unless-stopped` container stopped with code 0 | a container without a restart policy stopped with an error in the last 24 hours, or a container restarts, pauses, or is unhealthy |
 | `filehandles` | 90% or more of `fs.file-max` is in use | 80% or more of `fs.file-max` is in use |
 | `reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
 
-A `fail` makes the exit code 1. edc does not judge counters that only grow after boot, such as NIC drops. One reading cannot show when they changed.
+A `fail` makes the exit code 1. Some counters, such as NIC drops, only grow after boot. One reading cannot show when they changed. Thus on Linux, `network` reads the drop counters two times, 1 second apart. If a counter grew, the check warns. The counters are listen overflows and drops, softnet drops, NIC missed and FIFO errors, conntrack drops and insert failures, UDP receive buffer errors, and TCP memory pressure and aborts. If `--timeout` ends before the second reading, edc does not judge the counters, and the summary tells you. A virtual interface, such as tun, WireGuard, or Tailscale, reports the link state `unknown`. edc does not judge that state. For the gateway, edc reads only the neighbor table and sends no packets. If the table has no entry for the gateway, the host did not send to it yet, and edc does not warn.
 
 On macOS, the checks read other sources:
 
@@ -79,7 +79,7 @@ On macOS, the checks read other sources:
 | `memory` | `kern.memorystatus_vm_pressure_level` | The pressure level decides: `warn` warns and `critical` fails. Free memory is low on macOS by design. |
 | `disk` | `df` and `statfs` | Read-only mounts are not judged. They are the sealed system volume or a disk image, such as a mounted installer, that is full by design. |
 | `storage` | `diskutil list physical`, `diskutil info` | edc reads the SMART status and the NVMe values of each physical disk. It does not need root or `smartctl`. macOS has no md RAID. |
-| `network` | `route -n get default`, `/etc/resolv.conf` | conntrack and TCP memory are not checked. |
+| `network` | `route -n get default`, `ifconfig <interface>`, the neighbor table, `/etc/resolv.conf` | conntrack, TCP memory, orphan sockets, and drop counters are not checked. An interface without a `status` line, such as `utun`, has the link state `unknown`. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | A report written in the last hour counts. A kernel panic and a `JetsamEvent`, which means that the kernel ended processes for memory, fail. An app crash report or a hang report warns. CPU and wakeup reports do not count. |
 | `container`, `filehandles` | Docker socket, `kern.num_files` and `kern.maxfiles` | Same as Linux. |
 | `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS only. `heavy` warns, and `trapping` or `sleeping` fails. `moderate` is common under load and does not warn. |

@@ -8,12 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func hostCheckSources() (checkSources, bool) {
@@ -103,7 +107,8 @@ func readCheckDisks() ([]checkDisk, error) {
 	return result, nil
 }
 
-func readCheckNetwork() checkNetwork {
+func readCheckNetwork(ctx context.Context) checkNetwork {
+	first, sampledAt := collectNetworkHealth(), time.Now()
 	network := checkNetwork{DNS: readInfoDNS("/")}
 	// collectDefaultRoute는 파일을 읽지 못해도 빈 값을 준다. route가 없다는 판정과 섞이지 않게 먼저 읽어 본다.
 	if _, err := os.ReadFile("/proc/net/route"); err != nil {
@@ -118,10 +123,60 @@ func readCheckNetwork() checkNetwork {
 			}
 		}
 	}
-	health := collectNetworkHealth()
+	if gateway, iface := checkRouteParts(network.Route); iface != "" {
+		network.Link = readLinuxCheckLink("/sys/class/net", iface)
+		if address, ok := checkGatewayAddress(gateway); ok {
+			network.GatewayNeighbor = readLinuxGatewayNeighbor(iface, address)
+		}
+	}
+	health := first
+	if waitCheckCounterSample(ctx, sampledAt, checkCounterInterval) {
+		health = collectNetworkHealth()
+		network.CountersGrown = checkCounterGrowth(first, health)
+	} else {
+		network.CountersSkipped = true
+	}
 	network.Conntrack, network.ConntrackOK = networkConntrackUsage(health)
 	network.TCPMemory, network.TCPMemoryOK = networkTCPMemoryUsage(health)
+	if data, err := os.ReadFile("/proc/sys/net/ipv4/tcp_max_orphans"); err == nil {
+		limit, ok := parseNetworkUint(strings.TrimSpace(string(data)), 10)
+		if orphans := health.Gauges["tcp_orphans"].Value; ok && limit > 0 && orphans != nil {
+			network.Orphans, network.OrphansOK = float64(*orphans)/float64(limit)*100, true
+		}
+	}
 	return network
+}
+
+func readLinuxCheckLink(classNet, iface string) checkNetworkLink {
+	read := func(name string) string {
+		data, _ := os.ReadFile(filepath.Join(classNet, iface, name))
+		return strings.TrimSpace(string(data))
+	}
+	return checkNetworkLink{State: read("operstate"), Carrier: read("carrier")}
+}
+
+// readLinuxGatewayNeighbor는 kernel neighbor table에서 gateway 항목의 NUD 상태를 읽는다. root가 필요 없다. 항목이 없거나
+// table을 읽지 못하면 빈 문자열이다.
+func readLinuxGatewayNeighbor(iface string, gateway netip.Addr) string {
+	family := byte(unix.AF_INET)
+	if gateway.Is6() {
+		family = unix.AF_INET6
+	}
+	table, err := syscall.NetlinkRIB(unix.RTM_GETNEIGH, int(family))
+	if err != nil {
+		return ""
+	}
+	messages, err := syscall.ParseNetlinkMessage(table)
+	if err != nil {
+		return ""
+	}
+	names := neighborInterfaceNames{}
+	for _, message := range messages {
+		if neighbor, ok := parseNeighborMessage(message, family, names); ok && neighbor.iface == iface && neighbor.ip == gateway.String() && !neighbor.deleted {
+			return neighbor.state
+		}
+	}
+	return ""
 }
 
 func readCheckFileHandles() (*infoFileHandles, error) {

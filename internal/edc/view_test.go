@@ -3,7 +3,7 @@ package edc
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
+	stdgzip "compress/gzip"
 	"context"
 	"os"
 	"path/filepath"
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/x-mesh/fastgzip"
+	"github.com/x-mesh/fastcompress/gzip"
 )
 
 func readViewFixture(t *testing.T, name string) []string {
@@ -649,7 +649,7 @@ func TestViewReadLineAddsOneNewlineToACutLine(t *testing.T) {
 func gzipViewBytes(t *testing.T, content string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
-	writer := gzip.NewWriter(&buffer)
+	writer := stdgzip.NewWriter(&buffer)
 	if _, err := writer.Write([]byte(content)); err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +662,7 @@ func gzipViewBytes(t *testing.T, content string) []byte {
 // viewReceiveGzip은 .gz 본문을 화면과 같은 방식으로 풀어 마지막 keep줄을 모델에 넣는다.
 func viewReceiveGzip(t *testing.T, data []byte, keep int) (viewScreenModel, error) {
 	t.Helper()
-	reader, err := fastgzip.NewReader(bytes.NewReader(data))
+	reader, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/x-mesh/fastgzip"
+	"github.com/x-mesh/fastcompress/gzip"
 )
 
 // traceScreenPayloadBytes는 상세 보기를 위해 payload 전체를 두는 합계 상한이다. 목록은 event마다 앞 4KiB만 두므로,
@@ -553,7 +553,7 @@ func traceGunzipMessage(raw []byte) (string, string) {
 	if httpChunkedBody(head) {
 		body = httpDechunk(body)
 	}
-	reader, err := fastgzip.NewReader(bytes.NewReader(body))
+	reader, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Sprintf("(gzip: cannot read the body: %v)", err)
 	}

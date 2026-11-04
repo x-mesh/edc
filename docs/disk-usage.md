@@ -2,7 +2,7 @@
 
 # Disk usage and known caches
 
-[Disk usage of a directory (Linux and macOS)](#disk-usage-of-a-directory-linux-and-macos) · [Known cache sizes (Linux and macOS)](#known-cache-sizes-linux-and-macos)
+[Disk usage of a directory (Linux and macOS)](#disk-usage-of-a-directory-linux-and-macos) · [Known cache sizes (Linux and macOS)](#known-cache-sizes-linux-and-macos) · [Compress and decompress files](#compress-and-decompress-files)
 
 ![Directory usage browser](media/disk-usage.png)
 
@@ -382,3 +382,25 @@ The output always lists the types that edc does not measure. Use `-v` to see the
 
 The time limit is 60 seconds by default, and all candidates and sections share it. edc measures the P1 candidates first and the two remainder candidates last. A section that edc did not start has the status `not_scanned`. If the time ends, the result is `warn`, and `next` shows a command with a longer limit. `Ctrl-C` stops the run and keeps the results so far.
 
+## Compress and decompress files
+
+`edc compress` compresses a file to `.gz`, or to `.zst` with `--zstd`. `edc decompress` decompresses a `.gz` or `.zst` file. Use them to make an old log smaller on a host that has no `zstd` or `pigz`. Both commands work on Linux and macOS.
+
+```bash
+edc compress /var/log/app.log.1
+edc compress --zstd -j 8 dump.sql
+edc compress --rm /var/log/nginx/access.log.2
+edc decompress app.log.1.zst
+edc decompress -c app.log.2.gz | less
+tar -cf - data | edc compress > data.tar.gz
+```
+
+- edc writes the output beside the input and keeps the input. Add `--rm` to delete the input. edc deletes it only after it writes and syncs the output.
+- edc does not overwrite a file that exists. Delete the file or give `-o`.
+- The output gets the permissions and the modification time of the input. If you run edc as root, the output also gets the owner. `edc grep --ordered` uses the modification time of a rotated log, so this time must stay correct.
+- If edc fails while it writes, it deletes the partial output and keeps the input. A corrupt or truncated input gives exit code 1.
+- `-j N` sets the number of goroutines for gzip. The default is the CPU count. With `-j 1`, edc writes one stream, and the output can be a little smaller. zstd does not use `-j`.
+- `-l N` sets the level from 1 to 9. The default is 6 for gzip and 3 for zstd. zstd output does not get smaller above level 3.
+- `edc decompress` reads the first bytes of the file to find the format. A name that does not end in `.gz` or `.zst` needs `-o` or `-c`.
+- Without a file, both commands read stdin and write stdout. `edc compress` does not write compressed data to a terminal.
+- edc compresses one file at a time. Use `tar` to pack a directory. edc does not read `.xz` or `.bz2` files.

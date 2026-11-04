@@ -775,6 +775,34 @@ command:
       - "파일의 주석을 보존하고 원자적으로 교체하며, 새 파일은 권한 0600으로 만듭니다."
       - "비밀번호나 키는 저장하지 않습니다. 대상에는 SSH alias를 쓰십시오."
       - "같은 명령의 Step 화면에서 레시피도 편집합니다. 레시피가 없으면 처음 저장할 때 ./.edc/recipe.yaml을 만듭니다."
+  compress:
+    summary: "파일을 .gz나 .zst로 압축, 여러 코어 사용"
+    option:
+      zstd: ".gz 대신 .zst로 씀"
+      level: "수준 1(빠름)~9(작음), 기본값은 gzip 6, zstd 3"
+      jobs: "gzip을 압축하는 goroutine 수, 기본값은 CPU 수"
+      stdout: "stdout으로 쓰고 입력을 남김"
+      output: "출력 경로, 입력이 하나일 때"
+      remove: "출력을 다 쓰고 fsync한 뒤 입력을 지움"
+    notes:
+      - "app.log 옆에 app.log.gz를 쓰고 app.log는 남깁니다. 이미 있는 파일은 덮어쓰지 않습니다."
+      - "출력은 입력의 수정 시각과 권한을 이어받습니다. root로 실행하면 소유자도 이어받습니다."
+      - "쓰는 중에 실패하면 만들던 출력을 지우고 입력은 남깁니다."
+      - "zstd는 수준 3보다 높여도 더 작아지지 않습니다. -j는 gzip에만 적용됩니다."
+      - "파일을 주지 않으면 stdin을 읽어 stdout으로 씁니다. 압축한 바이트는 터미널에 쓰지 않습니다."
+      - "파일을 하나씩 압축합니다. 디렉터리는 tar로 묶습니다."
+  decompress:
+    summary: ".gz와 .zst 파일의 압축 해제"
+    option:
+      stdout: "stdout으로 쓰고 입력을 남김"
+      output: "출력 경로, 입력이 하나일 때"
+      remove: "출력을 다 쓰고 fsync한 뒤 입력을 지움"
+    notes:
+      - "이름이 아니라 앞 바이트를 읽어 gzip과 zstd를 가립니다."
+      - "app.log.gz 옆에 app.log를 쓰고 app.log.gz는 남깁니다. 이미 있는 파일은 덮어쓰지 않습니다."
+      - "이름이 .gz나 .zst로 끝나지 않는 파일은 -o나 -c가 필요합니다."
+      - "입력이 손상되거나 잘렸으면 만들던 출력을 지우고 exit code 1로 끝납니다."
+      - "파일을 주지 않으면 stdin을 읽어 stdout으로 씁니다."
   update:
     summary: "최신 release 설치"
     option:

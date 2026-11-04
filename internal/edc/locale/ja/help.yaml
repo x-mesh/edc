@@ -775,6 +775,34 @@ command:
       - "ファイルのコメントを保ち、原子的に置き換えます。新しいファイルの権限は 0600 です。"
       - "パスワードや鍵は保存しません。接続先には SSH alias を使います。"
       - "同じコマンドの Step 画面でレシピも編集します。レシピがなければ初回の保存時に ./.edc/recipe.yaml を作ります。"
+  compress:
+    summary: "ファイルを .gz か .zst に圧縮、複数コアを使用"
+    option:
+      zstd: ".gz の代わりに .zst で書く"
+      level: "レベル 1 (速い)〜9 (小さい)、既定は gzip 6、zstd 3"
+      jobs: "gzip を圧縮する goroutine 数、既定は CPU 数"
+      stdout: "stdout に書き、入力を残す"
+      output: "出力パス、入力が一つのとき"
+      remove: "出力を書き終えて fsync したあと入力を消す"
+    notes:
+      - "app.log の隣に app.log.gz を書き、app.log は残します。既にあるファイルは上書きしません。"
+      - "出力は入力の更新時刻と権限を引き継ぎます。root で実行すると所有者も引き継ぎます。"
+      - "書いている途中で失敗すると、作りかけの出力を消し、入力は残します。"
+      - "zstd はレベル 3 より上げても小さくなりません。-j は gzip だけに効きます。"
+      - "ファイルを渡さないと stdin を読み stdout に書きます。圧縮したバイトは端末に書きません。"
+      - "ファイルを一つずつ圧縮します。ディレクトリは tar でまとめます。"
+  decompress:
+    summary: ".gz と .zst ファイルの展開"
+    option:
+      stdout: "stdout に書き、入力を残す"
+      output: "出力パス、入力が一つのとき"
+      remove: "出力を書き終えて fsync したあと入力を消す"
+    notes:
+      - "名前ではなく先頭のバイトを読んで gzip と zstd を見分けます。"
+      - "app.log.gz の隣に app.log を書き、app.log.gz は残します。既にあるファイルは上書きしません。"
+      - "名前が .gz か .zst で終わらないファイルには -o か -c が要ります。"
+      - "入力が壊れているか途切れていると、作りかけの出力を消して exit code 1 で終わります。"
+      - "ファイルを渡さないと stdin を読み stdout に書きます。"
   update:
     summary: "最新 release の導入"
     option:

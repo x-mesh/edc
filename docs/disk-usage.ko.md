@@ -2,7 +2,7 @@
 
 # 디스크 사용량과 알려진 캐시
 
-[디렉터리 디스크 사용량 (Linux와 macOS)](#디렉터리-디스크-사용량-linux와-macos) · [알려진 개발 캐시 사용량 (Linux와 macOS)](#알려진-개발-캐시-사용량-linux와-macos)
+[디렉터리 디스크 사용량 (Linux와 macOS)](#디렉터리-디스크-사용량-linux와-macos) · [알려진 개발 캐시 사용량 (Linux와 macOS)](#알려진-개발-캐시-사용량-linux와-macos) · [파일 압축과 해제](#파일-압축과-해제)
 
 ![Directory usage browser](media/disk-usage.png)
 
@@ -377,3 +377,25 @@ worktree마다 `verdict`가 하나 있고, 아래 순서에서 처음 맞는 값
 
 제한 시간은 기본 60초이며 모든 후보와 섹션이 나눠 씁니다. P1 후보부터 재고 나머지 묶음 두 후보는 마지막에 잽니다. 시작하지 못한 섹션의 상태는 `not_scanned`입니다. 시간이 끝나면 결과는 `warn`이고 `next`에 더 긴 제한 시간의 명령을 보여 줍니다. `Ctrl-C`는 실행을 멈추고 그때까지의 결과를 남깁니다.
 
+## 파일 압축과 해제
+
+`edc compress`는 파일을 `.gz`로, `--zstd`를 주면 `.zst`로 압축합니다. `edc decompress`는 `.gz`나 `.zst` 파일의 압축을 풉니다. `zstd`나 `pigz`가 없는 호스트에서 오래된 로그를 줄일 때 씁니다. 두 명령 모두 Linux와 macOS에서 동작합니다.
+
+```bash
+edc compress /var/log/app.log.1
+edc compress --zstd -j 8 dump.sql
+edc compress --rm /var/log/nginx/access.log.2
+edc decompress app.log.1.zst
+edc decompress -c app.log.2.gz | less
+tar -cf - data | edc compress > data.tar.gz
+```
+
+- 출력은 입력 옆에 쓰고 입력은 남깁니다. `--rm`을 주면 입력을 지우는데, 출력을 다 쓰고 fsync한 뒤에만 지웁니다.
+- 이미 있는 파일은 덮어쓰지 않습니다. 그 파일을 지우거나 `-o`를 주세요.
+- 출력은 입력의 권한과 수정 시각을 이어받습니다. root로 실행하면 소유자도 이어받습니다. `edc grep --ordered`가 회전된 로그의 수정 시각을 쓰므로 이 시각이 바뀌면 안 됩니다.
+- 쓰는 중에 실패하면 만들던 출력을 지우고 입력은 남깁니다. 입력이 손상되거나 잘렸으면 exit code 1로 끝납니다.
+- `-j N`은 gzip을 압축하는 goroutine 수이고, 기본값은 CPU 수입니다. `-j 1`은 한 스트림으로 쓰므로 출력이 조금 더 작을 수 있습니다. zstd는 `-j`를 쓰지 않습니다.
+- `-l N`은 수준 1부터 9까지이고, 기본값은 gzip 6, zstd 3입니다. zstd는 수준 3보다 높여도 더 작아지지 않습니다.
+- `edc decompress`는 파일의 앞 바이트를 읽어 형식을 정합니다. 이름이 `.gz`나 `.zst`로 끝나지 않으면 `-o`나 `-c`가 필요합니다.
+- 파일을 주지 않으면 두 명령 모두 stdin을 읽어 stdout으로 씁니다. `edc compress`는 압축한 바이트를 터미널에 쓰지 않습니다.
+- 파일을 하나씩 압축합니다. 디렉터리는 `tar`로 묶으세요. `.xz`와 `.bz2`는 읽지 않습니다.

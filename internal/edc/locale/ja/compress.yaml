@@ -1,0 +1,13 @@
+# compress・decompress コマンドの日本語メッセージ。
+compress:
+  failed: "edc %s: %s: %s"
+  result: "%s → %s  %s → %s (%s)  %s"
+  error:
+    level: "edc compress: -l には 1 から 9 を渡します: %d"
+    jobs: "edc compress: -j には 1 以上を渡します: %d"
+    terminal: "edc compress: 圧縮したバイトは端末に書きません。ファイル、-o、または pipe を渡してください"
+    exists: "出力ファイルが既にあります。消すか -o を渡してください"
+    suffix: "既に圧縮されたファイルです。edc decompress で読みます"
+    not_regular: "通常のファイルではありません"
+    unknown_format: "gzip か zstd のデータではありません"
+    no_name: "名前が .gz か .zst で終わりません。-o か -c を渡してください"

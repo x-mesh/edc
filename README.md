@@ -23,7 +23,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | Record and compare runs | `edc top -w`, `edc history`, `edc log -- <command>` | [Resource history](docs/history.md#top-recordings-and-history), [command logs](docs/history.md#cron-and-application-logs) |
 | Work across hosts | `edc remote`, `edc clean --group <group>` | [Remote recipes](docs/remote.md#remote-recipes), [remote disk survey](docs/disk-usage.md#clean-on-more-hosts) |
 
-Inspection commands do not automatically repair the host. Explicit actions have effects: `remote` runs recipe commands, `check <routine>` runs the commands of a configured routine, `watch fs --exec` and `--rules` run configured actions, and `route`, `disk`, and `change` modify host settings. Recording, log rotation, pruning, setup, and updates also write or delete data. See each command's requirements before using it in automation.
+Inspection commands do not automatically repair the host. Explicit actions have effects: `remote` runs recipe commands, `check <routine>` runs the commands of a configured routine, `watch fs --exec` and `--rules` run configured actions, and `route`, `disk`, and `change` modify host settings. Recording, log rotation, pruning, setup, and updates also write or delete data. `compress` and `decompress` write files, and their `--rm` deletes the input. See each command's requirements before using it in automation.
 
 [Install](#install) · [Quick start](#quick-start) · [Configuration](docs/configuration.md#command-defaults) · [Build from source](docs/configuration.md#build) · [Exit codes](#exit-code)
 
@@ -143,6 +143,8 @@ edc clean
 ```
 
 The screen uses synthetic demo data. Both commands support Linux and macOS; some filesystem and Docker details are platform specific.
+
+**`compress` and `decompress` make an old log smaller on a host without `zstd` or `pigz`.** They write `.gz` or `.zst` on several cores. They keep the input unless you add `--rm`, and they do not overwrite a file. See [Compress and decompress files](docs/disk-usage.md#compress-and-decompress-files).
 
 **[Disk usage and cache inspection details →](docs/disk-usage.md)**
 

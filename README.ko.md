@@ -23,7 +23,7 @@
 | 실행 기록과 비교 | `edc top -w`, `edc history`, `edc log -- <command>` | [자원 사용 이력](docs/history.ko.md#top-저장과-이력-조회), [명령 로그](docs/history.ko.md#cron과-애플리케이션-로그) |
 | 여러 호스트에서 작업 | `edc remote`, `edc clean --group <group>` | [원격 recipe](docs/remote.ko.md#remote-recipe), [원격 디스크 조사](docs/disk-usage.ko.md#여러-호스트의-clean) |
 
-관측 명령은 호스트를 자동으로 복구하지 않습니다. 명시한 작업은 상태를 바꿀 수 있습니다. `remote`는 recipe의 명령을, `check <루틴>`은 설정한 루틴의 명령을, `watch fs --exec`와 `--rules`는 설정한 action을 실행하며, `route`, `disk`, `change`는 호스트 설정을 변경합니다. 기록, 로그 회전, 이력 삭제, 설정 저장, 업데이트도 파일을 쓰거나 삭제합니다. 자동화할 때는 각 명령의 실행 조건을 확인하세요.
+관측 명령은 호스트를 자동으로 복구하지 않습니다. 명시한 작업은 상태를 바꿀 수 있습니다. `remote`는 recipe의 명령을, `check <루틴>`은 설정한 루틴의 명령을, `watch fs --exec`와 `--rules`는 설정한 action을 실행하며, `route`, `disk`, `change`는 호스트 설정을 변경합니다. 기록, 로그 회전, 이력 삭제, 설정 저장, 업데이트도 파일을 쓰거나 삭제합니다. `compress`와 `decompress`는 파일을 쓰고, `--rm`을 주면 입력을 삭제합니다. 자동화할 때는 각 명령의 실행 조건을 확인하세요.
 
 [설치](#설치) · [빠른 시작](#빠른-시작) · [설정](docs/configuration.ko.md#command-기본값) · [소스 빌드](docs/configuration.ko.md#빌드) · [Exit code](#exit-code)
 
@@ -143,6 +143,8 @@ edc clean
 ```
 
 데모 데이터로 캡처한 화면입니다. 두 명령은 Linux와 macOS를 지원하며, 파일시스템·Docker 세부 기능은 OS에 따라 다릅니다.
+
+**`compress`와 `decompress`는 `zstd`나 `pigz`가 없는 호스트에서 오래된 로그를 줄입니다.** 여러 코어로 `.gz`나 `.zst`를 쓰고, `--rm`을 주지 않으면 입력을 남기며, 이미 있는 파일은 덮어쓰지 않습니다. [파일 압축과 해제](docs/disk-usage.ko.md#파일-압축과-해제)를 참고하세요.
 
 **[디스크 사용량·캐시 조사 자세히 보기 →](docs/disk-usage.ko.md)**
 

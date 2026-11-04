@@ -307,7 +307,7 @@ func TestCodecWritesUnderATemporaryName(t *testing.T) {
 	}
 }
 
-// --rm은 변환하는 동안 입력이 더 쓰였거나 경로가 다른 파일로 바뀌었으면 지우지 않는다. 출력은 읽은 만큼 남는다.
+// --rm은 변환하는 동안 입력이 더 쓰였거나, 같은 크기로 고쳐 쓰였거나, 경로가 다른 파일로 바뀌었으면 지우지 않는다. 출력은 읽은 만큼 남는다.
 func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -316,6 +316,11 @@ func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 		{"appended", func(path string) {
 			file, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 			file.WriteString("late line\n")
+			file.Close()
+		}},
+		{"rewritten", func(path string) {
+			file, _ := os.OpenFile(path, os.O_WRONLY, 0)
+			file.WriteAt([]byte("LINE\n"), 0)
 			file.Close()
 		}},
 		{"replaced", func(path string) {

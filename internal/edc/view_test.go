@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/x-mesh/fastcompress/gzip"
+	"github.com/x-mesh/fastcompress/zstd"
 )
 
 func readViewFixture(t *testing.T, name string) []string {
@@ -706,6 +707,67 @@ func TestViewReadGzipTailReportsTruncatedGzip(t *testing.T) {
 	}
 	if len(model.lines) == 0 {
 		t.Fatal("no lines before the cut")
+	}
+}
+
+// 화면 모드는 .zst를 끝까지 풀어 마지막 줄을 모델에 넣고, 다 쓰인 파일로 보아 따라가지 않는다.
+func TestViewLoadCompressedReadsTheZstdTail(t *testing.T) {
+	var content strings.Builder
+	for index := range 200000 {
+		content.WriteString("2026-11-04 10:00:00 INFO line " + strconv.Itoa(index) + "\n")
+	}
+	content.WriteString("2026-11-04 10:00:01 ERROR last without newline")
+	path := filepath.Join(t.TempDir(), "app.log.1.zst")
+	if err := os.WriteFile(path, zstd.Encode(nil, []byte(content.String()), 3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newViewScreenModel(path, 3)
+	if err := viewLoadCompressed(&model, path, logDecompressor(path), 3); err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, line := range model.lines {
+		texts = append(texts, line.text)
+	}
+	want := []string{"2026-11-04 10:00:00 INFO line 199998", "2026-11-04 10:00:00 INFO line 199999", "2026-11-04 10:00:01 ERROR last without newline"}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines %q", texts)
+	}
+	if !model.ended || model.err != nil || !model.changed.Equal(info.ModTime()) {
+		t.Fatalf("ended %v err %v changed %v", model.ended, model.err, model.changed)
+	}
+}
+
+// 잘린 .zst는 읽은 줄까지 보여 주되 오류를 남긴다. zstd 머리부터 틀린 파일은 화면을 열지 않는다.
+func TestViewLoadCompressedReportsABrokenZstd(t *testing.T) {
+	var content strings.Builder
+	for index := range 50000 {
+		content.WriteString("line " + strconv.Itoa(index) + "\n")
+	}
+	data := zstd.Encode(nil, []byte(content.String()), 3)
+	dir := t.TempDir()
+	cut := filepath.Join(dir, "cut.log.zst")
+	if err := os.WriteFile(cut, data[:len(data)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model := newViewScreenModel(cut, viewKeepLines)
+	if err := viewLoadCompressed(&model, cut, logDecompressor(cut), viewKeepLines); err != nil {
+		t.Fatal(err)
+	}
+	if model.err == nil || len(model.lines) == 0 {
+		t.Fatalf("err %v lines %d", model.err, len(model.lines))
+	}
+	broken := filepath.Join(dir, "broken.log.zst")
+	if err := os.WriteFile(broken, []byte("not zstd at all"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model = newViewScreenModel(broken, viewKeepLines)
+	if err := viewLoadCompressed(&model, broken, logDecompressor(broken), viewKeepLines); err == nil {
+		t.Fatal("no error for a file that is not zstd")
 	}
 }
 

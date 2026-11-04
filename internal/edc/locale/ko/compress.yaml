@@ -1,0 +1,14 @@
+# compress·decompress 명령의 한국어 메시지.
+compress:
+  failed: "edc %s: %s: %s"
+  result: "%s → %s  %s → %s (%s)  %s"
+  error:
+    level: "edc compress: -l에는 1부터 9까지 줍니다: %d"
+    jobs: "edc compress: -j에는 1 이상을 줍니다: %d"
+    terminal: "edc compress: 압축한 바이트는 터미널에 쓰지 않습니다. 파일, -o, 또는 pipe를 주세요"
+    exists: "출력 파일이 이미 있습니다. 지우거나 -o를 주세요"
+    suffix: "이미 압축된 파일입니다. edc decompress로 읽습니다"
+    not_regular: "일반 파일이 아닙니다"
+    unknown_format: "gzip이나 zstd 데이터가 아닙니다"
+    no_name: "이름이 .gz나 .zst로 끝나지 않습니다. -o나 -c를 주세요"
+    changed: "실행 중에 입력이 바뀌어 지우지 않았습니다"

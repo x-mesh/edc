@@ -522,7 +522,7 @@ If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the 
 
 ## Search logs
 
-`edc grep <pattern> [path...]` searches logs. It prints lines like `grep`: the path when you give several files, the line number with `-n`, and context lines with `-C N`. It searches a directory recursively. It skips binary files and reads `.gz` files in order.
+`edc grep <pattern> [path...]` searches logs. It prints lines like `grep`: the path when you give several files, the line number with `-n`, and context lines with `-C N`. It searches a directory recursively. It skips binary files and reads `.gz` and `.zst` files in order.
 
 ```bash
 # plain text in a directory
@@ -543,7 +543,7 @@ With `--level`, `--status`, `--since`, or `--until`, you can leave out the patte
 
 | Option | What it skips |
 | --- | --- |
-| `--since` with `--ordered` | `--since` and `--until` filter lines by their timestamps. Add `--ordered` when the log is in time order. Then `edc grep` checks the order at 16 points, skips a file whose last timestamp is before `--since` (a `.gz` file by its modification time), and bisects the timestamps to start near `--since`. A recent window of a multi-GB log reads a few MB. Without `--ordered` it reads the file whole, because a few probes cannot see a short backward run between them. |
+| `--since` with `--ordered` | `--since` and `--until` filter lines by their timestamps. Add `--ordered` when the log is in time order. Then `edc grep` checks the order at 16 points, skips a file whose last timestamp is before `--since` (a `.gz` or `.zst` file by its modification time), and bisects the timestamps to start near `--since`. A recent window of a multi-GB log reads a few MB. Without `--ordered` it reads the file whole, because a few probes cannot see a short backward run between them. |
 | `--last N` | It reads the file from the end and stops after N matches. |
 | index | On the second search of a file of 64 MB or more within 24 hours, it builds an index in the cache directory. Later searches read only the blocks that can hold the pattern, the time, the level, or the status. The time ranges in the index are exact, so this works without `--ordered`. |
 

@@ -7,12 +7,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/x-mesh/fastcompress/gzip"
 )
 
 // viewFollowDefaultLines는 -f에 -n이 없을 때 처음 보여 주는 줄 수다. tail -f와 같다.
@@ -137,7 +135,7 @@ func runViewScreen(path string, lines int) int {
 	var start func(program *tea.Program)
 	if path == "" {
 		start = func(program *tea.Program) { go viewReadStdin(ctx, program) }
-	} else if strings.HasSuffix(path, ".gz") {
+	} else if decompress := logDecompressor(path); decompress != nil {
 		file, err := os.Open(path)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, T("view.failed", err))
@@ -147,27 +145,27 @@ func runViewScreen(path string, lines int) int {
 		if err == nil && info.IsDir() {
 			err = fmt.Errorf("%s: %w", path, syscall.EISDIR)
 		}
-		var reader *gzip.Reader
+		var reader io.ReadCloser
 		if err == nil {
-			reader, err = gzip.NewReader(file)
+			reader, err = decompress(file)
 		}
 		if err != nil {
 			file.Close()
 			fmt.Fprintln(os.Stderr, T("view.failed", err))
 			return 1
 		}
-		// 회전된 .gz는 다 쓰인 뒤에 만들어지므로 따라가지 않는다. 끝에서 거꾸로 읽을 수 없어 화면을 열기 전에 끝까지 푼다.
+		// 회전된 .gz와 .zst는 다 쓰인 뒤에 만들어지므로 따라가지 않는다. 끝에서 거꾸로 읽을 수 없어 화면을 열기 전에 끝까지 푼다.
 		initialLines := keep
 		if lines == 0 {
 			initialLines = 0
 		}
-		raw, readErr := viewReadGzipTail(reader, initialLines)
+		raw, readErr := viewReadCompressedTail(reader, initialLines)
 		reader.Close()
 		file.Close()
 		model.ingest(raw, time.Now(), false)
 		model.changed = info.ModTime()
 		model.ended = true
-		// 잘린 .gz도 읽은 줄은 보여 주되, 온전한 로그로 믿지 않도록 오류를 함께 표시한다.
+		// 잘린 .gz나 .zst도 읽은 줄은 보여 주되, 온전한 로그로 믿지 않도록 오류를 함께 표시한다.
 		model.err = readErr
 		start = func(*tea.Program) {}
 	} else {

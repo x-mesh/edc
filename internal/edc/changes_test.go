@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/x-mesh/fastcompress/zstd"
 )
 
 func changesTouch(t *testing.T, root, path string, content string, mtime time.Time) {
@@ -136,12 +138,13 @@ func TestPackageLogFilesWarnsAboutCompressedSiblings(t *testing.T) {
 	changesTouch(t, root, "/var/log/dpkg.log.3.gz", "", now.Add(-72*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.log.4", "", now.Add(-72*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.log.5.xz", "", now.Add(-4*time.Hour))
+	changesTouch(t, root, "/var/log/dpkg.log.6.zst", "", now.Add(-5*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.logx", "", now)
 	files, compressed, err := packageLogFiles(root, "/var/log/dpkg.log", now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(files, ",") != "/var/log/dpkg.log,/var/log/dpkg.log.1,/var/log/dpkg.log.2.gz" {
+	if strings.Join(files, ",") != "/var/log/dpkg.log,/var/log/dpkg.log.1,/var/log/dpkg.log.2.gz,/var/log/dpkg.log.6.zst" {
 		t.Fatalf("files = %v", files)
 	}
 	if strings.Join(compressed, ",") != "/var/log/dpkg.log.5.xz" {
@@ -157,9 +160,10 @@ func TestCollectPackageChangesReadsRotatedLogsAndWarns(t *testing.T) {
 	changesTouch(t, root, "/var/log/dpkg.log.1", stamp(now.Add(-3*time.Hour))+" upgrade libc6:amd64 1 2\n", now.Add(-2*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.log.2.gz", changesGzip(t, stamp(now.Add(-6*time.Hour))+" remove nano:amd64 7.2-1 <none>\n"), now.Add(-5*time.Hour))
 	changesTouch(t, root, "/var/log/dpkg.log.3.xz", "binary", now.Add(-7*time.Hour))
+	changesTouch(t, root, "/var/log/dpkg.log.4.zst", string(zstd.Encode(nil, []byte(stamp(now.Add(-4*time.Hour))+" install jq:amd64 <none> 1.7.1-3\n"), 3)), now.Add(-3*time.Hour))
 	sources := changesSources{root: root, now: now}
 	result := changesResult("packages", now, collectPackageChanges(sources, now.Add(-24*time.Hour)))
-	if result.Status != StatusPass || result.Metrics["count"] != 3 {
+	if result.Status != StatusPass || result.Metrics["count"] != 4 {
 		t.Fatalf("result = %+v", result)
 	}
 	if len(result.Warnings) != 1 || result.Warnings[0] != T("changes.warning.compressed", "/var/log/dpkg.log.3.xz") {

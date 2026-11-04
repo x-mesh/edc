@@ -12,7 +12,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/x-mesh/fastgzip"
+	"github.com/x-mesh/fastcompress/gzip"
 )
 
 // viewFollowDefaultLines는 -f에 -n이 없을 때 처음 보여 주는 줄 수다. tail -f와 같다.
@@ -147,9 +147,9 @@ func runViewScreen(path string, lines int) int {
 		if err == nil && info.IsDir() {
 			err = fmt.Errorf("%s: %w", path, syscall.EISDIR)
 		}
-		var reader *fastgzip.Reader
+		var reader *gzip.Reader
 		if err == nil {
-			reader, err = fastgzip.NewReader(file)
+			reader, err = gzip.NewReader(file)
 		}
 		if err != nil {
 			file.Close()

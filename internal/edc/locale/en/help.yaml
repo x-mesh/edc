@@ -265,7 +265,7 @@ command:
       - "With a terminal and one pattern, grep searches code in the current directory. Pipes read stdin; an explicit path keeps log search behavior."
       - "Code and path searches default to the current directory and skip hidden files and .git; --hidden includes hidden files, --no-ignore ignores .gitignore."
       - "Code search reads current files without a log index and prints line numbers."
-      - "A directory is searched recursively. Binary files are skipped, and .gz files are read in order."
+      - "A directory is searched recursively. Binary files are skipped, and .gz and .zst files are read in order."
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
       - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log. edc checks the order at 16 points only, so lines in an out-of-order stretch between those points can be skipped. Leave out --ordered for a log that mixes sources or has clock jumps."
       - "--last reads the file from the end and stops after N matches."

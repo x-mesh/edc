@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/x-mesh/fastcompress/zstd"
 )
 
 // grepCommand는 grepRun을 파일로 된 stdin, stdout, stderr로 실행한다. 터미널이 아니므로 색과 hint는 나오지 않는다.
@@ -317,6 +319,28 @@ func TestGrepCommandSearchesSubdirectories(t *testing.T) {
 	code, stdout, _ := grepCommand(t, "", "upstream", dir)
 	if code != 0 || strings.Count(stdout, "\n") != 2 || !strings.Contains(stdout, filepath.Join(nested, "more.log")+":") {
 		t.Fatalf("recursive:\n%s", stdout)
+	}
+}
+
+// .zst도 .gz처럼 풀면서 차례로 읽는다. 손상된 .zst는 오류를 알리고 2로 끝난다.
+func TestGrepCommandReadsZstd(t *testing.T) {
+	dir := grepFixtureDir(t)
+	app, _ := os.ReadFile(filepath.Join(dir, "app.log"))
+	path := filepath.Join(dir, "app.log.1.zst")
+	if err := os.WriteFile(path, zstd.Encode(nil, app, 3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, _ := grepCommand(t, "", "-n", "--level", "warn", "pool", path)
+	if code != 0 || stdout != "2:2026-10-26 10:00:01,004 WARN  [pool-1] c.e.Db - pool 80% used\n" {
+		t.Fatalf("zst:\n%s", stdout)
+	}
+	broken := filepath.Join(dir, "broken.log.zst")
+	if err := os.WriteFile(broken, []byte("not zstd at all"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := grepCommand(t, "", "pool", broken)
+	if code != 2 || !strings.Contains(stderr, "broken.log.zst") {
+		t.Fatalf("code %d stderr %q", code, stderr)
 	}
 }
 

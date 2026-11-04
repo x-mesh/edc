@@ -668,7 +668,7 @@ func viewReceiveGzip(t *testing.T, data []byte, keep int) (viewScreenModel, erro
 	}
 	defer reader.Close()
 	model := newViewScreenModel("app.log.gz", keep)
-	raw, err := viewReadGzipTail(reader, keep)
+	raw, err := viewReadCompressedTail(reader, keep)
 	model.ingest(raw, time.Now(), false)
 	return model, err
 }

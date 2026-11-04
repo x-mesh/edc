@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/x-mesh/fastgzip"
+	"github.com/x-mesh/fastcompress/gzip"
 )
 
 // changes는 장애 직전에 호스트에서 무엇이 바뀌었는지를 읽기만 해서 보인다. 패키지 로그, /etc의 mtime,
@@ -232,7 +232,7 @@ func readPackageLog(sources changesSources, log changesPackageLog, path string, 
 	defer file.Close()
 	var reader io.Reader = file
 	if strings.HasSuffix(path, ".gz") {
-		gz, err := fastgzip.NewReader(file)
+		gz, err := gzip.NewReader(file)
 		if err != nil {
 			return nil, err
 		}

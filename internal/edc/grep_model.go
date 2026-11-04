@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/x-mesh/fastgzip"
+	"github.com/x-mesh/fastcompress/gzip"
 )
 
 const (
@@ -248,7 +248,7 @@ func grepExtractRuntime(archive, destination string, rt grepRuntimeAsset) error 
 		return err
 	}
 	defer f.Close()
-	gz, err := fastgzip.NewReader(f)
+	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return err
 	}

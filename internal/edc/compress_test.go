@@ -3,12 +3,14 @@ package edc
 import (
 	"bytes"
 	stdgzip "compress/gzip"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -201,6 +203,148 @@ func TestCodecRemoveOnlyAfterACompleteOutput(t *testing.T) {
 		}
 		if _, err := os.Stat(cut); err != nil {
 			t.Fatalf("%s: the input is gone: %v", name, err)
+		}
+	}
+}
+
+// Lstat으로 본 뒤 경로가 심볼릭 링크, 다른 파일, FIFO로 바뀌면 열지 않는다. FIFO를 열 때 쓰는 쪽을 기다리지 않는다.
+func TestCodecOpenRefusesAPathSwappedAfterTheCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	codecWrite(t, path, []byte("line\n"), 0o644, time.Now())
+	checked, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other.log")
+	codecWrite(t, other, []byte("other\n"), 0o644, time.Now())
+	link := filepath.Join(dir, "link.log")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, swapped := range []string{link, other, fifo} {
+		done := make(chan error, 1)
+		go func() {
+			file, _, err := codecOpenChecked(swapped, checked)
+			if file != nil {
+				file.Close()
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, errCodecNotRegular) {
+				t.Fatalf("%s: err %v", filepath.Base(swapped), err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: open waits", filepath.Base(swapped))
+		}
+	}
+	file, _, err := codecOpenChecked(path, checked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+}
+
+// 변환하는 동안 출력 이름은 비어 있고, 끝나면 임시 파일이 남지 않는다. 그 사이에 출력 이름이 생기면 덮어쓰지 않는다.
+func TestCodecWritesUnderATemporaryName(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		fail bool
+		race bool
+	}{{"done", false, false}, {"failed", true, false}, {"raced", false, true}} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.log")
+		codecWrite(t, path, []byte("line\n"), 0o640, time.Now())
+		target := path + ".out"
+		options := codecOptions{
+			command: "compress",
+			target:  func(string) (string, error) { return target, nil },
+			convert: func(dst io.Writer, src io.Reader) error {
+				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("%s: the output name exists during the run: %v", test.name, err)
+				}
+				if test.race {
+					os.WriteFile(target, []byte("keep"), 0o644)
+				}
+				if _, err := io.Copy(dst, src); err != nil {
+					return err
+				}
+				if test.fail {
+					return io.ErrUnexpectedEOF
+				}
+				return nil
+			},
+		}
+		_, err := codecPath(path, options, false)
+		entries, _ := os.ReadDir(dir)
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		want := []string{"app.log", "app.log.out"}
+		switch {
+		case test.fail:
+			want = []string{"app.log"}
+			if err == nil {
+				t.Fatalf("%s: no error", test.name)
+			}
+		case test.race:
+			if kept, _ := os.ReadFile(target); !errors.Is(err, errCodecExists) || string(kept) != "keep" {
+				t.Fatalf("%s: err %v kept %q", test.name, err, kept)
+			}
+		case err != nil:
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if strings.Join(names, " ") != strings.Join(want, " ") {
+			t.Fatalf("%s: files %v", test.name, names)
+		}
+	}
+}
+
+// --rm은 변환하는 동안 입력이 더 쓰였거나 경로가 다른 파일로 바뀌었으면 지우지 않는다. 출력은 읽은 만큼 남는다.
+func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(path string)
+	}{
+		{"appended", func(path string) {
+			file, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			file.WriteString("late line\n")
+			file.Close()
+		}},
+		{"replaced", func(path string) {
+			os.Rename(path, path+".old")
+			os.WriteFile(path, []byte("new log\n"), 0o644)
+		}},
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.log")
+		codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+		options := codecOptions{
+			command: "compress",
+			remove:  true,
+			target:  func(path string) (string, error) { return path + ".gz", nil },
+			convert: func(dst io.Writer, src io.Reader) error {
+				_, err := io.Copy(dst, src)
+				test.change(path)
+				return err
+			},
+		}
+		_, err := codecPath(path, options, false)
+		if !errors.Is(err, errCodecChanged) || codecErrorText(err) != T("compress.error.changed") {
+			t.Fatalf("%s: err %v", test.name, err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s: the input is gone: %v", test.name, err)
+		}
+		if packed, err := os.ReadFile(path + ".gz"); err != nil || string(packed) != "line\n" {
+			t.Fatalf("%s: output %q err %v", test.name, packed, err)
 		}
 	}
 }

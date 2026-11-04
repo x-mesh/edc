@@ -11,3 +11,4 @@ compress:
     not_regular: "通常のファイルではありません"
     unknown_format: "gzip か zstd のデータではありません"
     no_name: "名前が .gz か .zst で終わりません。-o か -c を渡してください"
+    changed: "実行中に入力が変わったため、消していません"

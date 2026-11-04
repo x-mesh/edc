@@ -11,3 +11,4 @@ compress:
     not_regular: "not a regular file"
     unknown_format: "not gzip or zstd data"
     no_name: "the name does not end in .gz or .zst; give -o or -c"
+    changed: "the input changed during the run; edc kept it"

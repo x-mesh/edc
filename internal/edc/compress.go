@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/x-mesh/fastcompress/gzip"
@@ -32,6 +36,7 @@ var (
 	errCodecNotRegular = errors.New("not a regular file")
 	errCodecUnknown    = errors.New("not gzip or zstd data")
 	errCodecNoName     = errors.New("no output name")
+	errCodecChanged    = errors.New("input changed")
 )
 
 type codecOptions struct {
@@ -206,32 +211,28 @@ func codecErrorText(err error) string {
 		return T("compress.error.unknown_format")
 	case errors.Is(err, errCodecNoName):
 		return T("compress.error.no_name")
+	case errors.Is(err, errCodecChanged):
+		return T("compress.error.changed")
 	}
 	return err.Error()
 }
 
-// codecPath는 입력 하나를 처리한다. 파일로 쓸 때는 다 쓰고 fsync한 뒤에만 원본을 지우고, 도중에 실패하면 만들던 파일을
-// 지운다. 반쯤 쓴 출력이 남으면 다음 실행이 덮어쓰기를 거부하고, --rm이 원본을 지운 뒤라면 로그를 잃는다.
+// codecPath는 입력 하나를 처리한다. 파일로 쓸 때는 같은 디렉터리의 임시 파일에 다 쓰고 fsync한 뒤 출력 이름을 붙이고,
+// 그다음에만 원본을 지운다. 출력 이름에 반쯤 쓴 파일이 남으면 다음 실행이 덮어쓰기를 거부하고, --rm이 원본을 지운 뒤라면
+// 로그를 잃는다. 프로세스가 죽어도 남는 것은 점으로 시작하는 임시 파일뿐이다.
 func codecPath(path string, options codecOptions, toStdout bool) (codecResult, error) {
 	started := time.Now()
 	result := codecResult{input: codecName(path), output: "stdout", decompress: options.command == "decompress"}
 	src := options.stdin
+	var input *os.File
 	var info fs.FileInfo
 	if path != "-" {
 		var err error
-		if info, err = os.Lstat(path); err != nil {
+		if input, info, err = codecOpenInput(path); err != nil {
 			return result, err
 		}
-		// 심볼릭 링크를 따라가 압축하고 --rm으로 링크만 지우면 원본은 그대로 남고 압축본만 늘어난다.
-		if !info.Mode().IsRegular() {
-			return result, errCodecNotRegular
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return result, err
-		}
-		defer file.Close()
-		src = file
+		defer input.Close()
+		src = input
 	}
 	counted := &codecCounter{reader: src}
 	if toStdout {
@@ -248,21 +249,24 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 		}
 	}
 	result.output = target
+	// 끝까지 변환한 뒤에야 이름이 겹친다고 알리지 않도록 먼저 본다. 그 사이에 생긴 파일은 아래 os.Link가 거부한다.
+	if _, err := os.Lstat(target); err == nil {
+		return result, fmt.Errorf("%s: %w", target, errCodecExists)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return result, err
+	}
 	mode := fs.FileMode(0o644)
 	if info != nil {
 		mode = info.Mode().Perm()
 	}
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if errors.Is(err, fs.ErrExist) {
-		return result, fmt.Errorf("%s: %w", target, errCodecExists)
-	}
+	out, temp, err := codecCreateTemp(target, mode)
 	if err != nil {
 		return result, err
 	}
 	written := &codecWriteCounter{writer: out}
 	err = options.convert(written, counted)
 	if err == nil {
-		err = codecKeepMetadata(out, target, info)
+		err = codecKeepMetadata(out, temp, info)
 	}
 	if err == nil {
 		err = out.Sync()
@@ -270,17 +274,109 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
+	// rename은 그 사이에 생긴 출력을 덮어쓰므로, 이름이 없을 때만 성공하는 hard link로 붙이고 임시 이름을 지운다.
+	if err == nil {
+		if err = os.Link(temp, target); errors.Is(err, fs.ErrExist) {
+			err = fmt.Errorf("%s: %w", target, errCodecExists)
+		}
+	}
+	os.Remove(temp)
 	if err != nil {
-		os.Remove(target)
 		return result, err
 	}
+	result.read, result.written, result.elapsed = counted.count, written.count, time.Since(started)
 	if options.remove {
+		// 출력 이름이 디스크에 남기 전에 원본을 지운 상태로 전원이 꺼지면 둘 다 잃을 수 있다.
+		if err := codecSyncDir(filepath.Dir(target)); err != nil {
+			return result, err
+		}
+		if err := codecInputUnchanged(path, input, info, counted.count); err != nil {
+			return result, err
+		}
 		if err := os.Remove(path); err != nil {
 			return result, err
 		}
 	}
-	result.read, result.written, result.elapsed = counted.count, written.count, time.Since(started)
 	return result, nil
+}
+
+// codecOpenInput은 일반 파일만 연다. 장치 파일은 열기만 해도 동작할 수 있어 Lstat으로 먼저 거른다. Lstat과 open 사이에
+// 경로가 심볼릭 링크로 바뀌어도 따라가지 않도록 O_NOFOLLOW로 열고, 연 파일이 Lstat으로 본 그 파일인지 다시 확인한다.
+// O_NONBLOCK은 그 사이에 FIFO로 바뀌었을 때 쓰는 쪽을 기다리며 멈추지 않게 한다. 일반 파일의 읽기에는 영향이 없다.
+func codecOpenInput(path string) (*os.File, fs.FileInfo, error) {
+	checked, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	// 심볼릭 링크를 따라가 압축하고 --rm으로 링크만 지우면 원본은 그대로 남고 압축본만 늘어난다.
+	if !checked.Mode().IsRegular() {
+		return nil, nil, errCodecNotRegular
+	}
+	return codecOpenChecked(path, checked)
+}
+
+func codecOpenChecked(path string, checked fs.FileInfo) (*os.File, fs.FileInfo, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, nil, errCodecNotRegular
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && (!info.Mode().IsRegular() || !os.SameFile(checked, info)) {
+		err = errCodecNotRegular
+	}
+	if err != nil {
+		file.Close()
+		return nil, nil, err
+	}
+	return file, info, nil
+}
+
+// codecCreateTemp는 target과 같은 디렉터리에 임시 파일을 만든다. 같은 파일 시스템이어야 hard link로 이름을 붙일 수 있다.
+// os.CreateTemp는 권한을 0600으로 고정하므로, stdin에서 받은 출력도 umask를 거친 mode를 받도록 직접 만든다.
+func codecCreateTemp(target string, mode fs.FileMode) (*os.File, string, error) {
+	dir, base := filepath.Split(target)
+	for range 16 {
+		temp := filepath.Join(dir, "."+base+"."+strconv.FormatUint(rand.Uint64(), 36)+".tmp")
+		file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return file, temp, err
+	}
+	return nil, "", fmt.Errorf("%s: %w", target, errCodecExists)
+}
+
+func codecSyncDir(dir string) error {
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
+}
+
+// codecInputUnchanged는 --rm이 지울 경로가 변환한 그 파일 그대로인지 본다. 아직 쓰이는 로그를 지우면 읽은 뒤에 붙은
+// 줄을 잃고, 경로가 다른 파일로 바뀌었으면 변환하지 않은 파일을 지운다. 이 검사와 unlink 사이의 짧은 틈은 경로로
+// 지우는 한 남는다.
+func codecInputUnchanged(path string, input *os.File, opened fs.FileInfo, read int64) error {
+	now, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if now.Size() != read || !now.ModTime().Equal(opened.ModTime()) {
+		return errCodecChanged
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(opened, current) {
+		return errCodecChanged
+	}
+	return nil
 }
 
 // codecKeepMetadata는 원본의 권한과 수정 시각을 출력에 옮긴다. 만들 때 준 권한은 umask가 깎으므로 다시 정한다.

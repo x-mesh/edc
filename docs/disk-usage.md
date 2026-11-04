@@ -396,9 +396,11 @@ tar -cf - data | edc compress > data.tar.gz
 ```
 
 - edc writes the output beside the input and keeps the input. Add `--rm` to delete the input. edc deletes it only after it writes and syncs the output.
+- If the input grows or another file takes its path while edc reads it, `--rm` keeps the input. edc then exits with code 1, and the output holds the data that edc read.
 - edc does not overwrite a file that exists. Delete the file or give `-o`.
 - The output gets the permissions and the modification time of the input. If you run edc as root, the output also gets the owner. `edc grep --ordered` uses the modification time of a rotated log, so this time must stay correct.
-- If edc fails while it writes, it deletes the partial output and keeps the input. A corrupt or truncated input gives exit code 1.
+- edc writes to a temporary file in the same directory. The name of this file starts with a dot. edc gives the output its name only after it writes and syncs all of the data. The file system must support hard links.
+- If edc fails while it writes, it deletes the temporary file and keeps the input. If the process stops, only the temporary file stays. A corrupt or truncated input gives exit code 1.
 - `-j N` sets the number of goroutines for gzip. The default is the CPU count. With `-j 1`, edc writes one stream, and the output can be a little smaller. zstd does not use `-j`.
 - `-l N` sets the level from 1 to 9. The default is 6 for gzip and 3 for zstd. zstd output does not get smaller above level 3.
 - `edc decompress` reads the first bytes of the file to find the format. A name that does not end in `.gz` or `.zst` needs `-o` or `-c`.

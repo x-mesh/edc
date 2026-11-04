@@ -322,6 +322,9 @@ func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 			file, _ := os.OpenFile(path, os.O_WRONLY, 0)
 			file.WriteAt([]byte("LINE\n"), 0)
 			file.Close()
+			// 파일 시스템의 시각 단위와 관계없이 수정 시각만 달라지게 한다.
+			later := time.Now().Add(time.Hour)
+			os.Chtimes(path, later, later)
 		}},
 		{"replaced", func(path string) {
 			os.Rename(path, path+".old")

@@ -5,6 +5,7 @@ import (
 	stdgzip "compress/gzip"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -178,6 +179,9 @@ func TestCodecRemoveOnlyAfterACompleteOutput(t *testing.T) {
 	code, _, stderr := codecCommand(t, compressRun, nil, "--rm", "--zstd", path)
 	if _, err := os.Stat(path); code != 0 || err == nil {
 		t.Fatalf("code %d stderr %q, the input is still there: %v", code, stderr, err)
+	}
+	if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+		t.Fatalf("left %v", held)
 	}
 	packed, err := os.ReadFile(path + ".zst")
 	if err != nil || !bytes.Equal(codecUnpack(t, packed), content) {
@@ -354,6 +358,97 @@ func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 		if packed, err := os.ReadFile(path + ".gz"); err != nil || string(packed) != "line\n" {
 			t.Fatalf("%s: output %q err %v", test.name, packed, err)
 		}
+		if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+			t.Fatalf("%s: left %v", test.name, held)
+		}
+	}
+}
+
+func codecRemoveOptions() codecOptions {
+	return codecOptions{
+		command: "compress",
+		remove:  true,
+		target:  func(path string) (string, error) { return path + ".gz", nil },
+		convert: func(dst io.Writer, src io.Reader) error {
+			_, err := io.Copy(dst, src)
+			return err
+		},
+	}
+}
+
+// 마지막 확인 뒤 지우기 전에 다른 파일이 경로를 차지해도 그 파일을 지우지 않고 원래 이름에 남긴다.
+func TestCodecRemoveKeepsAFileThatTakesThePathBeforeTheDelete(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log.1")
+	codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+	codecRemoveHook = func(stage string) {
+		if stage == "move" {
+			os.Rename(path, path+".old")
+			os.WriteFile(path, []byte("new log\n"), 0o644)
+		}
+	}
+	t.Cleanup(func() { codecRemoveHook = nil })
+	_, err := codecPath(path, codecRemoveOptions(), false)
+	if !errors.Is(err, errCodecChanged) {
+		t.Fatalf("err %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "new log\n" {
+		t.Fatalf("path holds %q err %v", data, err)
+	}
+	if data, err := os.ReadFile(path + ".old"); err != nil || string(data) != "line\n" {
+		t.Fatalf("the converted input holds %q err %v", data, err)
+	}
+	if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+		t.Fatalf("left %v", held)
+	}
+}
+
+// 되돌리는 사이에 또 다른 파일이 원래 이름을 차지하면 덮어쓰지 않는다. 옮긴 파일은 .rm 디렉터리에 남고 오류가 두 경로를 알린다.
+func TestCodecRemoveDoesNotOverwriteANameTakenDuringTheRestore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log.1")
+	codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+	codecRemoveHook = func(stage string) {
+		switch stage {
+		case "move":
+			os.Rename(path, path+".old")
+			os.WriteFile(path, []byte("new log\n"), 0o644)
+		case "restore":
+			os.WriteFile(path, []byte("newer log\n"), 0o644)
+		}
+	}
+	t.Cleanup(func() { codecRemoveHook = nil })
+	_, err := codecPath(path, codecRemoveOptions(), false)
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) || !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("err %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "newer log\n" {
+		t.Fatalf("path holds %q err %v", data, err)
+	}
+	held, _ := filepath.Glob(filepath.Join(dir, ".*.rm", "app.log.1"))
+	if len(held) != 1 || linkErr.Old != held[0] {
+		t.Fatalf("held %v, error names %q", held, linkErr.Old)
+	}
+	if data, err := os.ReadFile(held[0]); err != nil || string(data) != "new log\n" {
+		t.Fatalf("the moved file holds %q err %v", data, err)
+	}
+}
+
+// 상대 경로의 입력도 입력과 같은 디렉터리로 옮긴다. 시스템 임시 디렉터리는 다른 파일 시스템일 수 있어 rename이 실패한다.
+func TestCodecRemoveMovesARelativeInputBesideIt(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TMPDIR", filepath.Join(dir, "missing"))
+	codecWrite(t, "app.log.1", []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+	if _, err := codecPath("app.log.1", codecRemoveOptions(), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat("app.log.1"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the input is still there: %v", err)
+	}
+	if held, _ := filepath.Glob(".*.rm"); len(held) != 0 {
+		t.Fatalf("left %v", held)
 	}
 }
 

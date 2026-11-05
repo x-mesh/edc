@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,31 +16,65 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// codecProcRoot는 시험이 /proc이 없는 환경을 만들 때만 바꾼다.
-var codecProcRoot = "/proc"
+// codecProcRoot와 codecSetLease는 시험이 /proc이 없거나 lease를 쓸 수 없는 환경을 만들 때만 바꾼다.
+var (
+	codecProcRoot = "/proc"
+	codecSetLease = func(file *os.File) error {
+		_, err := unix.FcntlInt(file.Fd(), unix.F_SETLEASE, unix.F_RDLCK)
+		return err
+	}
+)
 
-// codecFindWriter는 held로 옮긴 입력을 쓰기 모드로 연 fd를 /proc에서 찾아 그 프로세스의 pid를 준다. 없으면 0이다.
-// fdinfo의 ino, mnt_id, flags와 mountinfo의 장치 번호로 맞춘다. fd를 stat하면 응답하지 않는 NFS나 FUSE의 파일에서
-// 멈추지만, fdinfo와 mountinfo는 파일 시스템에 묻지 않는다. 경로가 아니라 장치와 inode로 맞추므로 다른 mount namespace에서
-// bind mount로 연 fd도 찾는다. 읽을 권한이 없는 프로세스(다른 사용자의 프로세스)와 그사이 끝난 프로세스는 건너뛴다.
-func codecFindWriter(held string, moved fs.FileInfo) (int, error) {
+// codecCheckWriters는 held로 옮긴 입력을 다른 프로세스가 쓰기 모드로 열어 두었는지 본다. 그런 프로세스는 다시 읽은 뒤에도
+// 열린 fd로 쓸 수 있고, 그 데이터는 지울 때 사라진다. input은 읽기 모드로 연 그 파일이다.
+func codecCheckWriters(input *os.File, held string, moved fs.FileInfo) error {
 	want := moved.Sys().(*syscall.Stat_t)
 	// unlink는 이름 하나만 지운다. 다른 hard link가 남은 inode는 데이터도 남으므로, 열린 fd로 계속 써도 잃지 않는다.
 	if want.Nlink > 1 {
-		return 0, nil
+		return nil
 	}
+	// read lease는 그 파일을 쓰기 모드로 연 프로세스가 하나도 없을 때만 걸린다. 커널이 사용자와 namespace에 관계없이 세므로
+	// /proc으로 볼 수 없는 프로세스도 잡는다. lease는 input을 닫을 때 풀리므로, 그때까지 쓰기 모드로 여는 open은 기다린다.
+	err := codecSetLease(input)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, unix.EAGAIN) {
+		pid, _, _ := codecScanWriters(held, want)
+		return codecInUseError{pid: pid}
+	}
+	// lease는 파일 소유자나 CAP_LEASE가 있어야 하고, NFS처럼 지원하지 않는 파일 시스템도 있다. 그때는 /proc을 훑고, 볼 수
+	// 없는 프로세스가 있으면 지우지 않는다.
+	pid, complete, err := codecScanWriters(held, want)
+	switch {
+	case err != nil:
+		return err
+	case pid != 0:
+		return codecInUseError{pid: pid}
+	case !complete:
+		return errCodecUnchecked
+	}
+	return nil
+}
+
+// codecScanWriters는 want를 쓰기 모드로 연 fd를 /proc에서 찾아 그 프로세스의 pid를 준다. 없으면 0이다. complete는 모든
+// 프로세스의 fdinfo를 읽었는지다. fdinfo의 ino, mnt_id, flags와 mountinfo의 장치 번호로 맞춘다. fd를 stat하면 응답하지
+// 않는 NFS나 FUSE의 파일에서 멈추지만, fdinfo와 mountinfo는 파일 시스템에 묻지 않는다. 경로가 아니라 장치와 inode로
+// 맞추므로 다른 mount namespace에서 bind mount로 연 fd도 찾는다.
+func codecScanWriters(held string, want *syscall.Stat_t) (pid int, complete bool, err error) {
 	// /proc 디렉터리만 있고 procfs가 붙지 않은 chroot에서는 프로세스가 하나도 보이지 않으므로, 자기 fdinfo로 확인한다.
 	if _, err := os.Stat(filepath.Join(codecProcRoot, "self", "fdinfo")); err != nil {
-		return 0, errCodecNoProc
+		return 0, false, errCodecNoProc
 	}
 	procs, err := os.ReadDir(codecProcRoot)
 	if err != nil {
-		return 0, errCodecNoProc
+		return 0, false, errCodecNoProc
 	}
 	// fdinfo에 ino 줄이 없는 커널에서는 경로로 맞춘다. 옮긴 파일의 경로에는 이번에 만든 .rm 디렉터리 이름이 들어 있다.
 	token := string(filepath.Separator) + filepath.Base(filepath.Dir(held)) + string(filepath.Separator)
 	// fd마다 fdinfo를 열어 읽으므로 fd 3,000개에 약 70 ms가 걸린다. 프로세스를 나눠 여러 goroutine이 읽는다.
 	var found atomic.Int64
+	var missed atomic.Bool
 	var wg sync.WaitGroup
 	names := make(chan string)
 	for range runtime.GOMAXPROCS(0) {
@@ -47,7 +82,14 @@ func codecFindWriter(held string, moved fs.FileInfo) (int, error) {
 		go func() {
 			defer wg.Done()
 			for name := range names {
-				if found.Load() == 0 && codecProcWrites(name, want, token) {
+				if found.Load() != 0 {
+					continue
+				}
+				writes, read := codecProcWrites(name, want, token)
+				if !read {
+					missed.Store(true)
+				}
+				if writes {
 					pid, _ := strconv.Atoi(name)
 					found.CompareAndSwap(0, int64(pid))
 				}
@@ -64,15 +106,16 @@ func codecFindWriter(held string, moved fs.FileInfo) (int, error) {
 	}
 	close(names)
 	wg.Wait()
-	return int(found.Load()), nil
+	return int(found.Load()), !missed.Load(), nil
 }
 
-// codecProcWrites는 프로세스 하나가 want를 쓰기 모드로 연 fd를 가졌는지 본다.
-func codecProcWrites(name string, want *syscall.Stat_t, token string) bool {
+// codecProcWrites는 프로세스 하나가 want를 쓰기 모드로 연 fd를 가졌는지 본다. read는 그 프로세스의 fdinfo를 읽었는지다.
+// 그사이 끝난 프로세스는 쓸 수 없으므로 읽은 것으로 친다.
+func codecProcWrites(name string, want *syscall.Stat_t, token string) (writes, read bool) {
 	infoDir := filepath.Join(codecProcRoot, name, "fdinfo")
 	fds, err := os.ReadDir(infoDir)
 	if err != nil {
-		return false
+		return false, errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 	}
 	for _, fd := range fds {
 		info := codecFdInfo(filepath.Join(infoDir, fd.Name()))
@@ -83,7 +126,7 @@ func codecProcWrites(name string, want *syscall.Stat_t, token string) bool {
 		// 응답하지 않는 NFS나 FUSE에 있을 때 멈추므로, 그 fd의 mount를 mountinfo에서 찾아 장치 번호를 읽는다.
 		if info.hasIno {
 			if dev, ok := codecMountDev(name, info.mnt); ok && dev == want.Dev {
-				return true
+				return true, true
 			}
 			continue
 		}
@@ -96,10 +139,10 @@ func codecProcWrites(name string, want *syscall.Stat_t, token string) bool {
 			continue
 		}
 		if sys := stat.Sys().(*syscall.Stat_t); sys.Dev == want.Dev && sys.Ino == want.Ino {
-			return true
+			return true, true
 		}
 	}
-	return false
+	return false, true
 }
 
 type codecFd struct {

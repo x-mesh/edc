@@ -39,12 +39,16 @@ var (
 	errCodecNoName     = errors.New("no output name")
 	errCodecChanged    = errors.New("input changed")
 	errCodecNoProc     = errors.New("/proc is not available")
+	errCodecUnchecked  = errors.New("cannot check every process that may write the input")
 )
 
-// codecInUseError는 --rm이 지우려던 입력을 다른 프로세스가 쓰기 모드로 열어 둔 경우다.
+// codecInUseError는 --rm이 지우려던 입력을 다른 프로세스가 쓰기 모드로 열어 둔 경우다. pid를 알 수 없으면 0이다.
 type codecInUseError struct{ pid int }
 
 func (err codecInUseError) Error() string {
+	if err.pid == 0 {
+		return "another process has the input open for writing"
+	}
 	return "process " + strconv.Itoa(err.pid) + " has the input open for writing"
 }
 
@@ -211,6 +215,9 @@ func codecName(path string) string {
 func codecErrorText(err error) string {
 	var inUse codecInUseError
 	if errors.As(err, &inUse) {
+		if inUse.pid == 0 {
+			return T("compress.error.in_use_unknown")
+		}
 		return T("compress.error.in_use", inUse.pid)
 	}
 	switch {
@@ -228,6 +235,8 @@ func codecErrorText(err error) string {
 		return T("compress.error.changed")
 	case errors.Is(err, errCodecNoProc):
 		return T("compress.error.no_proc")
+	case errors.Is(err, errCodecUnchecked):
+		return T("compress.error.unchecked")
 	}
 	return err.Error()
 }
@@ -408,7 +417,7 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 		err = errCodecChanged
 	}
 	if err == nil {
-		err = codecNoWriter(held, moved)
+		err = codecCheckWriters(input, held, moved)
 	}
 	if err == nil {
 		err = codecSameData(input, read, digest)
@@ -428,14 +437,6 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 	}
 	os.Remove(held)
 	os.Remove(hold)
-	return err
-}
-
-func codecNoWriter(held string, moved fs.FileInfo) error {
-	pid, err := codecFindWriter(held, moved)
-	if err == nil && pid != 0 {
-		err = codecInUseError{pid: pid}
-	}
 	return err
 }
 

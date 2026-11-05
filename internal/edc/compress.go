@@ -355,8 +355,9 @@ func codecSyncDir(dir string) error {
 	return file.Sync()
 }
 
-// codecRemoveHook은 시험만 쓴다. --rm이 입력을 확인한 뒤 옮기기 직전에 불려, 그 사이에 경로가 바뀌는 경우를 만든다.
-var codecRemoveHook func()
+// codecRemoveHook은 시험만 쓴다. --rm이 입력을 옮기기 직전("move")과 원래 이름으로 되돌리기 직전("restore")에 불려,
+// 그 사이에 경로가 바뀌는 경우를 만든다.
+var codecRemoveHook func(stage string)
 
 // codecRemoveInput은 변환한 그 파일만 지운다. 경로를 확인하고 경로로 지우면 그 사이에 같은 이름으로 생긴 파일을 지우므로,
 // 입력을 같은 디렉터리에 새로 만든 빈 디렉터리로 옮긴 뒤 옮겨진 파일이 연 파일 그대로일 때만 지운다. 아니면 원래 이름으로
@@ -366,9 +367,11 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 		return err
 	}
 	if codecRemoveHook != nil {
-		codecRemoveHook()
+		codecRemoveHook("move")
 	}
-	dir, base := filepath.Split(path)
+	// filepath.Split은 상대 경로 "app.log"에 빈 디렉터리를 주고, MkdirTemp는 빈 디렉터리를 시스템 임시 디렉터리로 읽는다.
+	// 그 디렉터리가 다른 파일 시스템이면 rename이 실패하므로 입력과 같은 디렉터리를 Dir로 정한다.
+	dir, base := filepath.Dir(path), filepath.Base(path)
 	hold, err := os.MkdirTemp(dir, "."+base+".*.rm")
 	if err != nil {
 		return err
@@ -392,6 +395,9 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 	}
 	// rename으로 되돌리면 그 사이에 같은 이름으로 생긴 파일을 덮어쓰므로, 이름이 없을 때만 성공하는 hard link를 쓴다.
 	// 실패하면 입력을 옮긴 자리에 남기고, 두 경로가 든 LinkError로 알린다.
+	if codecRemoveHook != nil {
+		codecRemoveHook("restore")
+	}
 	if linkErr := os.Link(held, path); linkErr != nil {
 		return linkErr
 	}

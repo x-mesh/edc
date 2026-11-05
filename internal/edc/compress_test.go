@@ -179,6 +179,9 @@ func TestCodecRemoveOnlyAfterACompleteOutput(t *testing.T) {
 	if _, err := os.Stat(path); code != 0 || err == nil {
 		t.Fatalf("code %d stderr %q, the input is still there: %v", code, stderr, err)
 	}
+	if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+		t.Fatalf("left %v", held)
+	}
 	packed, err := os.ReadFile(path + ".zst")
 	if err != nil || !bytes.Equal(codecUnpack(t, packed), content) {
 		t.Fatalf("output err %v", err)
@@ -354,6 +357,43 @@ func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 		if packed, err := os.ReadFile(path + ".gz"); err != nil || string(packed) != "line\n" {
 			t.Fatalf("%s: output %q err %v", test.name, packed, err)
 		}
+		if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+			t.Fatalf("%s: left %v", test.name, held)
+		}
+	}
+}
+
+// 마지막 확인 뒤 지우기 전에 다른 파일이 경로를 차지해도 그 파일을 지우지 않고 원래 이름에 남긴다.
+func TestCodecRemoveKeepsAFileThatTakesThePathBeforeTheDelete(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log.1")
+	codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+	codecRemoveHook = func() {
+		os.Rename(path, path+".old")
+		os.WriteFile(path, []byte("new log\n"), 0o644)
+	}
+	t.Cleanup(func() { codecRemoveHook = nil })
+	options := codecOptions{
+		command: "compress",
+		remove:  true,
+		target:  func(path string) (string, error) { return path + ".gz", nil },
+		convert: func(dst io.Writer, src io.Reader) error {
+			_, err := io.Copy(dst, src)
+			return err
+		},
+	}
+	_, err := codecPath(path, options, false)
+	if !errors.Is(err, errCodecChanged) {
+		t.Fatalf("err %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "new log\n" {
+		t.Fatalf("path holds %q err %v", data, err)
+	}
+	if data, err := os.ReadFile(path + ".old"); err != nil || string(data) != "line\n" {
+		t.Fatalf("the converted input holds %q err %v", data, err)
+	}
+	if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+		t.Fatalf("left %v", held)
 	}
 }
 

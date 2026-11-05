@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,6 +118,46 @@ func TestCodecRemoveFindsAWriterThatProcCannotShow(t *testing.T) {
 	codecStartWriter(t, path)
 	codecProcRoot = t.TempDir()
 	t.Cleanup(func() { codecProcRoot = "/proc" })
+	codecExpectKept(t, dir, path, codecInUseBy(0))
+}
+
+// lease를 건 뒤 다른 프로세스가 쓰기 모드로 열려고 하면, 그 open은 lease가 풀릴 때까지 기다린다. 지우면 그 프로세스가 쓴
+// 데이터는 지운 inode로 가므로, 지우지 않고 원래 이름에 남긴다.
+func TestCodecRemoveKeepsAnInputOpenedForWritingDuringTheCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log.1")
+	codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+	var opener *exec.Cmd
+	codecRemoveHook = func(stage string) {
+		if stage != "delete" {
+			return
+		}
+		held, _ := filepath.Glob(filepath.Join(dir, ".*.rm", "app.log.1"))
+		if len(held) != 1 {
+			t.Errorf("held %v", held)
+			return
+		}
+		opener = exec.Command("sh", "-c", `exec 3>>"$0"`, held[0])
+		if err := opener.Start(); err != nil {
+			t.Error(err)
+			return
+		}
+		// open이 lease를 깨기 시작해 /proc/locks에 BREAKING으로 보일 때까지 기다린다.
+		breaking := "LEASE  BREAKING  UNLCK " + strconv.Itoa(os.Getpid()) + " "
+		for range 500 {
+			if locks, _ := os.ReadFile("/proc/locks"); strings.Contains(string(locks), breaking) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Error("the lease did not start to break")
+	}
+	t.Cleanup(func() {
+		codecRemoveHook = nil
+		if opener != nil {
+			opener.Wait()
+		}
+	})
 	codecExpectKept(t, dir, path, codecInUseBy(0))
 }
 

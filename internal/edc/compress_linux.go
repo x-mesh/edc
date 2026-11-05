@@ -26,35 +26,43 @@ var (
 )
 
 // codecCheckWriters는 held로 옮긴 입력을 다른 프로세스가 쓰기 모드로 열어 두었는지 본다. 그런 프로세스는 다시 읽은 뒤에도
-// 열린 fd로 쓸 수 있고, 그 데이터는 지울 때 사라진다. input은 읽기 모드로 연 그 파일이다.
-func codecCheckWriters(input *os.File, held string, moved fs.FileInfo) error {
+// 열린 fd로 쓸 수 있고, 그 데이터는 지울 때 사라진다. input은 읽기 모드로 연 그 파일이다. leased는 input에 read lease를
+// 걸었는지다.
+func codecCheckWriters(input *os.File, held string, moved fs.FileInfo) (leased bool, err error) {
 	want := moved.Sys().(*syscall.Stat_t)
 	// unlink는 이름 하나만 지운다. 다른 hard link가 남은 inode는 데이터도 남으므로, 열린 fd로 계속 써도 잃지 않는다.
 	if want.Nlink > 1 {
-		return nil
+		return false, nil
 	}
 	// read lease는 그 파일을 쓰기 모드로 연 프로세스가 하나도 없을 때만 걸린다. 커널이 사용자와 namespace에 관계없이 세므로
-	// /proc으로 볼 수 없는 프로세스도 잡는다. lease는 input을 닫을 때 풀리므로, 그때까지 쓰기 모드로 여는 open은 기다린다.
-	err := codecSetLease(input)
+	// /proc으로 볼 수 없는 프로세스도 잡는다. lease는 input을 닫을 때 풀리고, 그때까지 쓰기 모드로 여는 open은 기다린다.
+	err = codecSetLease(input)
 	if err == nil {
-		return nil
+		return true, nil
 	}
 	if errors.Is(err, unix.EAGAIN) {
 		pid, _, _ := codecScanWriters(held, want)
-		return codecInUseError{pid: pid}
+		return false, codecInUseError{pid: pid}
 	}
-	// lease는 파일 소유자나 CAP_LEASE가 있어야 하고, NFS처럼 지원하지 않는 파일 시스템도 있다. 그때는 /proc을 훑고, 볼 수
+	// lease는 파일 소유자나 CAP_LEASE가 있어야 하고, lease를 지원하지 않는 파일 시스템도 있다. 그때는 /proc을 훑고, 볼 수
 	// 없는 프로세스가 있으면 지우지 않는다.
 	pid, complete, err := codecScanWriters(held, want)
 	switch {
 	case err != nil:
-		return err
+		return false, err
 	case pid != 0:
-		return codecInUseError{pid: pid}
+		return false, codecInUseError{pid: pid}
 	case !complete:
-		return errCodecUnchecked
+		return false, errCodecUnchecked
 	}
-	return nil
+	return false, nil
+}
+
+// codecLeaseBroken은 lease를 건 뒤 다른 프로세스가 그 파일을 쓰기 모드로 열려고 했는지 본다. 그런 open이 기다리는 동안
+// 커널은 lease를 F_UNLCK로 깨는 중으로 두고, F_GETLEASE는 F_RDLCK가 아닌 값을 준다.
+func codecLeaseBroken(input *os.File) bool {
+	lease, err := unix.FcntlInt(input.Fd(), unix.F_GETLEASE, 0)
+	return err != nil || lease != unix.F_RDLCK
 }
 
 // codecScanWriters는 want를 쓰기 모드로 연 fd를 /proc에서 찾아 그 프로세스의 pid를 준다. 없으면 0이다. complete는 모든

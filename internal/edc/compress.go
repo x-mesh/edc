@@ -383,8 +383,8 @@ func codecSyncDir(dir string) error {
 	return file.Sync()
 }
 
-// codecRemoveHook은 시험만 쓴다. --rm이 입력을 옮기기 직전("move")과 원래 이름으로 되돌리기 직전("restore")에 불려,
-// 그 사이에 경로가 바뀌는 경우를 만든다.
+// codecRemoveHook은 시험만 쓴다. --rm이 입력을 옮기기 직전("move"), 지울지 마지막으로 보기 직전("delete"), 원래 이름으로
+// 되돌리기 직전("restore")에 불려, 그 사이에 입력이 바뀌는 경우를 만든다.
 var codecRemoveHook func(stage string)
 
 // codecRemoveInput은 변환한 그 파일만 지운다. 경로를 확인하고 경로로 지우면 그 사이에 같은 이름으로 생긴 파일을 지우므로,
@@ -416,11 +416,20 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 	if err == nil && !os.SameFile(opened, moved) {
 		err = errCodecChanged
 	}
+	leased := false
 	if err == nil {
-		err = codecCheckWriters(input, held, moved)
+		leased, err = codecCheckWriters(input, held, moved)
 	}
 	if err == nil {
 		err = codecSameData(input, read, digest)
+	}
+	if err == nil && codecRemoveHook != nil {
+		codecRemoveHook("delete")
+	}
+	// 다시 읽는 동안 쓰기 모드로 연 open은 lease가 풀릴 때까지 기다린다. 지운 뒤에 열리면 그 데이터는 지운 inode로 가므로,
+	// 지우기 직전에 lease가 깨지는 중인지 본다.
+	if err == nil && leased && codecLeaseBroken(input) {
+		err = codecInUseError{}
 	}
 	if err == nil {
 		if err = os.Remove(held); err == nil {

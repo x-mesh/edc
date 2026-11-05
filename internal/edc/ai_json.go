@@ -3,15 +3,19 @@ package edc
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"time"
 )
 
 // aiJSONReader는 대화 기록 한 줄에서 쓰는 필드만 읽는다. encoding/json은 도구 출력이 든 긴 문자열까지 한 글자씩 검사하고
 // 디코딩해서, 첫 scan 시간 대부분이 쓰지 않는 값에 들었다. 문자열 안은 SIMD로 구현된 bytes.IndexByte로 건너뛴다.
-// 숫자와 literal의 문법은 검사하지 않는다. 기록 파일은 도구가 쓴 JSON이고, 읽는 값은 형식을 따로 확인한다.
+// 구조와 숫자, literal의 문법은 encoding/json처럼 검사해서 깨진 줄은 세지 않는다. 건너뛰는 문자열 안의 제어 문자와 escape는
+// 검사하지 않는다. 그것까지 보려면 문자열을 한 글자씩 읽어야 해서 건너뛰는 이점이 사라진다.
 type aiJSONReader struct {
 	data []byte
 	pos  int
+	// depth는 지금 읽는 객체와 배열의 중첩 깊이다. 실패하면 줄 전체를 버리므로 성공한 경우에만 줄인다.
+	depth int
 }
 
 func (reader *aiJSONReader) peek() byte {
@@ -56,60 +60,140 @@ func (reader *aiJSONReader) str() ([]byte, bool) {
 	return reader.data[start:end], true
 }
 
+// aiJSONMaxDepth는 encoding/json이 받는 중첩 깊이의 한도다.
+const aiJSONMaxDepth = 10000
+
 func (reader *aiJSONReader) skip() bool {
 	switch reader.peek() {
-	case 0:
-		return false
 	case '"':
 		_, ok := reader.str()
 		return ok
-	case '{', '[':
-		depth := 0
-		for reader.pos < len(reader.data) {
-			switch reader.data[reader.pos] {
-			case '"':
-				if _, ok := reader.str(); !ok {
-					return false
-				}
-				continue
-			case '{', '[':
-				depth++
-			case '}', ']':
-				depth--
-				if depth == 0 {
-					reader.pos++
-					return true
-				}
-			}
-			reader.pos++
-		}
+	case '{':
+		return reader.object(reader.skipField)
+	case '[':
+		return reader.array(reader.skip)
+	case 't':
+		return reader.literal("true")
+	case 'f':
+		return reader.literal("false")
+	case 'n':
+		return reader.literal("null")
+	}
+	return reader.number() != nil
+}
+
+func (reader *aiJSONReader) skipField([]byte) bool {
+	return reader.skip()
+}
+
+func (reader *aiJSONReader) enter() bool {
+	reader.depth++
+	return reader.depth <= aiJSONMaxDepth
+}
+
+func (reader *aiJSONReader) literal(word string) bool {
+	if !bytes.HasPrefix(reader.data[reader.pos:], []byte(word)) {
 		return false
+	}
+	reader.pos += len(word)
+	return true
+}
+
+// number는 JSON 숫자 하나를 읽고 그 글자를 돌려준다. 문법에 맞지 않으면 nil이다. 앞의 공백은 peek이 건너뛴 뒤다.
+func (reader *aiJSONReader) number() []byte {
+	data, start := reader.data, reader.pos
+	at := start
+	if at < len(data) && data[at] == '-' {
+		at++
+	}
+	switch {
+	case at < len(data) && data[at] == '0':
+		at++
+	case at < len(data) && data[at] >= '1' && data[at] <= '9':
+		at = aiJSONDigits(data, at)
 	default:
-		start := reader.pos
-		for reader.pos < len(reader.data) {
-			switch reader.data[reader.pos] {
-			case ',', '}', ']', ' ', '\t', '\n', '\r':
-				return reader.pos > start
-			}
-			reader.pos++
+		return nil
+	}
+	if at < len(data) && data[at] == '.' {
+		next := aiJSONDigits(data, at+1)
+		if next == at+1 {
+			return nil
 		}
-		return reader.pos > start
+		at = next
+	}
+	if at < len(data) && (data[at] == 'e' || data[at] == 'E') {
+		at++
+		if at < len(data) && (data[at] == '+' || data[at] == '-') {
+			at++
+		}
+		next := aiJSONDigits(data, at)
+		if next == at {
+			return nil
+		}
+		at = next
+	}
+	reader.pos = at
+	return data[start:at]
+}
+
+func aiJSONDigits(data []byte, at int) int {
+	for at < len(data) && data[at] >= '0' && data[at] <= '9' {
+		at++
+	}
+	return at
+}
+
+func (reader *aiJSONReader) array(item func() bool) bool {
+	if reader.peek() != '[' || !reader.enter() {
+		return false
+	}
+	reader.pos++
+	if reader.peek() == ']' {
+		reader.pos++
+		reader.depth--
+		return true
+	}
+	for {
+		if !item() {
+			return false
+		}
+		switch reader.peek() {
+		case ',':
+			reader.pos++
+		case ']':
+			reader.pos++
+			reader.depth--
+			return true
+		default:
+			return false
+		}
 	}
 }
 
-// object는 key마다 field를 부른다. field는 값을 끝까지 읽어야 한다.
+// object는 key마다 field를 부른다. field는 값을 끝까지 읽어야 한다. escape가 든 key는 풀어서 넘긴다.
 func (reader *aiJSONReader) object(field func(key []byte) bool) bool {
-	if reader.peek() != '{' {
+	if reader.peek() != '{' || !reader.enter() {
 		return false
 	}
 	reader.pos++
 	if reader.peek() == '}' {
 		reader.pos++
+		reader.depth--
 		return true
 	}
 	for {
 		key, ok := reader.str()
-		if !ok || reader.peek() != ':' {
+		if !ok {
+			return false
+		}
+		if bytes.IndexByte(key, '\\') >= 0 {
+			var name string
+			if json.Unmarshal(reader.data[reader.pos-len(key)-2:reader.pos], &name) != nil {
+				return false
+			}
+			key = []byte(name)
+		}
+		if reader.peek() != ':' {
 			return false
 		}
 		reader.pos++
@@ -121,6 +205,7 @@ func (reader *aiJSONReader) object(field func(key []byte) bool) bool {
 			reader.pos++
 		case '}':
 			reader.pos++
+			reader.depth--
 			return true
 		default:
 			return false
@@ -141,30 +226,35 @@ func (reader *aiJSONReader) integer(target *int64) bool {
 	if reader.null() {
 		return true
 	}
-	start := reader.pos
-	if !reader.skip() {
+	text := reader.number()
+	if text == nil {
 		return false
 	}
-	text := reader.data[start:reader.pos]
-	negative := len(text) > 0 && text[0] == '-'
+	negative := text[0] == '-'
 	if negative {
 		text = text[1:]
 	}
-	// 18자리까지는 int64를 넘지 않는다. token 수가 그보다 크면 기록이 잘못된 것이다.
-	if len(text) == 0 || len(text) > 18 {
-		return false
+	limit := uint64(math.MaxInt64)
+	if negative {
+		limit++
 	}
-	var value int64
+	var value uint64
 	for _, char := range text {
+		// 소수와 지수는 encoding/json도 int64로 읽지 않는다.
 		if char < '0' || char > '9' {
 			return false
 		}
-		value = value*10 + int64(char-'0')
+		digit := uint64(char - '0')
+		if value > (limit-digit)/10 {
+			return false
+		}
+		value = value*10 + digit
 	}
 	if negative {
-		value = -value
+		*target = -int64(value)
+	} else {
+		*target = int64(value)
 	}
-	*target = value
 	return true
 }
 
@@ -192,7 +282,11 @@ func (reader *aiJSONReader) timestamp(target *time.Time) bool {
 	if !ok {
 		return false
 	}
-	value, err := time.Parse(time.RFC3339, string(content))
+	text := string(content)
+	if bytes.IndexByte(content, '\\') >= 0 && json.Unmarshal(reader.data[reader.pos-len(content)-2:reader.pos], &text) != nil {
+		return false
+	}
+	value, err := time.Parse(time.RFC3339, text)
 	if err != nil {
 		return false
 	}

@@ -117,13 +117,13 @@ func codecScanWriters(held string, want *syscall.Stat_t) (pid int, complete bool
 	return int(found.Load()), !missed.Load(), nil
 }
 
-// codecProcWrites는 프로세스 하나가 want를 쓰기 모드로 연 fd를 가졌는지 본다. read는 그 프로세스의 fdinfo를 읽었는지다.
-// 그사이 끝난 프로세스는 쓸 수 없으므로 읽은 것으로 친다.
+// codecProcWrites는 프로세스 하나가 want를 쓰기 모드로 연 fd나 쓰기 가능한 공유 mapping을 가졌는지 본다. read는 그
+// 프로세스의 fdinfo와 maps를 읽었는지다. 그사이 끝난 프로세스는 쓸 수 없으므로 읽은 것으로 친다.
 func codecProcWrites(name string, want *syscall.Stat_t, token string) (writes, read bool) {
 	infoDir := filepath.Join(codecProcRoot, name, "fdinfo")
 	fds, err := os.ReadDir(infoDir)
 	if err != nil {
-		return false, errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+		return false, codecProcGone(err)
 	}
 	for _, fd := range fds {
 		info := codecFdInfo(filepath.Join(infoDir, fd.Name()))
@@ -147,6 +147,38 @@ func codecProcWrites(name string, want *syscall.Stat_t, token string) (writes, r
 			continue
 		}
 		if sys := stat.Sys().(*syscall.Stat_t); sys.Dev == want.Dev && sys.Ino == want.Ino {
+			return true, true
+		}
+	}
+	// 쓰기 가능한 공유 mapping은 fd를 닫은 뒤에도 그 파일에 쓰고, fdinfo에는 보이지 않는다.
+	return codecMapsWrite(name, want)
+}
+
+func codecProcGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+// codecMapsWrite는 프로세스의 maps에 want를 쓰기 가능한 공유 mapping으로 연 줄이 있는지 본다. 한 줄은 "주소 권한 offset
+// major:minor inode 경로"이고, 권한의 둘째 글자가 w이고 넷째 글자가 s이면 쓰기 가능한 공유 mapping이다. 장치 번호는 16진수다.
+// 다른 사용자의 프로세스는 maps를 읽을 수 없으므로 read가 false다.
+func codecMapsWrite(name string, want *syscall.Stat_t) (writes, read bool) {
+	data, err := os.ReadFile(filepath.Join(codecProcRoot, name, "maps"))
+	if err != nil {
+		return false, codecProcGone(err)
+	}
+	ino := strconv.FormatUint(want.Ino, 10)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[4] != ino || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 's' {
+			continue
+		}
+		major, minor, ok := strings.Cut(fields[3], ":")
+		if !ok {
+			continue
+		}
+		maj, err1 := strconv.ParseUint(major, 16, 32)
+		mnr, err2 := strconv.ParseUint(minor, 16, 32)
+		if err1 == nil && err2 == nil && unix.Mkdev(uint32(maj), uint32(mnr)) == want.Dev {
 			return true, true
 		}
 	}

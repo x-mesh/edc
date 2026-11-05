@@ -334,6 +334,20 @@ func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 			os.Rename(path, path+".old")
 			os.WriteFile(path, []byte("new log\n"), 0o644)
 		}},
+		{"rewritten with the old mtime", func(path string) {
+			before, _ := os.Stat(path)
+			// 리눅스 커널은 파일 시각을 거친 시계로 정해, 같은 틱 안에서 고쳐 쓰면 ctime이 그대로일 수 있다. 바뀔 때까지 쓴다.
+			for range 1000 {
+				file, _ := os.OpenFile(path, os.O_WRONLY, 0)
+				file.WriteAt([]byte("LINE\n"), 0)
+				file.Close()
+				os.Chtimes(path, before.ModTime(), before.ModTime())
+				if now, _ := os.Stat(path); !codecChangeTime(now).Equal(codecChangeTime(before)) {
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}},
 	} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "app.log")

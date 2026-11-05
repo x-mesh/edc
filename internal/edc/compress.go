@@ -363,8 +363,14 @@ var codecRemoveHook func(stage string)
 // 입력을 같은 디렉터리에 새로 만든 빈 디렉터리로 옮긴 뒤 옮겨진 파일이 연 파일 그대로일 때만 지운다. 아니면 원래 이름으로
 // 되돌린다. 아직 쓰이는 로그를 지우면 읽은 뒤에 붙은 줄을 잃으므로, 옮기기 전과 후에 크기와 수정 시각을 본다.
 func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int64) error {
-	if err := codecInputUnchanged(input, opened, read); err != nil {
+	now, err := codecInputUnchanged(input, opened, read)
+	if err != nil {
 		return err
+	}
+	// 같은 크기로 고쳐 쓰고 수정 시각을 되돌려도 inode의 변경 시각(ctime)은 바뀐다. 권한, 소유자, hard link 수가 바뀌어도
+	// 바뀌므로 그때도 지우지 않는다. rename도 ctime을 바꾸므로 옮기기 전에만 본다.
+	if !codecChangeTime(now).Equal(codecChangeTime(opened)) {
+		return errCodecChanged
 	}
 	if codecRemoveHook != nil {
 		codecRemoveHook("move")
@@ -386,7 +392,7 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 		err = errCodecChanged
 	}
 	if err == nil {
-		err = codecInputUnchanged(input, opened, read)
+		_, err = codecInputUnchanged(input, opened, read)
 	}
 	if err == nil {
 		if err = os.Remove(held); err == nil {
@@ -406,16 +412,16 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 	return err
 }
 
-// codecInputUnchanged는 변환하는 동안 입력이 더 쓰였거나 같은 크기로 고쳐 쓰였는지 본다.
-func codecInputUnchanged(input *os.File, opened fs.FileInfo, read int64) error {
+// codecInputUnchanged는 변환하는 동안 입력이 더 쓰였거나 같은 크기로 고쳐 쓰였는지 크기와 수정 시각으로 본다.
+func codecInputUnchanged(input *os.File, opened fs.FileInfo, read int64) (fs.FileInfo, error) {
 	now, err := input.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if now.Size() != read || !now.ModTime().Equal(opened.ModTime()) {
-		return errCodecChanged
+		return nil, errCodecChanged
 	}
-	return nil
+	return now, nil
 }
 
 // codecKeepMetadata는 원본의 권한과 수정 시각을 출력에 옮긴다. 만들 때 준 권한은 umask가 깎으므로 다시 정한다.

@@ -14,7 +14,7 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/vishvananda/netlink v1.3.1
-	github.com/x-mesh/fastcompress v0.4.0
+	github.com/x-mesh/fastcompress v0.5.0
 	golang.org/x/arch v0.28.0
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0

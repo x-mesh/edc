@@ -38,7 +38,19 @@ var (
 	errCodecUnknown    = errors.New("not gzip or zstd data")
 	errCodecNoName     = errors.New("no output name")
 	errCodecChanged    = errors.New("input changed")
+	errCodecNoProc     = errors.New("/proc is not available")
+	errCodecUnchecked  = errors.New("cannot check every process that may write the input")
 )
+
+// codecInUseError는 --rm이 지우려던 입력을 다른 프로세스가 쓰기 모드로 열어 둔 경우다. pid를 알 수 없으면 0이다.
+type codecInUseError struct{ pid int }
+
+func (err codecInUseError) Error() string {
+	if err.pid == 0 {
+		return "another process has the input open for writing"
+	}
+	return "process " + strconv.Itoa(err.pid) + " has the input open for writing"
+}
 
 type codecOptions struct {
 	command string
@@ -201,6 +213,13 @@ func codecName(path string) string {
 }
 
 func codecErrorText(err error) string {
+	var inUse codecInUseError
+	if errors.As(err, &inUse) {
+		if inUse.pid == 0 {
+			return T("compress.error.in_use_unknown")
+		}
+		return T("compress.error.in_use", inUse.pid)
+	}
 	switch {
 	case errors.Is(err, errCodecExists):
 		return T("compress.error.exists")
@@ -214,6 +233,10 @@ func codecErrorText(err error) string {
 		return T("compress.error.no_name")
 	case errors.Is(err, errCodecChanged):
 		return T("compress.error.changed")
+	case errors.Is(err, errCodecNoProc):
+		return T("compress.error.no_proc")
+	case errors.Is(err, errCodecUnchecked):
+		return T("compress.error.unchecked")
 	}
 	return err.Error()
 }
@@ -360,14 +383,16 @@ func codecSyncDir(dir string) error {
 	return file.Sync()
 }
 
-// codecRemoveHook은 시험만 쓴다. --rm이 입력을 옮기기 직전("move")과 원래 이름으로 되돌리기 직전("restore")에 불려,
-// 그 사이에 경로가 바뀌는 경우를 만든다.
+// codecRemoveHook은 시험만 쓴다. --rm이 입력을 옮기기 직전("move"), 지울지 마지막으로 보기 직전("delete"), 원래 이름으로
+// 되돌리기 직전("restore")에 불려, 그 사이에 입력이 바뀌는 경우를 만든다.
 var codecRemoveHook func(stage string)
 
 // codecRemoveInput은 변환한 그 파일만 지운다. 경로를 확인하고 경로로 지우면 그 사이에 같은 이름으로 생긴 파일을 지우므로,
 // 입력을 같은 디렉터리에 새로 만든 빈 디렉터리로 옮긴 뒤 옮겨진 파일이 연 파일 그대로일 때만 지운다. 아니면 원래 이름으로
 // 되돌린다. 옮긴 뒤에는 경로로 그 파일을 열 수 없으므로, 열린 fd로 다시 읽어 변환한 데이터 그대로인지 본다. 같은 크기로
 // 고쳐 쓰고 수정 시각을 되돌린 입력도 이것으로 잡는다. 크기와 수정 시각은 아직 쓰이는 로그를 옮기기 전에 거르는 데 쓴다.
+// 다시 읽기 전에 그 파일을 쓰기 모드로 연 프로세스가 없는지 본다. 열린 fd로 쓰는 것은 이름을 옮겨도 막을 수 없으므로,
+// 그런 프로세스가 있으면 다시 읽은 뒤에도 쓸 수 있다.
 func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int64, digest *maphash.Hash) error {
 	if err := codecInputUnchanged(input, opened, read); err != nil {
 		return err
@@ -391,8 +416,20 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 	if err == nil && !os.SameFile(opened, moved) {
 		err = errCodecChanged
 	}
+	leased := false
+	if err == nil {
+		leased, err = codecCheckWriters(input, held, moved)
+	}
 	if err == nil {
 		err = codecSameData(input, read, digest)
+	}
+	if err == nil && codecRemoveHook != nil {
+		codecRemoveHook("delete")
+	}
+	// 다시 읽는 동안 쓰기 모드로 연 open은 lease가 풀릴 때까지 기다린다. 지운 뒤에 열리면 그 데이터는 지운 inode로 가므로,
+	// 지우기 직전에 lease가 깨지는 중인지 본다.
+	if err == nil && leased && codecLeaseBroken(input) {
+		err = codecInUseError{}
 	}
 	if err == nil {
 		if err = os.Remove(held); err == nil {

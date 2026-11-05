@@ -334,6 +334,13 @@ func TestCodecRemoveKeepsAChangedInput(t *testing.T) {
 			os.Rename(path, path+".old")
 			os.WriteFile(path, []byte("new log\n"), 0o644)
 		}},
+		{"rewritten with the old mtime", func(path string) {
+			before, _ := os.Stat(path)
+			file, _ := os.OpenFile(path, os.O_WRONLY, 0)
+			file.WriteAt([]byte("LINE\n"), 0)
+			file.Close()
+			os.Chtimes(path, before.ModTime(), before.ModTime())
+		}},
 	} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "app.log")
@@ -397,6 +404,33 @@ func TestCodecRemoveKeepsAFileThatTakesThePathBeforeTheDelete(t *testing.T) {
 	}
 	if data, err := os.ReadFile(path + ".old"); err != nil || string(data) != "line\n" {
 		t.Fatalf("the converted input holds %q err %v", data, err)
+	}
+	if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
+		t.Fatalf("left %v", held)
+	}
+}
+
+// 크기와 수정 시각을 본 뒤 옮기기 전에 같은 크기로 고쳐 쓰고 수정 시각을 되돌려도, 옮긴 뒤 다시 읽어 지우지 않는다.
+func TestCodecRemoveKeepsAnInputRewrittenBeforeTheMove(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log.1")
+	modified := time.Now().Add(-time.Hour)
+	codecWrite(t, path, []byte("line\n"), 0o644, modified)
+	codecRemoveHook = func(stage string) {
+		if stage == "move" {
+			file, _ := os.OpenFile(path, os.O_WRONLY, 0)
+			file.WriteAt([]byte("LINE\n"), 0)
+			file.Close()
+			os.Chtimes(path, modified, modified)
+		}
+	}
+	t.Cleanup(func() { codecRemoveHook = nil })
+	_, err := codecPath(path, codecRemoveOptions(), false)
+	if !errors.Is(err, errCodecChanged) {
+		t.Fatalf("err %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "LINE\n" {
+		t.Fatalf("path holds %q err %v", data, err)
 	}
 	if held, _ := filepath.Glob(filepath.Join(dir, ".*.rm")); len(held) != 0 {
 		t.Fatalf("left %v", held)

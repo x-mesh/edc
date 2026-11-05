@@ -396,8 +396,9 @@ tar -cf - data | edc compress > data.tar.gz
 ```
 
 - edc writes the output beside the input and keeps the input. Add `--rm` to delete the input. edc deletes it only after it writes and syncs the output.
-- If the input grows or another file takes its path before edc deletes it, `--rm` keeps the input. edc then exits with code 1, and the output holds the data that edc read.
-- To delete the input, edc first moves it into a new directory beside it. The name of this directory starts with a dot and ends with `.rm`. edc deletes the input only if it is the file that edc read. If the process stops at this step, the input can stay in this directory.
+- If the input changes or another file takes its path before edc reads the input again, `--rm` keeps the input. edc then exits with code 1, and the output holds the data that edc read.
+- To delete the input, edc first moves it into a new directory beside it. The name of this directory starts with a dot and ends with `.rm`. edc then reads the moved file again. edc deletes it only if it is the file that edc read and it holds the same data. If the process stops at this step, the input can stay in this directory.
+- With `--rm`, edc reads the input two times. After the move, a program that has the input open can still write to it. If the program writes after the second read, that data is lost, as with `rm`.
 - edc does not overwrite a file that exists. Delete the file or give `-o`.
 - The output gets the permissions and the modification time of the input. If you run edc as root, the output also gets the owner. `edc grep --ordered` uses the modification time of a rotated log, so this time must stay correct.
 - edc writes to a temporary file in the same directory. The name of this file starts with a dot. edc gives the output its name only after it writes and syncs all of the data. The file system must support hard links.

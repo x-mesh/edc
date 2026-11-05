@@ -12,3 +12,4 @@ compress:
     unknown_format: "gzip이나 zstd 데이터가 아닙니다"
     no_name: "이름이 .gz나 .zst로 끝나지 않습니다. -o나 -c를 주세요"
     changed: "실행 중에 입력이 바뀌어 지우지 않았습니다"
+    in_use: "프로세스 %d가 입력을 쓰기 모드로 열어 두어 지우지 않았습니다"

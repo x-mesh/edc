@@ -38,6 +38,7 @@ var (
 	errCodecUnknown    = errors.New("not gzip or zstd data")
 	errCodecNoName     = errors.New("no output name")
 	errCodecChanged    = errors.New("input changed")
+	errCodecNoProc     = errors.New("/proc is not available")
 )
 
 // codecInUseError는 --rm이 지우려던 입력을 다른 프로세스가 쓰기 모드로 열어 둔 경우다.
@@ -225,6 +226,8 @@ func codecErrorText(err error) string {
 		return T("compress.error.no_name")
 	case errors.Is(err, errCodecChanged):
 		return T("compress.error.changed")
+	case errors.Is(err, errCodecNoProc):
+		return T("compress.error.no_proc")
 	}
 	return err.Error()
 }

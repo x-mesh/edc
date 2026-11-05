@@ -1,0 +1,14 @@
+# English messages for the compress and decompress commands.
+compress:
+  failed: "edc %s: %s: %s"
+  result: "%s → %s  %s → %s (%s)  %s"
+  error:
+    level: "edc compress: -l takes 1 to 9: %d"
+    jobs: "edc compress: -j takes 1 or more: %d"
+    terminal: "edc compress: compressed data is not written to a terminal; give a file, -o, or a pipe"
+    exists: "the output exists; delete it or give -o"
+    suffix: "already compressed; edc decompress reads it"
+    not_regular: "not a regular file"
+    unknown_format: "not gzip or zstd data"
+    no_name: "the name does not end in .gz or .zst; give -o or -c"
+    changed: "the input changed during the run; edc kept it"

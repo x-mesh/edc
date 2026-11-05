@@ -18,8 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/x-mesh/fastcompress/gzip"
 )
 
 const grepUsage = "edc grep [options] <pattern> [path...]"
@@ -507,7 +505,7 @@ const (
 	grepIndexOutcomeNotBuilt
 )
 
-// grepSearchFile은 파일 하나를 검색한다. .gz는 풀면서 차례로 읽고, 그 밖의 파일은 index와 건너뛰기를 쓴다.
+// grepSearchFile은 파일 하나를 검색한다. .gz와 .zst는 풀면서 차례로 읽고, 그 밖의 파일은 index와 건너뛰기를 쓴다.
 func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buffers *grepBuffers, printer *grepPrinter, hints *grepHints) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -521,8 +519,8 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 	if info.IsDir() {
 		return false, nil
 	}
-	if strings.HasSuffix(path, ".gz") && !options.codeMode {
-		// 회전된 .gz는 내용이 다 쓰인 뒤에 만들어지므로 수정 시각이 마지막 줄보다 뒤다. --ordered면 풀지 않고 수정 시각으로 건너뛴다.
+	if decompress := logDecompressor(path); decompress != nil && !options.codeMode {
+		// 회전된 .gz와 .zst는 내용이 다 쓰인 뒤에 만들어지므로 수정 시각이 마지막 줄보다 뒤다. --ordered면 풀지 않고 수정 시각으로 건너뛴다.
 		if options.ordered && !options.since.IsZero() && info.ModTime().Add(grepTolerance).Before(options.since) {
 			hints.skippedOld = append(hints.skippedOld, path)
 			return false, nil
@@ -530,7 +528,7 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 		// fastcompress/gzip은 같은 100 MB 로그를 72ms에 풀어 klauspost/compress(241ms)와 표준 compress/gzip(357ms)보다 빠르고,
 		// macOS의 시스템 zlib(71ms)과 비슷하다. Linux arm64에서도 72ms다. 시스템 gzip을 부르는 방법은 macOS에서만 빨랐고
 		// Linux의 GNU gzip에서는 470ms로 더 느렸다. fastcompress/gzip은 입력을 256KB씩 직접 읽으므로 bufio.Reader는 복사만 늘린다.
-		reader, err := gzip.NewReader(file)
+		reader, err := decompress(file)
 		if err != nil {
 			return false, err
 		}

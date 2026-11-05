@@ -692,6 +692,29 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "compress", group: "tool",
+		usage: []string{"edc compress [--zstd] [-l N] [-j N] [-c | -o path] [--rm] [file...]", "<command> | edc compress > out.gz"},
+		options: []optionDoc{
+			{"--zstd", "command.compress.option.zstd"},
+			{"-l N", "command.compress.option.level"},
+			{"-j N", "command.compress.option.jobs"},
+			{"-c", "command.compress.option.stdout"},
+			{"-o path", "command.compress.option.output"},
+			{"--rm", "command.compress.option.remove"},
+		},
+		examples: []string{"edc compress /var/log/app.log.1", "edc compress --zstd -j 8 dump.sql", "edc compress --rm /var/log/nginx/access.log.2", "tar -cf - data | edc compress > data.tar.gz"},
+	},
+	{
+		name: "decompress", group: "tool",
+		usage: []string{"edc decompress [-c | -o path] [--rm] [file...]", "edc decompress < in.zst | less"},
+		options: []optionDoc{
+			{"-c", "command.decompress.option.stdout"},
+			{"-o path", "command.decompress.option.output"},
+			{"--rm", "command.decompress.option.remove"},
+		},
+		examples: []string{"edc decompress app.log.1.zst", "edc decompress -c app.log.2.gz | less", "edc decompress -o dump.sql backup.zst"},
+	},
+	{
 		name: "shell", group: "tool",
 		usage:    []string{"edc shell [zsh|bash] [--no-alias]"},
 		options:  []optionDoc{{"--no-alias", "command.shell.option.no_alias"}},

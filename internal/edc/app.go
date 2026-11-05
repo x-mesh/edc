@@ -93,6 +93,10 @@ func Run(args []string, version string) int {
 		return runGrep(args[1:])
 	case "search":
 		return runSearch(args[1:])
+	case "compress":
+		return runCompress(args[1:])
+	case "decompress":
+		return runDecompress(args[1:])
 	case "du":
 		return runDu(args[1:], version)
 	case "clean":

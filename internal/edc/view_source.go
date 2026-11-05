@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/x-mesh/fastcompress/gzip"
 )
 
 // viewBlockSize는 파일 끝에서 거꾸로 읽는 단위다.
@@ -341,9 +340,9 @@ func viewLineStartsAt(file io.ReaderAt, offset int64) bool {
 	return err == nil && previous[0] == '\n'
 }
 
-// viewReadGzipTail은 .gz를 처음부터 풀어 마지막 lines줄을 돌려준다. 남기지 않을 줄은 파싱하지 않으므로 시간 대부분이
+// viewReadCompressedTail은 .gz나 .zst를 처음부터 풀어 마지막 lines줄을 돌려준다. 남기지 않을 줄은 파싱하지 않으므로 시간 대부분이
 // 압축 해제에 든다. 끝까지 읽지 못하면(잘린 .gz 등) 그때까지의 마지막 줄과 함께 오류를 돌려준다.
-func viewReadGzipTail(reader *gzip.Reader, lines int) ([]string, error) {
+func viewReadCompressedTail(reader io.Reader, lines int) ([]string, error) {
 	tail, _, err := viewTailReader(reader, lines)
 	raw := make([]string, 0, len(tail))
 	for _, line := range tail {

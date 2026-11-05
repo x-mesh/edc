@@ -412,7 +412,7 @@ edc changes --json -            # 모든 변경을 metrics.events에 담음
 
 | 결과 | 원천 |
 |---|---|
-| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`와 압축되지 않은 회전 로그 |
+| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`와, 압축되지 않았거나 `.gz`·`.zst`로 압축된 회전 로그 |
 | `changes.etc` | `/etc` 아래 파일과 symlink의 mtime |
 | `changes.services` | service unit마다 마지막 시작 시각과 재시작 횟수 |
 
@@ -420,7 +420,7 @@ edc changes --json -            # 모든 변경을 metrics.events에 담음
 
 원천을 읽지 못하면 결과는 이유와 함께 `skip`입니다. `skip`은 바뀐 것이 없다는 뜻이 아닙니다. 모든 원천을 읽으려면 root로 실행하세요. root가 아니면 `/etc` 아래 일부 디렉터리와 일부 패키지 로그를 읽지 못합니다.
 
-`edc changes`는 회전된 압축 로그를 풀지 않습니다. 압축 로그가 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
+`edc changes`는 회전된 로그 중 `.gz`와 `.zst`를 풀어 읽습니다. `.xz`나 `.bz2` 같은 다른 압축 로그는 풀지 않고, 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
 
 ## 커널과 systemd 이벤트 (Linux)
 

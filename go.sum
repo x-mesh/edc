@@ -90,8 +90,8 @@ github.com/vishvananda/netlink v1.3.1 h1:3AEMt62VKqz90r0tmNhog0r/PpWKmrEShJU0wJW
 github.com/vishvananda/netlink v1.3.1/go.mod h1:ARtKouGSTGchR8aMwmkzC0qiNPrrWO5JS/XMVl45+b4=
 github.com/vishvananda/netns v0.0.5 h1:DfiHV+j8bA32MFM7bfEunvT8IAqQ/NzSJHtcmW5zdEY=
 github.com/vishvananda/netns v0.0.5/go.mod h1:SpkAiCQRtJ6TvvxPnOSyH3BMl6unz3xZlaprSwhNNJM=
-github.com/x-mesh/fastcompress v0.2.0 h1:EjI/oYkBt+RdJnMArX4EYCUhQkWXms0H9bSJNAOtPKs=
-github.com/x-mesh/fastcompress v0.2.0/go.mod h1:5dMvcURqKOj+BpBZG74e90QP8PpMKBrD5gSVzAUQsoY=
+github.com/x-mesh/fastcompress v0.4.0 h1:QfgsD9yIvKw8NmF6vNthn37dwxfbD76JxZ7+4/pCr4I=
+github.com/x-mesh/fastcompress v0.4.0/go.mod h1:5dMvcURqKOj+BpBZG74e90QP8PpMKBrD5gSVzAUQsoY=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e/go.mod h1:RbqR21r5mrJuqunuUZ/Dhy/avygyECGrLceyNeo4LiM=
 golang.org/x/arch v0.28.0 h1:wVwVdqsTuUbJvhYVCspQYwZXHNYeLSoZnmHD+ggddpQ=

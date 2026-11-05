@@ -265,7 +265,7 @@ command:
       - "With a terminal and one pattern, grep searches code in the current directory. Pipes read stdin; an explicit path keeps log search behavior."
       - "Code and path searches default to the current directory and skip hidden files and .git; --hidden includes hidden files, --no-ignore ignores .gitignore."
       - "Code search reads current files without a log index and prints line numbers."
-      - "A directory is searched recursively. Binary files are skipped, and .gz files are read in order."
+      - "A directory is searched recursively. Binary files are skipped, and .gz and .zst files are read in order."
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
       - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log. edc checks the order at 16 points only, so lines in an out-of-order stretch between those points can be skipped. Leave out --ordered for a log that mixes sources or has clock jumps."
       - "--last reads the file from the end and stops after N matches."
@@ -775,6 +775,34 @@ command:
       - "It keeps the comments of the file and replaces it atomically, with mode 0600 for a new file."
       - "It does not store passwords or keys. Use an SSH alias as the target."
       - "The Steps screen of the same command edits the recipe. It creates ./.edc/recipe.yaml on the first save if no recipe exists."
+  compress:
+    summary: "Compress files to .gz or .zst on several cores"
+    option:
+      zstd: "write .zst instead of .gz"
+      level: "level 1 (fast) to 9 (small), default 6 for gzip and 3 for zstd"
+      jobs: "goroutines for gzip, default the CPU count"
+      stdout: "write to stdout and keep the input"
+      output: "output path, for one input"
+      remove: "delete the input after the output is written and synced"
+    notes:
+      - "It writes app.log.gz beside app.log and keeps app.log. It does not overwrite a file that exists."
+      - "The output keeps the modification time and permissions of the input. As root, it also keeps the owner."
+      - "If it fails while it writes, it deletes the partial output and keeps the input."
+      - "zstd output does not get smaller above level 3. -j applies to gzip only."
+      - "Without a file, it reads stdin and writes stdout. It does not write compressed data to a terminal."
+      - "It compresses one file at a time. Use tar to pack a directory."
+  decompress:
+    summary: "Decompress .gz and .zst files"
+    option:
+      stdout: "write to stdout and keep the input"
+      output: "output path, for one input"
+      remove: "delete the input after the output is written and synced"
+    notes:
+      - "It reads the first bytes, not the name, to tell gzip from zstd."
+      - "It writes app.log beside app.log.gz and keeps app.log.gz. It does not overwrite a file that exists."
+      - "A file whose name does not end in .gz or .zst needs -o or -c."
+      - "If the input is corrupt or cut, it deletes the partial output and exits 1."
+      - "Without a file, it reads stdin and writes stdout."
   update:
     summary: "Install the latest release"
     option:

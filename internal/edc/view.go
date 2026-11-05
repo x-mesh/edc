@@ -7,12 +7,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/x-mesh/fastcompress/gzip"
 )
 
 // viewFollowDefaultLines는 -f에 -n이 없을 때 처음 보여 주는 줄 수다. tail -f와 같다.
@@ -121,6 +119,36 @@ func viewPassthrough(stdout, stderr io.Writer, path string, lines int, follow bo
 	return failure
 }
 
+// viewLoadCompressed는 .gz나 .zst를 끝까지 풀어 마지막 initialLines줄을 model에 넣는다. 파일을 열거나 풀기 시작하지
+// 못하면 오류를 돌려주고, 푸는 도중에 끊기면 읽은 줄과 함께 model.err에 남긴다.
+func viewLoadCompressed(model *viewScreenModel, path string, decompress func(io.Reader) (io.ReadCloser, error), initialLines int) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err == nil && info.IsDir() {
+		err = fmt.Errorf("%s: %w", path, syscall.EISDIR)
+	}
+	if err != nil {
+		return err
+	}
+	reader, err := decompress(file)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	// 회전된 .gz와 .zst는 다 쓰인 뒤에 만들어지므로 따라가지 않는다. 끝에서 거꾸로 읽을 수 없어 화면을 열기 전에 끝까지 푼다.
+	raw, readErr := viewReadCompressedTail(reader, initialLines)
+	model.ingest(raw, time.Now(), false)
+	model.changed = info.ModTime()
+	model.ended = true
+	// 잘린 .gz나 .zst도 읽은 줄은 보여 주되, 온전한 로그로 믿지 않도록 오류를 함께 표시한다.
+	model.err = readErr
+	return nil
+}
+
 // runViewScreen은 전체 화면을 연다. 파일은 끝에서 lines줄(기본 viewKeepLines)을 읽고 그 뒤로 늘어나는 줄을 따라간다.
 func runViewScreen(path string, lines int) int {
 	keep := viewKeepLines
@@ -137,38 +165,15 @@ func runViewScreen(path string, lines int) int {
 	var start func(program *tea.Program)
 	if path == "" {
 		start = func(program *tea.Program) { go viewReadStdin(ctx, program) }
-	} else if strings.HasSuffix(path, ".gz") {
-		file, err := os.Open(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, T("view.failed", err))
-			return 1
-		}
-		info, err := file.Stat()
-		if err == nil && info.IsDir() {
-			err = fmt.Errorf("%s: %w", path, syscall.EISDIR)
-		}
-		var reader *gzip.Reader
-		if err == nil {
-			reader, err = gzip.NewReader(file)
-		}
-		if err != nil {
-			file.Close()
-			fmt.Fprintln(os.Stderr, T("view.failed", err))
-			return 1
-		}
-		// 회전된 .gz는 다 쓰인 뒤에 만들어지므로 따라가지 않는다. 끝에서 거꾸로 읽을 수 없어 화면을 열기 전에 끝까지 푼다.
+	} else if decompress := logDecompressor(path); decompress != nil {
 		initialLines := keep
 		if lines == 0 {
 			initialLines = 0
 		}
-		raw, readErr := viewReadGzipTail(reader, initialLines)
-		reader.Close()
-		file.Close()
-		model.ingest(raw, time.Now(), false)
-		model.changed = info.ModTime()
-		model.ended = true
-		// 잘린 .gz도 읽은 줄은 보여 주되, 온전한 로그로 믿지 않도록 오류를 함께 표시한다.
-		model.err = readErr
+		if err := viewLoadCompressed(&model, path, decompress, initialLines); err != nil {
+			fmt.Fprintln(os.Stderr, T("view.failed", err))
+			return 1
+		}
 		start = func(*tea.Program) {}
 	} else {
 		file, err := os.Open(path)

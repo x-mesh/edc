@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -226,6 +227,7 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 	src := options.stdin
 	var input *os.File
 	var info fs.FileInfo
+	var digest maphash.Hash
 	if path != "-" {
 		var err error
 		if input, info, err = codecOpenInput(path); err != nil {
@@ -233,6 +235,9 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 		}
 		defer input.Close()
 		src = input
+		if options.remove {
+			src = io.TeeReader(input, &digest)
+		}
 	}
 	counted := &codecCounter{reader: src}
 	if toStdout {
@@ -290,7 +295,7 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 		if err := codecSyncDir(filepath.Dir(target)); err != nil {
 			return result, err
 		}
-		if err := codecRemoveInput(path, input, info, counted.count); err != nil {
+		if err := codecRemoveInput(path, input, info, counted.count, &digest); err != nil {
 			return result, err
 		}
 	}
@@ -361,16 +366,11 @@ var codecRemoveHook func(stage string)
 
 // codecRemoveInput은 변환한 그 파일만 지운다. 경로를 확인하고 경로로 지우면 그 사이에 같은 이름으로 생긴 파일을 지우므로,
 // 입력을 같은 디렉터리에 새로 만든 빈 디렉터리로 옮긴 뒤 옮겨진 파일이 연 파일 그대로일 때만 지운다. 아니면 원래 이름으로
-// 되돌린다. 아직 쓰이는 로그를 지우면 읽은 뒤에 붙은 줄을 잃으므로, 옮기기 전과 후에 크기와 수정 시각을 본다.
-func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int64) error {
-	now, err := codecInputUnchanged(input, opened, read)
-	if err != nil {
+// 되돌린다. 옮긴 뒤에는 경로로 그 파일을 열 수 없으므로, 열린 fd로 다시 읽어 변환한 데이터 그대로인지 본다. 같은 크기로
+// 고쳐 쓰고 수정 시각을 되돌린 입력도 이것으로 잡는다. 크기와 수정 시각은 아직 쓰이는 로그를 옮기기 전에 거르는 데 쓴다.
+func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int64, digest *maphash.Hash) error {
+	if err := codecInputUnchanged(input, opened, read); err != nil {
 		return err
-	}
-	// 같은 크기로 고쳐 쓰고 수정 시각을 되돌려도 inode의 변경 시각(ctime)은 바뀐다. 권한, 소유자, hard link 수가 바뀌어도
-	// 바뀌므로 그때도 지우지 않는다. rename도 ctime을 바꾸므로 옮기기 전에만 본다.
-	if !codecChangeTime(now).Equal(codecChangeTime(opened)) {
-		return errCodecChanged
 	}
 	if codecRemoveHook != nil {
 		codecRemoveHook("move")
@@ -392,7 +392,7 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 		err = errCodecChanged
 	}
 	if err == nil {
-		_, err = codecInputUnchanged(input, opened, read)
+		err = codecSameData(input, read, digest)
 	}
 	if err == nil {
 		if err = os.Remove(held); err == nil {
@@ -413,15 +413,30 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 }
 
 // codecInputUnchanged는 변환하는 동안 입력이 더 쓰였거나 같은 크기로 고쳐 쓰였는지 크기와 수정 시각으로 본다.
-func codecInputUnchanged(input *os.File, opened fs.FileInfo, read int64) (fs.FileInfo, error) {
+func codecInputUnchanged(input *os.File, opened fs.FileInfo, read int64) error {
 	now, err := input.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if now.Size() != read || !now.ModTime().Equal(opened.ModTime()) {
-		return nil, errCodecChanged
+		return errCodecChanged
 	}
-	return now, nil
+	return nil
+}
+
+// codecSameData는 입력을 처음부터 다시 읽어 변환할 때 읽은 데이터와 같은지 hash로 본다. 한 바이트 더 읽어 그사이 늘어난
+// 입력도 잡는다.
+func codecSameData(input *os.File, read int64, digest *maphash.Hash) error {
+	var again maphash.Hash
+	again.SetSeed(digest.Seed())
+	n, err := io.CopyBuffer(&again, io.NewSectionReader(input, 0, read+1), make([]byte, codecBufferSize))
+	if err != nil {
+		return err
+	}
+	if n != read || again.Sum64() != digest.Sum64() {
+		return errCodecChanged
+	}
+	return nil
 }
 
 // codecKeepMetadata는 원본의 권한과 수정 시각을 출력에 옮긴다. 만들 때 준 권한은 umask가 깎으므로 다시 정한다.

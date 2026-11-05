@@ -398,7 +398,11 @@ tar -cf - data | edc compress > data.tar.gz
 - edc writes the output beside the input and keeps the input. Add `--rm` to delete the input. edc deletes it only after it writes and syncs the output.
 - If the input changes or another file takes its path before edc reads the input again, `--rm` keeps the input. edc then exits with code 1, and the output holds the data that edc read.
 - To delete the input, edc first moves it into a new directory beside it. The name of this directory starts with a dot and ends with `.rm`. edc then reads the moved file again. edc deletes it only if it is the file that edc read and it holds the same data. If the process stops at this step, the input can stay in this directory.
-- With `--rm`, edc reads the input two times. After the move, a program that has the input open can still write to it. If the program writes after the second read, that data is lost, as with `rm`.
+- With `--rm`, edc reads the input two times. After the move, a program that has the input open can still write to it.
+- On Linux, edc also looks in `/proc` after the move. If another process has the input open for writing, edc keeps the input and exits with code 1. As root, edc sees every process in its PID namespace. As another user, edc sees only the processes of that user. edc compares the inode, so it also finds a process in a container that opened the file through a bind mount. This check adds about 25 ms for each file on a host with 3,000 open files.
+- If `/proc` is not available, for example in a chroot without procfs, `--rm` keeps the input and exits with code 1. Mount `/proc`, or delete the input yourself.
+- A process that edc cannot see, or any process on macOS, can still write after the second read. That data is lost, as with `rm`. Do not use `--rm` on a log that a program still writes.
+- If the input has more than one hard link, `--rm` removes only one name. The data stays under the other name, so edc does not look for writers.
 - edc does not overwrite a file that exists. Delete the file or give `-o`.
 - The output gets the permissions and the modification time of the input. If you run edc as root, the output also gets the owner. `edc grep --ordered` uses the modification time of a rotated log, so this time must stay correct.
 - edc writes to a temporary file in the same directory. The name of this file starts with a dot. edc gives the output its name only after it writes and syncs all of the data. The file system must support hard links.

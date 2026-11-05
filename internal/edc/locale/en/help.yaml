@@ -791,6 +791,8 @@ command:
       - "zstd output does not get smaller above level 3. -j applies to gzip only."
       - "Without a file, it reads stdin and writes stdout. It does not write compressed data to a terminal."
       - "It compresses one file at a time. Use tar to pack a directory."
+      - "On Linux, --rm keeps an input that another process has open for writing."
+      - "Do not use --rm on a log that a program still writes. A process that edc cannot see can still write after the last check, and that data is lost."
   decompress:
     summary: "Decompress .gz and .zst files"
     option:
@@ -803,6 +805,8 @@ command:
       - "A file whose name does not end in .gz or .zst needs -o or -c."
       - "If the input is corrupt or cut, it deletes the partial output and exits 1."
       - "Without a file, it reads stdin and writes stdout."
+      - "On Linux, --rm keeps an input that another process has open for writing."
+      - "Do not use --rm on a log that a program still writes. A process that edc cannot see can still write after the last check, and that data is lost."
   update:
     summary: "Install the latest release"
     option:

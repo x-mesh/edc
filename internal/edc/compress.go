@@ -38,7 +38,15 @@ var (
 	errCodecUnknown    = errors.New("not gzip or zstd data")
 	errCodecNoName     = errors.New("no output name")
 	errCodecChanged    = errors.New("input changed")
+	errCodecNoProc     = errors.New("/proc is not available")
 )
+
+// codecInUseError는 --rm이 지우려던 입력을 다른 프로세스가 쓰기 모드로 열어 둔 경우다.
+type codecInUseError struct{ pid int }
+
+func (err codecInUseError) Error() string {
+	return "process " + strconv.Itoa(err.pid) + " has the input open for writing"
+}
 
 type codecOptions struct {
 	command string
@@ -201,6 +209,10 @@ func codecName(path string) string {
 }
 
 func codecErrorText(err error) string {
+	var inUse codecInUseError
+	if errors.As(err, &inUse) {
+		return T("compress.error.in_use", inUse.pid)
+	}
 	switch {
 	case errors.Is(err, errCodecExists):
 		return T("compress.error.exists")
@@ -214,6 +226,8 @@ func codecErrorText(err error) string {
 		return T("compress.error.no_name")
 	case errors.Is(err, errCodecChanged):
 		return T("compress.error.changed")
+	case errors.Is(err, errCodecNoProc):
+		return T("compress.error.no_proc")
 	}
 	return err.Error()
 }
@@ -368,6 +382,8 @@ var codecRemoveHook func(stage string)
 // 입력을 같은 디렉터리에 새로 만든 빈 디렉터리로 옮긴 뒤 옮겨진 파일이 연 파일 그대로일 때만 지운다. 아니면 원래 이름으로
 // 되돌린다. 옮긴 뒤에는 경로로 그 파일을 열 수 없으므로, 열린 fd로 다시 읽어 변환한 데이터 그대로인지 본다. 같은 크기로
 // 고쳐 쓰고 수정 시각을 되돌린 입력도 이것으로 잡는다. 크기와 수정 시각은 아직 쓰이는 로그를 옮기기 전에 거르는 데 쓴다.
+// 다시 읽기 전에 그 파일을 쓰기 모드로 연 프로세스가 없는지 본다. 열린 fd로 쓰는 것은 이름을 옮겨도 막을 수 없으므로,
+// 그런 프로세스가 있으면 다시 읽은 뒤에도 쓸 수 있다.
 func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int64, digest *maphash.Hash) error {
 	if err := codecInputUnchanged(input, opened, read); err != nil {
 		return err
@@ -392,6 +408,9 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 		err = errCodecChanged
 	}
 	if err == nil {
+		err = codecNoWriter(held, moved)
+	}
+	if err == nil {
 		err = codecSameData(input, read, digest)
 	}
 	if err == nil {
@@ -409,6 +428,14 @@ func codecRemoveInput(path string, input *os.File, opened fs.FileInfo, read int6
 	}
 	os.Remove(held)
 	os.Remove(hold)
+	return err
+}
+
+func codecNoWriter(held string, moved fs.FileInfo) error {
+	pid, err := codecFindWriter(held, moved)
+	if err == nil && pid != 0 {
+		err = codecInUseError{pid: pid}
+	}
 	return err
 }
 

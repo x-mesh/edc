@@ -1,18 +1,41 @@
 package edc
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// TestCodecMapperHelper는 아래 시험이 띄우는 process다. EDC_CODEC_MAPPER의 파일을 쓰기 가능한 공유 mapping으로 두고 fd는 닫는다.
+func TestCodecMapperHelper(t *testing.T) {
+	path := os.Getenv("EDC_CODEC_MAPPER")
+	if path == "" {
+		t.Skip("helper process for TestCodecRemoveWithoutALeaseScansProc")
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped, err := syscall.Mmap(int(file.Fd()), 0, 1, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Munmap(mapped)
+	file.Close()
+	fmt.Println("mapped")
+	time.Sleep(60 * time.Second)
+}
 
 // codecStartWriter는 path를 fd 3에 쓰기 모드로 열어 둔 sh를 띄우고, 그 fd가 /proc에 보일 때까지 기다린다.
 func codecStartWriter(t *testing.T, path string) *exec.Cmd {
@@ -190,6 +213,67 @@ func TestCodecRemoveWithoutALeaseScansProc(t *testing.T) {
 	t.Run("unreadable process", func(t *testing.T) {
 		codecWithoutLease(t)
 		codecFakeProc(t, false)
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.log.1")
+		codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+		codecExpectKept(t, dir, path, codecIs(errCodecUnchecked, "compress.error.unchecked"))
+	})
+	t.Run("shared writable mapping", func(t *testing.T) {
+		codecWithoutLease(t)
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.log.1")
+		codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+		mapper := exec.Command(os.Args[0], "-test.run=^TestCodecMapperHelper$", "-test.count=1")
+		mapper.Env = append(os.Environ(), "EDC_CODEC_MAPPER="+path)
+		out, err := mapper.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mapper.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			mapper.Process.Kill()
+			mapper.Wait()
+		})
+		if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "mapped\n" {
+			t.Fatalf("the helper said %q: %v", line, err)
+		}
+		codecExpectKept(t, dir, path, codecInUseBy(mapper.Process.Pid))
+	})
+	// 공유 mapping에 쓰기 권한이 있을 때만 파일에 쓴다. private mapping은 고쳐도 복사본에 쓴다.
+	for perms, writes := range map[string]bool{"rw-s": true, "rw-p": false, "r--s": false} {
+		t.Run("mapping "+perms, func(t *testing.T) {
+			codecWithoutLease(t)
+			codecFakeProc(t, true)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "app.log.1")
+			codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stat := info.Sys().(*syscall.Stat_t)
+			line := fmt.Sprintf("7f0000000000-7f0000001000 %s 00000000 %x:%x %d %s\n", perms, unix.Major(stat.Dev), unix.Minor(stat.Dev), stat.Ino, path)
+			if err := os.WriteFile(filepath.Join(codecProcRoot, "123", "maps"), []byte(line), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if writes {
+				codecExpectKept(t, dir, path, codecInUseBy(123))
+				return
+			}
+			if _, err := codecPath(path, codecRemoveOptions(), false); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Run("unreadable maps", func(t *testing.T) {
+		codecWithoutLease(t)
+		codecFakeProc(t, true)
+		// root는 권한과 관계없이 읽으므로, 파일 대신 디렉터리를 두어 maps를 읽지 못하게 한다.
+		if err := os.Mkdir(filepath.Join(codecProcRoot, "123", "maps"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		dir := t.TempDir()
 		path := filepath.Join(dir, "app.log.1")
 		codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))

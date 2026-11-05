@@ -108,7 +108,6 @@ func TestAIClaudeUsageDeltaMatchesEncodingJSON(t *testing.T) {
 		`{` + at + `,"message":{"content":[{"type":"text","text":"a \"usage\":{\"input_tokens\":99} \\\\"}],"usage":{"input_tokens":1,"output_tokens":2}}}`,
 		`{` + at + `,"message":{"content":[{"type":"tool_use","input":{"usage":{"input_tokens":77}}}],"usage":{"input_tokens":1}}}`,
 		`{` + at + `,"message":{"usage":{"input_tokens":1}},"timestamp":"2026-11-06T01:02:03Z"}`,
-		`{"timestamp":"2026-11-05T01:02:03` + aiJSONEscape('Z') + `","message":{"usage":{"input_tokens":1}}}`,
 		`{"time` + aiJSONEscape('s') + `tamp":"2026-11-05T01:02:03Z","m` + aiJSONEscape('e') + `ssage":{"usage":{"input` + aiJSONEscape('_') + `tokens":5}}}`,
 		counted(`"x":[true,false,null,-1.5e+3,0,0.25,1E-2,{"a":[]},"s",{}]`),
 		tokens("9223372036854775807"),
@@ -132,6 +131,17 @@ func TestAIClaudeUsageDeltaMatchesEncodingJSON(t *testing.T) {
 	}
 	for _, line := range lines {
 		aiCompareClaudeLines(t, []string{line})
+	}
+}
+
+// escape로 쓴 timestamp는 encoding/json과 비교하지 않는다. encoding/json은 Go 1.25와 1.26에서 이 값을 읽지 않고 1.27에서는
+// 읽어서, 비교 기준이 Go 버전마다 다르다. JSON 문자열로 유효한 값이므로 aiJSONReader는 어느 버전에서나 읽는다.
+func TestAIClaudeUsageDeltaReadsAnEscapedTimestamp(t *testing.T) {
+	line := `{"timestamp":"2026-11-05T01:02:03` + aiJSONEscape('Z') + `","message":{"usage":{"input_tokens":1}}}`
+	at, usage, ok := aiClaudeUsageDelta([]byte(line), map[string]aiSeenMessage{})
+	want := time.Date(2026, 11, 5, 1, 2, 3, 0, time.UTC)
+	if !ok || !at.Equal(want) || usage != (aiUsage{Requests: 1, Input: 1}) {
+		t.Fatalf("%s\n got %v %+v %v\nwant %v %+v true", line, at, usage, ok, want, aiUsage{Requests: 1, Input: 1})
 	}
 }
 

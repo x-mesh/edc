@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -77,8 +78,7 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 		}
 		matcher.indexNeedle = matcher.needle
 		if ignoreCase && !useRegex {
-			// 대소문자를 무시해도 글자가 아닌 바이트는 그대로다. 그중 가장 긴 구간이 모든 일치에 들어간다.
-			matcher.needle = grepLongestNonLetterRun(pattern)
+			matcher.needle = grepIgnoreCaseNeedle(pattern)
 			matcher.indexNeedle = []byte(pattern)
 			if grepFoldsInASCII(pattern) {
 				matcher.fold = true
@@ -197,22 +197,44 @@ func grepLongestCommonRun(a, b []byte) []byte {
 	return best
 }
 
-func grepLongestNonLetterRun(pattern string) []byte {
+// grepIgnoreCaseNeedle은 (?i)로 pattern에 맞는 모든 일치에 그대로 들어가는 가장 긴 바이트다. 대소문자가 없는 글자는
+// 바이트가 그대로 들어가고, 대소문자가 있는 글자는 같은 글자들의 UTF-8이 함께 시작하는 바이트만 들어간다. é(c3 a9)와
+// É(c3 89)는 c3이 들어간다.
+func grepIgnoreCaseNeedle(pattern string) []byte {
 	var best []byte
-	start := -1
-	for index := 0; index <= len(pattern); index++ {
-		if index < len(pattern) && !viewWordByte(pattern[index]) {
-			if start < 0 {
-				start = index
+	start := 0
+	for index := 0; index < len(pattern); {
+		char, size := utf8.DecodeRuneInString(pattern[index:])
+		if char == utf8.RuneError || unicode.SimpleFold(char) != char {
+			if run := pattern[start:index] + grepFoldPrefix(char); len(run) > len(best) {
+				best = []byte(run)
 			}
-			continue
+			start = index + size
 		}
-		if start >= 0 && index-start > len(best) {
-			best = []byte(pattern[start:index])
-		}
-		start = -1
+		index += size
+	}
+	if len(pattern)-start > len(best) {
+		best = []byte(pattern[start:])
 	}
 	return best
+}
+
+// grepFoldPrefix는 (?i)에서 char와 같은 글자들의 UTF-8이 함께 시작하는 바이트다. U+FFFD는 정규식이 잘못된 UTF-8
+// 바이트로도 맞추므로 함께 시작하는 바이트가 없다.
+func grepFoldPrefix(char rune) string {
+	if char == utf8.RuneError {
+		return ""
+	}
+	prefix := string(char)
+	for other := unicode.SimpleFold(char); other != char; other = unicode.SimpleFold(other) {
+		encoded := string(other)
+		length := 0
+		for length < len(prefix) && length < len(encoded) && prefix[length] == encoded[length] {
+			length++
+		}
+		prefix = prefix[:length]
+	}
+	return prefix
 }
 
 // grepChoosePivot은 sample에서 가장 드문 needle 바이트의 위치와 두 번째로 드문 위치를 고른다. 가장 드문 바이트도

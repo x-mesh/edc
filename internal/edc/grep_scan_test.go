@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // grepNaiveLines는 scanner와 비교하는 기준이다. 줄을 하나씩 나눠 accept로 확정하고, 상한보다 긴 줄은 앞부분만 본다.
@@ -556,5 +558,82 @@ func TestGrepScanParallelLongLineAndOffsets(t *testing.T) {
 	}
 	if _, _, err := parallel(failing, 0, int64(len(data)), -1); !errors.Is(err, errGrepTestRead) {
 		t.Fatalf("parallel scan error %v, want %v", err, errGrepTestRead)
+	}
+}
+
+// -i 패턴에 대소문자가 있는 ASCII 밖 글자나 U+FFFD가 있어도 scanner는 정규식 (?i)와 같은 줄을 찾는다.
+func TestGrepIgnoreCaseNonASCIIMatchesRegex(t *testing.T) {
+	const lineLimit = 1000
+	random := rand.New(rand.NewSource(17))
+	for _, pattern := range []string{"café", "CAFÉ", "Ünïcode-ü", "σοφία", "오류 Café", "x → É", "İstanbul", "Å 1", "id=\uFFFD end"} {
+		var buffer bytes.Buffer
+		variants := 0
+		for range 300 {
+			if random.Intn(3) == 0 {
+				buffer.WriteString("unrelated line 0123 é\n")
+				continue
+			}
+			variants++
+			buffer.WriteString("at ")
+			for _, char := range pattern {
+				buffer.WriteString(grepFoldVariant(random, char))
+			}
+			buffer.WriteString(" done\n")
+		}
+		data := buffer.Bytes()
+		regex := regexp.MustCompile("(?i)" + regexp.QuoteMeta(pattern))
+		want := grepNaiveLines(data, lineLimit, regex.Match)
+		if len(want) != variants {
+			t.Fatalf("%q: regex matched %d lines, want %d", pattern, len(want), variants)
+		}
+		matcher, err := newGrepMatcher(pattern, false, true, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanner := newGrepScanner(matcher, nil)
+		scanner.block, scanner.lineLimit = 64, lineLimit
+		var got []grepLineRef
+		if _, err := scanner.scanRange(bytes.NewReader(data), 0, int64(len(data)), 0, func(ref grepLineRef) bool {
+			got = append(got, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+			return true
+		}); err != nil {
+			t.Fatal(err)
+		}
+		grepRefsEqual(t, pattern, got, want, true)
+	}
+}
+
+// grepFoldVariant는 (?i)에서 char와 같은 글자 하나다. 정규식은 잘못된 UTF-8 바이트를 U+FFFD로 읽으므로 U+FFFD 자리에는
+// 그런 바이트도 넣는다.
+func grepFoldVariant(random *rand.Rand, char rune) string {
+	if char == utf8.RuneError && random.Intn(2) == 0 {
+		return "\xff"
+	}
+	variants := []rune{char}
+	for other := unicode.SimpleFold(char); other != char; other = unicode.SimpleFold(other) {
+		variants = append(variants, other)
+	}
+	return string(variants[random.Intn(len(variants))])
+}
+
+// -i의 needle에는 대소문자가 없는 글자가 ASCII 밖 글자여도 남고, 대소문자가 있는 글자는 같은 글자들이 함께 시작하는
+// 바이트만 남는다. 한글처럼 대소문자가 없는 패턴과 ASCII 로그에서 찾는 é는 -i에서도 바이트로 건너뛴다.
+func TestGrepIgnoreCaseNeedleKeepsCaselessBytes(t *testing.T) {
+	for _, scenario := range []struct{ pattern, needle string }{
+		{"café", "\xc3"},
+		{"σοφία", "\xce"},
+		{"오류 Café", "오류 "},
+		{"x → É", " → \xc3"},
+		{"İstanbul", "İ"},
+		{"Café 500", " 500"},
+		{"id=\uFFFD end", "="},
+	} {
+		matcher, err := newGrepMatcher(scenario.pattern, false, true, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(matcher.needle) != scenario.needle {
+			t.Errorf("%q: needle %q, want %q", scenario.pattern, matcher.needle, scenario.needle)
+		}
 	}
 }

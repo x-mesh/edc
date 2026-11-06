@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io/fs"
@@ -117,13 +118,13 @@ func codecScanWriters(held string, want *syscall.Stat_t) (pid int, complete bool
 	return int(found.Load()), !missed.Load(), nil
 }
 
-// codecProcWrites는 프로세스 하나가 want를 쓰기 모드로 연 fd를 가졌는지 본다. read는 그 프로세스의 fdinfo를 읽었는지다.
-// 그사이 끝난 프로세스는 쓸 수 없으므로 읽은 것으로 친다.
+// codecProcWrites는 프로세스 하나가 want를 쓰기 모드로 연 fd나 쓰기 가능한 공유 mapping을 가졌는지 본다. read는 그
+// 프로세스의 fdinfo와 maps를 읽었는지다. 그사이 끝난 프로세스는 쓸 수 없으므로 읽은 것으로 친다.
 func codecProcWrites(name string, want *syscall.Stat_t, token string) (writes, read bool) {
 	infoDir := filepath.Join(codecProcRoot, name, "fdinfo")
 	fds, err := os.ReadDir(infoDir)
 	if err != nil {
-		return false, errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+		return false, codecProcGone(err)
 	}
 	for _, fd := range fds {
 		info := codecFdInfo(filepath.Join(infoDir, fd.Name()))
@@ -149,6 +150,54 @@ func codecProcWrites(name string, want *syscall.Stat_t, token string) (writes, r
 		if sys := stat.Sys().(*syscall.Stat_t); sys.Dev == want.Dev && sys.Ino == want.Ino {
 			return true, true
 		}
+	}
+	// 쓰기 가능한 공유 mapping은 fd를 닫은 뒤에도 그 파일에 쓰고, fdinfo에는 보이지 않는다.
+	return codecMapsWrite(name, want)
+}
+
+func codecProcGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+// codecMapsWrite는 프로세스의 maps에 want를 쓰기 가능한 공유 mapping으로 연 줄이 있는지 본다. 한 줄은 "주소 권한 offset
+// major:minor inode 경로"이고, 권한의 둘째 글자가 w이고 넷째 글자가 s이면 쓰기 가능한 공유 mapping이다. 장치 번호는 16진수다.
+// 다른 사용자의 프로세스는 maps를 읽을 수 없으므로 read가 false다. mapping이 많은 프로세스의 maps는 수 MB이고 worker마다
+// 하나씩 읽으므로, 한 줄씩 읽고 줄마다 할당하지 않는다. 너무 긴 줄을 만나면 끝까지 읽지 못했으므로 read가 false다.
+func codecMapsWrite(name string, want *syscall.Stat_t) (writes, read bool) {
+	file, err := os.Open(filepath.Join(codecProcRoot, name, "maps"))
+	if err != nil {
+		return false, codecProcGone(err)
+	}
+	defer file.Close()
+	ino := []byte(strconv.FormatUint(want.Ino, 10))
+	lines := bufio.NewScanner(file)
+	for lines.Scan() {
+		var fields [5][]byte
+		rest := lines.Bytes()
+		for i := range fields {
+			rest = bytes.TrimLeft(rest, " ")
+			end := bytes.IndexByte(rest, ' ')
+			if end < 0 {
+				end = len(rest)
+			}
+			fields[i], rest = rest[:end], rest[end:]
+		}
+		perms := fields[1]
+		if !bytes.Equal(fields[4], ino) || len(perms) < 4 || perms[1] != 'w' || perms[3] != 's' {
+			continue
+		}
+		major, minor, ok := bytes.Cut(fields[3], []byte(":"))
+		if !ok {
+			continue
+		}
+		maj, err1 := strconv.ParseUint(string(major), 16, 32)
+		mnr, err2 := strconv.ParseUint(string(minor), 16, 32)
+		if err1 == nil && err2 == nil && unix.Mkdev(uint32(maj), uint32(mnr)) == want.Dev {
+			return true, true
+		}
+	}
+	if err := lines.Err(); err != nil {
+		return false, codecProcGone(err)
 	}
 	return false, true
 }

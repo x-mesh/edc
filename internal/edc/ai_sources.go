@@ -699,19 +699,21 @@ func (scanner *aiTokenScanner) readFile(path string, file *aiScanFile, oldest ti
 		// 파일이 잘렸거나 새로 쓰였다. 처음부터 다시 읽는다.
 		*file = aiScanFile{}
 	}
-	if _, err := handle.Seek(file.offset, io.SeekStart); err != nil {
+	// io.ReadAll은 버퍼를 두 배씩 늘리며 복사하고 지운다. 크기를 아는 파일이라 한 번에 잡는다.
+	data := make([]byte, info.Size()-file.offset)
+	read, err := handle.ReadAt(data, file.offset)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
-	data, err := io.ReadAll(handle)
-	if err != nil {
-		return err
-	}
+	data = data[:read]
 	end := bytes.LastIndexByte(data, '\n')
 	if end < 0 {
 		return nil
 	}
-	for _, text := range bytes.Split(data[:end], []byte{'\n'}) {
-		line(file, text, oldest)
+	for rest := data[:end+1]; len(rest) > 0; {
+		cut := bytes.IndexByte(rest, '\n')
+		line(file, rest[:cut], oldest)
+		rest = rest[cut+1:]
 	}
 	file.offset += int64(end + 1)
 	return nil
@@ -741,32 +743,19 @@ func aiClaudeUsageDelta(line []byte, seen map[string]aiSeenMessage) (time.Time, 
 	if !bytes.Contains(line, []byte(`"usage"`)) {
 		return time.Time{}, aiUsage{}, false
 	}
-	var record struct {
-		Timestamp time.Time `json:"timestamp"`
-		RequestID string    `json:"requestId"`
-		Message   struct {
-			ID    string `json:"id"`
-			Usage *struct {
-				Input         int64 `json:"input_tokens"`
-				CacheCreation int64 `json:"cache_creation_input_tokens"`
-				CacheRead     int64 `json:"cache_read_input_tokens"`
-				Output        int64 `json:"output_tokens"`
-			} `json:"usage"`
-		} `json:"message"`
-	}
-	if json.Unmarshal(line, &record) != nil || record.Message.Usage == nil || record.Timestamp.IsZero() {
+	record, ok := parseAIClaudeRecord(line)
+	if !ok || !record.hasUsage || record.timestamp.IsZero() {
 		return time.Time{}, aiUsage{}, false
 	}
-	raw := record.Message.Usage
-	usage := aiUsage{Requests: 1, Input: raw.Input + raw.CacheCreation, Output: raw.Output, Cache: raw.CacheRead}
-	if record.Message.ID == "" {
-		return record.Timestamp, usage, true
+	usage := aiUsage{Requests: 1, Input: record.input + record.cacheCreation, Output: record.output, Cache: record.cacheRead}
+	if record.messageID == "" {
+		return record.timestamp, usage, true
 	}
-	key := record.Message.ID + ":" + record.RequestID
+	key := record.messageID + ":" + record.requestID
 	previous, ok := seen[key]
 	if !ok {
-		seen[key] = aiSeenMessage{at: record.Timestamp, usage: usage}
-		return record.Timestamp, usage, true
+		seen[key] = aiSeenMessage{at: record.timestamp, usage: usage}
+		return record.timestamp, usage, true
 	}
 	growth := aiUsage{
 		Input:  aiGrowth(previous.usage.Input, usage.Input),
@@ -787,22 +776,14 @@ func (scanner *aiTokenScanner) codexLine(file *aiScanFile, line []byte, oldest t
 	if !bytes.Contains(line, []byte(`"token_count"`)) {
 		return
 	}
-	var record struct {
-		Timestamp time.Time `json:"timestamp"`
-		Payload   struct {
-			Type string `json:"type"`
-			Info *struct {
-				Total aiCodexTotals `json:"total_token_usage"`
-			} `json:"info"`
-		} `json:"payload"`
-	}
-	if json.Unmarshal(line, &record) != nil || record.Payload.Type != "token_count" || record.Payload.Info == nil {
+	record, ok := parseAICodexRecord(line)
+	if !ok || record.kind != "token_count" || !record.hasInfo {
 		return
 	}
-	total, last := record.Payload.Info.Total, file.codex
+	total, last := record.total, file.codex
 	if total.Total > last.Total {
 		cached := aiGrowth(last.Cached, total.Cached)
-		scanner.add("codex", record.Timestamp, oldest, aiUsage{
+		scanner.add("codex", record.timestamp, oldest, aiUsage{
 			Requests: 1,
 			Input:    aiGrowth(cached, aiGrowth(last.Input, total.Input)),
 			Output:   aiGrowth(last.Output, total.Output),

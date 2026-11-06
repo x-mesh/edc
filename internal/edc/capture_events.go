@@ -125,7 +125,7 @@ type captureSummary struct {
 	Event       string `json:"event"`
 	EventCount  uint64 `json:"event_count"`
 	LostEvents  uint64 `json:"lost_events"`
-	// TLSUnmapped는 trace http --tls --port에서 socket을 몰라 port를 확인하지 못하고 버린 평문 레코드 수다.
+	// TLSUnmapped는 socket 주소나 TLS key log가 없어 해석하지 못한 TLS 레코드 수다.
 	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 	// TLSExecProblem은 --tls 자동 탐색이 trace 중에 exec 알림을 받지 못한 이유다. trace가 끝난 뒤 stderr로 알린다.
 	TLSExecProblem string   `json:"-"`
@@ -405,6 +405,7 @@ type tcpTraceOptions struct {
 	payload         tracePayloadMode
 	payloadExplicit bool
 	showSecrets     bool
+	tlsKeylog       string
 	tls             traceTLSMode
 	tlsExplicit     bool
 	implicitTLS     bool

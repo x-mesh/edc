@@ -182,7 +182,7 @@ Follow application requests and kernel activity to investigate a failure. HTTP t
 
 ![HTTP requests and responses with a message preview](docs/media/trace-http.png)
 
-Screen rendered with synthetic demo data. HTTP tracing requires Linux 5.15 or later and eBPF privileges. On a host with the required capabilities, trace a local HTTP service on port 8080:
+Screen rendered with synthetic demo data. HTTP trace requires Linux 5.15 or later with eBPF privileges, or macOS with packet capture privileges. On a host with the required capabilities, trace a local HTTP service on port 8080:
 
 ```bash
 sudo edc trace http --side server --port 8080

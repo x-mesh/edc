@@ -173,7 +173,38 @@ macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니�
 
 ## trace http
 
-Linux 5.15 이상에서 `edc trace http`를 실행하면 HTTP/1.x와 HTTP/2를 client·server 양쪽에서 봅니다. 기본 TLS 자동 탐지도 시작하며, TLS 탐색이나 attach가 실패해도 HTTP 수집을 계속합니다. HTTP/1 행은 header가 완성되면 출력하고, HTTP/2 행은 header block을 해석한 뒤 출력합니다.
+Linux 5.15 이상과 macOS에서 `edc trace http`를 실행하면 HTTP/1.x와 HTTP/2를 client·server 양쪽에서 봅니다. Linux는 기본 TLS 자동 탐지를 사용합니다. macOS는 PKTAP으로 수집하며 BPF 장치에 접근할 권한이 필요합니다. TLS 계측을 시작하기 전에 커널 캡처 필터를 적용하며, `--port`도 이 필터에 반영합니다. 손실 수에는 잘린 레코드, BPF 버퍼에서 버린 패킷과 스트림 복원 손실이 포함됩니다.
+
+macOS의 기본 HTTPS 수집은 DTrace로 OpenSSL의 암호화 전·복호화 후 평문 버퍼를 읽습니다. root 권한이 필요하며 키 로그는 필요하지 않습니다.
+
+```bash
+sudo edc trace http --process node
+sudo edc trace http --tls=/path/to/libssl.dylib
+```
+
+`--process`는 앱을 고르고 `--tls=<경로>`는 실행 중인 프로세스가 적재한 Mach-O 실행 파일이나 라이브러리를 고릅니다. `SSL_read`·`SSL_write` 또는 `_ex` 함수와 `SSL_free` 심볼이 필요합니다. macOS의 Go TLS·SecureTransport 함수는 계측하지 않습니다. 보호된 앱은 root 권한에서도 연결이 거부될 수 있으며 그 이유를 표시합니다.
+
+새 프로세스는 2초마다 탐색하므로 짧게 실행하고 끝나는 프로세스는 놓칠 수 있습니다. HTTP/2는 계측을 연결한 뒤 새 연결에서 시작해야 합니다. 이미 연결한 프로세스가 다른 TLS 라이브러리를 추가로 적재하면 수집을 다시 시작해야 합니다. 동시에 16개 프로세스를 계측하며, TLS 함수 호출 하나가 1MiB를 넘으면 해당 TLS 세션 수집을 중단합니다. 레코드 누락이나 실행 중 계측 오류는 오류를 반환합니다. 소켓 연결은 계측 시작 후의 `SSL_set_fd` 호출에서 확인하므로 기존 연결이나 custom BIO는 주소가 없을 수 있습니다. 소켓 주소를 읽지 못하면 `--port`로 확인할 수 없는 평문 레코드를 버리고 `tls_unmapped`에 집계합니다. `--tls=false`로 함수 계측을 끌 수 있습니다.
+
+다른 방법으로, 앱이 생성한 SSLKEYLOGFILE 형식의 키 로그를 `--tls-keylog <경로>`로 지정할 수 있습니다. 파일을 먼저 만들고 TLS handshake 전에 수집을 시작해야 합니다. 앱이 추가한 키도 수집 중에 읽습니다.
+
+```bash
+umask 077
+touch /tmp/edc-tls.keys
+sudo edc trace http --tls-keylog /tmp/edc-tls.keys --port 443
+```
+
+다른 터미널에서 키 로그를 지원하는 앱을 실행하세요. Node.js 예시는 다음과 같습니다.
+
+```bash
+node --tls-keylog=/tmp/edc-tls.keys app.js
+```
+
+TLS 1.3은 AES-GCM·ChaCha20-Poly1305를 지원합니다. TLS 1.2는 RSA·ECDHE 기반 AES-GCM과 ECDHE·DHE 기반 ChaCha20-Poly1305를 지원합니다. HTTP/1.x·HTTP/2, payload 마스킹과 TLS 1.3 KeyUpdate를 처리합니다. TLS 1.2 재협상, 0-RTT, QUIC은 지원하지 않습니다.
+
+키 로그는 64MiB·65,536개 항목, 키를 기다리는 TLS 레코드는 합계 16MiB로 제한합니다. 인증 오류는 수집을 중단하며, 키가 없는 레코드는 요약의 `tls_unmapped`로 집계합니다. macOS의 HTTP/1 행은 메시지가 끝난 뒤 출력합니다.
+
+Linux에서는 기본 TLS 자동 탐지도 시작하며, TLS 탐색이나 attach가 실패해도 HTTP 수집을 계속합니다. HTTP/1 행은 header가 완성되면 출력하고, HTTP/2 행은 header block을 해석한 뒤 출력합니다.
 
 ```bash
 edc trace http
@@ -351,7 +382,9 @@ amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 seccomp fi
 
 ## trace mysql
 
-Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
+Linux 5.15 이상과 macOS에서 `trace mysql`로 평문 MySQL 명령과 결과를 봅니다. Linux는 eBPF로 TCP 버퍼를 읽고, macOS는 PKTAP 패킷에서 TCP 스트림을 조립합니다. macOS는 패킷 캡처 권한이 필요하므로 일반적으로 `sudo`로 실행합니다. 기본 포트는 3306이며 `--port`로 바꿀 수 있습니다.
+
+macOS에서도 양쪽 연결, 분할된 패킷, prepared statement, SQL 값 마스킹과 응답 시간을 지원합니다. 연결 정보를 보려면 연결 전에 수집을 시작하세요. TLS와 압축 연결은 협상 상태를 표시하며 암호화된 SQL을 복호화하지 않습니다.
 
 ```bash
 edc trace mysql

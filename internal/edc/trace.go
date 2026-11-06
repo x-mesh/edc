@@ -107,12 +107,12 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	}},
 	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
 	{name: "http", view: traceProtocolView{selectorLabel: "http"}, spec: traceProtocolSpec{
-		groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath}, linuxOnly: true,
+		groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath},
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	}},
 	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다.
 	{name: "mysql", view: traceProtocolView{selectorLabel: "mysql"}, spec: traceProtocolSpec{
-		groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: traceMySQLGroupColumns, hideTraffic: true,
 		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
 	}},
 	// 평문 ClickHouse native protocol(TCP 9000)만 본다. TLS(9440) 안의 packet은 kernel에서 암호문이다.
@@ -255,8 +255,10 @@ func traceTCPScrollLabels(event captureEvent) (string, string) {
 
 // traceScope는 collector가 모을 범위다. server는 --side server로 로컬 서버 쪽을 볼 때 켠다.
 type traceScope struct {
-	protocol string
-	server   bool
+	process   string
+	tlsKeylog string
+	protocol  string
+	server    bool
 	// side는 --side 값이다. trace http는 비어 있으면 두 쪽을 모두 본다. trace dns는 server만 쓴다.
 	side string
 	// payload가 꺼져 있으면 message 앞부분을 event에 붙이지 않는다. 화면은 event를 최대 10,000건 보관한다.
@@ -285,7 +287,7 @@ type traceScope struct {
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll, http2Payload: options.payload != "",
+	return traceScope{process: options.process, tlsKeylog: options.tlsKeylog, protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll, http2Payload: options.payload != "",
 		showSecrets: options.showSecrets, tls: options.tls, implicitTLS: options.implicitTLS, progressive: options.progressive, tlsFinder: options.tlsFinder, port: uint16(options.port), httpPort: uint16(options.httpPort), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
 }
 
@@ -525,6 +527,7 @@ func runTraceProtocol(args []string) int {
 	set.Var(&options.payload, "payload", T("command.trace.option.payload"))
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.Var(&options.tls, "tls", T("command.trace.option.tls"))
+	set.StringVar(&options.tlsKeylog, "tls-keylog", "", T("command.trace.option.tls_keylog"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
 	set.IntVar(&options.httpPort, "http-port", 0, T("command.trace.option.http_port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
@@ -673,6 +676,26 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.slow_interactive"))
 		return 2
 	}
+
+	if options.tlsKeylog != "" {
+		if args[0] != "http" || runtime.GOOS != "darwin" {
+			fmt.Fprintln(os.Stderr, "--tls-keylog requires trace http on macOS")
+			return 2
+		}
+		if options.tlsExplicit && options.tls != "" {
+			fmt.Fprintln(os.Stderr, "--tls-keylog cannot be combined with --tls")
+			return 2
+		}
+		keylog, err := openTLSKeylog(options.tlsKeylog)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 3
+		}
+		keylog.close()
+	}
+	if options.tlsKeylog != "" {
+		options.tls = ""
+	}
 	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
@@ -697,7 +720,7 @@ func runTraceProtocol(args []string) int {
 	options.progressive = screen || (!options.raw && options.jsonPath == "" && options.groupBy == "")
 	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
 	if options.tls != "" {
-		finder, notices, code, err := resolveTraceTLSTargetsFor(options.tls, options.implicitTLS)
+		finder, notices, code, err := resolveTraceHTTPTLSTargets(options.tls, options.implicitTLS, options.process)
 		for _, notice := range notices {
 			fmt.Fprintln(os.Stderr, traceTLSNoticeText(notice))
 		}

@@ -89,7 +89,7 @@ func aiCompareClaudeLines(t *testing.T, lines []string) {
 }
 
 // 본문 문자열과 도구 입력에 든 "usage"는 message.usage가 아니다. escape로 쓴 이름과 값은 풀어서 읽고, 문법이 틀린 줄은
-// 건너뛰는 값에서 틀렸어도 세지 않는다.
+// 건너뛰는 값에서 틀렸어도 세지 않는다. 읽는 문자열에 escape하지 않은 제어 문자가 있으면 세지 않고, DEL은 제어 문자가 아니다.
 func TestAIClaudeUsageDeltaMatchesEncodingJSON(t *testing.T) {
 	const at = `"timestamp":"2026-11-05T01:02:03Z"`
 	counted := func(extra string) string {
@@ -115,6 +115,7 @@ func TestAIClaudeUsageDeltaMatchesEncodingJSON(t *testing.T) {
 		tokens("-0"),
 		tokens("null"),
 		nested(aiJSONMaxDepth - 1),
+		`{` + at + `,"message":{"id":"m` + "\x7f" + `","usage":{"input_tokens":1}}}`,
 
 		`{` + at + `,"message":{"usage":null}}`,
 		`{` + at + `,"message":null,"usage":{"input_tokens":1}}`,
@@ -128,6 +129,9 @@ func TestAIClaudeUsageDeltaMatchesEncodingJSON(t *testing.T) {
 		`{` + at + `,"message":{"usage":{"input_tokens":1}}`,
 		`{"timestamp":"bad","message":{"usage":{"input_tokens":1}}}`,
 		`{"timestamp":null,"message":{"usage":{"input_tokens":1}}}`,
+		`{` + at + `,"requestId":"r` + "\x01" + `","message":{"id":"m1","usage":{"input_tokens":1}}}`,
+		`{` + at + `,"message":{"id":"m` + "\x1f" + `","usage":{"input_tokens":1}}}`,
+		`{"timestamp":"2026-11-05T01:02:03Z` + "\t" + `","message":{"usage":{"input_tokens":1}}}`,
 	}
 	for _, line := range lines {
 		aiCompareClaudeLines(t, []string{line})

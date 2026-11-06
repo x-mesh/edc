@@ -267,11 +267,22 @@ func (reader *aiJSONReader) text(target *string) bool {
 	if !ok {
 		return false
 	}
-	if bytes.IndexByte(content, '\\') < 0 {
+	if aiJSONPlain(content) {
 		*target = string(content)
 		return true
 	}
 	return json.Unmarshal(reader.data[start:reader.pos], target) == nil
+}
+
+// aiJSONPlain은 문자열 내용에 escape도 제어 문자도 없는지 본다. encoding/json은 escape하지 않은 제어 문자가 든 문자열을
+// 거부한다. 고르는 값은 짧은 id이므로 바이트마다 봐도 된다.
+func aiJSONPlain(content []byte) bool {
+	for _, char := range content {
+		if char < 0x20 || char == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 func (reader *aiJSONReader) timestamp(target *time.Time) bool {

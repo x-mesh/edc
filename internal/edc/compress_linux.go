@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io/fs"
@@ -160,27 +161,43 @@ func codecProcGone(err error) bool {
 
 // codecMapsWrite는 프로세스의 maps에 want를 쓰기 가능한 공유 mapping으로 연 줄이 있는지 본다. 한 줄은 "주소 권한 offset
 // major:minor inode 경로"이고, 권한의 둘째 글자가 w이고 넷째 글자가 s이면 쓰기 가능한 공유 mapping이다. 장치 번호는 16진수다.
-// 다른 사용자의 프로세스는 maps를 읽을 수 없으므로 read가 false다.
+// 다른 사용자의 프로세스는 maps를 읽을 수 없으므로 read가 false다. mapping이 많은 프로세스의 maps는 수 MB이고 worker마다
+// 하나씩 읽으므로, 한 줄씩 읽고 줄마다 할당하지 않는다. 너무 긴 줄을 만나면 끝까지 읽지 못했으므로 read가 false다.
 func codecMapsWrite(name string, want *syscall.Stat_t) (writes, read bool) {
-	data, err := os.ReadFile(filepath.Join(codecProcRoot, name, "maps"))
+	file, err := os.Open(filepath.Join(codecProcRoot, name, "maps"))
 	if err != nil {
 		return false, codecProcGone(err)
 	}
-	ino := strconv.FormatUint(want.Ino, 10)
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 5 || fields[4] != ino || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 's' {
+	defer file.Close()
+	ino := []byte(strconv.FormatUint(want.Ino, 10))
+	lines := bufio.NewScanner(file)
+	for lines.Scan() {
+		var fields [5][]byte
+		rest := lines.Bytes()
+		for i := range fields {
+			rest = bytes.TrimLeft(rest, " ")
+			end := bytes.IndexByte(rest, ' ')
+			if end < 0 {
+				end = len(rest)
+			}
+			fields[i], rest = rest[:end], rest[end:]
+		}
+		perms := fields[1]
+		if !bytes.Equal(fields[4], ino) || len(perms) < 4 || perms[1] != 'w' || perms[3] != 's' {
 			continue
 		}
-		major, minor, ok := strings.Cut(fields[3], ":")
+		major, minor, ok := bytes.Cut(fields[3], []byte(":"))
 		if !ok {
 			continue
 		}
-		maj, err1 := strconv.ParseUint(major, 16, 32)
-		mnr, err2 := strconv.ParseUint(minor, 16, 32)
+		maj, err1 := strconv.ParseUint(string(major), 16, 32)
+		mnr, err2 := strconv.ParseUint(string(minor), 16, 32)
 		if err1 == nil && err2 == nil && unix.Mkdev(uint32(maj), uint32(mnr)) == want.Dev {
 			return true, true
 		}
+	}
+	if err := lines.Err(); err != nil {
+		return false, codecProcGone(err)
 	}
 	return false, true
 }

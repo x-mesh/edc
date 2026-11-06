@@ -279,6 +279,19 @@ func TestCodecRemoveWithoutALeaseScansProc(t *testing.T) {
 		codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
 		codecExpectKept(t, dir, path, codecIs(errCodecUnchecked, "compress.error.unchecked"))
 	})
+	// maps를 한 줄씩 읽으므로 읽을 수 있는 길이를 넘는 줄 뒤는 보지 못한다. 그때는 확인하지 못한 것으로 친다.
+	t.Run("maps line too long", func(t *testing.T) {
+		codecWithoutLease(t)
+		codecFakeProc(t, true)
+		long := "7f0000000000-7f0000001000 r--p 00000000 00:00 0 /" + strings.Repeat("x", bufio.MaxScanTokenSize) + "\n"
+		if err := os.WriteFile(filepath.Join(codecProcRoot, "123", "maps"), []byte(long), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.log.1")
+		codecWrite(t, path, []byte("line\n"), 0o644, time.Now().Add(-time.Hour))
+		codecExpectKept(t, dir, path, codecIs(errCodecUnchecked, "compress.error.unchecked"))
+	})
 	t.Run("no proc", func(t *testing.T) {
 		codecWithoutLease(t)
 		codecProcRoot = t.TempDir()

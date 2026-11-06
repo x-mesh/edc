@@ -237,8 +237,8 @@ func TestGrepMatcherNeedles(t *testing.T) {
 		{"Error 500", false, false, "Error 500"},
 		{"Error 500 at", false, true, "error 500 at"},
 		{"timeout", false, true, "timeout"},
-		{"Status 500 ok", false, true, " 500 "},
-		{"skip", false, true, ""},
+		{"Status 500 ok", false, true, "status 500 ok"},
+		{"skip", false, true, "skip"},
 		{`orders/[0-9]+`, true, false, "orders/"},
 		{`(?i)orders`, true, false, ""},
 		{`a|b`, true, false, ""},
@@ -373,7 +373,7 @@ func TestGrepSearchFileReusesReadBuffer(t *testing.T) {
 }
 
 func TestGrepFoldMatchesIgnoreCaseRegex(t *testing.T) {
-	data := append(grepFixture(1000), "\nTIMEOUT\nTiMeOuT x\ntime-out\nORDERS/41/CANCEL\nKelvin Key\nſecret\n"...)
+	data := append(grepFixture(1000), "\nTIMEOUT\nTiMeOuT x\ntime-out\nORDERS/41/CANCEL\nKelvin Key\nſecret\nde\u212a then DESK\n\u017ftatu\u017f then STATUS\n"...)
 	lines := bytes.Split(data, []byte("\n"))
 	sample := data[:min(len(data), grepSampleSize)]
 	for _, scenario := range []struct {
@@ -384,8 +384,11 @@ func TestGrepFoldMatchesIgnoreCaseRegex(t *testing.T) {
 		{"/41/cancel", true},
 		{"T", true},
 		{"/41/", true},
-		{"key", false},
-		{"secret", false},
+		{"key", true},
+		{"secret", true},
+		{"desk", true},
+		{"status", true},
+		{"ſecret", false},
 	} {
 		matcher, err := newGrepMatcher(scenario.pattern, false, true, sample)
 		if err != nil {
@@ -417,6 +420,54 @@ func TestGrepFoldMatchesIgnoreCaseRegex(t *testing.T) {
 				}
 				position += got + 1
 			}
+		}
+	}
+}
+
+// K와 ſ가 패턴의 어느 자리에 오든, 잘못된 UTF-8 바이트 옆에 있든 find와 scanner가 정규식 (?i)와 같은 자리와 줄을 찾는다.
+func TestGrepFoldPartnersMatchIgnoreCaseRegex(t *testing.T) {
+	const lineLimit = 1000
+	random := rand.New(rand.NewSource(13))
+	alphabet := []string{"s", "S", "\u017f", "k", "K", "\u212a", "e", "E", "x", "\n", "\xc5", "\xe2", "\xbf"}
+	var builder strings.Builder
+	for range 20000 {
+		builder.WriteString(alphabet[random.Intn(len(alphabet))])
+	}
+	data := []byte(builder.String())
+	for _, pattern := range []string{"s", "k", "sk", "kes", "ssek", "esk", "xk"} {
+		matcher, err := newGrepMatcher(pattern, false, true, data[:grepSampleSize/8])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !matcher.fold {
+			t.Fatalf("%s: not folded", pattern)
+		}
+		regex := regexp.MustCompile("(?i)" + regexp.QuoteMeta(pattern))
+		for position := 0; position < len(data); {
+			got, want := matcher.find(data[position:]), regex.FindIndex(data[position:])
+			if (want == nil) != (got < 0) || (want != nil && got != want[0]) {
+				t.Fatalf("%s at %d: find %d, regex %v", pattern, position, got, want)
+			}
+			if got < 0 {
+				break
+			}
+			position += got + 1
+		}
+		want := grepNaiveLines(data, lineLimit, regex.Match)
+		if len(want) == 0 {
+			t.Fatalf("%s: no line matched", pattern)
+		}
+		for _, block := range []int{1, 7, 64, 4096} {
+			scanner := newGrepScanner(matcher, nil)
+			scanner.block, scanner.lineLimit = block, lineLimit
+			var got []grepLineRef
+			if _, err := scanner.scanRange(bytes.NewReader(data), 0, int64(len(data)), 0, func(ref grepLineRef) bool {
+				got = append(got, grepLineRef{ref.offset, ref.number, bytes.Clone(ref.text)})
+				return true
+			}); err != nil {
+				t.Fatal(err)
+			}
+			grepRefsEqual(t, fmt.Sprintf("%s block %d", pattern, block), got, want, true)
 		}
 	}
 }

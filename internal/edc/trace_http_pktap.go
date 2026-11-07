@@ -21,6 +21,10 @@ type pktapTCPPacket struct {
 
 // PKTAP v1 and v2 share the flags offset. Layout: xnu bsd/net/pktap.h.
 func decodeHTTPPKTAP(data []byte, wallNS uint64, clockOffset int64) (pktapTCPPacket, bool) {
+	return decodeTransportPKTAP(data, wallNS, clockOffset, 6)
+}
+
+func decodeTransportPKTAP(data []byte, wallNS uint64, clockOffset int64, protocol byte) (pktapTCPPacket, bool) {
 	var result pktapTCPPacket
 	if len(data) < 40 {
 		return result, false
@@ -63,7 +67,7 @@ func decodeHTTPPKTAP(data []byte, wallNS uint64, clockOffset int64) (pktapTCPPac
 	var tcp []byte
 	switch family {
 	case 2:
-		if len(ip) < 20 || ip[0]>>4 != 4 || ip[9] != 6 || binary.BigEndian.Uint16(ip[6:])&0x3fff != 0 {
+		if len(ip) < 20 || ip[0]>>4 != 4 || ip[9] != protocol || binary.BigEndian.Uint16(ip[6:])&0x3fff != 0 {
 			return result, false
 		}
 		head, size := int(ip[0]&15)*4, int(binary.BigEndian.Uint16(ip[2:]))
@@ -82,7 +86,7 @@ func decodeHTTPPKTAP(data []byte, wallNS uint64, clockOffset int64) (pktapTCPPac
 		}
 		source, destination = netip.AddrFrom16([16]byte(ip[8:24])), netip.AddrFrom16([16]byte(ip[24:40]))
 		next, at := ip[6], 40
-		for next != 6 {
+		for next != protocol {
 			if at+2 > size {
 				return result, false
 			}
@@ -104,11 +108,20 @@ func decodeHTTPPKTAP(data []byte, wallNS uint64, clockOffset int64) (pktapTCPPac
 	default:
 		return result, false
 	}
-	if len(tcp) < 20 {
+	if len(tcp) < 8 || protocol == 6 && len(tcp) < 20 {
 		return result, false
 	}
-	head := int(tcp[12]>>4) * 4
-	if head < 20 || head > len(tcp) {
+	head := 8
+	if protocol == 6 {
+		head = int(tcp[12]>>4) * 4
+	} else {
+		size := int(binary.BigEndian.Uint16(tcp[4:6]))
+		if size < 8 || size > len(tcp) {
+			return result, false
+		}
+		tcp = tcp[:size]
+	}
+	if head < 8 || protocol == 6 && head < 20 || head > len(tcp) {
 		return result, false
 	}
 	result.sent = flags&2 != 0
@@ -120,7 +133,9 @@ func decodeHTTPPKTAP(data []byte, wallNS uint64, clockOffset int64) (pktapTCPPac
 		pid = 0
 	}
 	result.httpPacket = httpPacket{bootTimeNS: uint64(int64(wallNS) - clockOffset), pid: pid, process: string(name), sent: result.sent, source: local.String(), destination: remote.String(), payload: tcp[head:]}
-	result.sequence, result.flags = binary.BigEndian.Uint32(tcp[4:]), tcp[13]
+	if protocol == 6 {
+		result.sequence, result.flags = binary.BigEndian.Uint32(tcp[4:]), tcp[13]
+	}
 	return result, true
 }
 
@@ -131,6 +146,9 @@ type pktapHTTPKey struct {
 }
 type pktapHTTPDirection struct {
 	mysqlWire                    *mysqlStream
+	redisBoundary                *redisReader
+	redisBoundaryBytes           int
+	protocolStarted              bool
 	started, closed, blocked, h2 bool
 	next, offset                 uint32
 	buffer                       []byte
@@ -145,6 +163,9 @@ type pktapHTTPFlow struct {
 	directions [2]pktapHTTPDirection
 }
 type pktapHTTPTracker struct {
+	dns          *dnsQueryTracker
+	postgres     *postgresTracker
+	postgresPort uint16
 	redis        *redisTracker
 	redisPort    uint16
 	mysql        *mysqlTracker
@@ -164,9 +185,16 @@ func newPKTAPHTTPTracker(scope traceScope, offset int64) *pktapHTTPTracker {
 	tracker.keepGzip, tracker.progressive = scope.keepGzip, scope.progressive
 	tracker.h2PayloadLimit = traceHTTP2PayloadLimit(scope)
 	result := &pktapHTTPTracker{tracker: tracker, flows: map[pktapHTTPKey]*pktapHTTPFlow{}, clockOffset: offset}
+	if scope.protocol == "dns" {
+		result.dns = newDNSQueryTracker(scope.server)
+	}
 	if scope.protocol == "mysql" {
 		result.mysql = newMySQLTracker(scope.side, scope.showSecrets)
 		result.mysqlPort = cmp.Or(scope.port, traceMySQLDefaultPort)
+	}
+	if scope.protocol == "postgres" {
+		result.postgres = newPostgresTracker(scope.side, scope.showSecrets)
+		result.postgresPort = cmp.Or(scope.port, tracePostgresDefaultPort)
 	}
 	if scope.protocol == "redis" {
 		result.redis = newRedisTracker(scope.side, scope.showSecrets)
@@ -191,6 +219,91 @@ func (t *pktapHTTPTracker) emitPacket(packet httpPacket, now time.Time) []captur
 func (t *pktapHTTPTracker) drain(d *pktapHTTPDirection, final bool, now time.Time) []captureEvent {
 	before := len(d.buffer)
 	defer func() { t.buffered += len(d.buffer) - before }()
+	if t.dns != nil {
+		var events []captureEvent
+		for len(d.buffer) >= 2 {
+			size := int(binary.BigEndian.Uint16(d.buffer[:2]))
+			if size < traceDNSHeaderSize {
+				t.recordLoss("dns_frame_length", d.packet, "")
+				d.blocked = true
+				d.buffer = nil
+				break
+			}
+			if len(d.buffer) < size+2 {
+				break
+			}
+			packet := d.packet
+			packet.payload = d.buffer[2 : size+2]
+			events = append(events, t.dnsEvents(packet, true)...)
+			d.buffer = d.buffer[size+2:]
+		}
+		if final && len(d.buffer) > 0 {
+			t.recordLoss("dns_incomplete_frame", d.packet, "")
+			d.buffer = nil
+		}
+		if len(d.buffer) == 0 {
+			d.buffer = nil
+		}
+		return events
+	}
+	if t.postgres != nil {
+		var events []captureEvent
+		for len(d.buffer) > 0 {
+			if conn := t.postgres.conns[d.packet.socket]; conn != nil && (conn.encrypted || conn.closed) {
+				d.buffer = nil
+				break
+			}
+			if conn := t.postgres.conns[d.packet.socket]; conn != nil && conn.answer != 0 && (d.buffer[0] == 'S' || d.buffer[0] == 'N' || d.buffer[0] == 'G') {
+				packet := d.packet
+				packet.payload = d.buffer[:1]
+				events = append(events, t.postgresEvents(packet)...)
+				d.buffer = d.buffer[1:]
+				continue
+			}
+			header, start := 5, 1
+			if d.buffer[0] == 0 {
+				header, start = 4, 0
+			}
+			if len(d.buffer) < header {
+				break
+			}
+			size := int(binary.BigEndian.Uint32(d.buffer[start:header])) + start
+			if size < header || size > httpMessageMax {
+				d.blocked = true
+				t.recordLoss("postgres_frame_length", d.packet, "")
+				d.buffer = nil
+				break
+			}
+			if len(d.buffer) < size {
+				break
+			}
+			packet := d.packet
+			packet.payload = d.buffer[:size]
+			events = append(events, t.postgresEvents(packet)...)
+			d.buffer = d.buffer[size:]
+		}
+		if final && len(d.buffer) > 0 {
+			t.recordLoss("postgres_incomplete_frame", d.packet, "")
+			d.buffer = nil
+		}
+		if len(d.buffer) == 0 {
+			d.buffer = nil
+		}
+		return events
+	}
+	if t.redis != nil && !d.protocolStarted && len(d.buffer) > 0 && !d.packet.decrypted {
+		if d.buffer[0] >= 0x14 && d.buffer[0] <= 0x17 {
+			if len(d.buffer) < 3 {
+				return nil
+			}
+			if tlsRecordHeaderStart(d.buffer) {
+				d.blocked = true
+				d.buffer = nil
+				return nil
+			}
+		}
+		d.protocolStarted = true
+	}
 	if t.mysql != nil {
 		if len(d.buffer) == 0 {
 			return nil
@@ -206,6 +319,9 @@ func (t *pktapHTTPTracker) drain(d *pktapHTTPDirection, final bool, now time.Tim
 	}
 	if t.redis != nil {
 		if len(d.buffer) == 0 {
+			return nil
+		}
+		if t.redisReplyNeedsMore(d, final) {
 			return nil
 		}
 		packet := d.packet
@@ -323,6 +439,17 @@ func (t *pktapHTTPTracker) closeFlow(key pktapHTTPKey, flow *pktapHTTPFlow, now 
 	if t.redis != nil {
 		t.redis.forgetSocket(flow.id)
 	}
+	if t.postgres != nil {
+		t.postgres.forgetSocket(flow.id)
+	}
+	if t.dns != nil {
+		for key, queries := range t.dns.pending {
+			if key.tcp && key.socket == flow.id {
+				delete(t.dns.pending, key)
+				t.dns.size -= len(queries)
+			}
+		}
+	}
 	events = append(events, t.tracker.forget(flow.id)...)
 	delete(t.flows, key)
 	return events
@@ -421,6 +548,9 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 		connection := t.redis.newConn()
 		connection.requestSynced, connection.responseSynced = true, true
 		t.redis.conns[flow.id] = connection
+	}
+	if t.postgres != nil && packet.flags&0x12 == 2 && t.postgres.conns[flow.id] == nil {
+		t.postgres.conns[flow.id] = &postgresConn{request: postgresStream{synced: true, untyped: true}, response: postgresStream{synced: true}}
 	}
 	flow.updated = now
 	if packet.pid != 0 && packet.process != "" {

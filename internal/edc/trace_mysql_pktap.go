@@ -27,5 +27,8 @@ func (t *pktapHTTPTracker) mysqlEvents(packet httpPacket, wire *mysqlStream) []c
 		events = append(events, t.mysql.events(record, t.clockOffset)...)
 		return true
 	})
+	for i := range events {
+		events[i].TLS = events[i].TLS || packet.decrypted
+	}
 	return events
 }

@@ -448,7 +448,7 @@ command:
       side: "http와 DB trace는 두 쪽, dns는 client 쪽"
       payload: "http, socket: 앞 4KiB. =all: 1MiB까지"
       show_secrets: "http: 가린 header. DB: SQL, redis 값"
-      tls: "http: HTTPS 평문. 기본 자동 탐지. =경로: 파일 하나"
+      tls: "TLS 평문. HTTP: 기본 자동 탐지. macOS MySQL/Redis: 명시적으로 사용. =경로: 파일 하나"
       tls_keylog: "macOS http: SSLKEYLOGFILE 파일로 TLS 복호화"
       port: "http: 이 port만. DB: 서버 port"
       http_port: "clickhouse: HTTP port, 기본 8123"

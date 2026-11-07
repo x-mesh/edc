@@ -9,6 +9,10 @@ import (
 const pktapHTTPPacketLimit = 256 << 10
 
 func pktapHTTPFilter(port uint16) ([]bpf.Instruction, error) {
+	return pktapTransportFilter(port, false)
+}
+
+func pktapTransportFilter(port uint16, udp bool) ([]bpf.Instruction, error) {
 	var code []bpf.Instruction
 	labels := map[string]int{}
 	var patches []struct {
@@ -56,7 +60,11 @@ func pktapHTTPFilter(port uint16) ([]bpf.Instruction, error) {
 	branch(bpf.JumpEqual, 30<<24, "ipv6", "reject")
 	mark("ipv4")
 	emit(bpf.LoadIndirect{Off: 9, Size: 1})
+	if udp {
+		branch(bpf.JumpEqual, 17, "ipv4-transport", "")
+	}
 	branch(bpf.JumpNotEqual, 6, "reject", "")
+	mark("ipv4-transport")
 	emit(bpf.LoadIndirect{Off: 6, Size: 2})
 	branch(bpf.JumpBitsSet, 0x3fff, "reject", "")
 	if port == 0 {
@@ -68,6 +76,9 @@ func pktapHTTPFilter(port uint16) ([]bpf.Instruction, error) {
 	mark("ipv6")
 	emit(bpf.LoadIndirect{Off: 6, Size: 1})
 	branch(bpf.JumpEqual, 6, "ipv6-tcp", "")
+	if udp {
+		branch(bpf.JumpEqual, 17, "ipv6-tcp", "")
+	}
 	// Preserve extension-header packets for the existing userspace TCP decoder.
 	for _, protocol := range []uint32{0, 43, 51, 60} {
 		branch(bpf.JumpEqual, protocol, "accept", "")

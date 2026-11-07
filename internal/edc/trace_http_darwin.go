@@ -71,13 +71,15 @@ var loadDarwinHTTPPCAP = sync.OnceValues(func() (*darwinHTTPPCAP, error) {
 	return api, nil
 })
 
-func openDarwinHTTPPCAP() (*darwinHTTPPCAP, uintptr, error) {
+func openDarwinHTTPPCAP() (*darwinHTTPPCAP, uintptr, error) { return openDarwinPCAP("pktap,all") }
+
+func openDarwinPCAP(device string) (*darwinHTTPPCAP, uintptr, error) {
 	api, err := loadDarwinHTTPPCAP()
 	if err != nil {
 		return nil, 0, err
 	}
 	var buffer [256]byte
-	handle := api.create("pktap,all", &buffer[0])
+	handle := api.create(device, &buffer[0])
 	if handle == 0 {
 		return nil, 0, fmt.Errorf("create PKTAP capture: %s", bytes.TrimRight(buffer[:], "\x00"))
 	}
@@ -110,7 +112,7 @@ func openDarwinHTTPPCAP() (*darwinHTTPPCAP, uintptr, error) {
 	return api, handle, nil
 }
 func (api *darwinHTTPPCAP) setHTTPFilter(handle uintptr, scope traceScope) error {
-	instructions, err := pktapHTTPFilter(scope.port)
+	instructions, err := pktapTransportFilter(scope.port, scope.protocol == "dns")
 	if err != nil {
 		return err
 	}
@@ -148,6 +150,9 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 	if scope.protocol == "redis" && scope.port == 0 {
 		scope.port = traceRedisDefaultPort
 	}
+	if scope.protocol == "postgres" && scope.port == 0 {
+		scope.port = tracePostgresDefaultPort
+	}
 	var keylog *tlsKeylog
 	if scope.tlsKeylog != "" {
 		var err error
@@ -158,7 +163,14 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 		defer keylog.close()
 	}
 
-	api, handle, err := openDarwinHTTPPCAP()
+	if scope.protocol == "dns" {
+		scope.port = 53
+	}
+	device := "pktap,all"
+	if scope.interfaceName != "" {
+		device = "pktap," + scope.interfaceName
+	}
+	api, handle, err := openDarwinPCAP(device)
 	if err != nil {
 		return captureSummary{}, err
 	}
@@ -264,6 +276,14 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 			}
 			wall := uint64(header.seconds)*uint64(time.Second) + uint64(header.microseconds)*uint64(time.Microsecond)
 			packet, ok := decodeHTTPPKTAP(unsafe.Slice((*byte)(data), int(header.captured)), wall, offset)
+			if !ok && tracker.dns != nil {
+				udp, valid := decodeTransportPKTAP(unsafe.Slice((*byte)(data), int(header.captured)), wall, offset, 17)
+				if valid {
+					if err := emit(tracker.dnsEvents(udp.httpPacket, false)); err != nil {
+						return captureSummary{}, err
+					}
+				}
+			}
 			if ok {
 				if scope.port != 0 && !pktapHTTPPortMatches(packet, scope.port) {
 					continue

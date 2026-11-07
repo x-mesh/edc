@@ -98,6 +98,8 @@ root 권한 없이 실행하면 macOS trace는 현재 사용자의 kernel socket
 
 ## trace dns
 
+macOS에서는 libpcap과 PKTAP으로 평문 UDP·TCP DNS를 수집합니다. 기본값은 전체 인터페이스이며 `--interface lo0`로 범위를 제한할 수 있습니다. PKTAP의 프로세스 정보를 사용하고, 응답에 소유자 정보가 없으면 같은 질의의 소유자가 모두 일치할 때 보완합니다. 지연 시간은 수집한 패킷 사이의 시간이며 소켓 읽기 지연은 측정하지 않습니다. 요약에는 패킷 드롭과 TCP 재조립 유실을 표시합니다. IP 조각과 TCP 연결 이벤트는 지원하지 않습니다.
+
 Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 출력합니다. UDP port 53의 DNS message를 읽고, port 53으로 가는 TCP 연결도 표시합니다.
 
 ```bash
@@ -136,7 +138,7 @@ edc trace dns --side server --group-by target
 
 서버 쪽 응답 시간은 서버가 질의를 읽은 때부터 응답을 보낸 때까지입니다. 서버 쪽 질의의 `read_delay_ms`는 질의가 서버의 수신 큐에서 기다린 시간입니다. 응답 시간이 짧으면 대개 캐시에서 답한 것이고, 길면 상위 서버에 물어본 것입니다. 서버 쪽에서는 서버가 port 53으로 받은 TCP 연결을 `dns_tcp_accept`로 표시하고, 서버가 그 client에게 잘린 응답을 보냈으면 그 질의의 이름을 붙입니다. edc는 서버가 `accept()`를 부를 때 listen socket의 process를 알게 되므로, trace 전부터 떠 있던 서버의 첫 연결에는 process가 없을 수 있습니다.
 
-`trace dns`는 port 53만 관측합니다. DNS over TCP는 message 앞에 2바이트 길이를 붙입니다. 길이와 message를 두 버퍼로 나눠 쓰거나 두 번에 나눠 읽는 program이 많아, edc는 쓰기의 앞 두 버퍼를 읽고, 2바이트만 읽은 조각은 같은 연결의 다음 읽기와 이어 붙입니다. 한 번의 읽기 중간에서 시작하는 message는 찾지 못합니다. DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
+`trace dns`는 port 53만 관측합니다. DNS over TCP는 message 앞에 2바이트 길이를 붙입니다. 길이와 message를 두 버퍼로 나눠 쓰거나 두 번에 나눠 읽는 program이 많아, edc는 쓰기의 앞 두 버퍼를 읽고, 2바이트만 읽은 조각은 같은 연결의 다음 읽기와 이어 붙입니다. 한 번의 읽기 중간에서 시작하는 message는 찾지 못합니다. DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다.
 
 ## trace arp
 
@@ -384,6 +386,8 @@ amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 seccomp fi
 
 ## trace mysql
 
+macOS에서는 `--tls --port 3306`로 TLS 라이브러리의 평문을 수집할 수 있습니다. `--tls=/path/to/client`로 실행 파일을 지정할 수 있습니다. HTTP TLS와 같은 DTrace 권한 및 OpenSSL·SecureTransport·Go 버전 제한이 적용됩니다. 키 로그는 필요하지 않으며 기존 값 마스킹을 유지합니다.
+
 Linux 5.15 이상과 macOS에서 `trace mysql`로 평문 MySQL 명령과 결과를 봅니다. Linux는 eBPF로 TCP 버퍼를 읽고, macOS는 PKTAP 패킷에서 TCP 스트림을 조립합니다. macOS는 패킷 캡처 권한이 필요하므로 일반적으로 `sudo`로 실행합니다. 기본 포트는 3306이며 `--port`로 바꿀 수 있습니다.
 
 macOS에서도 양쪽 연결, 분할된 패킷, prepared statement, SQL 값 마스킹과 응답 시간을 지원합니다. 연결 정보를 보려면 연결 전에 수집을 시작하세요. TLS와 압축 연결은 협상 상태를 표시하며 암호화된 SQL을 복호화하지 않습니다.
@@ -430,7 +434,7 @@ JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 �
 - `mysql_error`에는 `error_code`, `sql_state`, `message`가 있습니다.
 - `mysql_result`에는 column 수인 `columns`가 있습니다. 행은 세지도 읽지도 않습니다.
 
-응답 event에는 답한 명령의 `command`와 `sql`이 함께 들어 있습니다. `mysql_tls`는 명령이 아닙니다. 연결이 TLS를 쓴다는 표시이며 `tls: true`가 있습니다. edc는 그 연결을 더 읽지 않습니다.
+응답 event에는 답한 명령의 `command`와 `sql`이 함께 들어 있습니다. `mysql_tls`는 명령이 아닙니다. 연결이 TLS를 쓴다는 표시이며 `tls: true`가 있습니다. macOS TLS probe가 없으면 edc는 그 연결을 더 읽지 않습니다.
 
 MySQL은 한 번에 명령 하나에 답하므로, 명령 뒤에 오는 첫 응답 packet이 그 명령의 응답입니다. `latency_ms`는 client가 명령을 보낸 때부터 그 packet을 읽은 때까지입니다. 서버 쪽에서는 서버가 명령을 읽은 때부터 그 packet을 쓴 때까지입니다. client 응답 시간에는 network가 들어가고, 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. 첫 packet 뒤의 행은 읽지 않으므로 `latency_ms`는 마지막 행까지 걸린 시간이 아닙니다.
 
@@ -447,7 +451,7 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다
 `trace mysql`에는 다음 제한이 있습니다.
 
 - TCP만 봅니다. `mysql -h localhost`는 unix socket을 쓰므로 `trace mysql`에는 아무것도 보이지 않습니다. `mysql -h 127.0.0.1`은 TCP입니다. unix socket의 raw payload는 `trace socket`으로 봅니다.
-- TLS는 읽지 않습니다. MySQL 8.4의 `mysql` client는 TCP에서 기본으로 TLS를 쓰므로 많은 연결에 `mysql_tls`만 나옵니다. test에서는 `--ssl-mode=DISABLED`를 씁니다.
+- macOS의 `--tls`가 없으면 암호화된 MySQL 쿼리는 표시하지 않습니다. 평문 TCP 테스트에는 `--ssl-mode=DISABLED`를 사용하세요.
 - 압축 연결은 읽지 않습니다. `compressed: true`인 `mysql_connect`와 로그인 결과까지만 보이고, 그 뒤에는 event가 없습니다.
 - port 33060의 X Protocol은 읽지 않습니다.
 - 명령에 query attribute 값이 있으면 SQL을 찾지 못해 `sql` 없이 명령만 보입니다.
@@ -557,6 +561,8 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다
 
 ## trace postgres
 
+macOS에서도 libpcap과 PKTAP으로 평문 PostgreSQL을 수집합니다. 패킷 접근 권한이 필요하며, Startup 정보를 보려면 연결 전에 수집을 시작하세요. 기본 포트는 5432입니다. 쿼리, prepared statement, 응답 연결과 지연 시간에는 기존 분석기를 사용합니다.
+
 Linux 5.15 이상에서 `trace postgres`를 사용하면 평문 PostgreSQL 요청과 결과를 발생 즉시 출력합니다. edc는 kernel에서 PostgreSQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 5432이고, 다른 port는 `--port`로 지정합니다.
 
 ```bash
@@ -611,7 +617,11 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 씁니다. `--gr
 - 연결 중간에 trace를 시작하면 그 연결의 `postgres_connect`가 없습니다. edc는 다음 요청에서 경계를 찾습니다.
 - event의 SQL은 1,024 byte까지 보이고, 잘랐으면 `sql_truncated`가 true입니다.
 
+macOS에서는 PostgreSQL 메시지 하나를 1 MiB로 제한합니다. 이를 넘으면 해당 스트림의 분석을 중단하고 유실 수를 늘립니다.
+
 ## trace redis
+
+macOS에서는 `--tls --port 6380`로 TLS 라이브러리의 평문을 수집할 수 있습니다. `--tls=/path/to/client`로 실행 파일을 지정할 수 있습니다. HTTP TLS와 같은 DTrace 권한 및 OpenSSL·SecureTransport·Go 버전 제한이 적용됩니다. 키 로그는 필요하지 않으며 기존 값 마스킹을 유지합니다.
 
 Linux 5.15 이상 또는 macOS에서 `trace redis`를 사용하면 평문 Redis 명령과 응답을 발생 즉시 출력합니다. Linux에서는 kernel에서 Redis port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 6379이고, 다른 port는 `--port`로 지정합니다.
 
@@ -644,7 +654,7 @@ Ctrl-C 뒤의 요약은 쪽과 명령 이름마다 한 행을 쓰고, 명령 수
 
 `trace redis`에는 다음 제한이 있습니다.
 
-- TLS는 읽지 않습니다. TLS 연결에서는 RESP 경계를 찾지 못해 event가 나오지 않습니다.
+- macOS의 `--tls`가 없으면 암호화된 Redis 명령과 응답은 표시하지 않습니다.
 - TCP만 봅니다. unix socket 연결은 보이지 않습니다.
 - Linux는 요청 앞 4 KiB, 응답 쓰기나 읽기는 앞 1 KiB만 남깁니다. 5,000개 항목의 `LRANGE`처럼 아주 큰 array 응답은 경계를 잃습니다. 그 명령은 응답 없음으로 세고, 다음 명령에서 경계를 다시 맞춥니다.
 - bulk 값은 크기만큼 건너뛰므로 10 KB `SET`도 응답과 짝을 찾습니다. 5,000개 값을 넣는 `RPUSH`처럼 인자 header가 캡처 밖에 있는 명령은 `truncated: true`로 표시하고 응답과 짝짓지 않습니다.

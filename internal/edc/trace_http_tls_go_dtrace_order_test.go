@@ -253,3 +253,12 @@ func TestDarwinTLSGoWriteSnapshotDecoder(t *testing.T) {
 		}
 	}
 }
+
+func TestDarwinTLSGoWriteSnapshotRejectsReadAndCloseRecords(t *testing.T) {
+	for _, header := range []string{"EDC_GO_WRITE 42 100 1 0 0 0 0 0 -1 client", "EDC_GO_WRITE 42 100 1 0 1 0 0 0 -1 client", "EDC_GO_WRITE 42 100 1 1 1 0 0 0 -1 client"} {
+		var decoder darwinTLSDecoder
+		if _, err := decoder.line(header); err == nil {
+			t.Fatalf("invalid write snapshot accepted: %s", header)
+		}
+	}
+}

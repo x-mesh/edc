@@ -191,3 +191,23 @@ func TestDarwinPKTAPReplayValidatesHTTPEventParity(t *testing.T) {
 		t.Fatal("changed latency accepted")
 	}
 }
+
+func TestDarwinReplayHTTPEventPreservesIdentityAndLatency(t *testing.T) {
+	latency := 12.5
+	event := captureEvent{Protocol: "http", PID: 42, Source: "127.0.0.1:50000", Destination: "127.0.0.1:443", Method: "GET", Path: "/fixture", Side: traceClientSide, Status: 200, TLS: true, LatencyMS: &latency}
+	actual, ok := darwinReplayHTTPEvent(event)
+	expected := darwinPKTAPReplayHTTPEvent{PID: 42, Source: event.Source, Destination: event.Destination, Method: "GET", Path: "/fixture", Side: traceClientSide, Status: 200, TLS: true, HasLatency: true, Latency: latency}
+	if !ok || actual != expected {
+		t.Fatalf("actual=%+v expected=%+v ok=%t", actual, expected, ok)
+	}
+	event.LatencyMS = nil
+	actual, ok = darwinReplayHTTPEvent(event)
+	if !ok || actual.HasLatency || actual.Latency != 0 {
+		t.Fatalf("absent latency=%+v", actual)
+	}
+	for _, event := range []captureEvent{{Protocol: "redis", Method: "GET"}, {Protocol: "http"}} {
+		if _, ok := darwinReplayHTTPEvent(event); ok {
+			t.Fatalf("non-message HTTP event accepted: %+v", event)
+		}
+	}
+}

@@ -145,6 +145,9 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 	if scope.protocol == "mysql" && scope.port == 0 {
 		scope.port = traceMySQLDefaultPort
 	}
+	if scope.protocol == "redis" && scope.port == 0 {
+		scope.port = traceRedisDefaultPort
+	}
 	var keylog *tlsKeylog
 	if scope.tlsKeylog != "" {
 		var err error

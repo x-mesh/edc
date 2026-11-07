@@ -103,6 +103,7 @@ func runLifecycle(workers, rounds int, pause time.Duration, keepAlive bool) {
 		},
 		DisableKeepAlives:   !keepAlive,
 		MaxIdleConnsPerHost: workers,
+		MaxConnsPerHost:     workers,
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}

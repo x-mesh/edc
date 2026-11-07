@@ -119,3 +119,17 @@ func TestPKTAPRedisRESP3PushDoesNotConsumeReply(t *testing.T) {
 		t.Fatalf("push/reply=%#v", events)
 	}
 }
+
+func TestPKTAPRedisCapturesExistingConnectionWithoutSYN(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{protocol: "redis"}, 0)
+	now := time.Now()
+	request := redisPKTAPCommand("GET", "existing")
+	events := tracker.add(redisPKTAPTestPacket(false, true, 1000, 1_000_000, request), now)
+	if len(events) != 1 || events[0].Redis.Command != "GET" {
+		t.Fatalf("existing connection request=%+v", events)
+	}
+	events = tracker.add(redisPKTAPTestPacket(false, false, 9000, 31_000_000, []byte("$2\r\nOK\r\n")), now)
+	if len(events) != 1 || events[0].Redis.Command != "GET" || events[0].LatencyMS == nil || *events[0].LatencyMS != 30 {
+		t.Fatalf("existing connection response=%+v", events)
+	}
+}

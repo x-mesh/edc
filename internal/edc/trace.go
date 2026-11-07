@@ -105,7 +105,6 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("ndp") },
 	}},
-	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
 	{name: "http", view: traceProtocolView{selectorLabel: "http"}, spec: traceProtocolSpec{
 		groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath},
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },

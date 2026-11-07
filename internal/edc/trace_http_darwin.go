@@ -278,7 +278,7 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 			packet, ok := decodeHTTPPKTAP(unsafe.Slice((*byte)(data), int(header.captured)), wall, offset)
 			if !ok && tracker.dns != nil {
 				udp, valid := decodeTransportPKTAP(unsafe.Slice((*byte)(data), int(header.captured)), wall, offset, 17)
-				if valid {
+				if valid && pktapHTTPPortMatches(udp, scope.port) {
 					if err := emit(tracker.dnsEvents(udp.httpPacket, false)); err != nil {
 						return captureSummary{}, err
 					}
@@ -337,8 +337,11 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 			return captureSummary{}, tracker.tls.err
 		}
 		unmapped += tracker.tls.unmapped
+		if tracker.tls.earlyData > 0 {
+			notices = append(notices, fmt.Sprintf("%d TLS 0-RTT connections were skipped (unsupported)", tracker.tls.earlyData))
+		}
 		if unmapped != 0 {
-			notice := fmt.Sprintf("%d TLS records have no matching key log secrets or complete handshake", unmapped)
+			notice := fmt.Sprintf("%d TLS records could not be decoded (missing secrets, incomplete handshakes, or unsupported early data)", unmapped)
 			notices = append(notices, notice)
 			if onEvent != nil {
 				if err := onEvent(captureEvent{TLSNotice: notice}); err != nil {

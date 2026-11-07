@@ -753,10 +753,12 @@ const (
 	tlsHelloFixedSize      = 4 + 2 + 32
 	tlsExtensionServerName = 0x0000
 	tlsExtensionALPN       = 0x0010
+	tlsExtensionEarlyData  = 42
 )
 
 // tlsClientHello는 ClientHello에서 읽은 값이다. 원격이 보낸 값이라 제어 문자를 \xNN으로 바꿔 둔다.
 type tlsClientHello struct {
+	earlyData  bool
 	serverName string
 	alpn       []string
 }
@@ -807,6 +809,8 @@ func parseTLSClientHello(payload []byte, record bool) (tlsClientHello, bool) {
 			break
 		}
 		switch kind {
+		case tlsExtensionEarlyData:
+			hello.earlyData = len(data) == 0
 		case tlsExtensionServerName:
 			hello.serverName = tlsServerName(data)
 		case tlsExtensionALPN:

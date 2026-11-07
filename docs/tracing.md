@@ -524,13 +524,15 @@ For key log decryption, start capture before the TLS handshake. The application 
 For example, run these commands in separate terminals. Start the trace before the Node.js application.
 
 ```bash
-umask 077
-touch /tmp/edc-tls.keys
-sudo edc trace http --tls-keylog /tmp/edc-tls.keys --port 443
+keylog=$(mktemp /tmp/edc-tls.XXXXXX)
+printf '%s\n' "$keylog"
+sudo edc trace http --tls-keylog "$keylog" --port 443
 ```
 
+In the second terminal, replace `<printed-keylog-path>` with the printed path.
+
 ```bash
-node --tls-keylog=/tmp/edc-tls.keys app.js
+node --tls-keylog="<printed-keylog-path>" app.js
 ```
 
 TLS 1.3 supports AES-GCM and ChaCha20-Poly1305.
@@ -539,7 +541,9 @@ TLS 1.2 supports AES-GCM with RSA or ECDHE, plus ChaCha20-Poly1305 with ECDHE or
 
 HTTPS supports HTTP/1.x, HTTP/2, payload masks, and TLS 1.3 KeyUpdate. TLS 1.2 renegotiation, 0-RTT, and QUIC are unsupported.
 
-The key log limit is 64 MiB and 65,536 entries. Buffered TLS records, incomplete handshakes, and plaintext that awaits earlier records share a 16 MiB limit.
+The key log limit is 64 MiB and 65,536 entries. TLS record buffers, queue storage, incomplete handshakes, and plaintext that awaits earlier records share a 16 MiB limit.
+
+Wire and plaintext queues hold at most 16,384 records. edc skips unsupported 0-RTT connections and counts their records in `tls_unmapped`.
 
 Capture gaps or authentication errors stop decryption with an error. The summary counts records without matching secrets in `tls_unmapped`.
 

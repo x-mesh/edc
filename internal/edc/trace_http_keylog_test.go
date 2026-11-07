@@ -530,3 +530,97 @@ func BenchmarkTLSKeylogBlockedPlaintextQueue(b *testing.B) {
 		})
 	}
 }
+
+func TestTLSKeylogEarlyDataDoesNotStopOtherConnections(t *testing.T) {
+	packets, keys := tlsKeylogTestCapture(t, tls.VersionTLS13, 0, false)
+	path := filepath.Join(t.TempDir(), "fixture.log")
+	if err := os.WriteFile(path, keys, 0600); err != nil {
+		t.Fatal(err)
+	}
+	log, err := openTLSKeylog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.close()
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	tracker.tls = newTLSKeylogDecryptor(log, tracker)
+	body := make([]byte, 34)
+	body[0], body[1] = 3, 3
+	body = append(body, 0, 0, 2, 0x13, 1, 1, 0, 0, 4, 0, 42, 0, 0)
+	hello := append([]byte{1, 0, 0, byte(len(body))}, body...)
+	wire := append([]byte{22, 3, 3, 0, byte(len(hello))}, hello...)
+	d := tracker.tls
+	d.record(httpPacket{socket: 9999, sent: true, payload: wire}, time.Now())
+	d.connections[9999].version = tls.VersionTLS13
+	d.connections[9999].suite = tls.TLS_AES_128_GCM_SHA256
+	d.log.keys[tlsKeylogKey{label: "CLIENT_HANDSHAKE_TRAFFIC_SECRET"}] = bytes.Repeat([]byte{2}, 32)
+	early := tlsKeylogTestRecord(t, tls.TLS_AES_128_GCM_SHA256, bytes.Repeat([]byte{1}, 32), 0, 23, []byte("early"))
+	d.record(httpPacket{socket: 9999, sent: true, payload: early}, time.Now())
+	if d.err != nil || d.unmapped == 0 || d.pending != 0 {
+		t.Fatalf("early data blocked capture: err=%v unmapped=%d pending=%d", d.err, d.unmapped, d.pending)
+	}
+	var events []captureEvent
+	for _, packet := range packets {
+		events = append(events, tracker.add(packet, time.Now())...)
+	}
+	events = append(events, tracker.sweep(time.Now(), true)...)
+	request, response := false, false
+	for _, event := range events {
+		if event.TLS && event.Path == "/secure" {
+			request = request || event.Method == "GET" && event.Status == 0
+			response = response || event.Status == 200
+		}
+	}
+	if d.err != nil || !request || !response {
+		t.Fatalf("healthy connection failed: request=%t response=%t err=%v", request, response, d.err)
+	}
+	d.forget(9999, time.Now())
+	if d.buffered != 0 || d.queued != 0 {
+		t.Fatalf("early data retained buffers: bytes=%d records=%d", d.buffered, d.queued)
+	}
+}
+
+func TestTLSKeylogBoundsTinyRecordMetadata(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	d := newTLSKeylogDecryptor(nil, tracker)
+	for i := 0; i <= tlsKeylogQueueLimit; i++ {
+		d.record(httpPacket{socket: 1, sent: true, payload: []byte{23, 3, 3, 0, 0}}, time.Now())
+	}
+	if d.err == nil {
+		t.Fatal("tiny TLS records bypassed the queue metadata bound")
+	}
+	if d.buffered <= d.pending || d.queued != tlsKeylogQueueLimit {
+		t.Fatalf("queue metadata was not charged: bytes=%d pending=%d records=%d", d.buffered, d.pending, d.queued)
+	}
+	d.forget(1, time.Now())
+	if d.buffered != 0 || d.pending != 0 || d.queued != 0 {
+		t.Fatalf("queue cleanup buffered=%d pending=%d", d.buffered, d.pending)
+	}
+}
+
+func TestTLSKeylogRefreshPropagatesTruncationAndSizeErrors(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		size    int64
+		message string
+	}{{"truncate", 0, "truncated"}, {"oversize", tlsKeylogFileLimit + 1, "exceeds"}} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "fixture.log")
+			if err := os.WriteFile(path, []byte("# fixture\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			log, err := openTLSKeylog(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer log.close()
+			if err := os.Truncate(path, test.size); err != nil {
+				t.Fatal(err)
+			}
+			d := newTLSKeylogDecryptor(log, newPKTAPHTTPTracker(traceScope{}, 0))
+			if events := d.refresh(time.Now()); len(events) != 0 || d.err == nil || !strings.Contains(d.err.Error(), test.message) {
+				t.Fatalf("refresh error=%v events=%d", d.err, len(events))
+			}
+		})
+	}
+}

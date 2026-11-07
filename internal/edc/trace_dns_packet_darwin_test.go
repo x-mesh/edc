@@ -136,3 +136,58 @@ func TestDecodeDarwinDNSIPv6ExtensionHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeDarwinDNSIPv6ExtensionChain(t *testing.T) {
+	for _, chain := range [][]byte{{0, 60}, {43, 51, 60}} {
+		sizes := make([]int, len(chain))
+		extensionBytes := 0
+		for i, kind := range chain {
+			sizes[i] = 8
+			if kind == 51 {
+				sizes[i] = 12
+			}
+			extensionBytes += sizes[i]
+		}
+		frame := make([]byte, 4+40+extensionBytes+8+12)
+		binary.LittleEndian.PutUint32(frame, 30)
+		ip := frame[4:]
+		ip[0] = 0x60
+		ip[6] = chain[0]
+		ip[23] = 1
+		ip[39] = 2
+		binary.BigEndian.PutUint16(ip[4:], uint16(len(ip)-40))
+		at := 40
+		for i, kind := range chain {
+			next := byte(17)
+			if i+1 < len(chain) {
+				next = chain[i+1]
+			}
+			ip[at] = next
+			if kind == 51 {
+				ip[at+1] = 1
+			}
+			at += sizes[i]
+		}
+		udp := ip[at:]
+		binary.BigEndian.PutUint16(udp, 50000)
+		binary.BigEndian.PutUint16(udp[2:], 53)
+		binary.BigEndian.PutUint16(udp[4:], uint16(len(udp)))
+		source, destination, payload, ok := decodeDarwinDNSPacket(frame, 0)
+		if !ok || source.String() != "[::1]:50000" || destination.String() != "[::2]:53" || len(payload) != 12 {
+			t.Fatalf("chain=%v source=%s destination=%s ok=%t", chain, source, destination, ok)
+		}
+		second := 40 + sizes[0]
+		ip[second+1] = 255
+		if _, _, _, ok := decodeDarwinDNSPacket(frame, 0); ok {
+			t.Fatalf("invalid second extension length accepted: %v", chain)
+		}
+		ip[second+1] = 0
+		if chain[1] == 51 {
+			ip[second+1] = 1
+		}
+		ip[second] = 44
+		if _, _, _, ok := decodeDarwinDNSPacket(frame, 0); ok {
+			t.Fatalf("fragment inside extension chain accepted: %v", chain)
+		}
+	}
+}

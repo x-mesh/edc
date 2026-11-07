@@ -14,22 +14,36 @@ type darwinTLSGoCall struct {
 type darwinTLSGoConnection struct {
 	active, writers, bytes int
 	reads, closes          []darwinTLSRecord
+	writes                 []darwinTLSRecord
 }
+type darwinTLSGoObservation struct {
+	serial uint64
+	key    darwinTLSGoCall
+	phase  uint8
+	closed bool
+	size   uint64
+	offset uint32
+}
+
 type darwinTLSGoOrder struct {
-	calls          map[darwinTLSGoCall]struct{}
+	serial         uint64
+	recent         [16]darwinTLSGoObservation
+	calls          map[darwinTLSGoCall]uint64
 	connections    map[uint64]*darwinTLSGoConnection
 	bytes, records int
 }
 
 func newDarwinTLSGoOrder() *darwinTLSGoOrder {
-	return &darwinTLSGoOrder{calls: map[darwinTLSGoCall]struct{}{}, connections: map[uint64]*darwinTLSGoConnection{}}
+	return &darwinTLSGoOrder{calls: map[darwinTLSGoCall]uint64{}, connections: map[uint64]*darwinTLSGoConnection{}}
 }
 func (o *darwinTLSGoOrder) add(r darwinTLSRecord) ([]darwinTLSRecord, error) {
 	c := o.connections[r.object]
 	key := darwinTLSGoCall{r.object, r.goroutine, r.frame, r.sent}
+	o.serial++
+	o.recent[(o.serial-1)%uint64(len(o.recent))] = darwinTLSGoObservation{o.serial, key, r.goPhase, r.closed, r.size, r.offset}
 	if r.goPhase == 1 {
-		if _, exists := o.calls[key]; exists {
-			return nil, fmt.Errorf("duplicate Go TLS call begin")
+		if began, exists := o.calls[key]; exists {
+			return nil, fmt.Errorf("duplicate Go TLS call begin: object=%x goroutine=%x frame=%d sent=%t first_record=%d duplicate_record=%d active=%d writers=%d recent=%+v", r.object, r.goroutine, r.frame, r.sent, began, o.serial, c.active, c.writers, o.recent)
 		}
 		if len(o.calls) >= darwinTLSGoOrderCalls || c == nil && len(o.connections) >= pktapHTTPFlowLimit {
 			return nil, fmt.Errorf("Go TLS active call limit exceeded")
@@ -45,12 +59,71 @@ func (o *darwinTLSGoOrder) add(r darwinTLSRecord) ([]darwinTLSRecord, error) {
 		if r.sent {
 			c.writers++
 		}
-		o.calls[key] = struct{}{}
+		o.calls[key] = o.serial
 		return nil, nil
+	}
+	if r.goPhase == 3 {
+		if c == nil || c.writers != 1 || !r.sent {
+			return nil, fmt.Errorf("Go TLS write snapshot has no active writer")
+		}
+		size := cap(r.payload)
+		if o.records >= darwinTLSGoOrderRecords || o.bytes+size > darwinTLSGoOrderBytes || c.bytes+size > darwinTLSGoOrderConnectionBytes {
+			return nil, fmt.Errorf("Go TLS write snapshot limit exceeded")
+		}
+		if len(c.writes) > 0 {
+			previous := c.writes[len(c.writes)-1]
+			if r.offset != previous.offset+uint32(len(previous.payload)) {
+				return nil, fmt.Errorf("Go TLS write snapshot has a gap")
+			}
+		}
+		c.writes = append(c.writes, r)
+		c.bytes += size
+		o.bytes += size
+		o.records++
+		return nil, nil
+	}
+	if r.goPhase == 4 {
+		if _, exists := o.calls[key]; !exists || c == nil || c.writers != 1 {
+			return nil, fmt.Errorf("Go TLS write result has no active call")
+		}
+		if len(c.writes) > 0 && c.writes[0].offset != r.offset {
+			return nil, fmt.Errorf("Go TLS write snapshot offset changed before return")
+		}
+		captured := 0
+		for _, chunk := range c.writes {
+			captured += len(chunk.payload)
+		}
+		if uint64(captured) < min(r.size, uint64(httpMessageMax)) {
+			return nil, fmt.Errorf("Go TLS write result exceeds its snapshot")
+		}
+		var output []darwinTLSRecord
+		left := r.size
+		for _, chunk := range c.writes {
+			if left == 0 {
+				break
+			}
+			n := min(uint64(len(chunk.payload)), left)
+			chunk.payload = chunk.payload[:n]
+			chunk.size = n
+			chunk.fd = r.fd
+			chunk.goPhase = 0
+			chunk.offset = r.offset + uint32(r.size-left)
+			if r.size > httpMessageMax {
+				chunk.size = r.size
+			}
+			output = append(output, chunk)
+			left -= n
+		}
+		o.release(c.writes)
+		c.writes = nil
+		return output, nil
 	}
 	if r.goPhase == 2 {
 		if _, exists := o.calls[key]; !exists || c == nil {
 			return nil, fmt.Errorf("Go TLS call end has no begin")
+		}
+		if r.sent && len(c.writes) > 0 {
+			return nil, fmt.Errorf("Go TLS write ended before its snapshot was confirmed")
 		}
 		delete(o.calls, key)
 		c.active--

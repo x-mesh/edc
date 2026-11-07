@@ -5,6 +5,7 @@ package edc
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,8 +29,39 @@ type darwinPKTAPReplayPacket struct {
 
 type darwinPKTAPReplay struct {
 	Packets   []darwinPKTAPReplayPacket
+	Expected  []darwinPKTAPReplayHTTPEvent
 	Truncated bool
 	bytes     int
+}
+
+type darwinPKTAPReplayHTTPEvent struct {
+	PID                                     uint32
+	Source, Destination, Method, Path, Side string
+	Status                                  int
+	TLS, HasLatency                         bool
+	Latency                                 float64
+}
+
+func darwinReplayHTTPEvent(event captureEvent) (darwinPKTAPReplayHTTPEvent, bool) {
+	if event.Protocol != "http" || (event.Method == "" && event.Status == 0) {
+		return darwinPKTAPReplayHTTPEvent{}, false
+	}
+	value := darwinPKTAPReplayHTTPEvent{PID: event.PID, Source: event.Source, Destination: event.Destination, Method: event.Method, Path: event.Path, Side: event.Side, Status: event.Status, TLS: event.TLS, HasLatency: event.LatencyMS != nil}
+	if event.LatencyMS != nil {
+		value.Latency = *event.LatencyMS
+	}
+	return value, true
+}
+func validateDarwinReplayHTTPEvents(expected, actual []darwinPKTAPReplayHTTPEvent) error {
+	if len(expected) != len(actual) {
+		return fmt.Errorf("HTTP replay events=%d expected=%d", len(actual), len(expected))
+	}
+	for i := range expected {
+		if expected[i] != actual[i] {
+			return fmt.Errorf("HTTP replay event %d differs: actual=%#v expected=%#v", i, actual[i], expected[i])
+		}
+	}
+	return nil
 }
 
 func (r *darwinPKTAPReplay) add(packet pktapTCPPacket, now time.Time) {
@@ -96,16 +128,35 @@ func TestDarwinPKTAPSavedReplay(t *testing.T) {
 		losses[reason]++
 		t.Logf("%s pid=%d local=%s remote=%s %s", reason, packet.pid, packet.source, packet.destination, detail)
 	}
+	var actual []darwinPKTAPReplayHTTPEvent
+	observe := func(events []captureEvent) {
+		for _, event := range events {
+			if value, ok := darwinReplayHTTPEvent(event); ok {
+				if value.Status != 0 && (value.Method == "" || value.Path == "" || !value.HasLatency) {
+					t.Fatalf("orphan HTTP replay response: %#v", value)
+				}
+				actual = append(actual, value)
+			}
+		}
+	}
 	var now time.Time
 	for _, p := range replay.Packets {
 		now = time.Unix(0, p.Now)
 		if p.TLS {
-			tracker.addDarwinTLS(darwinTLSRecord{pid: p.PID, object: p.Object, wallNS: p.Timestamp, source: p.Source, destination: p.Destination, process: p.Process, sent: p.Sent, closed: p.Closed, payload: p.Payload, fd: p.FD, offset: p.Sequence, size: p.Size}, p.Port, now)
+			events, _ := tracker.addDarwinTLS(darwinTLSRecord{pid: p.PID, object: p.Object, wallNS: p.Timestamp, source: p.Source, destination: p.Destination, process: p.Process, sent: p.Sent, closed: p.Closed, payload: p.Payload, fd: p.FD, offset: p.Sequence, size: p.Size}, p.Port, now)
+			observe(events)
 			continue
 		}
-		tracker.add(pktapTCPPacket{httpPacket: httpPacket{bootTimeNS: p.Timestamp, pid: p.PID, process: p.Process, source: p.Source, destination: p.Destination, sent: p.Sent, payload: p.Payload}, sequence: p.Sequence, flags: p.Flags}, now)
+		observe(tracker.add(pktapTCPPacket{httpPacket: httpPacket{bootTimeNS: p.Timestamp, pid: p.PID, process: p.Process, source: p.Source, destination: p.Destination, sent: p.Sent, payload: p.Payload}, sequence: p.Sequence, flags: p.Flags}, now))
 	}
-	tracker.sweep(now, true)
+	observe(tracker.sweep(now, true))
+	if len(replay.Expected) > 0 {
+		if err := validateDarwinReplayHTTPEvents(replay.Expected, actual); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		t.Log("legacy replay has no captured HTTP event oracle; only framing and orphan-response checks apply")
+	}
 	if tracker.lost != 0 {
 		t.Fatalf("replayed decoder losses=%d reasons=%v", tracker.lost, losses)
 	}
@@ -118,5 +169,25 @@ func TestDarwinPKTAPReplayRecorderOwnsPacketBytes(t *testing.T) {
 	packet.payload[0] = 'x'
 	if string(replay.Packets[0].Payload) != "fixture" || replay.bytes != 7 {
 		t.Fatalf("packet=%q bytes=%d", replay.Packets[0].Payload, replay.bytes)
+	}
+}
+
+func TestDarwinPKTAPReplayValidatesHTTPEventParity(t *testing.T) {
+	expected := []darwinPKTAPReplayHTTPEvent{{PID: 42, Method: "GET", Path: "/request", TLS: true}, {PID: 42, Method: "GET", Path: "/request", Status: 200, TLS: true, HasLatency: true, Latency: 30}}
+	if err := validateDarwinReplayHTTPEvents(expected, expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDarwinReplayHTTPEvents(expected, nil); err == nil {
+		t.Fatal("missing events accepted")
+	}
+	actual := append([]darwinPKTAPReplayHTTPEvent{}, expected...)
+	actual[1].Path = "/wrong"
+	if err := validateDarwinReplayHTTPEvents(expected, actual); err == nil {
+		t.Fatal("response matched to another request accepted")
+	}
+	actual[1] = expected[1]
+	actual[1].Latency = 0
+	if err := validateDarwinReplayHTTPEvents(expected, actual); err == nil {
+		t.Fatal("changed latency accepted")
 	}
 }

@@ -34,8 +34,7 @@ func (c *darwinTLSAddressCache) metadata(r darwinTLSRecord) error {
 			if c.references[value.generation] > 0 {
 				c.retained[value.generation] = value
 			}
-			c.generation++
-			c.fds[r.fd] = darwinTLSAddress{fd: r.fd, generation: c.generation}
+			delete(c.fds, r.fd)
 		}
 		return nil
 	}

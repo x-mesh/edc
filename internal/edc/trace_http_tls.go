@@ -28,6 +28,7 @@ type traceTLSTarget struct {
 	process      string
 	path         string
 	darwinModule string
+	darwinNotice string
 	symbols      []string
 	offsets      map[string]uint64
 	goReturns    map[string][]uint64

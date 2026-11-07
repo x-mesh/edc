@@ -246,6 +246,9 @@ func newDarwinTLSCapture(scope traceScope) (*darwinTLSCapture, error) {
 func (c *darwinTLSCapture) attach(targets []traceTLSTarget) error {
 	groups := map[uint32][]traceTLSTarget{}
 	for _, target := range targets {
+		if target.darwinNotice != "" {
+			c.notices.offer(target.darwinNotice)
+		}
 		groups[target.pid] = append(groups[target.pid], target)
 	}
 	pids := make([]uint32, 0, len(groups))

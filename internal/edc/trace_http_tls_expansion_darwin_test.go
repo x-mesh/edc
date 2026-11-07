@@ -864,6 +864,11 @@ func TestDarwinHTTPSExpansionCaptureLive(t *testing.T) {
 				if !event.TLS || event.PID != uint32(client.Process.Pid) {
 					return nil
 				}
+				if goTLS {
+					if value, ok := darwinReplayHTTPEvent(event); ok {
+						replay.Expected = append(replay.Expected, value)
+					}
+				}
 				if strings.Contains(event.Payload, "Bearer fixture-secret") {
 					return fmt.Errorf("authorization header was not masked")
 				}
@@ -1089,5 +1094,50 @@ func TestDarwinGoTLSFDMappingDiagnosticLive(t *testing.T) {
 	}
 	if counts["data_without_address"] > 0 {
 		t.Fatalf("FD diagnostic complete: %d records still lack socket addresses", counts["data_without_address"])
+	}
+}
+
+func TestDarwinTLSDiscoveryKeepsSecureTransportWhenGoABIIsUnsupported(t *testing.T) {
+	directory := t.TempDir()
+	source, binary := filepath.Join(directory, "mixed.go"), filepath.Join(directory, "mixed")
+	preamble := `package main
+/*
+#cgo CFLAGS: -Wno-deprecated-declarations
+#cgo LDFLAGS: -framework Security
+#include <Security/SecureTransport.h>
+*/
+import "C"
+`
+	code := strings.Replace(darwinGoTLSFixture, "package main", preamble, 1)
+	code = strings.Replace(code, "func main() {", "func main() {\nvar processed C.size_t\nC.SSLRead(C.SSLContextRef(0),nil,0,&processed)\nC.SSLWrite(C.SSLContextRef(0),nil,0,&processed)\n", 1)
+	if err := os.WriteFile(source, []byte(code), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "build", "-o", binary, source)
+	command.Env = append(os.Environ(), "CGO_ENABLED=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("compile mixed TLS metadata fixture: %v\n%s", err, output)
+	}
+	info, err := buildinfo.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := bytes.Index(data, []byte(traceTLSGoBuildMagic))
+	if at < 0 || len(info.GoVersion) != 8 || data[at+32] != 8 {
+		t.Fatal("unexpected inline Go build version layout")
+	}
+	copy(data[at+33:at+41], []byte("go1.24.0"))
+	if err := os.WriteFile(binary, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := inspectDarwinTLSFile(binary)
+	if err != nil || len(targets) != 1 || targets[0].darwinModule != "Security" || !strings.Contains(targets[0].darwinNotice, "go1.24.0") {
+		t.Fatalf("independent SecureTransport lost: targets=%#v error=%v", targets, err)
 	}
 }

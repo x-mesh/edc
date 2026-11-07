@@ -85,3 +85,26 @@ func TestDarwinTLSGoControlDecoder(t *testing.T) {
 		t.Fatal("control interleaving accepted", err)
 	}
 }
+
+func TestDarwinTLSGoOrderRejectsDistinctOverlappingCalls(t *testing.T) {
+	for _, sent := range []bool{false, true} {
+		o := newDarwinTLSGoOrder()
+		first := darwinTLSRecord{object: 1, goroutine: 2, frame: 3, sent: sent, goPhase: 1}
+		if _, err := o.add(first); err != nil {
+			t.Fatal(err)
+		}
+		second := first
+		second.goroutine++
+		second.frame++
+		if _, err := o.add(second); err == nil || !strings.Contains(err.Error(), "overlapping") {
+			t.Fatalf("sent=%t accepted concurrent call: %v", sent, err)
+		}
+		first.goPhase = 2
+		if _, err := o.add(first); err != nil {
+			t.Fatal(err)
+		}
+		if len(o.calls) != 0 || len(o.connections) != 0 {
+			t.Fatal("rejected call changed the accepted call lifecycle")
+		}
+	}
+}

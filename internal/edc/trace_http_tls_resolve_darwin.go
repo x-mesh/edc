@@ -132,27 +132,31 @@ func inspectDarwinTLSFile(path string) ([]traceTLSTarget, error) {
 		}
 		hasGoTLS = bytes.Contains(data, []byte(traceTLSGoRead)) && bytes.Contains(data, []byte(traceTLSGoWrite))
 	}
+	var goErr error
 	if hasGoTLS {
-		info, err := buildinfo.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read Go TLS ABI: %w", err)
-		}
-		if info.GoVersion != "go1.25.0" && info.GoVersion != "go1.27.3" {
-			return nil, fmt.Errorf("unsupported macOS Go TLS ABI: %s", info.GoVersion)
-		}
-		names := []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose, "internal/poll.(*FD).Read", "internal/poll.(*FD).Write"}
-		symbols = darwinTLSDefinedSymbols(file, names)
-		if len(symbols) != len(names) {
-			return nil, fmt.Errorf("macOS Go TLS needs defined TLS and poll FD symbols; stripped binaries are unsupported")
-		}
-		if _, err := darwinTLSModuleName(path); err != nil {
-			return nil, err
-		}
-		machine := elf.EM_AARCH64
-		if file.Cpu == macho.CpuAmd64 {
-			machine = elf.EM_X86_64
-		}
-		targets = append(targets, traceTLSTarget{path: path, symbols: []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose}, goMachine: machine})
+		goErr = func() error {
+			info, err := buildinfo.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read Go TLS ABI: %w", err)
+			}
+			if info.GoVersion != "go1.25.0" && info.GoVersion != "go1.27.3" {
+				return fmt.Errorf("unsupported macOS Go TLS ABI: %s", info.GoVersion)
+			}
+			names := []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose, "internal/poll.(*FD).Read", "internal/poll.(*FD).Write"}
+			symbols = darwinTLSDefinedSymbols(file, names)
+			if len(symbols) != len(names) {
+				return fmt.Errorf("macOS Go TLS needs defined TLS and poll FD symbols; stripped binaries are unsupported")
+			}
+			if _, err := darwinTLSModuleName(path); err != nil {
+				return err
+			}
+			machine := elf.EM_AARCH64
+			if file.Cpu == macho.CpuAmd64 {
+				machine = elf.EM_X86_64
+			}
+			targets = append(targets, traceTLSTarget{path: path, symbols: []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose}, goMachine: machine})
+			return nil
+		}()
 	}
 	imports, err := file.ImportedSymbols()
 	if err != nil {
@@ -173,6 +177,15 @@ func inspectDarwinTLSFile(path string) ([]traceTLSTarget, error) {
 			}
 		}
 	}
+	if goErr != nil {
+		if len(targets) == 0 {
+			return nil, goErr
+		}
+		for i := range targets {
+			targets[i].darwinNotice = fmt.Sprintf("macOS Go TLS discovery skipped: %v", goErr)
+		}
+	}
+
 	return targets, nil
 }
 

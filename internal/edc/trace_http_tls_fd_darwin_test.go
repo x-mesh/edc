@@ -175,3 +175,24 @@ func TestDarwinTLSAddressRolesPreserveServerPort(t *testing.T) {
 		t.Fatalf("record=%#v events=%#v unmapped=%t", r, events, unmapped)
 	}
 }
+
+func TestDarwinTLSFDCacheDoesNotAccumulateClosedDescriptors(t *testing.T) {
+	c := newDarwinTLSAddressCache(42)
+	c.lookup = func(uint32, int32) (string, string) { return "", "" }
+	for i := 0; i < darwinTLSFDAddressLimit+1; i++ {
+		fd := int32(i)
+		for _, r := range []darwinTLSRecord{{pid: 42, fd: fd, fdMeta: 2, fdKind: 2, address: "127.0.0.1:443"}, {pid: 42, fd: fd, fdMeta: 1, object: 1}, {pid: 42, fd: fd, fdMeta: 3}} {
+			if err := c.metadata(r); err != nil {
+				t.Fatalf("descriptor %d: %v", i, err)
+			}
+		}
+		r := darwinTLSRecord{pid: 42, fd: fd, object: 1}
+		if err := c.decorate(&r); err != nil || r.destination != "127.0.0.1:443" {
+			t.Fatalf("closed descriptor %d lost its active object: %#v %v", fd, r, err)
+		}
+		c.forget(1)
+	}
+	if len(c.fds) != 0 || len(c.retained) != 0 || len(c.objects) != 0 || len(c.references) != 0 {
+		t.Fatalf("closed cache entries remain: descriptors=%d history=%d objects=%d references=%d", len(c.fds), len(c.retained), len(c.objects), len(c.references))
+	}
+}

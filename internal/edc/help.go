@@ -539,6 +539,7 @@ var commandDocs = []commandDoc{
 			{"--payload[=all]", "command.trace.option.payload"},
 			{"--show-secrets", "command.trace.option.show_secrets"},
 			{"--tls[=<path>]", "command.trace.option.tls"},
+			{"--tls-keylog <path>", "command.trace.option.tls_keylog"},
 			{"--port <n>", "command.trace.option.port"},
 			{"--http-port <n>", "command.trace.option.http_port"},
 			{"--container <name>", "command.trace.option.container"},

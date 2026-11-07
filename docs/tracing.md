@@ -2,7 +2,7 @@
 
 # Tracing and packet capture
 
-Inspect requests, connections, process activity, and kernel waits. Support and privileges vary by trace; HTTP tracing requires Linux 5.15 or later with the required eBPF capabilities. See each section for its requirements and measurement limits.
+Inspect requests, connections, process activity, and kernel waits. Support and privileges vary by trace. HTTP trace supports Linux 5.15 or later with eBPF capabilities and macOS with packet capture privileges. See each section for its requirements and measurement limits.
 
 ![HTTP trace event list with message preview, rendered from synthetic demo data](media/trace-http.png)
 
@@ -452,11 +452,78 @@ On macOS, the kernel puts the interface number into the link-local addresses of 
 
 ## trace http
 
-Use `edc trace http` on Linux 5.15 or later to inspect HTTP/1.x and HTTP/2 traffic on both sides.
+Use `edc trace http` on Linux 5.15 or later, or macOS, to inspect HTTP traffic.
 
-The bare command enables TLS auto discovery. It continues HTTP capture if TLS discovery or attach fails.
+The trace supports HTTP/1.x and HTTP/2 on both sides.
 
-HTTP/1 rows appear after the headers complete. HTTP/2 rows appear after each header block.
+The bare command enables TLS auto discovery on Linux and macOS. It continues HTTP capture if initial TLS discovery or attachment fails.
+
+On macOS, HTTP trace uses the system libpcap and PKTAP metadata. It requires access to `/dev/bpf*`, usually through `sudo`.
+
+macOS applies a kernel capture filter before TLS probes start. The filter uses `--port` when set.
+
+Loss counters combine truncated records, BPF buffer drops, and stream reconstruction losses.
+
+macOS supports process filters, port filters, payloads, HTTP/2, and TLS handshake metadata.
+
+On macOS, edc uses DTrace to read OpenSSL buffers before encryption and after decryption. This mode needs root and no key log.
+
+Use `--process <name>` to select an application. Use `--tls=<path>` to select a loaded Mach-O executable or library.
+
+```bash
+sudo edc trace http --process node
+sudo edc trace http --tls=/path/to/libssl.dylib
+```
+
+The target needs defined SSL read, SSL write, and SSL_free symbols. Both standard calls and the `_ex` APIs are supported.
+
+macOS does not instrument Go TLS or SecureTransport. Protected applications can reject DTrace attachment even with root privileges.
+
+Automatic discovery scans new processes every two seconds. Processes that finish before a scan can be missed.
+
+If an attached process loads another TLS library, restart capture. For HTTP/2, establish a new connection after the probes attach.
+
+DTrace capture has a limit of 16 active processes and 1 MiB per TLS call. A larger call stops that TLS session.
+
+DTrace drop reports and runtime probe errors stop capture with an error. Socket attribution uses SSL_set_fd calls after attachment. Existing connections and custom BIOs can lack socket addresses.
+
+If socket addresses are unavailable, `--port` drops those records and increments `tls_unmapped`.
+
+Use `--tls=false` to disable function probes. Use `--tls-keylog <path>` for application key logs instead. The key log must exist before capture starts.
+
+For key log decryption, start capture before the TLS handshake. The application must write secrets in the SSLKEYLOGFILE format. edc reads new entries during capture.
+
+For example, run these commands in separate terminals. Start the trace before the Node.js application.
+
+```bash
+umask 077
+touch /tmp/edc-tls.keys
+sudo edc trace http --tls-keylog /tmp/edc-tls.keys --port 443
+```
+
+```bash
+node --tls-keylog=/tmp/edc-tls.keys app.js
+```
+
+TLS 1.3 supports AES-GCM and ChaCha20-Poly1305.
+
+TLS 1.2 supports AES-GCM with RSA or ECDHE, plus ChaCha20-Poly1305 with ECDHE or DHE.
+
+HTTPS supports HTTP/1.x, HTTP/2, payload masks, and TLS 1.3 KeyUpdate. TLS 1.2 renegotiation, 0-RTT, and QUIC are unsupported.
+
+The key log limit is 64 MiB and 65,536 entries. Buffered TLS records, incomplete handshakes, and plaintext that awaits earlier records share a 16 MiB limit.
+
+Capture gaps or authentication errors stop decryption with an error. The summary counts records without matching secrets in `tls_unmapped`.
+
+Neither macOS TLS mode changes certificates. The key log mode does not attach function probes.
+
+On macOS, HTTP/1 rows appear after the message completes. Responses without a message length appear when the connection closes or capture ends.
+
+On macOS, a message above 1 MiB or a buffer overflow stops capture for that TCP direction. The summary counts the overflow as lost events.
+
+Capture gaps can prevent response correlation.
+
+On Linux, HTTP/1 rows appear after the headers complete. HTTP/2 rows appear after each header block.
 
 ```bash
 edc trace http
@@ -842,7 +909,17 @@ edc supports this field on Linux 5.15 or later.
 
 ## trace mysql
 
-Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
+Use `trace mysql` on Linux 5.15 or later, or macOS, to inspect plain MySQL commands and results.
+
+Linux reads TCP buffers with eBPF. macOS reads PKTAP packets and reconstructs TCP streams. macOS requires packet capture privileges, usually through `sudo`.
+
+The default port is 3306. Use `--port` for another port.
+
+macOS supports both sides, split packets, prepared statements, SQL value masks, and measured response latency.
+
+Before a client connects, start capture to record handshake metadata.
+
+TLS and compressed connections show their negotiation state. MySQL trace does not decrypt their queries.
 
 ```bash
 edc trace mysql

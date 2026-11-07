@@ -15,5 +15,9 @@ func (t *pktapHTTPTracker) postgresEvents(packet httpPacket) []captureEvent {
 		return nil
 	}
 	record := mysqlRecord{bootTimeNS: packet.bootTimeNS, pid: packet.pid, cgroupID: packet.cgroupID, process: packet.process, socket: packet.socket, source: packet.source, destination: packet.destination, localPort: local.Port(), peerPort: peer.Port(), sent: packet.sent, server: local.Port() == t.postgresPort, size: len(packet.payload), payload: packet.payload}
-	return t.postgres.events(record, t.clockOffset)
+	events := t.postgres.events(record, t.clockOffset)
+	for i := range events {
+		events[i].TLS = events[i].TLS || packet.decrypted
+	}
+	return events
 }

@@ -193,20 +193,22 @@ PKTAP 패킷에 PID가 없으면 같은 TCP 주소쌍의 유일한 소유자와 
 다른 방법으로, 앱이 생성한 SSLKEYLOGFILE 형식의 키 로그를 `--tls-keylog <경로>`로 지정할 수 있습니다. 파일을 먼저 만들고 TLS handshake 전에 수집을 시작해야 합니다. 앱이 추가한 키도 수집 중에 읽습니다.
 
 ```bash
-umask 077
-touch /tmp/edc-tls.keys
-sudo edc trace http --tls-keylog /tmp/edc-tls.keys --port 443
+keylog=$(mktemp /tmp/edc-tls.XXXXXX)
+printf '%s\n' "$keylog"
+sudo edc trace http --tls-keylog "$keylog" --port 443
 ```
 
 다른 터미널에서 키 로그를 지원하는 앱을 실행하세요. Node.js 예시는 다음과 같습니다.
 
+다른 터미널에서 `<printed-keylog-path>`를 첫 터미널에 출력한 경로로 바꿔 실행하세요.
+
 ```bash
-node --tls-keylog=/tmp/edc-tls.keys app.js
+node --tls-keylog="<printed-keylog-path>" app.js
 ```
 
 TLS 1.3은 AES-GCM·ChaCha20-Poly1305를 지원합니다. TLS 1.2는 RSA·ECDHE 기반 AES-GCM과 ECDHE·DHE 기반 ChaCha20-Poly1305를 지원합니다. HTTP/1.x·HTTP/2, payload 마스킹과 TLS 1.3 KeyUpdate를 처리합니다. TLS 1.2 재협상, 0-RTT, QUIC은 지원하지 않습니다.
 
-키 로그는 64MiB·65,536개 항목, 키를 기다리는 TLS 레코드, 미완성 handshake, 앞선 레코드를 기다리는 평문은 합계 16MiB로 제한합니다. 인증 오류는 수집을 중단하며, 키가 없는 레코드는 요약의 `tls_unmapped`로 집계합니다. macOS의 HTTP/1 행은 메시지가 끝난 뒤 출력합니다.
+키 로그는 64MiB·65,536개 항목으로 제한합니다. TLS 레코드·대기열 저장 공간·미완성 handshake·대기 중인 평문은 합계 16MiB, wire·평문 대기열은 합계 16,384개 레코드로 제한합니다. 지원하지 않는 0-RTT 연결은 건너뛰고 해당 레코드를 `tls_unmapped`로 집계합니다. 인증 오류는 수집을 중단하며, 키가 없는 레코드는 요약의 `tls_unmapped`로 집계합니다. macOS의 HTTP/1 행은 메시지가 끝난 뒤 출력합니다.
 
 Linux에서는 기본 TLS 자동 탐지도 시작하며, TLS 탐색이나 attach가 실패해도 HTTP 수집을 계속합니다. HTTP/1 행은 header가 완성되면 출력하고, HTTP/2 행은 header block을 해석한 뒤 출력합니다.
 

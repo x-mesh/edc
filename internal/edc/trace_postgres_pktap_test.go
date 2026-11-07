@@ -109,3 +109,24 @@ func TestPKTAPPostgresSSLNegotiation(t *testing.T) {
 		t.Fatal("encrypted bytes entered PostgreSQL framing")
 	}
 }
+
+func TestPKTAPPostgresDecryptedInputPreservesTLSMetadata(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{protocol: "postgres"}, 0)
+	packet := pktapTestTCP(true, 0, string(pgQuery("SELECT 'private-value'")))
+	packet.source, packet.destination = "127.0.0.1:50000", "127.0.0.1:5432"
+	packet.decrypted = true
+	packet.tlsObject = 1
+	packet.bootTimeNS = 1_000_000
+	events := tracker.add(packet, time.Now())
+	if len(events) != 1 || !events[0].TLS || events[0].Event != postgresEventQuery || strings.Contains(events[0].Postgres.SQL, "private-value") {
+		t.Fatalf("TLS query=%+v", events)
+	}
+	packet.sent = false
+	packet.sequence = 0
+	packet.bootTimeNS = 31_000_000
+	packet.payload = append(pgComplete("SELECT 1"), pgReady()...)
+	events = tracker.add(packet, time.Now())
+	if len(events) != 1 || !events[0].TLS || events[0].Event != postgresEventResult || events[0].LatencyMS == nil || *events[0].LatencyMS != 30 {
+		t.Fatalf("TLS response=%+v", events)
+	}
+}

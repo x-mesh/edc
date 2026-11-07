@@ -100,3 +100,33 @@ func TestPKTAPDNSReportsIncompleteFrame(t *testing.T) {
 		t.Fatalf("loss=%d bytes=%d", tracker.lost, tracker.buffered)
 	}
 }
+
+func TestPKTAPDNSRejectsNonDNSPortsAfterIPv6Extensions(t *testing.T) {
+	query := new(dns.Msg)
+	query.SetQuestion("fixture.example.", dns.TypeA)
+	payload, err := query.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := pktapTestRecord(false, true, true)
+	metadata := int(binary.LittleEndian.Uint32(frame)) + 4
+	ip := make([]byte, 40+8+8+len(payload))
+	copy(ip, frame[metadata:metadata+40])
+	binary.BigEndian.PutUint16(ip[4:], uint16(len(ip)-40))
+	ip[6] = 0
+	ip[40] = 17
+	udp := ip[48:]
+	binary.BigEndian.PutUint16(udp, 9000)
+	binary.BigEndian.PutUint16(udp[2:], 9001)
+	binary.BigEndian.PutUint16(udp[4:], uint16(len(udp)))
+	copy(udp[8:], payload)
+	frame = append(frame[:metadata], ip...)
+	packet, ok := decodeTransportPKTAP(frame, 1_000_000, 0, 17)
+	if !ok {
+		t.Fatal("valid UDP extension packet was rejected")
+	}
+	tracker := newPKTAPHTTPTracker(traceScope{protocol: "dns"}, 0)
+	if events := tracker.dnsEvents(packet.httpPacket, false); len(events) != 0 {
+		t.Fatalf("non-DNS port events=%+v", events)
+	}
+}

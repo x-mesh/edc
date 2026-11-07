@@ -14,6 +14,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -23,6 +24,10 @@ import (
 const tlsKeylogFileLimit = 64 << 20
 const tlsKeylogEntryLimit = 65536
 const tlsKeylogPendingLimit = 16 << 20
+const tlsKeylogQueueLimit = 16384
+
+var tlsKeylogWireRecordBytes = int(reflect.TypeFor[tlsWireRecord]().Size())
+var tlsKeylogPlainRecordBytes = int(reflect.TypeFor[tlsPlainRecord]().Size())
 
 type tlsKeylogKey struct {
 	random [32]byte
@@ -162,15 +167,17 @@ type tlsWireRecord struct {
 	data   []byte
 }
 type tlsKeylogDirection struct {
-	pending                []tlsWireRecord
-	plaintext              []tlsPlainRecord
-	encrypted, application bool
-	sequence               uint64
-	aead                   cipher.AEAD
-	iv, secret, handshake  []byte
-	plainOffset            uint32
+	pendingAllocation, plaintextAllocation int
+	pending                                []tlsWireRecord
+	plaintext                              []tlsPlainRecord
+	encrypted, application                 bool
+	sequence                               uint64
+	aead                                   cipher.AEAD
+	iv, secret, handshake                  []byte
+	plainOffset                            uint32
 }
 type tlsKeylogConnection struct {
+	earlyData            bool
 	nextOrder            uint64
 	client               int
 	haveClient           bool
@@ -181,6 +188,8 @@ type tlsKeylogConnection struct {
 	updated              time.Time
 }
 type tlsKeylogDecryptor struct {
+	queued      int
+	earlyData   uint64
 	log         *tlsKeylog
 	tracker     *pktapHTTPTracker
 	connections map[uint64]*tlsKeylogConnection
@@ -208,12 +217,33 @@ func (d *tlsKeylogDecryptor) record(packet httpPacket, now time.Time) []captureE
 		index = 1
 	}
 	direction := &connection.directions[index]
-	if d.buffered+len(packet.payload) > tlsKeylogPendingLimit {
+	if d.queued >= tlsKeylogQueueLimit {
+		d.err = fmt.Errorf("TLS queue exceeds %d records", tlsKeylogQueueLimit)
+		return nil
+	}
+	grow := len(direction.pending) == cap(direction.pending)
+	capacity := cap(direction.pending)
+	allocation := direction.pendingAllocation
+	if grow {
+		capacity = max(1, 2*capacity)
+		allocation = capacity * tlsKeylogWireRecordBytes
+	}
+	if d.buffered-direction.pendingAllocation+allocation+len(packet.payload) > tlsKeylogPendingLimit {
 		d.err = fmt.Errorf("TLS buffered data exceeds %d bytes", tlsKeylogPendingLimit)
 		return nil
 	}
-	direction.pending = append(direction.pending, tlsWireRecord{order: connection.nextOrder, packet: packet, data: bytes.Clone(packet.payload)})
+	if grow {
+		queue := make([]tlsWireRecord, len(direction.pending), capacity)
+		copy(queue, direction.pending)
+		direction.pending = queue
+		d.buffered += allocation - direction.pendingAllocation
+		direction.pendingAllocation = allocation
+	}
+	data := make([]byte, len(packet.payload))
+	copy(data, packet.payload)
+	direction.pending = append(direction.pending, tlsWireRecord{order: connection.nextOrder, packet: packet, data: data})
 	direction.pending[len(direction.pending)-1].packet.payload = nil
+	d.queued++
 	connection.nextOrder++
 	d.pending += len(packet.payload)
 	d.buffered += len(packet.payload)
@@ -237,8 +267,14 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 				}
 				direction.pending[0] = tlsWireRecord{}
 				direction.pending = direction.pending[1:]
+				d.queued--
+				if len(direction.pending) == 0 {
+					direction.pending = nil
+					d.buffered -= direction.pendingAllocation
+					direction.pendingAllocation = 0
+				}
 				d.pending -= len(record.data)
-				d.buffered -= len(record.data)
+				d.buffered -= cap(record.data)
 				progress = true
 				if kind == 22 {
 					if err := d.handshake(c, i, plaintext); err != nil {
@@ -246,16 +282,34 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 						return events
 					}
 				}
+				if c.earlyData {
+					d.unmapped++
+				}
 				if kind == 23 && len(plaintext) > 0 {
 					packet := pktapTCPPacket{httpPacket: record.packet, sequence: direction.plainOffset, tlsObject: record.packet.socket}
 					packet.decrypted = true
 					packet.payload = plaintext
 					direction.plainOffset += uint32(len(plaintext))
-					if d.buffered+cap(plaintext) > tlsKeylogPendingLimit {
-						d.err = fmt.Errorf("TLS buffered data exceeds %d bytes", tlsKeylogPendingLimit)
+					grow := len(direction.plaintext) == cap(direction.plaintext)
+					capacity := cap(direction.plaintext)
+					allocation := direction.plaintextAllocation
+					if grow {
+						capacity = max(1, 2*capacity)
+						allocation = capacity * tlsKeylogPlainRecordBytes
+					}
+					if d.queued >= tlsKeylogQueueLimit || d.buffered-direction.plaintextAllocation+allocation+cap(plaintext) > tlsKeylogPendingLimit {
+						d.err = fmt.Errorf("TLS plaintext queue exceeds capture limits")
 						return events
 					}
+					if grow {
+						queue := make([]tlsPlainRecord, len(direction.plaintext), capacity)
+						copy(queue, direction.plaintext)
+						direction.plaintext = queue
+						d.buffered += allocation - direction.plaintextAllocation
+						direction.plaintextAllocation = allocation
+					}
 					d.buffered += cap(plaintext)
+					d.queued++
 					direction.plaintext = append(direction.plaintext, tlsPlainRecord{order: record.order, packet: packet})
 				}
 			}
@@ -282,6 +336,12 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 		record := direction.plaintext[0]
 		direction.plaintext[0] = tlsPlainRecord{}
 		direction.plaintext = direction.plaintext[1:]
+		d.queued--
+		if len(direction.plaintext) == 0 {
+			direction.plaintext = nil
+			d.buffered -= direction.plaintextAllocation
+			direction.plaintextAllocation = 0
+		}
 		d.buffered -= cap(record.packet.payload)
 		events = append(events, d.tracker.add(record.packet, now)...)
 	}
@@ -318,6 +378,10 @@ func (d *tlsKeylogDecryptor) handshake(c *tlsKeylogConnection, index int, data [
 			}
 			c.client, c.haveClient = index, true
 			copy(c.random[:], body[2:34])
+			if hello, ok := parseTLSClientHello(message[:n], false); ok && hello.earlyData && !c.earlyData {
+				c.earlyData = true
+				d.earlyData++
+			}
 		case 2:
 			if len(body) < 38 {
 				return fmt.Errorf("invalid TLS ServerHello")
@@ -426,6 +490,10 @@ func tlsKeylogAEAD(key []byte, chacha bool) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 func (d *tlsKeylogDecryptor) decrypt(c *tlsKeylogConnection, index int, record []byte) ([]byte, byte, bool, error) {
+	// Unsupported early data must not stop unrelated TLS connections.
+	if c.earlyData {
+		return nil, 0, true, nil
+	}
 	if len(record) < 5 || int(binary.BigEndian.Uint16(record[3:])) != len(record)-5 {
 		return nil, 0, false, fmt.Errorf("invalid TLS record length")
 	}
@@ -588,12 +656,14 @@ func (d *tlsKeylogDecryptor) forget(socket uint64, now time.Time) []captureEvent
 		d.unmapped += uint64(len(direction.pending))
 		for _, record := range direction.pending {
 			d.pending -= len(record.data)
-			d.buffered -= len(record.data)
+			d.buffered -= cap(record.data)
 		}
 		d.unmapped += uint64(len(direction.plaintext))
 		for _, record := range direction.plaintext {
 			d.buffered -= cap(record.packet.payload)
 		}
+		d.queued -= len(direction.pending) + len(direction.plaintext)
+		d.buffered -= direction.pendingAllocation + direction.plaintextAllocation
 		d.buffered -= len(direction.handshake)
 		clear(direction.secret)
 		clear(direction.iv)

@@ -372,7 +372,7 @@ func httpMessageEnd(data []byte, event captureEvent) (end int, known bool) {
 	bodyStart := head + 4
 	response := event.Status != 0
 	// 1xx, 204, 304 응답과 HEAD의 응답에는 Content-Length가 있어도 본문이 없다.
-	if response && (event.Status < 200 || event.Status == 204 || event.Status == 304 || event.Method == "HEAD") {
+	if response && (event.Status < 200 || event.Status == 204 || event.Status == 304 || event.Method == "HEAD" || event.Method == "CONNECT" && event.Status >= 200 && event.Status < 300) {
 		return bodyStart, true
 	}
 	chunked, length, hasLength := false, 0, false

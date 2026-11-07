@@ -2,7 +2,6 @@ package edc
 
 import (
 	"bytes"
-	"cmp"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
@@ -15,7 +14,6 @@ import (
 	"hash"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -165,6 +163,7 @@ type tlsWireRecord struct {
 }
 type tlsKeylogDirection struct {
 	pending                []tlsWireRecord
+	plaintext              []tlsPlainRecord
 	encrypted, application bool
 	sequence               uint64
 	aead                   cipher.AEAD
@@ -173,7 +172,6 @@ type tlsKeylogDirection struct {
 }
 type tlsKeylogConnection struct {
 	nextOrder            uint64
-	plaintext            []tlsPlainRecord
 	client               int
 	haveClient           bool
 	random, serverRandom [32]byte
@@ -258,7 +256,7 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 						return events
 					}
 					d.buffered += cap(plaintext)
-					c.plaintext = append(c.plaintext, tlsPlainRecord{order: record.order, packet: packet})
+					direction.plaintext = append(direction.plaintext, tlsPlainRecord{order: record.order, packet: packet})
 				}
 			}
 		}
@@ -269,18 +267,25 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 			barrier = pending[0].order
 		}
 	}
-	slices.SortFunc(c.plaintext, func(a, b tlsPlainRecord) int { return cmp.Compare(a.order, b.order) })
-	consumed := 0
-	for _, record := range c.plaintext {
-		if record.order >= barrier {
+	for {
+		selected := -1
+		for i := range c.directions {
+			queue := c.directions[i].plaintext
+			if len(queue) > 0 && queue[0].order < barrier && (selected < 0 || queue[0].order < c.directions[selected].plaintext[0].order) {
+				selected = i
+			}
+		}
+		if selected < 0 {
 			break
 		}
+		direction := &c.directions[selected]
+		record := direction.plaintext[0]
+		direction.plaintext[0] = tlsPlainRecord{}
+		direction.plaintext = direction.plaintext[1:]
 		d.buffered -= cap(record.packet.payload)
 		events = append(events, d.tracker.add(record.packet, now)...)
-		consumed++
 	}
-	clear(c.plaintext[:consumed])
-	c.plaintext = c.plaintext[consumed:]
+
 	return events
 }
 func (d *tlsKeylogDecryptor) handshake(c *tlsKeylogConnection, index int, data []byte) error {
@@ -585,14 +590,14 @@ func (d *tlsKeylogDecryptor) forget(socket uint64, now time.Time) []captureEvent
 			d.pending -= len(record.data)
 			d.buffered -= len(record.data)
 		}
+		d.unmapped += uint64(len(direction.plaintext))
+		for _, record := range direction.plaintext {
+			d.buffered -= cap(record.packet.payload)
+		}
 		d.buffered -= len(direction.handshake)
 		clear(direction.secret)
 		clear(direction.iv)
 		clear(direction.handshake)
-	}
-	d.unmapped += uint64(len(c.plaintext))
-	for _, record := range c.plaintext {
-		d.buffered -= cap(record.packet.payload)
 	}
 	delete(d.connections, socket)
 	for key, flow := range d.tracker.flows {

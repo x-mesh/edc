@@ -465,7 +465,7 @@ func pktapPossibleHTTP(data []byte) bool {
 	if len(data) == 0 {
 		return true
 	}
-	for _, prefix := range []string{"GET ", "POST ", "PUT ", "HEAD ", "DELETE ", "PATCH ", "OPTIONS ", "HTTP/1."} {
+	for _, prefix := range []string{"GET ", "POST ", "PUT ", "HEAD ", "DELETE ", "PATCH ", "OPTIONS ", "CONNECT ", "TRACE ", "HTTP/1."} {
 		if bytes.HasPrefix(data, []byte(prefix)) || bytes.HasPrefix([]byte(prefix), data) {
 			return true
 		}

@@ -230,3 +230,86 @@ func TestPKTAPHTTPContiguousOverflowReleasesWaitingMemory(t *testing.T) {
 		}
 	}
 }
+
+func TestPKTAPHTTPConnectAndTraceRequests(t *testing.T) {
+	for _, method := range []string{"CONNECT", "TRACE"} {
+		t.Run(method, func(t *testing.T) {
+			tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+			now := time.Now()
+			target := "/trace"
+			if method == "CONNECT" {
+				target = "example.com:443"
+			}
+			request := method + " " + target + " HTTP/1.1\r\nHost: example.com\r\n\r\n"
+			var events []captureEvent
+			for i := range request {
+				events = append(events, tracker.add(pktapTestTCP(true, uint32(i), request[i:i+1]), now)...)
+			}
+			if len(events) != 1 || events[0].Method != method || events[0].Path != target {
+				t.Fatalf("requests=%#v", events)
+			}
+			events = tracker.add(pktapTestTCP(false, 0, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"), now)
+			if len(events) != 1 || events[0].Method != method || events[0].Status != 403 {
+				t.Fatalf("response=%#v", events)
+			}
+		})
+	}
+}
+
+func TestPKTAPHTTP2FragmentedPrefaceAndFrames(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	request := append(bytes.Clone(http2Preface), http2TestFrame(1, 5, 1, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/split"}))...)
+	response := http2TestFrame(1, 5, 1, http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "204"}))
+	for _, wire := range []struct {
+		sent bool
+		data []byte
+	}{{true, request}, {false, response}} {
+		var events []captureEvent
+		for i := range wire.data {
+			events = append(events, tracker.add(pktapTestTCP(wire.sent, uint32(i), string(wire.data[i:i+1])), now)...)
+		}
+		if len(events) != 1 || events[0].Path != "/split" || (!wire.sent && events[0].Status != 204) {
+			t.Fatalf("sent=%t events=%#v", wire.sent, events)
+		}
+	}
+	tracker.sweep(now, true)
+	if tracker.buffered != 0 || len(tracker.flows) != 0 {
+		t.Fatalf("buffered=%d flows=%d", tracker.buffered, len(tracker.flows))
+	}
+}
+func TestPKTAPHTTPFlowLimitEvictsAndReleasesQueuedSegments(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	for i := 0; i < pktapHTTPFlowLimit; i++ {
+		packet := pktapTestTCP(true, 0, "G")
+		packet.pid = uint32(i + 1)
+		tracker.add(packet, now.Add(time.Duration(i)))
+		packet.sequence, packet.payload = 100, []byte("waiting")
+		tracker.add(packet, now.Add(time.Duration(i)))
+	}
+	packet := pktapTestTCP(true, 0, "G")
+	packet.pid = uint32(pktapHTTPFlowLimit + 1)
+	tracker.add(packet, now.Add(time.Second))
+	for key := range tracker.flows {
+		if key.pid == 1 {
+			t.Fatal("oldest flow survived eviction")
+		}
+	}
+	if len(tracker.flows) != pktapHTTPFlowLimit || tracker.buffered != (pktapHTTPFlowLimit-1)*8+1 || tracker.lost == 0 {
+		t.Fatalf("flows=%d buffered=%d lost=%d", len(tracker.flows), tracker.buffered, tracker.lost)
+	}
+	tracker.sweep(now.Add(time.Second), true)
+	if tracker.buffered != 0 || len(tracker.flows) != 0 {
+		t.Fatalf("cleanup buffered=%d flows=%d", tracker.buffered, len(tracker.flows))
+	}
+}
+func TestPKTAPHTTPConnectSuccessEndsAtHeaders(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	tracker.add(pktapTestTCP(true, 0, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n"), now)
+	events := tracker.add(pktapTestTCP(false, 0, "HTTP/1.1 200 Connection Established\r\n\r\n"), now)
+	if len(events) != 1 || events[0].Method != "CONNECT" || events[0].Status != 200 {
+		t.Fatalf("response=%#v", events)
+	}
+}

@@ -137,3 +137,44 @@ func FuzzPKTAPHTTPFilter(f *testing.F) {
 		}
 	})
 }
+
+func TestPKTAPHTTPFilterIPv4Options(t *testing.T) {
+	instructions, err := pktapHTTPFilter(8080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := bpf.NewVM(instructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v2 := range []bool{false, true} {
+		for _, ihl := range []int{6, 10, 15} {
+			packet := pktapTestRecord(v2, false, true)
+			header := int(binary.LittleEndian.Uint32(packet))
+			if v2 {
+				header = int(packet[0])
+			}
+			ip := packet[header+4:]
+			expanded := append([]byte{}, ip[:20]...)
+			expanded = append(expanded, make([]byte, ihl*4-20)...)
+			expanded = append(expanded, ip[20:]...)
+			expanded[0] = 0x40 | byte(ihl)
+			binary.BigEndian.PutUint16(expanded[2:], uint16(len(expanded)))
+			for _, ports := range [][2]uint16{{50000, 8080}, {8080, 9090}, {50000, 9090}} {
+				binary.BigEndian.PutUint16(expanded[ihl*4:], ports[0])
+				binary.BigEndian.PutUint16(expanded[ihl*4+2:], ports[1])
+				wire := append(append([]byte{}, packet[:header+4]...), expanded...)
+				count, err := machine.Run(wire)
+				want := ports[0] == 8080 || ports[1] == 8080
+				if err != nil || (count > 0) != want {
+					t.Fatalf("v2=%t ihl=%d ports=%v count=%d error=%v", v2, ihl, ports, count, err)
+				}
+				if want {
+					if _, ok := decodeHTTPPKTAP(wire, 1, 0); !ok {
+						t.Fatal("IPv4 options did not reach TCP decoder")
+					}
+				}
+			}
+		}
+	}
+}

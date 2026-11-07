@@ -37,8 +37,7 @@ const (
 	traceHTTPPendingLimit = 65536
 )
 
-// traceHTTPMethods는 BPF가 앞 4바이트로 거르는 method와 같다. 사용자 공간은 요청 줄 전체를 다시 확인한다.
-var traceHTTPMethods = []string{"GET", "POST", "PUT", "HEAD", "DELETE", "PATCH", "OPTIONS"}
+var traceHTTPMethods = []string{"GET", "POST", "PUT", "HEAD", "DELETE", "PATCH", "OPTIONS", "CONNECT", "TRACE"}
 
 // httpPacket은 kernel이 TCP로 주고받은 HTTP message의 앞부분이다. source는 로컬 쪽, destination은 상대 쪽이다.
 type httpPacket struct {

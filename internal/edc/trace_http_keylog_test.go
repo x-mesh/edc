@@ -470,13 +470,13 @@ func TestTLSKeylogQueuedPaddingAccounting(t *testing.T) {
 	if d.err != nil {
 		t.Fatal(d.err)
 	}
-	if len(c.plaintext) != 1 {
-		t.Fatalf("queued=%d", len(c.plaintext))
+	if len(c.directions[1].plaintext) != 1 {
+		t.Fatalf("queued=%d", len(c.directions[1].plaintext))
 	}
-	if string(c.plaintext[0].packet.payload) != "x" {
-		t.Fatalf("plaintext=%q", c.plaintext[0].packet.payload)
+	if string(c.directions[1].plaintext[0].packet.payload) != "x" {
+		t.Fatalf("plaintext=%q", c.directions[1].plaintext[0].packet.payload)
 	}
-	retained := cap(c.plaintext[0].packet.payload)
+	retained := cap(c.directions[1].plaintext[0].packet.payload)
 	if d.buffered-d.pending < retained {
 		t.Fatalf("plaintext charged=%d, retained allocation capacity=%d", d.buffered-d.pending, retained)
 	}
@@ -511,4 +511,22 @@ func TestTLSKeylogQueuedPaddingEnforcesGlobalLimit(t *testing.T) {
 		}
 	}
 	t.Fatal("padded plaintext exceeded the global buffer limit")
+}
+
+func BenchmarkTLSKeylogBlockedPlaintextQueue(b *testing.B) {
+	for _, count := range []int{1000, 10000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			d := newTLSKeylogDecryptor(nil, nil)
+			c := &tlsKeylogConnection{nextOrder: uint64(count + 1)}
+			c.directions[0].pending = []tlsWireRecord{{order: 0, data: []byte{23, 3, 3, 0, 1, 0}}}
+			for i := 0; i < count; i++ {
+				c.directions[1].plaintext = append(c.directions[1].plaintext, tlsPlainRecord{order: uint64(i + 1)})
+			}
+			now := time.Now()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				d.drain(c, now)
+			}
+		})
+	}
 }

@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -320,5 +322,25 @@ func TestDarwinTLSDiagnosticsDetectDropsAfterTruncation(t *testing.T) {
 	_, dropped := diagnostic.snapshot()
 	if !dropped {
 		t.Fatal("DTrace drops after the diagnostic limit were not detected")
+	}
+}
+
+func TestDarwinTLSFatMachOSelectsHostSlice(t *testing.T) {
+	directory := t.TempDir()
+	source, binary := filepath.Join(directory, "fixture.c"), filepath.Join(directory, "fixture")
+	code := "int SSL_read(void *s,void *b,int n){return n;}\nint SSL_write(void *s,const void *b,int n){return n;}\nvoid SSL_free(void *s){}\n#if defined(__arm64__)\nint SSL_read_ex(void *s,void *b,unsigned long n,unsigned long *r){return 1;}\n#else\nint SSL_write_ex(void *s,const void *b,unsigned long n,unsigned long *r){return 1;}\n#endif\nint main(void){return 0;}\n"
+	if err := os.WriteFile(source, []byte(code), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("/usr/bin/clang", "-arch", "arm64", "-arch", "x86_64", "-O0", source, "-o", binary).CombinedOutput(); err != nil {
+		t.Fatalf("compile fat Mach-O: %v\n%s", err, output)
+	}
+	symbols, err := darwinTLSFileSymbols(binary)
+	want := "SSL_read_ex"
+	if runtime.GOARCH == "amd64" {
+		want = "SSL_write_ex"
+	}
+	if err != nil || len(symbols) != 4 || !slices.Contains(symbols, want) {
+		t.Fatalf("symbols=%q expected=%s error=%v", symbols, want, err)
 	}
 }

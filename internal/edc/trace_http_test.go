@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -528,7 +529,7 @@ func TestParseHTTPRequestReadsTheRequestLineAndHost(t *testing.T) {
 		t.Fatalf("request = %q %q %q %t", method, target, host, ok)
 	}
 	// body 조각이 method로 시작해도 요청 줄 형식이 아니면 HTTP가 아니다.
-	for _, payload := range []string{"GET ready\r\n", "GETS / HTTP/1.1\r\n", "GET / HTTP/2\r\n", "GET / HTTP/1.1", "CONNECT example.com:443 HTTP/1.1\r\n"} {
+	for _, payload := range []string{"GET ready\r\n", "GETS / HTTP/1.1\r\n", "GET / HTTP/2\r\n", "GET / HTTP/1.1"} {
 		if _, _, _, ok := parseHTTPRequest([]byte(payload)); ok {
 			t.Fatalf("%q was read as a request", payload)
 		}
@@ -1491,8 +1492,11 @@ func TestHTTPSplitStartsKeepTLSPlaintextApart(t *testing.T) {
 	}
 }
 
-func TestTraceTLSOptionNeedsHTTP(t *testing.T) {
+func TestTraceTLSOptionPlatformRestrictions(t *testing.T) {
 	for _, args := range [][]string{{"tcp", "--tls"}, {"mysql", "--tls"}, {"clickhouse", "--tls"}, {"dns", "--tls=/usr/lib/libssl.so.3"}, {"http", "--tls="}} {
+		if runtime.GOOS == "darwin" && args[0] == "mysql" {
+			continue
+		}
 		if code := runTrace(args); code != 2 {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}

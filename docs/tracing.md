@@ -2,7 +2,7 @@
 
 # Tracing and packet capture
 
-Inspect requests, connections, process activity, and kernel waits. Support and privileges vary by trace; HTTP tracing requires Linux 5.15 or later with the required eBPF capabilities. See each section for its requirements and measurement limits.
+Inspect requests, connections, process activity, and kernel waits. Support and privileges vary by trace. HTTP trace supports Linux 5.15 or later with eBPF capabilities and macOS with packet capture privileges. See each section for its requirements and measurement limits.
 
 ![HTTP trace event list with message preview, rendered from synthetic demo data](media/trace-http.png)
 
@@ -375,7 +375,9 @@ If you run the trace with `sudo`, it shows the processes of all users and the co
 
 ## trace dns
 
-Use `trace dns` on Linux to print DNS queries and answers as they arrive. It reads the DNS messages of UDP port 53 and also shows TCP connections to port 53.
+Use `trace dns` on Linux or macOS to inspect DNS queries and answers.
+
+Linux also reports TCP connection events. macOS reconstructs UDP and TCP DNS messages.
 
 ```bash
 edc trace dns
@@ -413,7 +415,17 @@ edc trace dns --side server --group-by target
 
 On the server side, the latency starts when the server reads the query and stops when the server sends the answer. The `read_delay_ms` of a server query is the time that the query waited in the receive queue of the server. A short latency usually shows an answer from the cache. A long latency usually shows a query to an upstream server. On the server side, `dns_tcp_accept` shows a TCP connection that the server accepts on port 53. If the server sent a truncated answer to that client, the event gets the name of the query. edc learns the process of a listen socket when the server calls `accept()`. So for a server that started before the trace, the first accepted connection can have no process.
 
-`trace dns` watches only port 53. DNS over TCP puts a 2-byte length before each message. Many programs write the length and the message as two buffers, or read them in two reads. edc reads the first two buffers of a write, and it joins a 2-byte read with the next read on the same connection. It does not find a message that starts in the middle of a read. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
+`trace dns` watches only port 53. DNS over TCP puts a 2-byte length before each message. Many programs write the length and the message as two buffers, or read them in two reads. edc reads the first two buffers of a write, and it joins a 2-byte read with the next read on the same connection. It does not find a message that starts in the middle of a read. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. On macOS, `trace dns` captures plain UDP and TCP DNS through libpcap and PKTAP.
+
+Use `--interface lo0` to restrict capture to the loopback interface. The default captures all interfaces.
+
+PKTAP supplies process metadata. An answer without process metadata uses the matched query owner when all matched queries have the same owner.
+
+The latency covers captured packets. macOS does not measure the socket read delay.
+
+The summary reports capture drops and TCP reconstruction loss. IP fragments are unsupported.
+
+macOS reconstructs TCP DNS messages. It does not report TCP connection events.
 
 ## trace arp
 
@@ -452,11 +464,98 @@ On macOS, the kernel puts the interface number into the link-local addresses of 
 
 ## trace http
 
-Use `edc trace http` on Linux 5.15 or later to inspect HTTP/1.x and HTTP/2 traffic on both sides.
+Use `edc trace http` on Linux 5.15 or later, or macOS, to inspect HTTP traffic.
 
-The bare command enables TLS auto discovery. It continues HTTP capture if TLS discovery or attach fails.
+The trace supports HTTP/1.x and HTTP/2 on both sides.
 
-HTTP/1 rows appear after the headers complete. HTTP/2 rows appear after each header block.
+The bare command enables TLS auto discovery on Linux and macOS. It continues HTTP capture if initial TLS discovery or attachment fails.
+
+On macOS, HTTP trace uses the system libpcap and PKTAP metadata. It requires access to `/dev/bpf*`, usually through `sudo`.
+
+macOS applies a kernel capture filter before TLS probes start. The filter uses `--port` when set.
+
+Loss counters combine truncated records, BPF buffer drops, and stream reconstruction losses.
+
+macOS supports process filters, port filters, payloads, HTTP/2, and TLS handshake metadata.
+
+On macOS, edc uses DTrace for OpenSSL, supported Go TLS, and SecureTransport. This mode needs root and no key log.
+
+Use `--process <name>` to select an application. Use `--tls=<path>` to select a loaded Mach-O executable or library.
+
+```bash
+sudo edc trace http --process node
+sudo edc trace http --tls=/path/to/libssl.dylib
+```
+
+OpenSSL targets need defined SSL read, SSL write, and SSL_free symbols. Both standard calls and the `_ex` APIs are supported.
+
+macOS also supports Go TLS in unstripped Go 1.25.0 and Go 1.27.3 executables. Other Go versions are unsupported.
+
+Calls in the same direction on one Go TLS connection must not overlap. The trace stops with an error if calls overlap.
+
+SecureTransport targets must import SSLRead and SSLWrite from the Security framework. Use `--tls=<executable>` to select those applications. Network.framework is unsupported.
+
+Protected applications can reject DTrace attachment even with root privileges.
+
+Unknown PKTAP PIDs use the unique owner of the same TCP endpoints. Ambiguous owners stay separate.
+
+Automatic discovery scans new processes every two seconds. Processes that finish before a scan can be missed.
+
+If an attached process loads another TLS library, restart capture. For HTTP/2, establish a new connection after the probes attach.
+
+DTrace capture has a limit of 16 active processes and 1 MiB per TLS call. A larger call stops that TLS session.
+
+The TLS output queue has limits of 4096 records and 32 MiB. Queued payload capacity counts toward the byte limit.
+
+The collector wakes when records arrive. A queue limit error stops capture.
+
+DTrace drop reports and runtime probe errors stop capture with an error.
+
+OpenSSL socket attribution uses SSL_set_fd calls after attachment. Existing connections and custom BIOs can lack socket addresses.
+
+Go TLS reads socket descriptors from internal/poll.FD. SecureTransport records socket calls. Address metadata preserves endpoints after close and descriptor reuse.
+
+If socket addresses are unavailable, `--port` drops those records and increments `tls_unmapped`.
+
+Use `--tls=false` to disable function probes. Use `--tls-keylog <path>` for application key logs instead. The key log must exist before capture starts.
+
+For key log decryption, start capture before the TLS handshake. The application must write secrets in the SSLKEYLOGFILE format. edc reads new entries during capture.
+
+For example, run these commands in separate terminals. Start the trace before the Node.js application.
+
+```bash
+keylog=$(mktemp /tmp/edc-tls.XXXXXX)
+printf '%s\n' "$keylog"
+sudo edc trace http --tls-keylog "$keylog" --port 443
+```
+
+In the second terminal, replace `<printed-keylog-path>` with the printed path.
+
+```bash
+node --tls-keylog="<printed-keylog-path>" app.js
+```
+
+TLS 1.3 supports AES-GCM and ChaCha20-Poly1305.
+
+TLS 1.2 supports AES-GCM with RSA or ECDHE, plus ChaCha20-Poly1305 with ECDHE or DHE.
+
+HTTPS supports HTTP/1.x, HTTP/2, payload masks, and TLS 1.3 KeyUpdate. TLS 1.2 renegotiation, 0-RTT, and QUIC are unsupported.
+
+The key log limit is 64 MiB and 65,536 entries. TLS record buffers, queue storage, incomplete handshakes, and plaintext that awaits earlier records share a 16 MiB limit.
+
+Wire and plaintext queues hold at most 16,384 records. edc skips unsupported 0-RTT connections and counts their records in `tls_unmapped`.
+
+Capture gaps or authentication errors stop decryption with an error. The summary counts records without matching secrets in `tls_unmapped`.
+
+Neither macOS TLS mode changes certificates. The key log mode does not attach function probes.
+
+On macOS, HTTP/1 rows appear after the message completes. Responses without a message length appear when the connection closes or capture ends.
+
+On macOS, a message above 1 MiB or a buffer overflow stops capture for that TCP direction. The summary counts the overflow as lost events.
+
+Capture gaps can prevent response correlation.
+
+On Linux, HTTP/1 rows appear after the headers complete. HTTP/2 rows appear after each header block.
 
 ```bash
 edc trace http
@@ -842,7 +941,25 @@ edc supports this field on Linux 5.15 or later.
 
 ## trace mysql
 
-Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
+Use `trace mysql` on Linux 5.15 or later, or macOS, to inspect plain MySQL commands and results.
+
+Linux reads TCP buffers with eBPF. macOS reads PKTAP packets and reconstructs TCP streams. macOS requires packet capture privileges, usually through `sudo`.
+
+The default port is 3306. Use `--port` for another port.
+
+macOS supports both sides, split packets, prepared statements, SQL value masks, and measured response latency.
+
+Before a client connects, start capture to record handshake metadata.
+
+TLS and compressed connections show their negotiation state.
+
+On macOS, use `--tls` to capture MySQL plaintext through the HTTP trace TLS probes.
+
+Use `--tls=/path/to/client` to select an executable. Use `--process` to restrict automatic discovery.
+
+The probes require root and a supported OpenSSL, SecureTransport, or Go TLS target. The HTTP TLS restrictions also apply.
+
+MySQL TLS capture starts from a recognized command boundary. Compressed MySQL remains unsupported.
 
 ```bash
 edc trace mysql
@@ -886,7 +1003,7 @@ A response is one of these events:
 - `mysql_error` has `error_code`, `sql_state`, and `message`.
 - `mysql_result` has `columns`, the number of columns. edc does not count or read the rows.
 
-A response event has the `command` and the `sql` of the command that it answers. `mysql_tls` is not a command. It shows that the connection uses TLS and has `tls: true`. edc reads no more of that connection.
+A response event has the `command` and the `sql` of the command that it answers. `mysql_tls` is not a command. It shows that the connection uses TLS and has `tls: true`. Without macOS TLS probes, edc reads no more of that connection.
 
 MySQL answers one command at a time. So the first response packet after a command is the response of that command. `latency_ms` starts when the client sends the command and stops when the client reads that packet. On the server side, it starts when the server reads the command and stops when the server writes that packet. The client latency includes the network. The server latency includes only the work of the server. edc does not read the rows after the first packet, so `latency_ms` is not the time to the last row.
 
@@ -903,7 +1020,7 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Th
 `trace mysql` has these limits:
 
 - It reads TCP only. `mysql -h localhost` uses a unix socket, so `trace mysql` sees nothing. `mysql -h 127.0.0.1` uses TCP. Use `trace socket` to see the raw payload of a unix socket.
-- It does not read TLS. The `mysql` client of MySQL 8.4 uses TLS on TCP by default, so many connections show only `mysql_tls`. Use `--ssl-mode=DISABLED` in a test.
+- Without macOS `--tls`, encrypted MySQL queries are unavailable. Use `--ssl-mode=DISABLED` for a plain TCP test.
 - It does not read a compressed connection. It shows `mysql_connect` with `compressed: true` and the result of the login. It shows no event after that.
 - It does not read the X Protocol on port 33060.
 - If a command has the values of query attributes, edc cannot find the SQL. It shows the command without `sql`.
@@ -1013,7 +1130,13 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Th
 
 ## trace postgres
 
-Use `trace postgres` on Linux 5.15 or later to print plain PostgreSQL requests and results as they arrive. edc reads the start of each TCP read and write on the PostgreSQL port in the kernel. The default port is 5432. Use `--port` for another port.
+Use `trace postgres` on Linux 5.15 or later, or macOS, to inspect plain PostgreSQL requests and results.
+
+Linux reads TCP buffers with eBPF. macOS reconstructs TCP streams through libpcap and PKTAP.
+
+macOS capture requires packet access, usually through `sudo`. Start capture before the connection to record startup metadata.
+
+The default port is 5432. Use `--port` for another port.
 
 ```bash
 edc trace postgres
@@ -1067,9 +1190,23 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Wi
 - If the trace starts in the middle of a connection, there is no `postgres_connect` for it. edc finds the boundary at a later request.
 - An event shows up to 1,024 bytes of SQL. `sql_truncated` is true if edc cuts it.
 
+macOS limits each complete PostgreSQL message to 1 MiB. Larger messages stop that stream and increase the loss count.
+
 ## trace redis
 
-Use `trace redis` on Linux 5.15 or later to print plain Redis commands and replies as they arrive. edc reads the start of each TCP read and write on the Redis port in the kernel. The default port is 6379. Use `--port` for another port.
+Use `trace redis` on Linux 5.15 or later, or macOS, to print plain Redis commands and replies.
+
+Linux reads the start of each TCP read and write in the kernel.
+
+macOS uses libpcap and PKTAP to reconstruct TCP streams. macOS capture requires packet access, usually through `sudo`.
+
+On macOS, use `--tls --port 6380` to capture Redis plaintext through the HTTP trace TLS probes.
+
+Use `--tls=/path/to/client` to select an executable. The HTTP TLS prerequisites and target restrictions also apply.
+
+TLS events carry `tls: true`. Default value masks remain active. A TLS key log is unnecessary.
+
+The default port is 6379. Use `--port` for another port.
 
 ```bash
 edc trace redis
@@ -1098,9 +1235,9 @@ The summary after Ctrl-C shows one row for each side and command name. A row sho
 
 `trace redis` has these limits:
 
-- It does not read TLS. edc finds no RESP framing in a TLS connection, so it shows no events for it.
+- Without macOS `--tls`, encrypted Redis commands and replies are unavailable.
 - It reads TCP only. A unix socket connection is not visible.
-- edc keeps the first 4 KiB of each request and the first 1 KiB of each reply write or read. A very large array reply, for example `LRANGE` of 5,000 items, loses the framing. That command counts as unanswered, and the next command re-syncs.
+- On Linux, edc keeps the first 4 KiB of each request and the first 1 KiB of each reply write or read. A very large array reply, for example `LRANGE` of 5,000 items, loses the framing. That command counts as unanswered, and the next command re-syncs.
 - edc skips bulk values by their size, so a 10 KB `SET` still gets its reply. If the argument headers of a command are outside the capture, for example `RPUSH` with 5,000 values, the command shows `truncated: true` and gets no reply.
 - After `CLIENT REPLY OFF` or `CLIENT REPLY SKIP`, the server does not reply. These commands have `no_reply: true`, and edc does not count them as unanswered.
 - After PSYNC or SYNC, edc does not read the replication stream as replies. A replica sends `REPLCONF ACK` to its master each second. On the master, `--side server` shows one `REPLCONF ACK` with `no_reply: true` for each replica each second.

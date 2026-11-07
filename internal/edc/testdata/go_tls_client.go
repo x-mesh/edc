@@ -52,18 +52,46 @@ func waitForTLSWrites() {
 	panic("a TLS Write did not return")
 }
 
-func runStress() {
+func runStress() { runLifecycle(16, 4, 0, false) }
+
+func runLifecycle(workers, rounds int, pause time.Duration, keepAlive bool) {
 	runtime.GOMAXPROCS(4)
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "go-tls-response:"+r.URL.Path)
-	}))
-	defer server.Close()
+	address := ""
+	if len(os.Args) > 2 {
+		address = os.Args[2]
+	}
+	if address == "" {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "go-tls-response:"+r.URL.Path) }))
+		defer server.Close()
+		address = server.URL
+	}
 	var writes sync.WaitGroup
+	var descriptorsMu sync.Mutex
+	descriptors := map[uintptr]bool{}
+	reused := 0
+	connections := 0
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		DialTLSContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 			if err != nil {
+				return nil, err
+			}
+			socket, err := conn.(*net.TCPConn).SyscallConn()
+			if err != nil {
+				conn.Close()
+				return nil, err
+			}
+			if err := socket.Control(func(fd uintptr) {
+				descriptorsMu.Lock()
+				defer descriptorsMu.Unlock()
+				connections++
+				if descriptors[fd] {
+					reused++
+				}
+				descriptors[fd] = true
+			}); err != nil {
+				conn.Close()
 				return nil, err
 			}
 			secure := tls.Client(movingConn{conn}, &tls.Config{InsecureSkipVerify: true})
@@ -73,21 +101,23 @@ func runStress() {
 			}
 			return completedConn{Conn: secure, writes: &writes}, nil
 		},
-		DisableKeepAlives: true,
+		DisableKeepAlives:   !keepAlive,
+		MaxIdleConnsPerHost: workers,
+		MaxConnsPerHost:     workers,
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
-	fmt.Println("ready", os.Getpid(), server.URL)
+	fmt.Println("ready", os.Getpid(), address)
 	waitForStart()
 	var wait sync.WaitGroup
 	errors := make(chan error, 64)
-	for worker := 0; worker < 16; worker++ {
+	for worker := 0; worker < workers; worker++ {
 		wait.Add(1)
 		go func(worker int) {
 			defer wait.Done()
-			for i := 0; i < 4; i++ {
+			for i := 0; i < rounds; i++ {
 				path := fmt.Sprintf("/go-tls-probe-%d-%d", worker, i)
-				response, err := client.Get(server.URL + path)
+				response, err := client.Get(address + path)
 				if err != nil {
 					errors <- err
 					return
@@ -98,6 +128,7 @@ func runStress() {
 					errors <- fmt.Errorf("%s: %q, %v", path, body, err)
 				}
 				runtime.GC()
+				time.Sleep(pause)
 			}
 		}(worker)
 	}
@@ -109,7 +140,7 @@ func runStress() {
 		os.Exit(1)
 	}
 	waitForTLSWrites()
-	fmt.Println("completed 64 HTTPS requests")
+	fmt.Printf("completed %d HTTPS requests fd_reuses=%d fd_connections=%d\n", workers*rounds, reused, connections)
 }
 
 type growingConn struct {
@@ -218,6 +249,22 @@ func runErrors() {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "reconnect":
+			runLifecycle(1, 128, 0, false)
+			return
+		case "concurrent":
+			runLifecycle(16, 16, 0, false)
+			return
+		case "keepalive":
+			runLifecycle(8, 4, 0, true)
+			return
+		case "soak":
+			runLifecycle(8, 30, 2*time.Second, true)
+			return
+		}
+	}
 	if len(os.Args) > 1 && os.Args[1] == "stack" {
 		runStack()
 	} else if len(os.Args) > 1 && os.Args[1] == "errors" {

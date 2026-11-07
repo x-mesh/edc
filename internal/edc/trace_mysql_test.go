@@ -677,8 +677,8 @@ func TestMySQLTraceLabelAndPortOption(t *testing.T) {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}
 	}
-	if !traceProtocols["mysql"].serverSide || !traceProtocols["mysql"].linuxOnly {
-		t.Fatal("trace mysql must be Linux only and allow --side server")
+	if !traceProtocols["mysql"].serverSide || traceProtocols["mysql"].linuxOnly {
+		t.Fatal("trace mysql must allow macOS and --side server")
 	}
 }
 

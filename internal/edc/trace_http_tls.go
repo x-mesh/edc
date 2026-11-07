@@ -24,11 +24,15 @@ import (
 // 위치다. 위치를 주면 uprobe를 붙일 때 ELF의 심볼 표를 다시 읽지 않는다. node처럼 큰 실행 파일은 그 표를 읽는 데 100ms
 // 넘게 걸려, trace 중에 새로 뜬 process의 첫 요청보다 늦게 붙는다.
 type traceTLSTarget struct {
-	path      string
-	symbols   []string
-	offsets   map[string]uint64
-	goReturns map[string][]uint64
-	goMachine elf.Machine
+	pid          uint32
+	process      string
+	path         string
+	darwinModule string
+	darwinNotice string
+	symbols      []string
+	offsets      map[string]uint64
+	goReturns    map[string][]uint64
+	goMachine    elf.Machine
 	// id는 탐색이 고른 파일의 (device, inode)다. --tls=<경로>로 준 파일은 0이다.
 	id [2]uint64
 }

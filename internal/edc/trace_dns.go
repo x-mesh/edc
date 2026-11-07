@@ -47,6 +47,8 @@ type dnsPacket struct {
 
 // dnsQueryKey의 remote는 client 쪽이면 DNS 서버, 서버 쪽이면 질의한 client다.
 type dnsQueryKey struct {
+	tcp       bool
+	socket    uint64
 	server    bool
 	localPort string
 	remote    string
@@ -54,6 +56,8 @@ type dnsQueryKey struct {
 }
 
 type dnsPendingQuery struct {
+	pid        uint32
+	process    string
 	bootTimeNS uint64
 	name       string
 	queryType  string
@@ -138,10 +142,10 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	if !packet.sent && packet.arrivalNS != 0 {
 		event.ReadDelayMS = traceSpan(packet.arrivalNS, packet.bootTimeNS)
 	}
-	key := dnsQueryKey{server: server, localPort: localPort, remote: packet.destination, id: id}
+	key := dnsQueryKey{tcp: packet.tcp, socket: packet.socket, server: server, localPort: localPort, remote: packet.destination, id: id}
 	if query {
 		event.Event = traceDNSQueryEvent
-		tracker.remember(key, dnsPendingQuery{bootTimeNS: packet.bootTimeNS, name: event.Target, queryType: event.QueryType})
+		tracker.remember(key, dnsPendingQuery{pid: packet.pid, process: packet.process, bootTimeNS: packet.bootTimeNS, name: event.Target, queryType: event.QueryType})
 		return event, true
 	}
 	// 응답이 BPF가 읽는 1024바이트보다 길면 해석하지 못한다. header의 RCODE와 ANCOUNT로 결과를 정하고, 이름은 질의에서 가져온다.
@@ -154,6 +158,17 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	if queries := tracker.pending[key]; len(queries) > 0 {
 		delete(tracker.pending, key)
 		tracker.size -= len(queries)
+		if event.PID == 0 {
+			owner := queries[0]
+			for _, query := range queries[1:] {
+				if query.pid != owner.pid {
+					owner.pid = 0
+					owner.process = ""
+					break
+				}
+			}
+			event.PID, event.Process = owner.pid, owner.process
+		}
 		event.LatencyMS = traceSpan(queries[0].bootTimeNS, packet.bootTimeNS)
 		if !packet.sent && packet.arrivalNS != 0 {
 			event.NetworkMS = traceSpan(queries[0].bootTimeNS, packet.arrivalNS)

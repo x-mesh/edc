@@ -137,6 +137,9 @@ func httpTracePrerequisites() error {
 }
 
 var captureAttachedHook func()
+var captureTrackerHook func(*pktapHTTPTracker)
+var capturePacketHook func(pktapTCPPacket, time.Time)
+var captureTLSRecordHook func(darwinTLSRecord, uint16, time.Time)
 
 func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	if scope.protocol == "mysql" && scope.port == 0 {
@@ -165,6 +168,9 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 		return captureSummary{}, err
 	}
 	tracker := newPKTAPHTTPTracker(scope, offset)
+	if captureTrackerHook != nil {
+		captureTrackerHook(tracker)
+	}
 	if keylog != nil {
 		tracker.tls = newTLSKeylogDecryptor(keylog, tracker)
 	}
@@ -250,7 +256,7 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 				return captureSummary{}, fmt.Errorf("invalid PKTAP capture record")
 			}
 			if header.captured < header.length {
-				tracker.lost++
+				tracker.recordLoss("pktap_truncated", httpPacket{}, fmt.Sprintf("captured=%d original=%d", header.captured, header.length))
 				continue
 			}
 			wall := uint64(header.seconds)*uint64(time.Second) + uint64(header.microseconds)*uint64(time.Microsecond)
@@ -258,6 +264,9 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 			if ok {
 				if scope.port != 0 && !pktapHTTPPortMatches(packet, scope.port) {
 					continue
+				}
+				if capturePacketHook != nil {
+					capturePacketHook(packet, time.Now())
 				}
 				if err := emit(tracker.add(packet, time.Now())); err != nil {
 					return captureSummary{}, err
@@ -269,6 +278,7 @@ func collectDarwinHTTPEvents(scope traceScope, duration time.Duration, onEvent f
 		case 0:
 			select {
 			case <-stop:
+			case <-tlsCapture.records.ready:
 			case <-tick.C:
 			}
 		default:

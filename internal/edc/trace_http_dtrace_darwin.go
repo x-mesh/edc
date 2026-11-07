@@ -63,7 +63,15 @@ type darwinTLSWorker struct {
 	stopRequested, forced bool
 }
 
-func startDarwinTLSWorker(targets []traceTLSTarget, records chan<- darwinTLSRecord) (*darwinTLSWorker, error) {
+func (worker *darwinTLSWorker) enqueue(records *darwinTLSRecordQueue, record darwinTLSRecord) bool {
+	if err := records.push(record); err != nil {
+		worker.err = err
+		return false
+	}
+	return true
+}
+
+func startDarwinTLSWorker(targets []traceTLSTarget, records *darwinTLSRecordQueue) (*darwinTLSWorker, error) {
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("macOS TLS worker has no targets")
 	}
@@ -93,6 +101,28 @@ func startDarwinTLSWorker(targets []traceTLSTarget, records chan<- darwinTLSReco
 		defer close(worker.done)
 		scanner := bufio.NewScanner(stdout)
 		decoder := darwinTLSDecoder{}
+		order := newDarwinTLSGoOrder()
+		addresses := newDarwinTLSAddressCache(pid)
+		trackAddresses := false
+		for _, target := range targets {
+			if target.goMachine != 0 || slices.Contains(target.symbols, "SSLRead") {
+				trackAddresses = true
+			}
+		}
+		send := func(record darwinTLSRecord) bool {
+			if record.pid != pid {
+				worker.err = fmt.Errorf("TLS record belongs to PID %d, expected %d", record.pid, pid)
+				return false
+			}
+			if record.closed {
+				addresses.forget(record.object)
+			}
+			if targets[0].process != "" {
+				record.process = targets[0].process
+			}
+			return worker.enqueue(records, record)
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "EDC_READY" {
@@ -111,19 +141,39 @@ func startDarwinTLSWorker(targets []traceTLSTarget, records chan<- darwinTLSReco
 					_ = command.Process.Kill()
 					break
 				}
-				if targets[0].process != "" {
-					record.process = targets[0].process
+				if record.fdMeta != 0 {
+					if err := addresses.metadata(*record); err != nil {
+						worker.err = err
+						_ = command.Process.Kill()
+						break
+					}
+					continue
 				}
-				select {
-				case records <- *record:
-				default:
-					worker.err = fmt.Errorf("macOS TLS output queue is full")
+				// Legacy OpenSSL probes do not emit FD generations, so retain their live address lookup.
+				if trackAddresses {
+					if err := addresses.decorate(record); err != nil {
+						worker.err = err
+						_ = command.Process.Kill()
+						break
+					}
+				}
+				output, err := order.add(*record)
+				if err != nil {
+					worker.err = err
 					_ = command.Process.Kill()
+					break
+				}
+				for _, ready := range output {
+					if !send(ready) {
+						break
+					}
 				}
 				if worker.err != nil {
+					_ = command.Process.Kill()
 					break
 				}
 			}
+
 		}
 		if err := scanner.Err(); err != nil && worker.err == nil {
 			worker.err = err
@@ -131,6 +181,17 @@ func startDarwinTLSWorker(targets []traceTLSTarget, records chan<- darwinTLSReco
 		}
 		if decoder.record != nil && worker.err == nil {
 			worker.err = fmt.Errorf("DTrace ended during a TLS record")
+		}
+		if worker.err == nil {
+			output, err := order.finish()
+			if err != nil {
+				worker.err = err
+			}
+			for _, record := range output {
+				if !send(record) {
+					break
+				}
+			}
 		}
 		if err := command.Wait(); err != nil && worker.err == nil {
 			worker.err = err
@@ -147,7 +208,7 @@ type darwinTLSCapture struct {
 	scope     traceScope
 	ctx       context.Context
 	cancel    context.CancelFunc
-	records   chan darwinTLSRecord
+	records   *darwinTLSRecordQueue
 	workers   map[uint32]*darwinTLSWorker
 	attempted map[uint32]bool
 	discovery <-chan darwinTLSDiscovery
@@ -159,7 +220,7 @@ type darwinTLSCapture struct {
 
 func newDarwinTLSCapture(scope traceScope) (*darwinTLSCapture, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	capture := &darwinTLSCapture{scope: scope, ctx: ctx, cancel: cancel, records: make(chan darwinTLSRecord, 16), workers: map[uint32]*darwinTLSWorker{}, attempted: map[uint32]bool{}, notices: newTraceTLSNoticeBuffer(), nextScan: time.Now().Add(2 * time.Second)}
+	capture := &darwinTLSCapture{scope: scope, ctx: ctx, cancel: cancel, records: newDarwinTLSRecordQueue(), workers: map[uint32]*darwinTLSWorker{}, attempted: map[uint32]bool{}, notices: newTraceTLSNoticeBuffer(), nextScan: time.Now().Add(2 * time.Second)}
 	if scope.tls == "" || scope.tlsKeylog != "" {
 		return capture, nil
 	}
@@ -232,8 +293,10 @@ func (c *darwinTLSCapture) poll(tracker *pktapHTTPTracker, emit func([]captureEv
 		select {
 		case <-worker.done:
 			delete(c.workers, pid)
-			if err := c.drain(tracker, emit, now); err != nil {
-				return err
+			for queued := c.records.len(); queued > 0; queued -= 64 {
+				if err := c.drain(tracker, emit, now); err != nil {
+					return err
+				}
 			}
 			if err := emit(tracker.finishDarwinTLSPID(pid, now)); err != nil {
 				return err
@@ -299,20 +362,22 @@ func (c *darwinTLSCapture) poll(tracker *pktapHTTPTracker, emit func([]captureEv
 }
 func (c *darwinTLSCapture) drain(tracker *pktapHTTPTracker, emit func([]captureEvent) error, now time.Time) error {
 	for i := 0; i < 64; i++ {
-		select {
-		case record := <-c.records:
-			events, unmapped := tracker.addDarwinTLS(record, c.scope.port, now)
-			if unmapped {
-				c.unmapped++
-			}
-			if err := emit(events); err != nil {
-				return err
-			}
-			if record.size > uint64(len(record.payload)) {
-				c.notices.offer("A TLS call exceeded 1 MiB; capture stopped for that TLS session")
-			}
-		default:
+		record, ok := c.records.pop()
+		if !ok {
 			return nil
+		}
+		if captureTLSRecordHook != nil {
+			captureTLSRecordHook(record, c.scope.port, now)
+		}
+		events, unmapped := tracker.addDarwinTLS(record, c.scope.port, now)
+		if unmapped {
+			c.unmapped++
+		}
+		if err := emit(events); err != nil {
+			return err
+		}
+		if record.size > uint64(len(record.payload)) {
+			c.notices.offer("A TLS call exceeded 1 MiB; capture stopped for that TLS session")
 		}
 	}
 	return nil
@@ -351,8 +416,10 @@ func (c *darwinTLSCapture) finish(tracker *pktapHTTPTracker, emit func([]capture
 		return err
 	}
 	c.stop()
-	if err := c.drain(tracker, emit, now); err != nil {
-		return err
+	for queued := c.records.len(); queued > 0; queued -= 64 {
+		if err := c.drain(tracker, emit, now); err != nil {
+			return err
+		}
 	}
 	for pid, worker := range c.workers {
 		diagnostic, dropped := worker.diagnostics.snapshot()
@@ -415,7 +482,10 @@ func darwinTLSAddressesFromInfo(info []byte) (string, string) {
 	return netip.AddrPortFrom(local.Unmap(), binary.BigEndian.Uint16(proto[darwinInLPort:])).String(), netip.AddrPortFrom(remote.Unmap(), binary.BigEndian.Uint16(proto[darwinInFPort:])).String()
 }
 func (t *pktapHTTPTracker) addDarwinTLS(record darwinTLSRecord, port uint16, now time.Time) ([]captureEvent, bool) {
-	source, destination := darwinTLSAddresses(record.pid, record.fd)
+	source, destination := record.source, record.destination
+	if source == "" && destination == "" {
+		source, destination = darwinTLSAddresses(record.pid, record.fd)
+	}
 	packet := pktapTCPPacket{httpPacket: httpPacket{bootTimeNS: uint64(int64(record.wallNS) - t.clockOffset), pid: record.pid, process: record.process, sent: record.sent, source: source, destination: destination, payload: record.payload, decrypted: true}, sequence: record.offset, tlsObject: record.object}
 	if record.closed {
 		packet.flags = 4
@@ -425,7 +495,7 @@ func (t *pktapHTTPTracker) addDarwinTLS(record darwinTLSRecord, port uint16, now
 	}
 	events := t.add(packet, now)
 	if record.size > uint64(len(record.payload)) {
-		t.lost++
+		t.recordLoss("tls_call_limit", packet.httpPacket, fmt.Sprintf("captured=%d original=%d", len(record.payload), record.size))
 		if flow := t.flows[pktapHTTPKey{pid: record.pid, tlsObject: record.object}]; flow != nil {
 			for i := range flow.directions {
 				direction := &flow.directions[i]

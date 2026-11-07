@@ -153,3 +153,30 @@ func FuzzDarwinTLSDecoder(f *testing.F) {
 		}
 	})
 }
+
+func TestDarwinSecureTransportBinaryScript(t *testing.T) {
+	script, err := darwinTLSScript([]traceTLSTarget{{path: "/System/Library/Frameworks/Security.framework/Security", symbols: []string{"SSLRead", "SSLWrite", "SSLClose"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{"pid$target:Security:SSLRead:entry", "pid$target:Security:SSLWrite:return", "pid$target:Security:SSLClose:entry", "self->edc_secure", "(int)arg1 == -9803", "(int)arg1 == -9805", "(int)arg1 == -9816", "*(userland uint64_t *)self->edc_out", "trace(*(userland edc_tls_bytes_16 *)(self->edc_buffer+this->offset))"} {
+		if !strings.Contains(script, part) {
+			t.Errorf("missing %q", part)
+		}
+	}
+	if strings.Contains(script, "copyinstr") || strings.Contains(script, "copyin(") {
+		t.Fatal("SecureTransport payload must use binary-safe user references")
+	}
+}
+
+func TestDarwinTLSAddressRolesIgnoreSymbolAliases(t *testing.T) {
+	if strings.Contains(darwinTLSFDAddressScript, "probefunc") {
+		t.Fatal("socket address roles depend on canonical symbol aliases instead of selected probes")
+	}
+	for name, kind := range map[string]int{"getsockname": 1, "getpeername": 0, "accept": 2, "connect": 2, "bind": 3} {
+		clause := fmt.Sprintf("pid$target:libsystem_kernel.dylib:%s:entry\n{ self->edc_addr_kind=%d; }", name, kind)
+		if !strings.Contains(darwinTLSFDAddressScript, clause) {
+			t.Errorf("missing fixed address role for %s", name)
+		}
+	}
+}

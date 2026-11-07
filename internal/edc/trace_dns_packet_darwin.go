@@ -63,7 +63,7 @@ func decodeDarwinDNSPacket(frame []byte, link uint32) (netip.AddrPort, netip.Add
 		dst = netip.AddrFrom4([4]byte(frame[16:20]))
 		frame = frame[header:total]
 	} else {
-		if len(frame) < 40 || frame[0]>>4 != 6 || frame[6] != 17 {
+		if len(frame) < 40 || frame[0]>>4 != 6 {
 			return empty, empty, nil, false
 		}
 		total := 40 + int(binary.BigEndian.Uint16(frame[4:6]))
@@ -72,7 +72,26 @@ func decodeDarwinDNSPacket(frame []byte, link uint32) (netip.AddrPort, netip.Add
 		}
 		src = netip.AddrFrom16([16]byte(frame[8:24]))
 		dst = netip.AddrFrom16([16]byte(frame[24:40]))
-		frame = frame[40:total]
+		next, at := frame[6], 40
+		for next != 17 {
+			if at+2 > total {
+				return empty, empty, nil, false
+			}
+			size := 0
+			switch next {
+			case 0, 43, 60:
+				size = (int(frame[at+1]) + 1) * 8
+			case 51:
+				size = (int(frame[at+1]) + 2) * 4
+			default:
+				return empty, empty, nil, false
+			}
+			if at+size > total {
+				return empty, empty, nil, false
+			}
+			next, at = frame[at], at+size
+		}
+		frame = frame[at:total]
 	}
 	if len(frame) < 8 {
 		return empty, empty, nil, false

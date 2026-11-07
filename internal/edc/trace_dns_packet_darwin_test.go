@@ -62,8 +62,8 @@ func TestDecodeDarwinDNSLoopbackIPv6(t *testing.T) {
 
 func TestDarwinDNSPacketForSide(t *testing.T) {
 	client := netip.MustParseAddrPort("127.0.0.1:12345")
-	server := netip.MustParseAddrPort("127.0.0.1:53")
-	local := map[netip.Addr]bool{client.Addr(): true}
+	server := netip.MustParseAddrPort("127.0.0.2:53")
+	local := map[netip.Addr]bool{client.Addr(): true, server.Addr(): true}
 	query := make([]byte, 12)
 	for _, side := range []bool{false, true} {
 		q, ok := darwinDNSPacketForSide(client, server, query, local, side)
@@ -108,5 +108,31 @@ func TestDarwinDNSPCAP(t *testing.T) {
 	err := readDarwinDNSPCAP(&stream, 0, local, false, newDNSQueryTracker(false), func(e captureEvent) error { events = append(events, e); return nil })
 	if err != io.EOF || len(events) != 1 || events[0].Event != "dns_query" {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestDecodeDarwinDNSIPv6ExtensionHeaders(t *testing.T) {
+	for _, next := range []byte{0, 43, 60, 51} {
+		frame := make([]byte, 4+40+8+8+12)
+		binary.LittleEndian.PutUint32(frame, 30)
+		ip := frame[4:]
+		ip[0] = 0x60
+		ip[6] = next
+		ip[23] = 1
+		ip[39] = 2
+		binary.BigEndian.PutUint16(ip[4:], uint16(len(ip)-40))
+		ip[40] = 17
+		udp := ip[48:]
+		binary.BigEndian.PutUint16(udp, 50000)
+		binary.BigEndian.PutUint16(udp[2:], 53)
+		binary.BigEndian.PutUint16(udp[4:], uint16(len(udp)))
+		source, destination, payload, ok := decodeDarwinDNSPacket(frame, 0)
+		if !ok || source.String() != "[::1]:50000" || destination.String() != "[::2]:53" || len(payload) != 12 {
+			t.Fatalf("next=%d source=%s destination=%s ok=%t", next, source, destination, ok)
+		}
+		ip[41] = 255
+		if _, _, _, ok := decodeDarwinDNSPacket(frame, 0); ok {
+			t.Fatalf("accepted invalid extension size: %d", next)
+		}
 	}
 }

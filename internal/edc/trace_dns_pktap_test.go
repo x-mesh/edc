@@ -76,7 +76,11 @@ func TestPKTAPDNSUDPDecoderAndFilter(t *testing.T) {
 				t.Fatalf("UDP filter=%d %v", count, err)
 			}
 			packet, ok := decodeTransportPKTAP(data, 1_000_000, 0, 17)
-			if !ok || packet.pid != 42 || packet.destination != "127.0.0.2:53" && !v6 {
+			wantSource, wantDestination := "127.0.0.1:50000", "127.0.0.2:53"
+			if v6 {
+				wantSource, wantDestination = "[::1]:50000", "[::2]:53"
+			}
+			if !ok || packet.pid != 42 || packet.source != wantSource || packet.destination != wantDestination {
 				t.Fatalf("UDP=%+v ok=%t", packet, ok)
 			}
 			for i := 0; i < len(data); i++ {

@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,5 +210,23 @@ func TestPKTAPHTTPTLSFragments(t *testing.T) {
 	got := tracker.add(pktapTestTCP(true, 102, string(hello[2:])), now)
 	if len(got) != 1 || got[0].Event != traceTLSHelloEvent || got[0].Target != "example.com" {
 		t.Fatalf("TLS hello: %#v", got)
+	}
+}
+
+func TestPKTAPHTTPContiguousOverflowReleasesWaitingMemory(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	tracker.add(pktapTestTCP(true, 0, "G"), now)
+	tracker.add(pktapTestTCP(true, 100, "waiting"), now)
+	tracker.add(pktapTestTCP(true, 1, strings.Repeat("x", httpMessageMax)), now)
+	if tracker.buffered != 0 || tracker.lost != 1 {
+		t.Fatalf("buffered=%d lost=%d", tracker.buffered, tracker.lost)
+	}
+	for _, flow := range tracker.flows {
+		for _, direction := range flow.directions {
+			if direction.waitingBytes != 0 || len(direction.waiting) != 0 {
+				t.Fatal("blocked flow retained waiting packets")
+			}
+		}
 	}
 }

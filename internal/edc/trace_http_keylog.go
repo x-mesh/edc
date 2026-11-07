@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
@@ -14,6 +15,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -152,7 +154,12 @@ func (l *tlsKeylog) refresh() error {
 	}
 }
 
+type tlsPlainRecord struct {
+	order  uint64
+	packet pktapTCPPacket
+}
 type tlsWireRecord struct {
+	order  uint64
 	packet httpPacket
 	data   []byte
 }
@@ -165,6 +172,8 @@ type tlsKeylogDirection struct {
 	plainOffset            uint32
 }
 type tlsKeylogConnection struct {
+	nextOrder            uint64
+	plaintext            []tlsPlainRecord
 	client               int
 	haveClient           bool
 	random, serverRandom [32]byte
@@ -178,6 +187,7 @@ type tlsKeylogDecryptor struct {
 	tracker     *pktapHTTPTracker
 	connections map[uint64]*tlsKeylogConnection
 	pending     int
+	buffered    int
 	unmapped    uint64
 	err         error
 }
@@ -200,13 +210,15 @@ func (d *tlsKeylogDecryptor) record(packet httpPacket, now time.Time) []captureE
 		index = 1
 	}
 	direction := &connection.directions[index]
-	if d.pending+len(packet.payload) > tlsKeylogPendingLimit {
-		d.err = fmt.Errorf("TLS records awaiting keys exceed %d bytes", tlsKeylogPendingLimit)
+	if d.buffered+len(packet.payload) > tlsKeylogPendingLimit {
+		d.err = fmt.Errorf("TLS buffered data exceeds %d bytes", tlsKeylogPendingLimit)
 		return nil
 	}
-	direction.pending = append(direction.pending, tlsWireRecord{packet: packet, data: bytes.Clone(packet.payload)})
+	direction.pending = append(direction.pending, tlsWireRecord{order: connection.nextOrder, packet: packet, data: bytes.Clone(packet.payload)})
 	direction.pending[len(direction.pending)-1].packet.payload = nil
+	connection.nextOrder++
 	d.pending += len(packet.payload)
+	d.buffered += len(packet.payload)
 	return d.drain(connection, now)
 }
 func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []captureEvent {
@@ -228,6 +240,7 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 				direction.pending[0] = tlsWireRecord{}
 				direction.pending = direction.pending[1:]
 				d.pending -= len(record.data)
+				d.buffered -= len(record.data)
 				progress = true
 				if kind == 22 {
 					if err := d.handshake(c, i, plaintext); err != nil {
@@ -240,19 +253,46 @@ func (d *tlsKeylogDecryptor) drain(c *tlsKeylogConnection, now time.Time) []capt
 					packet.decrypted = true
 					packet.payload = plaintext
 					direction.plainOffset += uint32(len(plaintext))
-					events = append(events, d.tracker.add(packet, now)...)
+					if d.buffered+cap(plaintext) > tlsKeylogPendingLimit {
+						d.err = fmt.Errorf("TLS buffered data exceeds %d bytes", tlsKeylogPendingLimit)
+						return events
+					}
+					d.buffered += cap(plaintext)
+					c.plaintext = append(c.plaintext, tlsPlainRecord{order: record.order, packet: packet})
 				}
 			}
 		}
 	}
+	barrier := c.nextOrder
+	for i := range c.directions {
+		if pending := c.directions[i].pending; len(pending) > 0 && pending[0].order < barrier {
+			barrier = pending[0].order
+		}
+	}
+	slices.SortFunc(c.plaintext, func(a, b tlsPlainRecord) int { return cmp.Compare(a.order, b.order) })
+	consumed := 0
+	for _, record := range c.plaintext {
+		if record.order >= barrier {
+			break
+		}
+		d.buffered -= cap(record.packet.payload)
+		events = append(events, d.tracker.add(record.packet, now)...)
+		consumed++
+	}
+	clear(c.plaintext[:consumed])
+	c.plaintext = c.plaintext[consumed:]
 	return events
 }
 func (d *tlsKeylogDecryptor) handshake(c *tlsKeylogConnection, index int, data []byte) error {
 	direction := &c.directions[index]
+	if d.buffered+len(data) > tlsKeylogPendingLimit {
+		return fmt.Errorf("TLS buffered data exceeds %d bytes", tlsKeylogPendingLimit)
+	}
 	if len(direction.handshake)+len(data) > httpMessageMax {
 		return fmt.Errorf("TLS handshake exceeds capture limit")
 	}
 	direction.handshake = append(direction.handshake, data...)
+	d.buffered += len(data)
 	for len(direction.handshake) >= 4 {
 		message := direction.handshake
 		n := 4 + (int(message[1])<<16 | int(message[2])<<8 | int(message[3]))
@@ -331,7 +371,8 @@ func (d *tlsKeylogDecryptor) handshake(c *tlsKeylogConnection, index int, data [
 				direction.sequence = 0
 			}
 		}
-		direction.handshake = direction.handshake[n:]
+		d.buffered -= n
+		direction.handshake = bytes.Clone(direction.handshake[n:])
 	}
 	if len(direction.handshake) == 0 {
 		direction.handshake = nil
@@ -542,10 +583,16 @@ func (d *tlsKeylogDecryptor) forget(socket uint64, now time.Time) []captureEvent
 		d.unmapped += uint64(len(direction.pending))
 		for _, record := range direction.pending {
 			d.pending -= len(record.data)
+			d.buffered -= len(record.data)
 		}
+		d.buffered -= len(direction.handshake)
 		clear(direction.secret)
 		clear(direction.iv)
 		clear(direction.handshake)
+	}
+	d.unmapped += uint64(len(c.plaintext))
+	for _, record := range c.plaintext {
+		d.buffered -= cap(record.packet.payload)
 	}
 	delete(d.connections, socket)
 	for key, flow := range d.tracker.flows {

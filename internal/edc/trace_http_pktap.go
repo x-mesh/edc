@@ -389,8 +389,10 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 			}
 			d.next += uint32(len(payload))
 			if len(d.buffer)+len(payload) > httpMessageMax || t.buffered+len(payload) > pktapHTTPBufferLimit {
-				t.buffered -= len(d.buffer)
+				t.buffered -= len(d.buffer) + d.waitingBytes
 				d.buffer = nil
+				d.waiting = nil
+				d.waitingBytes = 0
 				d.blocked = true
 				t.lost++
 				break

@@ -223,7 +223,7 @@ func TestTLSKeylogWaitsForAppendedSecrets(t *testing.T) {
 	for _, event := range events {
 		response = response || event.TLS && event.Status == 200
 	}
-	if !response || tracker.tls.pending != 0 {
+	if !response || tracker.tls.pending != 0 || tracker.tls.buffered != 0 {
 		t.Fatalf("response=%t pending=%d events=%#v", response, tracker.tls.pending, events)
 	}
 }
@@ -319,7 +319,7 @@ func TestTLSKeylogMissingSecretsAreCounted(t *testing.T) {
 		tracker.add(packet, time.Now())
 	}
 	events := tracker.sweep(time.Now(), true)
-	if tracker.tls.unmapped == 0 || tracker.tls.pending != 0 || len(tracker.tls.connections) != 0 {
+	if tracker.tls.unmapped == 0 || tracker.tls.pending != 0 || tracker.tls.buffered != 0 || len(tracker.tls.connections) != 0 {
 		t.Fatalf("missing=%d pending=%d connections=%d", tracker.tls.unmapped, tracker.tls.pending, len(tracker.tls.connections))
 	}
 	for _, event := range events {
@@ -385,4 +385,130 @@ func TestTLSKeylogTLS13KeyUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTLSKeylogWholeSecretAppendPreservesRequestOrder(t *testing.T) {
+	packets, keys := tlsKeylogTestCapture(t, tls.VersionTLS13, 0, false)
+	path := filepath.Join(t.TempDir(), "fixture.keys")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	keylog, err := openTLSKeylog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keylog.close()
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	tracker.tls = newTLSKeylogDecryptor(keylog, tracker)
+	for _, packet := range packets {
+		tracker.add(packet, time.Now())
+	}
+	if tracker.tls.pending == 0 {
+		t.Fatal("encrypted records were not retained")
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(keys); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	events := tracker.tls.refresh(time.Now())
+	events = append(events, tracker.sweep(time.Now(), true)...)
+	if tracker.tls.err != nil {
+		t.Fatal(tracker.tls.err)
+	}
+	response := false
+	for _, event := range events {
+		response = response || event.TLS && event.Status == 200 && event.Method == "GET" && event.Path == "/secure" && event.LatencyMS != nil
+	}
+	if !response || tracker.tls.pending != 0 || tracker.tls.buffered != 0 {
+		t.Fatalf("response=%t pending=%d events=%#v", response, tracker.tls.pending, events)
+	}
+}
+
+func TestTLSKeylogBoundsIncompleteHandshakesGlobally(t *testing.T) {
+	d := newTLSKeylogDecryptor(nil, nil)
+	payload := make([]byte, 65540)
+	payload[0], payload[1], payload[2] = 22, 3, 3
+	binary.BigEndian.PutUint16(payload[3:5], 65535)
+	payload[5], payload[6], payload[7], payload[8] = 1, 15, 255, 252
+	for socket := uint64(1); socket <= 300; socket++ {
+		d.record(httpPacket{socket: socket, payload: payload}, time.Now())
+		if d.err != nil {
+			if !strings.Contains(d.err.Error(), "TLS buffered data exceeds") || d.buffered > tlsKeylogPendingLimit {
+				t.Fatalf("buffered=%d error=%v", d.buffered, d.err)
+			}
+			d.tracker = newPKTAPHTTPTracker(traceScope{}, 0)
+			for socket := range d.connections {
+				d.forget(socket, time.Now())
+			}
+			if d.buffered != 0 || d.pending != 0 {
+				t.Fatalf("cleanup buffered=%d pending=%d", d.buffered, d.pending)
+			}
+			return
+		}
+	}
+	t.Fatal("incomplete TLS handshakes exceeded the global buffer limit")
+}
+
+func TestTLSKeylogQueuedPaddingAccounting(t *testing.T) {
+	secret := bytes.Repeat([]byte{42}, 32)
+	random := [32]byte{1}
+	log := &tlsKeylog{keys: map[tlsKeylogKey][]byte{{random, "CLIENT_TRAFFIC_SECRET_0"}: secret}}
+	d := newTLSKeylogDecryptor(log, nil)
+	c := &tlsKeylogConnection{client: 1, haveClient: true, random: random, version: 0x0304, suite: 0x1301}
+	c.directions[0].application = true
+	c.directions[1].application = true
+	d.connections[1] = c
+	d.record(httpPacket{socket: 1, payload: []byte{23, 3, 3, 0, 1, 0}}, time.Now())
+	padded := make([]byte, 16383)
+	padded[0], padded[1] = 'x', 23
+	record := tlsKeylogTestRecord(t, 0x1301, secret, 0, 0, padded)
+	d.record(httpPacket{socket: 1, sent: true, payload: record}, time.Now())
+	if d.err != nil {
+		t.Fatal(d.err)
+	}
+	if len(c.plaintext) != 1 {
+		t.Fatalf("queued=%d", len(c.plaintext))
+	}
+	if string(c.plaintext[0].packet.payload) != "x" {
+		t.Fatalf("plaintext=%q", c.plaintext[0].packet.payload)
+	}
+	retained := cap(c.plaintext[0].packet.payload)
+	if d.buffered-d.pending < retained {
+		t.Fatalf("plaintext charged=%d, retained allocation capacity=%d", d.buffered-d.pending, retained)
+	}
+}
+
+func TestTLSKeylogQueuedPaddingEnforcesGlobalLimit(t *testing.T) {
+	secret := bytes.Repeat([]byte{42}, 32)
+	random := [32]byte{1}
+	log := &tlsKeylog{keys: map[tlsKeylogKey][]byte{{random, "CLIENT_TRAFFIC_SECRET_0"}: secret}}
+	d := newTLSKeylogDecryptor(log, nil)
+	c := &tlsKeylogConnection{client: 1, haveClient: true, random: random, version: 0x0304, suite: 0x1301}
+	c.directions[0].application = true
+	c.directions[1].application = true
+	d.connections[1] = c
+	now := time.Now()
+	d.record(httpPacket{socket: 1, payload: []byte{23, 3, 3, 0, 1, 0}}, now)
+	padded := make([]byte, 16383)
+	padded[0], padded[1] = 'x', 23
+	for sequence := uint64(0); sequence < 1100; sequence++ {
+		record := tlsKeylogTestRecord(t, 0x1301, secret, sequence, 0, padded)
+		d.record(httpPacket{socket: 1, sent: true, payload: record}, now)
+		if d.err != nil {
+			if !strings.Contains(d.err.Error(), "TLS buffered data exceeds") || d.buffered > tlsKeylogPendingLimit {
+				t.Fatalf("buffered=%d error=%v", d.buffered, d.err)
+			}
+			d.tracker = newPKTAPHTTPTracker(traceScope{}, 0)
+			d.forget(1, now)
+			if d.buffered != 0 || d.pending != 0 {
+				t.Fatalf("cleanup buffered=%d pending=%d", d.buffered, d.pending)
+			}
+			return
+		}
+	}
+	t.Fatal("padded plaintext exceeded the global buffer limit")
 }

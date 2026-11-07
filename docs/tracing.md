@@ -511,7 +511,7 @@ TLS 1.2 supports AES-GCM with RSA or ECDHE, plus ChaCha20-Poly1305 with ECDHE or
 
 HTTPS supports HTTP/1.x, HTTP/2, payload masks, and TLS 1.3 KeyUpdate. TLS 1.2 renegotiation, 0-RTT, and QUIC are unsupported.
 
-The key log limit is 64 MiB and 65,536 entries. Records that await secrets have a 16 MiB limit.
+The key log limit is 64 MiB and 65,536 entries. Buffered TLS records, incomplete handshakes, and plaintext that awaits earlier records share a 16 MiB limit.
 
 Capture gaps or authentication errors stop decryption with an error. The summary counts records without matching secrets in `tls_unmapped`.
 

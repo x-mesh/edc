@@ -202,7 +202,7 @@ node --tls-keylog=/tmp/edc-tls.keys app.js
 
 TLS 1.3은 AES-GCM·ChaCha20-Poly1305를 지원합니다. TLS 1.2는 RSA·ECDHE 기반 AES-GCM과 ECDHE·DHE 기반 ChaCha20-Poly1305를 지원합니다. HTTP/1.x·HTTP/2, payload 마스킹과 TLS 1.3 KeyUpdate를 처리합니다. TLS 1.2 재협상, 0-RTT, QUIC은 지원하지 않습니다.
 
-키 로그는 64MiB·65,536개 항목, 키를 기다리는 TLS 레코드는 합계 16MiB로 제한합니다. 인증 오류는 수집을 중단하며, 키가 없는 레코드는 요약의 `tls_unmapped`로 집계합니다. macOS의 HTTP/1 행은 메시지가 끝난 뒤 출력합니다.
+키 로그는 64MiB·65,536개 항목, 키를 기다리는 TLS 레코드, 미완성 handshake, 앞선 레코드를 기다리는 평문은 합계 16MiB로 제한합니다. 인증 오류는 수집을 중단하며, 키가 없는 레코드는 요약의 `tls_unmapped`로 집계합니다. macOS의 HTTP/1 행은 메시지가 끝난 뒤 출력합니다.
 
 Linux에서는 기본 TLS 자동 탐지도 시작하며, TLS 탐색이나 attach가 실패해도 HTTP 수집을 계속합니다. HTTP/1 행은 header가 완성되면 출력하고, HTTP/2 행은 header block을 해석한 뒤 출력합니다.
 

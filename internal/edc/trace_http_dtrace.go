@@ -33,6 +33,10 @@ type darwinTLSDecoder struct {
 
 func (d *darwinTLSDecoder) line(line string) (*darwinTLSRecord, error) {
 	line = strings.TrimSpace(line)
+	writeSnapshot := strings.HasPrefix(line, "EDC_GO_WRITE ")
+	if writeSnapshot {
+		line = "EDC_TLS " + strings.TrimPrefix(line, "EDC_GO_WRITE ")
+	}
 	if strings.HasPrefix(line, "EDC_FD_") {
 		if d.record != nil {
 			return nil, fmt.Errorf("FD metadata interrupted a TLS record")
@@ -82,8 +86,30 @@ func (d *darwinTLSDecoder) line(line string) (*darwinTLSRecord, error) {
 		}
 		return &darwinTLSRecord{pid: uint32(values[0]), fd: int32(values[1]), fdKind: uint8(values[2]), address: netip.AddrPortFrom(address, uint16(values[4])).String(), fdMeta: 2}, nil
 	}
-	if line == "EDC_GO_CONCURRENT" {
-		return nil, fmt.Errorf("overlapping Go TLS calls on one connection and direction are unsupported")
+	if line == "EDC_GO_CONCURRENT" || strings.HasPrefix(line, "EDC_GO_CONCURRENT ") {
+		return nil, fmt.Errorf("overlapping Go TLS calls on one connection and direction are unsupported: %s", line)
+	}
+	if strings.HasPrefix(line, "EDC_GO_WRITE_RESULT ") {
+		if d.record != nil {
+			return nil, fmt.Errorf("Go TLS write result interrupted a TLS record")
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 8 {
+			return nil, fmt.Errorf("invalid Go TLS write result")
+		}
+		var values [6]uint64
+		for i, field := range fields[1:7] {
+			value, err := strconv.ParseUint(field, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid Go TLS write result field")
+			}
+			values[i] = value
+		}
+		fd, err := strconv.ParseInt(fields[7], 10, 32)
+		if err != nil || fd < -1 || values[0] == 0 || values[0] > 1<<31-1 || values[1] == 0 || values[2] == 0 || values[3] == 0 || values[5] > 1<<32-1 {
+			return nil, fmt.Errorf("invalid Go TLS write result limits")
+		}
+		return &darwinTLSRecord{pid: uint32(values[0]), object: values[1], goroutine: values[2], frame: values[3], size: values[4], offset: uint32(values[5]), fd: int32(fd), sent: true, goPhase: 4}, nil
 	}
 	if strings.HasPrefix(line, "EDC_GO_") {
 		if d.record != nil {
@@ -135,6 +161,13 @@ func (d *darwinTLSDecoder) line(line string) (*darwinTLSRecord, error) {
 		}
 		d.captured = int(values[6])
 		d.record = &darwinTLSRecord{pid: uint32(values[0]), wallNS: values[1], object: values[2], sent: values[3] != 0, closed: values[4] != 0, offset: uint32(values[5]), size: values[7], fd: int32(fd), process: fields[10], payload: make([]byte, 0, d.captured)}
+		if writeSnapshot {
+			if !d.record.sent || d.record.closed {
+				d.record = nil
+				return nil, fmt.Errorf("invalid Go TLS write snapshot direction")
+			}
+			d.record.goPhase = 3
+		}
 		return nil, nil
 	}
 	if line == "EDC_END" {
@@ -240,11 +273,15 @@ func darwinTLSScript(targets []traceTLSTarget) (string, error) {
 	}
 	entry, ret := strings.Join(entries, ",\n"), strings.Join(returns, ",\n")
 	var script strings.Builder
+	dynamicSize := "2m"
+	if len(goTargets) > 0 {
+		dynamicSize = "16m"
+	}
+	script.WriteString("#pragma D option dynvarsize=" + dynamicSize + "\n")
 	script.WriteString(`#pragma D option quiet
 #pragma D option rawbytes
 #pragma D option temporal
 #pragma D option bufsize=2m
-#pragma D option dynvarsize=2m
 #pragma D option switchrate=20hz
 
 self uint64_t edc_depth;

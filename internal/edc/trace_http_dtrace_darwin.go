@@ -114,6 +114,12 @@ func startDarwinTLSWorker(targets []traceTLSTarget, records *darwinTLSRecordQueu
 				worker.err = fmt.Errorf("TLS record belongs to PID %d, expected %d", record.pid, pid)
 				return false
 			}
+			if trackAddresses {
+				if err := addresses.decorate(&record); err != nil {
+					worker.err = err
+					return false
+				}
+			}
 			if record.closed {
 				addresses.forget(record.object)
 			}

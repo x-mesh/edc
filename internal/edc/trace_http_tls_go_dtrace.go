@@ -71,7 +71,7 @@ uint64_t edc_go_closed[pid_t,uint64_t];
 }
 @ENTRY@
 /this->edc_other/
-{ printf("EDC_GO_CONCURRENT\n"); }
+{ printf("EDC_GO_CONCURRENT pid=%d object=%llu direction=@D@ goroutine=%llu frame=%llu owner=%llu owner_frame=%llu fd=%lld\n",pid,this->edc_object,this->edc_g,this->edc_frame,edc_go_owner[pid,this->edc_object,@D@],edc_go_frame[pid,this->edc_object,@D@],(int64_t)edc_fd[pid,this->edc_object]-1); }
 @ENTRY@
 /!this->edc_other && !this->edc_old/
 { printf("EDC_GO_BEGIN %d %llu @D@ %llu %llu\n",pid,this->edc_object,this->edc_g,this->edc_frame); }
@@ -105,7 +105,31 @@ uint64_t edc_go_closed[pid_t,uint64_t];
  this->edc_wall=edc_go_wall[pid,this->edc_g,@D@,this->edc_frame];
 }
 `))
-			script.WriteString(darwinTLSDataScript(prefix+"return", "this->edc_valid", "this->"))
+			if direction == 1 {
+				script.WriteString(expand(`
+@ENTRY@
+/!this->edc_other && !this->edc_old/
+{
+ this->edc_requested=uregs[@LEN@];
+ this->edc_actual=this->edc_requested;
+ this->edc_captured=this->edc_actual > 1048576 ? 1048576 : this->edc_actual;
+ this->edc_sent=1;
+ this->edc_wall=edc_go_wall[pid,this->edc_g,@D@,this->edc_frame];
+}
+`))
+				script.WriteString(strings.ReplaceAll(darwinTLSDataScript(prefix+"entry", "!this->edc_other && !this->edc_old", "this->"), "EDC_TLS ", "EDC_GO_WRITE "))
+				script.WriteString(expand(`
+@RETURN@
+/this->edc_valid && this->edc_actual <= this->edc_requested/
+{ printf("EDC_GO_WRITE_RESULT %d %llu %llu %llu %llu %u %lld\n",pid,this->edc_object,this->edc_g,this->edc_frame,this->edc_actual,(uint32_t)edc_offset[pid,this->edc_object,@D@],(int64_t)edc_fd[pid,this->edc_object]-1); }
+@RETURN@
+/this->edc_valid && this->edc_actual > this->edc_requested/
+{ printf("EDC_FAULT\n"); }
+`))
+			} else {
+				script.WriteString(darwinTLSDataScript(prefix+"return", "this->edc_valid", "this->"))
+			}
+
 			script.WriteString(expand(`
 @RETURN@
 /this->edc_valid/

@@ -238,7 +238,26 @@ func TestDarwinTLSExpansionProbeSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, script := range map[string]string{"Go": goScript, "SecureTransport": darwinSecureTransportProbe, "SecureTransportBinary": secureScript} {
+	targets, err := inspectDarwinTLSFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goBinaryScript, err := darwinTLSScript(targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(goBinaryScript, "#pragma D option dynvarsize=16m") || !strings.Contains(secureScript, "#pragma D option dynvarsize=2m") {
+		t.Fatal("TLS dynamic state budget does not match the backend")
+	}
+	for _, block := range strings.Split(goBinaryScript, "\n\n") {
+		if strings.Contains(block, ".Write:return") && (strings.Contains(block, "edc_tls_bytes_") || strings.Contains(block, "this->edc_buffer+")) {
+			t.Fatal("Go TLS Write return still dereferences its input buffer")
+		}
+	}
+	if !strings.Contains(goBinaryScript, "EDC_GO_WRITE ") || !strings.Contains(goBinaryScript, "EDC_GO_WRITE_RESULT ") {
+		t.Fatal("Go TLS write snapshot protocol is missing")
+	}
+	for name, script := range map[string]string{"Go": goScript, "GoBinary": goBinaryScript, "SecureTransport": darwinSecureTransportProbe, "SecureTransportBinary": secureScript} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "probe.d")
 			if err := os.WriteFile(path, []byte(strings.ReplaceAll(script, "pid$target:", "profile:")), 0600); err != nil {

@@ -196,3 +196,46 @@ func TestDarwinTLSFDCacheDoesNotAccumulateClosedDescriptors(t *testing.T) {
 		t.Fatalf("closed cache entries remain: descriptors=%d history=%d objects=%d references=%d", len(c.fds), len(c.retained), len(c.objects), len(c.references))
 	}
 }
+
+func TestDarwinTLSFDCacheChurnKeepsLateRecordsOnOriginalSocket(t *testing.T) {
+	cache := newDarwinTLSAddressCache(42)
+	cache.lookup = func(uint32, int32) (string, string) { return "", "" }
+	for i := 0; i < 20000; i++ {
+		old := uint64(1)
+		next := uint64(2)
+		local := fmt.Sprintf("127.0.0.1:%d", 20000+i)
+		remote := "127.0.0.1:443"
+		for _, record := range []darwinTLSRecord{
+			{pid: 42, fd: 7, fdMeta: 2, fdKind: 2, address: remote},
+			{pid: 42, fd: 7, fdMeta: 2, fdKind: 1, address: local},
+			{pid: 42, fd: 7, fdMeta: 1, object: old},
+			{pid: 42, fd: 7, fdMeta: 3},
+			{pid: 42, fd: 7, fdMeta: 2, fdKind: 2, address: "127.0.0.1:8443"},
+			{pid: 42, fd: 7, fdMeta: 2, fdKind: 1, address: "127.0.0.1:60000"},
+			{pid: 42, fd: 7, fdMeta: 1, object: next},
+		} {
+			if err := cache.metadata(record); err != nil {
+				t.Fatal(err)
+			}
+		}
+		late := darwinTLSRecord{pid: 42, fd: 7, object: old}
+		current := darwinTLSRecord{pid: 42, fd: 7, object: next}
+		if err := cache.decorate(&late); err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.decorate(&current); err != nil {
+			t.Fatal(err)
+		}
+		if late.source != local || late.destination != remote || current.source != "127.0.0.1:60000" || current.destination != "127.0.0.1:8443" {
+			t.Fatalf("iteration %d: old=%+v new=%+v", i, late, current)
+		}
+		cache.forget(old)
+		cache.forget(next)
+		if err := cache.metadata(darwinTLSRecord{pid: 42, fd: 7, fdMeta: 3}); err != nil {
+			t.Fatal(err)
+		}
+		if len(cache.fds)+len(cache.objects)+len(cache.retained)+len(cache.references) != 0 {
+			t.Fatalf("iteration %d retained socket history", i)
+		}
+	}
+}

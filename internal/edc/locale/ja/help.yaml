@@ -448,7 +448,7 @@ command:
       side: "http と DB の trace は両側、dns は client 側"
       payload: "http、socket: 先頭 4 KiB。=all は 1 MiB まで"
       show_secrets: "http: マスクした header。DB: SQL、redis の値"
-      tls: "http: HTTPS 平文。既定は自動検出。=パス: ファイル 1 つ"
+      tls: "TLS 平文。HTTP: 既定は自動検出。macOS MySQL/Redis: 明示指定。=パス: ファイル 1 つ"
       tls_keylog: "macOS http: SSLKEYLOGFILE ファイルで TLS を復号"
       port: "http: この port。DB: server の port"
       http_port: "clickhouse: HTTP の port、既定 8123"

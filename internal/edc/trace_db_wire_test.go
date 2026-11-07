@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 func TestPostgresAndRedisAreRegisteredLikeTheOtherDatabases(t *testing.T) {
 	for _, protocol := range []string{"postgres", "redis"} {
 		spec := traceProtocols[protocol]
-		if !spec.serverSide || spec.linuxOnly != (protocol == "postgres") || !spec.hideTraffic || spec.newSummarizer == nil || spec.scrollLabels == nil {
+		if !spec.serverSide || spec.linuxOnly || !spec.hideTraffic || spec.newSummarizer == nil || spec.scrollLabels == nil {
 			t.Fatalf("%s spec = %+v", protocol, spec)
 		}
 		var titles []string
@@ -30,6 +31,9 @@ func TestPostgresAndRedisAreRegisteredLikeTheOtherDatabases(t *testing.T) {
 			t.Fatalf("%s rows are not paired", protocol)
 		}
 		for _, args := range [][]string{{protocol, "--port", "0"}, {protocol, "--payload"}, {protocol, "--http-port", "8123"}, {protocol, "--tls"}, {protocol, "--side", "both"}, {protocol, "--slow", "0s"}} {
+			if protocol == "redis" && runtime.GOOS == "darwin" && len(args) == 2 && args[1] == "--tls" {
+				continue
+			}
 			if code := runTrace(args); code != 2 {
 				t.Fatalf("trace %q exit = %d, want 2", args, code)
 			}

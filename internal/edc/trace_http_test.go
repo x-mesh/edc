@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -1491,8 +1492,11 @@ func TestHTTPSplitStartsKeepTLSPlaintextApart(t *testing.T) {
 	}
 }
 
-func TestTraceTLSOptionNeedsHTTP(t *testing.T) {
+func TestTraceTLSOptionPlatformRestrictions(t *testing.T) {
 	for _, args := range [][]string{{"tcp", "--tls"}, {"mysql", "--tls"}, {"clickhouse", "--tls"}, {"dns", "--tls=/usr/lib/libssl.so.3"}, {"http", "--tls="}} {
+		if runtime.GOOS == "darwin" && args[0] == "mysql" {
+			continue
+		}
 		if code := runTrace(args); code != 2 {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}

@@ -390,16 +390,17 @@ func (traffic *traceTraffic) finalize(duration time.Duration) {
 }
 
 type tcpTraceOptions struct {
-	duration    time.Duration
-	slow        time.Duration
-	jsonPath    string
-	raw         bool
-	live        bool
-	groupBy     string
-	process     string
-	destination string
-	detail      bool
-	yes         bool
+	interfaceName string
+	duration      time.Duration
+	slow          time.Duration
+	jsonPath      string
+	raw           bool
+	live          bool
+	groupBy       string
+	process       string
+	destination   string
+	detail        bool
+	yes           bool
 	// side는 trace dns가 볼 쪽이다. client는 이 host의 조회, server는 로컬 DNS 서버가 받은 질의다.
 	side            string
 	payload         tracePayloadMode

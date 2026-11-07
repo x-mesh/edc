@@ -448,7 +448,7 @@ command:
       side: "http and database traces: both sides. dns: client"
       payload: "http, socket: first 4 KiB. =all: up to 1 MiB"
       show_secrets: "http: masked headers. databases: SQL, values"
-      tls: "http: HTTPS plaintext. Auto by default. =<path>: one file"
+      tls: "TLS plaintext. HTTP: auto by default. macOS MySQL/Redis: opt in. =<path>: one file"
       tls_keylog: "http on macOS: decrypt TLS with an SSLKEYLOGFILE file"
       port: "http: only this port. databases: the server port"
       http_port: "clickhouse: HTTP port, default 8123"

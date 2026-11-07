@@ -175,16 +175,18 @@ macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니�
 
 Linux 5.15 이상과 macOS에서 `edc trace http`를 실행하면 HTTP/1.x와 HTTP/2를 client·server 양쪽에서 봅니다. Linux는 기본 TLS 자동 탐지를 사용합니다. macOS는 PKTAP으로 수집하며 BPF 장치에 접근할 권한이 필요합니다. TLS 계측을 시작하기 전에 커널 캡처 필터를 적용하며, `--port`도 이 필터에 반영합니다. 손실 수에는 잘린 레코드, BPF 버퍼에서 버린 패킷과 스트림 복원 손실이 포함됩니다.
 
-macOS의 기본 HTTPS 수집은 DTrace로 OpenSSL의 암호화 전·복호화 후 평문 버퍼를 읽습니다. root 권한이 필요하며 키 로그는 필요하지 않습니다.
+macOS의 기본 HTTPS 수집은 DTrace로 OpenSSL·지원 Go TLS·SecureTransport의 평문 버퍼를 읽습니다. root 권한이 필요하며 키 로그는 필요하지 않습니다.
 
 ```bash
 sudo edc trace http --process node
 sudo edc trace http --tls=/path/to/libssl.dylib
 ```
 
-`--process`는 앱을 고르고 `--tls=<경로>`는 실행 중인 프로세스가 적재한 Mach-O 실행 파일이나 라이브러리를 고릅니다. `SSL_read`·`SSL_write` 또는 `_ex` 함수와 `SSL_free` 심볼이 필요합니다. macOS의 Go TLS·SecureTransport 함수는 계측하지 않습니다. 보호된 앱은 root 권한에서도 연결이 거부될 수 있으며 그 이유를 표시합니다.
+`--process`는 앱을 고르고 `--tls=<경로>`는 실행 중인 프로세스가 적재한 Mach-O 실행 파일이나 라이브러리를 고릅니다. OpenSSL은 `SSL_read`·`SSL_write` 또는 `_ex` 함수와 `SSL_free` 심볼이 필요합니다. Go TLS는 심볼을 제거하지 않은 Go 1.25.0·1.27.3 실행 파일을 지원합니다. 다른 Go 버전은 지원하지 않습니다. 한 Go TLS 연결에서 같은 방향의 I/O 호출이 겹치면 오류로 수집을 중단합니다. SecureTransport는 Security 프레임워크의 `SSLRead`·`SSLWrite`를 가져오는 실행 파일이나 라이브러리에서 탐지합니다. Network.framework는 지원하지 않습니다. 보호된 앱은 root 권한에서도 연결이 거부될 수 있으며 그 이유를 표시합니다.
 
-새 프로세스는 2초마다 탐색하므로 짧게 실행하고 끝나는 프로세스는 놓칠 수 있습니다. HTTP/2는 계측을 연결한 뒤 새 연결에서 시작해야 합니다. 이미 연결한 프로세스가 다른 TLS 라이브러리를 추가로 적재하면 수집을 다시 시작해야 합니다. 동시에 16개 프로세스를 계측하며, TLS 함수 호출 하나가 1MiB를 넘으면 해당 TLS 세션 수집을 중단합니다. 레코드 누락이나 실행 중 계측 오류는 오류를 반환합니다. 소켓 연결은 계측 시작 후의 `SSL_set_fd` 호출에서 확인하므로 기존 연결이나 custom BIO는 주소가 없을 수 있습니다. 소켓 주소를 읽지 못하면 `--port`로 확인할 수 없는 평문 레코드를 버리고 `tls_unmapped`에 집계합니다. `--tls=false`로 함수 계측을 끌 수 있습니다.
+PKTAP 패킷에 PID가 없으면 같은 TCP 주소쌍의 유일한 소유자와 재조립 상태를 공유합니다. 소유자가 여러 명이면 별도로 처리합니다.
+
+새 프로세스는 2초마다 탐색하므로 짧게 실행하고 끝나는 프로세스는 놓칠 수 있습니다. HTTP/2는 계측을 연결한 뒤 새 연결에서 시작해야 합니다. 이미 연결한 프로세스가 다른 TLS 라이브러리를 추가로 적재하면 수집을 다시 시작해야 합니다. 동시에 16개 프로세스를 계측하며, TLS 함수 호출 하나가 1MiB를 넘으면 해당 TLS 세션 수집을 중단합니다. 레코드 누락이나 실행 중 계측 오류는 오류를 반환합니다. TLS 출력 큐는 최대 4,096개 레코드와 32MiB로 제한하며 레코드가 도착하면 수집기를 깨웁니다. 큐 한도를 넘으면 오류로 수집을 중단합니다. OpenSSL 소켓은 계측 시작 후의 `SSL_set_fd` 호출에서 확인하므로 기존 연결이나 custom BIO는 주소가 없을 수 있습니다. Go TLS는 `internal/poll.FD`에서 FD를 확인하고, SecureTransport는 소켓 호출을 추적합니다. 주소 메타데이터는 소켓 종료와 FD 재사용 후에도 TLS 연결별로 구분합니다. 소켓 주소를 읽지 못하면 `--port`로 확인할 수 없는 평문 레코드를 버리고 `tls_unmapped`에 집계합니다. `--tls=false`로 함수 계측을 끌 수 있습니다.
 
 다른 방법으로, 앱이 생성한 SSLKEYLOGFILE 형식의 키 로그를 `--tls-keylog <경로>`로 지정할 수 있습니다. 파일을 먼저 만들고 TLS handshake 전에 수집을 시작해야 합니다. 앱이 추가한 키도 수집 중에 읽습니다.
 

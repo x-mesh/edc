@@ -313,3 +313,114 @@ func TestPKTAPHTTPConnectSuccessEndsAtHeaders(t *testing.T) {
 		t.Fatalf("response=%#v", events)
 	}
 }
+
+func TestPKTAPHTTPPortMatchesKnownEndpoint(t *testing.T) {
+	for _, test := range []struct {
+		source, destination string
+		port                uint16
+		want                bool
+	}{
+		{"", "127.0.0.1:443", 443, true},
+		{"127.0.0.1:8443", "", 8443, true},
+		{"", "127.0.0.1:443", 8443, false},
+		{"invalid", "also invalid", 443, false},
+	} {
+		packet := pktapTCPPacket{httpPacket: httpPacket{source: test.source, destination: test.destination}}
+		if got := pktapHTTPPortMatches(packet, test.port); got != test.want {
+			t.Fatalf("endpoints=%s,%s port=%d accepted=%t", test.source, test.destination, test.port, got)
+		}
+	}
+}
+
+func TestPKTAPHTTPLossHookClassifiesQueuedClose(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	count := 0
+	tracker.lossHook = func(reason string, packet httpPacket, detail string) {
+		if reason != "tcp_waiting_close" || packet.pid != 42 || !strings.Contains(detail, "gap=99") {
+			t.Fatalf("reason=%s pid=%d detail=%s", reason, packet.pid, detail)
+		}
+		count++
+	}
+	now := time.Now()
+	tracker.add(pktapTestTCP(true, 0, "G"), now)
+	tracker.add(pktapTestTCP(true, 100, "waiting"), now)
+	tracker.sweep(now, true)
+	if tracker.lost != 1 || count != 1 {
+		t.Fatalf("lost=%d callbacks=%d", tracker.lost, count)
+	}
+}
+
+func TestPKTAPHTTPUnknownPIDContinuesKnownConnection(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	request := "GET /owner HTTP/1.1\r\nHost: fixture\r\n\r\n"
+	tracker.add(pktapTestTCP(true, 100, request[:5]), now)
+	middle := pktapTestTCP(true, 105, request[5:15])
+	middle.pid = 0
+	middle.process = "kernel_task"
+	tracker.add(middle, now)
+	events := tracker.add(pktapTestTCP(true, 115, request[15:]), now)
+	if len(events) != 1 || events[0].Path != "/owner" || events[0].PID != 42 || events[0].Process != "fixture" {
+		t.Fatalf("events=%#v", events)
+	}
+	tracker.sweep(now, true)
+	if tracker.lost != 0 || tracker.buffered != 0 {
+		t.Fatalf("lost=%d buffered=%d", tracker.lost, tracker.buffered)
+	}
+}
+func TestPKTAPHTTPKnownPIDAdoptsPendingUnknownConnection(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	first := pktapTestTCP(true, 100, "GET /adopt ")
+	first.pid = 0
+	first.process = ""
+	tracker.add(first, now)
+	events := tracker.add(pktapTestTCP(true, 111, "HTTP/1.1\r\nHost: fixture\r\n\r\n"), now)
+	if len(events) != 1 || events[0].PID != 42 || events[0].Process != "fixture" || events[0].Path != "/adopt" {
+		t.Fatalf("events=%#v", events)
+	}
+	if len(tracker.flows) != 1 {
+		t.Fatalf("split owner state: %d flows", len(tracker.flows))
+	}
+}
+func TestPKTAPHTTPUnknownPIDDoesNotChooseAmbiguousOwner(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	packet := pktapTestTCP(true, 100, "G")
+	tracker.add(packet, now)
+	packet.pid = 43
+	tracker.add(packet, now)
+	packet.pid = 0
+	packet.sequence = 101
+	packet.payload = []byte("ET /ambiguous HTTP/1.1\r\nHost: fixture\r\n\r\n")
+	if events := tracker.add(packet, now); len(events) != 0 {
+		t.Fatalf("ambiguous PID was attributed: %#v", events)
+	}
+	if len(tracker.flows) != 3 {
+		t.Fatalf("ambiguous streams merged: %d", len(tracker.flows))
+	}
+}
+
+func TestPKTAPHTTPUnknownSYNAdoptsKnownOwnerBeforePayload(t *testing.T) {
+	tracker := newPKTAPHTTPTracker(traceScope{}, 0)
+	now := time.Now()
+	syn := pktapTestTCP(false, 100, "")
+	syn.pid = 0
+	syn.process = ""
+	syn.flags = 2
+	tracker.add(syn, now)
+	ack := pktapTestTCP(true, 900, "")
+	ack.flags = 0x12
+	tracker.add(ack, now)
+	request := pktapTestTCP(false, 101, "GET /syn-owner HTTP/1.1\r\nHost: fixture\r\n\r\n")
+	request.pid = 0
+	request.process = "kernel_task"
+	events := tracker.add(request, now)
+	if len(events) != 1 || events[0].PID != 42 || events[0].Process != "fixture" || events[0].Path != "/syn-owner" {
+		t.Fatalf("events=%#v", events)
+	}
+	tracker.sweep(now, true)
+	if tracker.lost != 0 || tracker.buffered != 0 {
+		t.Fatalf("lost=%d buffered=%d", tracker.lost, tracker.buffered)
+	}
+}

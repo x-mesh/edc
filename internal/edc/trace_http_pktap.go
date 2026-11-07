@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"time"
 )
@@ -139,6 +140,7 @@ type pktapHTTPDirection struct {
 }
 type pktapHTTPFlow struct {
 	id         uint64
+	process    string
 	updated    time.Time
 	directions [2]pktapHTTPDirection
 }
@@ -151,6 +153,7 @@ type pktapHTTPTracker struct {
 	flows        map[pktapHTTPKey]*pktapHTTPFlow
 	nextID, lost uint64
 	clockOffset  int64
+	lossHook     func(string, httpPacket, string)
 	buffered     int
 }
 
@@ -270,6 +273,12 @@ func (t *pktapHTTPTracker) drain(d *pktapHTTPDirection, final bool, now time.Tim
 	}
 	return events
 }
+func (t *pktapHTTPTracker) recordLoss(reason string, packet httpPacket, detail string) {
+	t.lost++
+	if t.lossHook != nil {
+		t.lossHook(reason, packet, detail)
+	}
+}
 func (t *pktapHTTPTracker) closeFlow(key pktapHTTPKey, flow *pktapHTTPFlow, now time.Time) []captureEvent {
 	if t.flows[key] != flow {
 		return nil
@@ -280,7 +289,10 @@ func (t *pktapHTTPTracker) closeFlow(key pktapHTTPKey, flow *pktapHTTPFlow, now 
 		events = append(events, t.drain(&flow.directions[i], true, now)...)
 		t.buffered -= len(flow.directions[i].buffer) + flow.directions[i].waitingBytes
 		if len(flow.directions[i].waiting) > 0 {
-			t.lost++
+			for sequence, queued := range flow.directions[i].waiting {
+				t.recordLoss("tcp_waiting_close", queued.httpPacket, fmt.Sprintf("next=%d queued=%d gap=%d bytes=%d flags=%#x", flow.directions[i].next, sequence, int32(sequence-flow.directions[i].next), len(queued.payload), queued.flags))
+				break
+			}
 		}
 	}
 	if t.tls != nil {
@@ -301,6 +313,57 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 	if packet.tlsObject != 0 {
 		key.local, key.remote = "", ""
 	}
+	if packet.tlsObject == 0 && packet.pid == 0 && t.flows[key] == nil {
+		var owner *pktapHTTPFlow
+		var ownerKey pktapHTTPKey
+		ambiguous := false
+		for candidate, flow := range t.flows {
+			if candidate.tlsObject != 0 || candidate.pid == 0 || candidate.local != key.local || candidate.remote != key.remote {
+				continue
+			}
+			if owner != nil {
+				ambiguous = true
+				break
+			}
+			owner, ownerKey = flow, candidate
+		}
+		if owner != nil && !ambiguous {
+			key = ownerKey
+			packet.pid = ownerKey.pid
+			packet.process = owner.process
+		}
+	}
+	if packet.tlsObject == 0 && packet.pid != 0 && t.flows[key] == nil {
+		unknown := key
+		unknown.pid = 0
+		if pending := t.flows[unknown]; pending != nil {
+			ambiguous := false
+			for candidate := range t.flows {
+				if candidate.tlsObject == 0 && candidate.pid != 0 && candidate.local == key.local && candidate.remote == key.remote {
+					ambiguous = true
+					break
+				}
+			}
+			if !ambiguous {
+				delete(t.flows, unknown)
+				t.flows[key] = pending
+				for i := range pending.directions {
+					direction := &pending.directions[i]
+					if direction.packet.pid == 0 {
+						direction.packet.pid = packet.pid
+						direction.packet.process = packet.process
+					}
+					for sequence, queued := range direction.waiting {
+						if queued.pid == 0 {
+							queued.pid = packet.pid
+							queued.process = packet.process
+							direction.waiting[sequence] = queued
+						}
+					}
+				}
+			}
+		}
+	}
 	flow := t.flows[key]
 	var events []captureEvent
 	if flow == nil {
@@ -316,7 +379,7 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 				}
 			}
 			events = append(events, t.closeFlow(oldest, selected, now)...)
-			t.lost++
+			t.recordLoss("tcp_flow_limit", packet.httpPacket, "")
 		}
 		t.nextID++
 		flow = &pktapHTTPFlow{id: t.nextID}
@@ -336,6 +399,9 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 		}
 	}
 	flow.updated = now
+	if packet.pid != 0 && packet.process != "" {
+		flow.process = packet.process
+	}
 	index := 0
 	if packet.sent {
 		index = 1
@@ -365,7 +431,7 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 			d.blocked = true
 			d.waiting = nil
 			d.waitingBytes = 0
-			t.lost++
+			t.recordLoss("tcp_waiting_limit", packet.httpPacket, fmt.Sprintf("sequence=%d next=%d bytes=%d", packet.sequence, d.next, len(packet.payload)))
 			return events
 		}
 		if d.waiting == nil {
@@ -394,7 +460,7 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 				d.waiting = nil
 				d.waitingBytes = 0
 				d.blocked = true
-				t.lost++
+				t.recordLoss("tcp_message_limit", packet.httpPacket, fmt.Sprintf("bytes=%d", len(payload)))
 				break
 			}
 			d.buffer = append(d.buffer, payload...)
@@ -453,12 +519,9 @@ func (t *pktapHTTPTracker) sweep(now time.Time, final bool) []captureEvent {
 }
 
 func pktapHTTPPortMatches(packet pktapTCPPacket, port uint16) bool {
-	local, err := netip.ParseAddrPort(packet.source)
-	if err != nil {
-		return false
-	}
-	remote, err := netip.ParseAddrPort(packet.destination)
-	return err == nil && (local.Port() == port || remote.Port() == port)
+	local, localErr := netip.ParseAddrPort(packet.source)
+	remote, remoteErr := netip.ParseAddrPort(packet.destination)
+	return localErr == nil && local.Port() == port || remoteErr == nil && remote.Port() == port
 }
 
 func pktapPossibleHTTP(data []byte) bool {

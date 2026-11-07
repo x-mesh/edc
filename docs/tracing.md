@@ -466,7 +466,7 @@ Loss counters combine truncated records, BPF buffer drops, and stream reconstruc
 
 macOS supports process filters, port filters, payloads, HTTP/2, and TLS handshake metadata.
 
-On macOS, edc uses DTrace to read OpenSSL buffers before encryption and after decryption. This mode needs root and no key log.
+On macOS, edc uses DTrace for OpenSSL, supported Go TLS, and SecureTransport. This mode needs root and no key log.
 
 Use `--process <name>` to select an application. Use `--tls=<path>` to select a loaded Mach-O executable or library.
 
@@ -475,9 +475,17 @@ sudo edc trace http --process node
 sudo edc trace http --tls=/path/to/libssl.dylib
 ```
 
-The target needs defined SSL read, SSL write, and SSL_free symbols. Both standard calls and the `_ex` APIs are supported.
+OpenSSL targets need defined SSL read, SSL write, and SSL_free symbols. Both standard calls and the `_ex` APIs are supported.
 
-macOS does not instrument Go TLS or SecureTransport. Protected applications can reject DTrace attachment even with root privileges.
+macOS also supports Go TLS in unstripped Go 1.25.0 and Go 1.27.3 executables. Other Go versions are unsupported.
+
+Calls in the same direction on one Go TLS connection must not overlap. The trace stops with an error if calls overlap.
+
+SecureTransport targets must import SSLRead and SSLWrite from the Security framework. Use `--tls=<executable>` to select those applications. Network.framework is unsupported.
+
+Protected applications can reject DTrace attachment even with root privileges.
+
+Unknown PKTAP PIDs use the unique owner of the same TCP endpoints. Ambiguous owners stay separate.
 
 Automatic discovery scans new processes every two seconds. Processes that finish before a scan can be missed.
 
@@ -485,7 +493,15 @@ If an attached process loads another TLS library, restart capture. For HTTP/2, e
 
 DTrace capture has a limit of 16 active processes and 1 MiB per TLS call. A larger call stops that TLS session.
 
-DTrace drop reports and runtime probe errors stop capture with an error. Socket attribution uses SSL_set_fd calls after attachment. Existing connections and custom BIOs can lack socket addresses.
+The TLS output queue has limits of 4096 records and 32 MiB. Queued payload capacity counts toward the byte limit.
+
+The collector wakes when records arrive. A queue limit error stops capture.
+
+DTrace drop reports and runtime probe errors stop capture with an error.
+
+OpenSSL socket attribution uses SSL_set_fd calls after attachment. Existing connections and custom BIOs can lack socket addresses.
+
+Go TLS reads socket descriptors from internal/poll.FD. SecureTransport records socket calls. Address metadata preserves endpoints after close and descriptor reuse.
 
 If socket addresses are unavailable, `--port` drops those records and increments `tls_unmapped`.
 

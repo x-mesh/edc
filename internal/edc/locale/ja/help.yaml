@@ -569,7 +569,7 @@ command:
       - "TCP だけを見ます。-h なしの psql は unix socket を使います。"
       - "大きな結果は境界を失いますが、最後の書き込みの末尾で応答時間を測ります。"
       - "その時 pipeline の 2 番目の要求があると、両方とも応答なしになります。"
-      - "trace redis は Linux 5.15 以降で平文 Redis のコマンドと応答を表示します。"
+      - "trace redis は Linux 5.15 以降と macOS で平文 Redis のコマンドと応答を表示します。"
       - "両側を表示します。--port は Redis の port で、既定は 6379 です。"
       - "--slow は応答時間がその値以上の組の行だけを残します。"
       - "--show-secrets は引数と値の preview を表示します。password は常に隠します。"

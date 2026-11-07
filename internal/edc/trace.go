@@ -127,7 +127,7 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	}},
 	// 평문 RESP(Redis 6379)만 본다. TLS 연결의 byte는 암호문이라 framing을 찾지 못하고 버린다.
 	{name: "redis", view: traceProtocolView{selectorLabel: "redis"}, spec: traceProtocolSpec{
-		groupColumns: traceRedisGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: traceRedisGroupColumns, hideTraffic: true,
 		scrollLabels: traceRedisScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newRedisTraceSummarizer() },
 	}},
 	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},

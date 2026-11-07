@@ -1162,7 +1162,13 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Wi
 
 ## trace redis
 
-Use `trace redis` on Linux 5.15 or later to print plain Redis commands and replies as they arrive. edc reads the start of each TCP read and write on the Redis port in the kernel. The default port is 6379. Use `--port` for another port.
+Use `trace redis` on Linux 5.15 or later, or macOS, to print plain Redis commands and replies.
+
+Linux reads the start of each TCP read and write in the kernel.
+
+macOS uses libpcap and PKTAP to reconstruct TCP streams. macOS capture requires packet access, usually through `sudo`.
+
+The default port is 6379. Use `--port` for another port.
 
 ```bash
 edc trace redis
@@ -1193,7 +1199,7 @@ The summary after Ctrl-C shows one row for each side and command name. A row sho
 
 - It does not read TLS. edc finds no RESP framing in a TLS connection, so it shows no events for it.
 - It reads TCP only. A unix socket connection is not visible.
-- edc keeps the first 4 KiB of each request and the first 1 KiB of each reply write or read. A very large array reply, for example `LRANGE` of 5,000 items, loses the framing. That command counts as unanswered, and the next command re-syncs.
+- On Linux, edc keeps the first 4 KiB of each request and the first 1 KiB of each reply write or read. A very large array reply, for example `LRANGE` of 5,000 items, loses the framing. That command counts as unanswered, and the next command re-syncs.
 - edc skips bulk values by their size, so a 10 KB `SET` still gets its reply. If the argument headers of a command are outside the capture, for example `RPUSH` with 5,000 values, the command shows `truncated: true` and gets no reply.
 - After `CLIENT REPLY OFF` or `CLIENT REPLY SKIP`, the server does not reply. These commands have `no_reply: true`, and edc does not count them as unanswered.
 - After PSYNC or SYNC, edc does not read the replication stream as replies. A replica sends `REPLCONF ACK` to its master each second. On the master, `--side server` shows one `REPLCONF ACK` with `no_reply: true` for each replica each second.

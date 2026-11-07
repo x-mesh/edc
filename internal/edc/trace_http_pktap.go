@@ -145,6 +145,8 @@ type pktapHTTPFlow struct {
 	directions [2]pktapHTTPDirection
 }
 type pktapHTTPTracker struct {
+	redis        *redisTracker
+	redisPort    uint16
 	mysql        *mysqlTracker
 	mysqlPort    uint16
 	tls          *tlsKeylogDecryptor
@@ -165,6 +167,10 @@ func newPKTAPHTTPTracker(scope traceScope, offset int64) *pktapHTTPTracker {
 	if scope.protocol == "mysql" {
 		result.mysql = newMySQLTracker(scope.side, scope.showSecrets)
 		result.mysqlPort = cmp.Or(scope.port, traceMySQLDefaultPort)
+	}
+	if scope.protocol == "redis" {
+		result.redis = newRedisTracker(scope.side, scope.showSecrets)
+		result.redisPort = cmp.Or(scope.port, traceRedisDefaultPort)
 	}
 	if scope.payloadAll {
 		result.messages = newHTTPMessages(tracker, httpMessageMax, scope.showSecrets)
@@ -195,6 +201,16 @@ func (t *pktapHTTPTracker) drain(d *pktapHTTPDirection, final bool, now time.Tim
 		packet := d.packet
 		packet.payload = d.buffer
 		events := t.mysqlEvents(packet, d.mysqlWire)
+		d.buffer = nil
+		return events
+	}
+	if t.redis != nil {
+		if len(d.buffer) == 0 {
+			return nil
+		}
+		packet := d.packet
+		packet.payload = d.buffer
+		events := t.redisEvents(packet)
 		d.buffer = nil
 		return events
 	}
@@ -304,6 +320,9 @@ func (t *pktapHTTPTracker) closeFlow(key pktapHTTPKey, flow *pktapHTTPFlow, now 
 	if t.mysql != nil {
 		t.mysql.forgetSocket(flow.id)
 	}
+	if t.redis != nil {
+		t.redis.forgetSocket(flow.id)
+	}
 	events = append(events, t.tracker.forget(flow.id)...)
 	delete(t.flows, key)
 	return events
@@ -397,6 +416,11 @@ func (t *pktapHTTPTracker) add(packet pktapTCPPacket, now time.Time) []captureEv
 			flow = &pktapHTTPFlow{id: t.nextID}
 			t.flows[key] = flow
 		}
+	}
+	if t.redis != nil && packet.flags&0x12 == 2 && t.redis.conns[flow.id] == nil {
+		connection := t.redis.newConn()
+		connection.requestSynced, connection.responseSynced = true, true
+		t.redis.conns[flow.id] = connection
 	}
 	flow.updated = now
 	if packet.pid != 0 && packet.process != "" {

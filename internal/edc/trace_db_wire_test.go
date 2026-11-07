@@ -11,7 +11,7 @@ import (
 func TestPostgresAndRedisAreRegisteredLikeTheOtherDatabases(t *testing.T) {
 	for _, protocol := range []string{"postgres", "redis"} {
 		spec := traceProtocols[protocol]
-		if !spec.serverSide || !spec.linuxOnly || !spec.hideTraffic || spec.newSummarizer == nil || spec.scrollLabels == nil {
+		if !spec.serverSide || spec.linuxOnly != (protocol == "postgres") || !spec.hideTraffic || spec.newSummarizer == nil || spec.scrollLabels == nil {
 			t.Fatalf("%s spec = %+v", protocol, spec)
 		}
 		var titles []string

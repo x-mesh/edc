@@ -569,7 +569,7 @@ command:
       - "It reads TCP only. psql without -h uses a unix socket."
       - "A large result loses framing. The end of the last write gives its latency."
       - "A second pipelined request then leaves both requests unanswered."
-      - "trace redis shows plain Redis commands and replies on Linux 5.15+."
+      - "trace redis shows plain Redis commands and replies on Linux 5.15+ and macOS."
       - "It shows both sides. --port is the Redis port. The default is 6379."
       - "--slow keeps only paired rows at or above the latency."
       - "--show-secrets shows argument and value previews. Passwords never show."

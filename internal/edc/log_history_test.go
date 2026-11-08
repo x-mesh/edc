@@ -123,7 +123,7 @@ func TestLogHistoryDisplayModesAndLegacy(t *testing.T) {
 		} else if parser.rows[0].Key != key {
 			t.Fatalf("%s key mismatch", mode)
 		}
-		// 머리말 전체가 아니라 command 필드를 본다. cwd에 "-l"이 들어간 checkout(예: fix/join-return-line)에서도 판정이 같아야 한다.
+		// 머리말 전체가 아니라 command 필드를 본다. 경로에 "-l"이 들어간 checkout에서도 판정이 같아야 한다.
 		if mode == "name" && strings.Join(parser.rows[0].Command, " ") != "ls" {
 			t.Fatalf("name exposes argument: %q", parser.rows[0].Command)
 		}

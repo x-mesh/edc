@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,51 @@ func TestGrepIndexSearchEqualsFullScan(t *testing.T) {
 		}
 		if scenario.name == "rare literal" && len(want) == 0 {
 			t.Fatal("fixture has no rare literal")
+		}
+	}
+}
+
+// (?i)에서 s, k는 ſ(U+017F), K(U+212A)와도 같다. 그 글자로만 쓰인 낱말도 -i 검색이 index로 블록을 건너뛸 때 찾고,
+// index는 그런 패턴으로도 블록을 거른다.
+func TestGrepIndexIgnoreCaseFindsFoldPartners(t *testing.T) {
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	data := grepLevelLog(12000, start, 5)
+	// 줄마다 다른 블록에 넣어 ſ나 K 하나만 든 블록도 본다.
+	for index, line := range []string{
+		"2026-10-26 01:30:00,000 WARN  [http-3] c.e.Api - \u017fession 41 expired 1\n",
+		"2026-10-26 02:30:00,000 ERROR [http-5] c.e.Api - \u212aafka broker down 2\n",
+		"2026-10-26 03:30:00,000 INFO  [http-1] c.e.Api - TA\u017f\u212a done 3\n",
+	} {
+		at := len(data) * (index + 1) / 4
+		at += bytes.IndexByte(data[at:], '\n') + 1
+		data = slices.Concat(data[:at], []byte(line), data[at:])
+	}
+	indexPath := filepath.Join(t.TempDir(), "level.idx")
+	grepBuildTestIndex(t, indexPath, data, viewFormatLevel)
+	for _, scenario := range []struct {
+		pattern    string
+		ignoreCase bool
+		lines      int
+	}{
+		{"session", true, 1},
+		{"SESSION", true, 1},
+		{"kafka", true, 1},
+		{"task", true, 1},
+		{"\u017fession", false, 1},
+		{"session", false, 0},
+	} {
+		name := fmt.Sprintf("%q -i %v", scenario.pattern, scenario.ignoreCase)
+		want := grepFullScan(t, data, scenario.pattern, false, scenario.ignoreCase, viewFormatLevel, nil)
+		if len(want) != scenario.lines {
+			t.Fatalf("%s: full scan found %d lines, want %d", name, len(want), scenario.lines)
+		}
+		got, search, _, _, err := grepIndexedScan(t, indexPath, data, scenario.pattern, false, scenario.ignoreCase, viewFormatLevel, nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		grepRefsEqual(t, name, got, want, true)
+		if total := int(search.index.header.Blocks); search.blocksRead*2 > total {
+			t.Errorf("%s: read %d of %d blocks", name, search.blocksRead, total)
 		}
 	}
 }

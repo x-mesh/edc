@@ -314,7 +314,8 @@ func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+	// 이전 edc도 history DB를 처음부터 WAL로 만들었다.
+	for _, statement := range append([]string{"PRAGMA journal_mode=WAL"}, append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1")...) {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}

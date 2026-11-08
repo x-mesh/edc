@@ -112,11 +112,20 @@ func (display *remoteDisplay) Start(host, step, phase string) {
 }
 
 func (display *remoteDisplay) WriteLine(prefix, line string) {
+	display.writeStreamLine("", "", prefix, line)
+}
+
+// writeStreamLine은 원격 출력 한 줄을 전달한다. 실시간 화면은 -v가 아니어도 칸마다 마지막 줄을 보여 줘야
+// 멈춘 step이 어디서 걸렸는지 알 수 있으므로 host와 step을 함께 보낸다.
+func (display *remoteDisplay) writeStreamLine(host, step, prefix, line string) {
 	if display == nil {
 		return
 	}
 	if display.live != nil {
-		display.live.send(remoteLogMsg{prefix: prefix, line: line})
+		if display.redact {
+			line = redactIPAddresses(line)
+		}
+		display.live.send(remoteLogMsg{host: host, step: step, prefix: prefix, line: line})
 		return
 	}
 	display.mu.Lock()
@@ -149,6 +158,8 @@ func (display *remoteDisplay) Close() {
 type remoteStreamWriter struct {
 	mu      sync.Mutex
 	display *remoteDisplay
+	host    string
+	step    string
 	prefix  string
 	pending string
 }
@@ -162,7 +173,7 @@ func (writer *remoteStreamWriter) Write(data []byte) (int, error) {
 		if index < 0 {
 			break
 		}
-		writer.display.WriteLine(writer.prefix, writer.pending[:index])
+		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending[:index])
 		writer.pending = writer.pending[index+1:]
 	}
 	return len(data), nil
@@ -172,7 +183,7 @@ func (writer *remoteStreamWriter) Flush() {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
 	if writer.pending != "" {
-		writer.display.WriteLine(writer.prefix, writer.pending)
+		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending)
 		writer.pending = ""
 	}
 }

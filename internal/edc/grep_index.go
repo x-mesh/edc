@@ -28,7 +28,8 @@ const (
 	grepIndexCacheCap = 1 << 30
 	// grepIndexSeenWindow 안에 같은 파일을 다시 검색하면 그때 index를 만든다. 첫 검색은 grep과 같은 비용으로 끝낸다.
 	grepIndexSeenWindow = 24 * time.Hour
-	grepIndexVersion    = 1
+	// 버전 2부터 ſ, K가 든 줄의 s, k trigram을 넣는다. 버전 1 index는 -i 검색에서 그런 블록을 건너뛰므로 다시 만든다.
+	grepIndexVersion = 2
 )
 
 var grepIndexMagic = [8]byte{'E', 'D', 'C', 'G', 'R', 'I', 'D', 'X'}
@@ -226,6 +227,21 @@ func grepTrigrams(data []byte, visit func(uint32)) {
 
 func grepLetter(char byte) bool { return char >= 'a' && char <= 'z' }
 
+// (?i)에서 s, k는 ASCII 밖 글자 ſ(U+017F), K(U+212A)와도 같다. -i 질의는 needle을 ASCII로만 접으므로, index는 이 글자를
+// s, k로 바꾼 줄의 trigram도 넣는다. 그러지 않으면 ſession만 든 블록을 -i session이 건너뛴다.
+var (
+	grepLongS  = []byte("\u017f")
+	grepKelvin = []byte("\u212a")
+)
+
+// grepPartnersToASCII는 line의 ſ와 K를 s와 k로 바꾼 사본이다. 둘 다 없으면 nil이다.
+func grepPartnersToASCII(line []byte) []byte {
+	if !bytes.Contains(line, grepLongS) && !bytes.Contains(line, grepKelvin) {
+		return nil
+	}
+	return bytes.ReplaceAll(bytes.ReplaceAll(line, grepLongS, []byte("s")), grepKelvin, []byte("k"))
+}
+
 // grepBloomBits는 trigram 하나가 켜는 비트 세 개다.
 func grepBloomBits(trigram uint32) [3]uint32 {
 	return [3]uint32{
@@ -264,7 +280,13 @@ func grepBuildSketch(region grepBlockRegion, format viewFormat, now time.Time) g
 	sketch := grepSketch{Lines: region.lines, LastLevel: -1, CRC: crc32.Checksum(region.raw, grepCRC)}
 	filter := newGrepFilter(format, nil, now)
 	inherits := format == viewFormatLevel || format == viewFormatJSON
+	set := func(trigram uint32) {
+		for _, bit := range grepBloomBits(trigram) {
+			sketch.Bloom[bit>>3] |= 1 << (bit & 7)
+		}
+	}
 	data := region.data
+	partners := bytes.Contains(data, grepLongS) || bytes.Contains(data, grepKelvin)
 	for len(data) != 0 {
 		end := bytes.IndexByte(data, '\n')
 		next := end + 1
@@ -275,11 +297,12 @@ func grepBuildSketch(region grepBlockRegion, format viewFormat, now time.Time) g
 		if len(line) > grepLineLimit {
 			line = line[:grepLineLimit]
 		}
-		grepTrigrams(line, func(trigram uint32) {
-			for _, bit := range grepBloomBits(trigram) {
-				sketch.Bloom[bit>>3] |= 1 << (bit & 7)
+		grepTrigrams(line, set)
+		if partners {
+			if folded := grepPartnersToASCII(line); folded != nil {
+				grepTrigrams(folded, set)
 			}
-		})
+		}
 		fields := filter.track(line)
 		header := inherits && fields.event == nil && (fields.level != "" || len(fields.timeText) != 0)
 		if fields.event != nil && sketch.Flags&grepFlagHasHeader == 0 {

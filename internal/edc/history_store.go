@@ -270,29 +270,7 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 		if !write {
 			return nil
 		}
-		has, err := historyHasSnapshots(db)
-		if err != nil {
-			return err
-		}
-		if !has {
-			if err := historyMigrate(db, historySnapshotStatements()); err != nil {
-				return err
-			}
-		} else {
-			has, err := historyHasOverviewIndexes(db)
-			if err != nil {
-				return err
-			}
-			if !has {
-				if err := historyMigrate(db, historyOverviewIndexStatements()); err != nil {
-					return err
-				}
-			}
-		}
-		if err := historyAddProcessMemoryColumn(db); err != nil {
-			return err
-		}
-		if err := historyAddTopColumns(db); err != nil {
+		if err := historyUpgrade(db); err != nil {
 			return err
 		}
 		return historyEnableWAL(db)
@@ -314,8 +292,76 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 	return historyEnableWAL(db)
 }
 
+// historyUpgrade는 이전 edc가 만든 DB에 없는 표, index, column을 쓰기 잠금을 먼저 잡은 transaction 하나로 더한다. commit마다
+// fsync하므로, 단계마다 commit하면 여러 writer가 동시에 처음 열 때 늦은 쪽이 그 commit을 모두 기다리다 디스크가 느리면 busy_timeout을
+// 넘긴다. 잠금을 기다리는 동안 다른 writer가 이미 더했으면 IF NOT EXISTS와 duplicate column name이 아무것도 쓰지 않아, 늦은 쪽의
+// commit은 fsync하지 않는다. 빠진 것이 없으면 잠금을 잡지 않으므로, 다른 writer가 기록하는 중에도 연다.
+func historyUpgrade(db *sql.DB) (err error) {
+	statements, err := historyUpgradeStatements(db)
+	if err != nil || len(statements) == 0 {
+		return err
+	}
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	for _, statement := range statements {
+		if _, err := conn.ExecContext(ctx, statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
+}
+
+func historyUpgradeStatements(db *sql.DB) ([]string, error) {
+	var statements []string
+	has, err := historyHasSnapshots(db)
+	if err != nil {
+		return nil, err
+	}
+	if !has {
+		statements = historySnapshotStatements()
+	} else {
+		has, err := historyHasOverviewIndexes(db)
+		if err != nil {
+			return nil, err
+		}
+		if !has {
+			statements = historyOverviewIndexStatements()
+		}
+	}
+	if !historyHasProcessMemoryColumn(db) {
+		statements = append(statements, "ALTER TABLE top_process_samples ADD COLUMN memory_bytes INTEGER")
+	}
+	columns, err := historyTableColumns(db, "top_samples")
+	if err != nil {
+		return nil, err
+	}
+	types := map[string]string{}
+	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
+		name, kind, _ := strings.Cut(definition, " ")
+		types[name] = kind
+	}
+	for _, column := range historyAddedTopColumns {
+		if !columns[column] {
+			statements = append(statements, "ALTER TABLE top_samples ADD COLUMN "+column+" "+types[column])
+		}
+	}
+	return statements, nil
+}
+
 // historyMigrate는 statements를 한 transaction으로 실행하고 user_version을 현재 버전으로 둔다. 중간에 실패하면 아무것도 남지 않는다.
-// 두 writer가 처음 여는 순간이 겹쳐도 늦은 쪽의 IF NOT EXISTS가 아무것도 하지 않아, 둘 다 DB를 연다.
 func historyMigrate(db *sql.DB, statements []string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -366,20 +412,6 @@ func historyOverviewIndexStatements() []string {
 	}
 }
 
-func historyAddProcessMemoryColumn(db *sql.DB) error {
-	if historyHasProcessMemoryColumn(db) {
-		return nil
-	}
-	_, err := db.Exec("ALTER TABLE top_process_samples ADD COLUMN memory_bytes INTEGER")
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	if !historyHasProcessMemoryColumn(db) {
-		return err
-	}
-	return nil
-}
-
 func historyHasProcessMemoryColumn(db *sql.DB) bool {
 	rows, err := db.Query("PRAGMA table_info(top_process_samples)")
 	if err != nil {
@@ -396,28 +428,6 @@ func historyHasProcessMemoryColumn(db *sql.DB) bool {
 		}
 	}
 	return false
-}
-
-func historyAddTopColumns(db *sql.DB) error {
-	columns, err := historyTableColumns(db, "top_samples")
-	if err != nil {
-		return err
-	}
-	types := map[string]string{}
-	for _, definition := range strings.Split(historyMetricColumns(historyHostMetrics), ", ") {
-		name, kind, _ := strings.Cut(definition, " ")
-		types[name] = kind
-	}
-	for _, column := range historyAddedTopColumns {
-		if columns[column] {
-			continue
-		}
-		// 두 writer가 동시에 처음 열면 늦은 쪽의 ALTER가 duplicate column name으로 실패한다. 이미 더해진 것이므로 넘어간다.
-		if _, err := db.Exec("ALTER TABLE top_samples ADD COLUMN " + column + " " + types[column]); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-	}
-	return nil
 }
 
 // historyTopColumnMissing은 읽기로 연 이전 DB에 이 지표의 column이 아직 없는지다. 없으면 그 지표의 기록도 없다.

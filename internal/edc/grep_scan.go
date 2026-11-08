@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -40,6 +41,8 @@ type grepMatcher struct {
 	indexNeedle []byte
 	// fold는 -i 문자열 패턴을 정규식 없이 ASCII 대소문자만 접어 찾는다는 뜻이다. 그때 needle은 소문자 패턴이다.
 	fold bool
+	// partners는 (?i)에서 패턴의 k, s와 같은 ASCII 밖 글자의 UTF-8 바이트다. 이 글자가 든 줄은 정규식으로 확정한다.
+	partners [][]byte
 	// pivot은 needle에서 IndexByte로 찍는 바이트의 위치다. -1이면 bytes.Index를 쓴다. second는 전체 비교 전에 확인하는
 	// 두 번째 바이트다.
 	pivot, second int
@@ -77,12 +80,12 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 		}
 		matcher.indexNeedle = matcher.needle
 		if ignoreCase && !useRegex {
-			// 대소문자를 무시해도 글자가 아닌 바이트는 그대로다. 그중 가장 긴 구간이 모든 일치에 들어간다.
-			matcher.needle = grepLongestNonLetterRun(pattern)
+			matcher.needle = grepIgnoreCaseNeedle(pattern)
 			matcher.indexNeedle = []byte(pattern)
-			if grepFoldsInASCII(pattern) {
+			if grepASCIIPattern(pattern) {
 				matcher.fold = true
 				matcher.needle = bytes.ToLower([]byte(pattern))
+				matcher.partners = grepFoldPartners(matcher.needle)
 			}
 		}
 	}
@@ -90,19 +93,29 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 	return matcher, nil
 }
 
-// grepFoldsInASCII는 (?i)로 pattern에 맞는 글자가 모두 ASCII인지 본다. 유니코드 대소문자 접기에서 ASCII 글자 중 k와 s만
-// ASCII 밖의 글자(K U+212A, ſ U+017F)와 같다. 그런 패턴은 정규식으로 찾아야 결과가 같다.
-func grepFoldsInASCII(pattern string) bool {
+func grepASCIIPattern(pattern string) bool {
 	if pattern == "" {
 		return false
 	}
 	for index := 0; index < len(pattern); index++ {
-		switch char := pattern[index]; {
-		case char >= utf8.RuneSelf, char == 'k', char == 'K', char == 's', char == 'S':
+		if pattern[index] >= utf8.RuneSelf {
 			return false
 		}
 	}
 	return true
+}
+
+// grepFoldPartners는 (?i)에서 lower의 글자와 같은 ASCII 밖 글자의 UTF-8 바이트다. 유니코드 대소문자 접기에서 ASCII 글자
+// 중 k와 s만 ASCII 밖 글자(K U+212A, ſ U+017F)와 같다.
+func grepFoldPartners(lower []byte) [][]byte {
+	var partners [][]byte
+	if bytes.IndexByte(lower, 'k') >= 0 {
+		partners = append(partners, []byte("\u212a"))
+	}
+	if bytes.IndexByte(lower, 's') >= 0 {
+		partners = append(partners, []byte("\u017f"))
+	}
+	return partners
 }
 
 func grepASCIIUpper(char byte) byte {
@@ -197,22 +210,44 @@ func grepLongestCommonRun(a, b []byte) []byte {
 	return best
 }
 
-func grepLongestNonLetterRun(pattern string) []byte {
+// grepIgnoreCaseNeedle은 (?i)로 pattern에 맞는 모든 일치에 그대로 들어가는 가장 긴 바이트다. 대소문자가 없는 글자는
+// 바이트가 그대로 들어가고, 대소문자가 있는 글자는 같은 글자들의 UTF-8이 함께 시작하는 바이트만 들어간다. é(c3 a9)와
+// É(c3 89)는 c3이 들어간다.
+func grepIgnoreCaseNeedle(pattern string) []byte {
 	var best []byte
-	start := -1
-	for index := 0; index <= len(pattern); index++ {
-		if index < len(pattern) && !viewWordByte(pattern[index]) {
-			if start < 0 {
-				start = index
+	start := 0
+	for index := 0; index < len(pattern); {
+		char, size := utf8.DecodeRuneInString(pattern[index:])
+		if char == utf8.RuneError || unicode.SimpleFold(char) != char {
+			if run := pattern[start:index] + grepFoldPrefix(char); len(run) > len(best) {
+				best = []byte(run)
 			}
-			continue
+			start = index + size
 		}
-		if start >= 0 && index-start > len(best) {
-			best = []byte(pattern[start:index])
-		}
-		start = -1
+		index += size
+	}
+	if len(pattern)-start > len(best) {
+		best = []byte(pattern[start:])
 	}
 	return best
+}
+
+// grepFoldPrefix는 (?i)에서 char와 같은 글자들의 UTF-8이 함께 시작하는 바이트다. U+FFFD는 정규식이 잘못된 UTF-8
+// 바이트로도 맞추므로 함께 시작하는 바이트가 없다.
+func grepFoldPrefix(char rune) string {
+	if char == utf8.RuneError {
+		return ""
+	}
+	prefix := string(char)
+	for other := unicode.SimpleFold(char); other != char; other = unicode.SimpleFold(other) {
+		encoded := string(other)
+		length := 0
+		for length < len(prefix) && length < len(encoded) && prefix[length] == encoded[length] {
+			length++
+		}
+		prefix = prefix[:length]
+	}
+	return prefix
 }
 
 // grepChoosePivot은 sample에서 가장 드문 needle 바이트의 위치와 두 번째로 드문 위치를 고른다. 가장 드문 바이트도
@@ -268,9 +303,50 @@ func (matcher *grepMatcher) find(data []byte) int {
 	}
 }
 
-// findFold는 pivot 바이트의 소문자와 대문자를 각각 IndexByte로 찾는다. 두 위치를 기억해 두어, 한쪽이 드물어도 같은
-// 구간을 다시 훑지 않는다.
+// findFold는 needle이 대소문자를 무시하고 처음 시작하는 자리다. ASCII 글자만 든 일치보다 앞서 시작하는 일치는 그 일치보다
+// 앞에 K나 ſ를 담고 있다. 그래서 그 앞에서 K나 ſ가 든 줄만 정규식으로 본다. ASCII 일치와 같은 줄이면 정규식이 찾는 첫
+// 일치는 그 일치이거나 더 앞이다.
 func (matcher *grepMatcher) findFold(data []byte) int {
+	at := matcher.findASCIIFold(data)
+	if len(matcher.partners) == 0 {
+		return at
+	}
+	limit := at
+	if limit < 0 {
+		limit = len(data)
+	}
+	for position := 0; position < limit; {
+		partner := matcher.indexPartner(data[position:limit])
+		if partner < 0 {
+			break
+		}
+		partner += position
+		lineStart := bytes.LastIndexByte(data[:partner], '\n') + 1
+		lineEnd := len(data)
+		if newline := bytes.IndexByte(data[partner:], '\n'); newline >= 0 {
+			lineEnd = partner + newline
+		}
+		if found := matcher.regex.FindIndex(data[lineStart:lineEnd]); found != nil {
+			return lineStart + found[0]
+		}
+		position = lineEnd + 1
+	}
+	return at
+}
+
+func (matcher *grepMatcher) indexPartner(data []byte) int {
+	first := -1
+	for _, partner := range matcher.partners {
+		if index := bytes.Index(data, partner); index >= 0 {
+			first, data = index, data[:index]
+		}
+	}
+	return first
+}
+
+// findASCIIFold는 pivot 바이트의 소문자와 대문자를 각각 IndexByte로 찾는다. 두 위치를 기억해 두어, 한쪽이 드물어도 같은
+// 구간을 다시 훑지 않는다.
+func (matcher *grepMatcher) findASCIIFold(data []byte) int {
 	needle := matcher.needle
 	lower := needle[matcher.pivot]
 	upper := grepASCIIUpper(lower)

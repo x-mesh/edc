@@ -196,7 +196,7 @@ x-mesh   xm update  →  xm version
 brew     brew update && brew upgrade -f   tags mac
 ```
 
-표 아래 줄은 진행 상황을 보여 줍니다. 그 아래에는 지금 도는 step마다 한 줄씩 host, step, phase, 경과 시간, 마지막 출력 줄과 그 출력이 나온 뒤 지난 시간이 나옵니다. 마지막 출력이 오래됐다면 그 step이 무언가를 기다리고 있는 것입니다. 그다음 줄들은 step마다의 command를 보여 줍니다.
+표 아래 줄은 진행 상황을 보여 줍니다. 그 아래에는 지금 도는 step마다 다섯 개까지 한 줄씩 host, step, phase, 경과 시간, 마지막 출력 줄과 그 출력이 나온 뒤 지난 시간이 나오고, 다섯 개를 넘는 step은 개수로만 알려 줍니다. 마지막 출력이 오래됐다면 그 step이 무언가를 기다리고 있는 것입니다. 그다음 줄들은 step마다의 command를 보여 줍니다.
 
 stdin과 stdout이 모두 terminal이면 확인 질문이 이 표 바로 아래, command 목록 위에 나옵니다. 가리킨 답에는 `▌` 막대와 반전 색이 붙습니다. 좌우 방향키와 Enter로 답하거나 `y`, `n`으로 답합니다. 그 줄은 곧 진행 줄로 바뀌고 표가 채워집니다. 질문을 건너뛰려면 `-f`를 씁니다.
 

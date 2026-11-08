@@ -284,23 +284,19 @@ func (model remoteModel) countCompleted() int {
 // remoteLastLine은 출력 한 줄에서 화면에 보여 줄 부분을 고른다. 진행 막대는 \r로 같은 줄을 덮어쓰므로
 // 마지막 조각만 남기고, 색 코드와 앞뒤 공백을 지운다.
 func remoteLastLine(line string) string {
-	line = ansi.Strip(line)
-	parts := strings.Split(line, "\r")
-	for index := len(parts) - 1; index >= 0; index-- {
-		if trimmed := strings.TrimSpace(parts[index]); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
+	return strings.TrimSpace(remoteLogLine(line))
 }
 
 // remoteLogLine은 출력 줄을 화면 한 줄에 맞게 다듬는다. 색 코드를 남기면 줄을 자를 때 escape 중간이 잘린다.
 func remoteLogLine(line string) string {
-	line = ansi.Strip(line)
-	if index := strings.LastIndex(strings.TrimRight(line, "\r"), "\r"); index >= 0 {
-		line = line[index+1:]
+	parts := strings.Split(ansi.Strip(line), "\r")
+	for index := len(parts) - 1; index >= 0; index-- {
+		// 진행 막대를 공백으로 덮어 지운 조각은 건너뛴다. 남기면 칸별 출력에 빈 줄이 들어간다.
+		if trimmed := strings.TrimRight(parts[index], " \t"); strings.TrimSpace(trimmed) != "" {
+			return trimmed
+		}
 	}
-	return strings.TrimRight(line, "\r \t")
+	return ""
 }
 
 func appendLimited(lines []string, line string, limit int) []string {

@@ -332,7 +332,7 @@ func TestRemoteModelFillsTheScreenWithOutputPerCell(t *testing.T) {
 	for index := 0; index < 60; index++ {
 		model = remoteAfter(t, model,
 			remoteLogMsg{host: "workstation", step: "brew", line: fmt.Sprintf("\x1b[32mbrew %02d\x1b[0m", index)},
-			remoteLogMsg{host: "build-server", step: "git-kit", line: fmt.Sprintf("gk %02d", index)},
+			remoteLogMsg{host: "build-server", step: "git-kit", line: fmt.Sprintf("gk %02d\r   \r", index)},
 		)
 	}
 	for _, height := range []int{24, 50} {

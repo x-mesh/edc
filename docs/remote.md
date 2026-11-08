@@ -185,7 +185,7 @@ x-mesh   xm update  →  xm version
 brew     brew update && brew upgrade -f   tags mac
 ```
 
-The line under the table names the host, the step, and the phase that runs now. The lines below it give the command of each step.
+The line under the table shows the progress. Below it, each step that runs now gets one line, up to five lines. A count replaces the other steps. The line gives the host, the step, the phase, the elapsed time, and the last output line with its age. An old output line shows a step that waits. The lines after them give the command of each step.
 
 If stdin and stdout are terminals, the confirmation question appears right under this table, above the command list. The answer you point at gets a `▌` bar and reversed colors. Answer with the left and right arrow keys and Enter, or with `y` or `n`. The same line then becomes the progress line and the table fills in. Use `-f` to skip the question.
 
@@ -198,7 +198,7 @@ alpha  ·      ·
 
 The table fits the terminal width. `edc` first shortens the column names, then changes `PASS` and `FAIL` to `✓` and `✗` with a legend, and last shortens the host names.
 
-Add `-v` to show the last output lines below the table.
+While the steps run, the screen uses the full terminal. The rows below the command list show the recent output of each step that runs now, in one block for each step. The step that runs longest comes first. When the run ends, `edc` goes back to the normal screen and leaves the final table there. If `edc` cannot read the terminal height, add `-v` to show the last output lines below the table.
 
 Press Ctrl-C to cancel. `edc` stops the running commands, marks the remaining steps as `SKIP`, prints the summary, and returns exit code `4`. Press Ctrl-C again to close the screen at once.
 

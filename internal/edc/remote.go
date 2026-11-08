@@ -437,10 +437,10 @@ func remoteCancelledResult(probe, host, step string, started time.Time) Result {
 }
 
 func streamWriter(display *remoteDisplay, host, step, phase string) io.Writer {
-	if display == nil || !display.verbose {
+	if display == nil || (!display.verbose && display.live == nil) {
 		return nil
 	}
-	return &remoteStreamWriter{display: display, prefix: fmt.Sprintf("%s/%s/%s", host, step, phase)}
+	return &remoteStreamWriter{display: display, host: host, step: step, prefix: fmt.Sprintf("%s/%s/%s", host, step, phase)}
 }
 
 func flushRemoteStream(writer io.Writer) {

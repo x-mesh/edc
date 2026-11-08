@@ -106,14 +106,14 @@ func TestTopAutoRecordKeepsBacklogAndStopsAfterCalmTail(t *testing.T) {
 	}
 	t.Cleanup(func() { recorder.Close("finished") })
 	// Record의 queue는 historyQueueSize칸이다. 시험은 sample을 기다리지 않고 넣으므로 backlog를 다 쓸 때까지 기다린다.
-	waitHistorySampleCount(t, model.recordPath, 301)
+	waitHistorySampleCount(t, recorder, model.recordPath, 301)
 	feed(402, 403, 20)
 	if line := strings.Join(model.statusLines(), "\n"); !strings.Contains(line, "auto load 20 > 2×8 · REC") {
 		t.Fatalf("status lines do not show the trigger: %q", line)
 	}
 	for second := 404; second < 464; second += historyQueueSize / 2 {
 		feed(second, min(second+historyQueueSize/2-1, 463), 1)
-		waitHistorySampleCount(t, model.recordPath, 301+min(second+historyQueueSize/2-1, 463)-401)
+		waitHistorySampleCount(t, recorder, model.recordPath, 301+min(second+historyQueueSize/2-1, 463)-401)
 	}
 	if model.recorder == nil {
 		t.Fatal("recording stopped before the calm tail ended")
@@ -172,15 +172,20 @@ func TestTopAutoRecordStaysOutOfManualRecording(t *testing.T) {
 	}
 }
 
-func waitHistorySampleCount(t *testing.T, path string, want int) {
+// waitHistorySampleCount는 recorder가 want개를 기록할 때까지 기다린다. recorder는 sample마다 fsync하므로 디스크가 느린
+// runner에서는 sample 10개에 5초를 넘긴다. 마감은 기록이 멈춘 경우만 잡으면 되므로 넉넉히 둔다.
+func waitHistorySampleCount(t *testing.T, recorder *topRecorder, path string, want int) {
 	t.Helper()
 	db, err := openHistoryDB(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(time.Minute)
 	for {
+		if err := recorder.Err(); err != nil {
+			t.Fatalf("the recorder failed: %v", err)
+		}
 		var count int
 		if err := db.QueryRow("SELECT sample_count FROM runs ORDER BY started_ns DESC LIMIT 1").Scan(&count); err != nil {
 			t.Fatal(err)

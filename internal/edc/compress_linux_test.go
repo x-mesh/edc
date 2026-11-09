@@ -37,8 +37,12 @@ func TestCodecMapperHelper(t *testing.T) {
 	time.Sleep(60 * time.Second)
 }
 
-// codecStartWriter는 path를 fd 3에 쓰기 모드로 열어 둔 sh를 띄우고, 그 fd가 /proc에 보일 때까지 기다린다.
+// codecStartWriter는 path를 fd 3에 쓰기 모드로 열어 둔 sh를 띄우고, 그 fd가 path를 가리킬 때까지 기다린다.
 func codecStartWriter(t *testing.T, path string) *exec.Cmd {
+	want, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	writer := exec.Command("sh", "-c", `exec 3>>"$0"; exec sleep 60`, path)
 	if err := writer.Start(); err != nil {
 		t.Fatal(err)
@@ -48,8 +52,9 @@ func codecStartWriter(t *testing.T, path string) *exec.Cmd {
 		writer.Wait()
 	})
 	fd := filepath.Join("/proc", strconv.Itoa(writer.Process.Pid), "fd", "3")
+	// sh가 시작할 때 dynamic loader가 ld.so.cache와 libc를 잠시 fd 3으로 연다. fd가 있는지만 보면 path를 열기 전에 돌아온다.
 	for range 200 {
-		if _, err := os.Readlink(fd); err == nil {
+		if info, err := os.Stat(fd); err == nil && os.SameFile(info, want) {
 			return writer
 		}
 		time.Sleep(10 * time.Millisecond)

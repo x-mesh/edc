@@ -212,10 +212,22 @@ func TestRemoteStreamWriterBoundsALineWithoutNewline(t *testing.T) {
 
 // 글자 경계가 없는 바이트열도 상한에서 잘라야 loop가 끝난다.
 func TestRemoteStreamWriterCutsBytesWithoutARuneStart(t *testing.T) {
-	display := newRemoteDisplay(io.Discard, remoteDisplayOptions{verbose: true})
+	var output strings.Builder
+	display := newRemoteDisplay(&output, remoteDisplayOptions{verbose: true})
 	writer := &remoteStreamWriter{display: display, prefix: "p"}
-	_, _ = writer.Write([]byte(strings.Repeat("\x80", 3*remoteStreamLineLimit)))
+	input := strings.Repeat("\x80", 3*remoteStreamLineLimit+7)
+	_, _ = writer.Write([]byte(input))
 	if len(writer.pending) > remoteStreamLineLimit {
 		t.Fatalf("pending grew to %d bytes", len(writer.pending))
+	}
+	writer.Flush()
+	// 잘라 낸 조각을 이어 붙이면 입력과 같아야 한다. 빠지거나 겹치거나 순서가 바뀐 바이트가 없다.
+	var joined strings.Builder
+	for _, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		_, text, _ := strings.Cut(line, "| ")
+		joined.WriteString(text)
+	}
+	if joined.String() != input {
+		t.Fatalf("emitted %d bytes, want the %d input bytes in order", joined.Len(), len(input))
 	}
 }

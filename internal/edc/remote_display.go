@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -112,11 +113,20 @@ func (display *remoteDisplay) Start(host, step, phase string) {
 }
 
 func (display *remoteDisplay) WriteLine(prefix, line string) {
+	display.writeStreamLine("", "", prefix, line)
+}
+
+// writeStreamLine은 원격 출력 한 줄을 전달한다. 실시간 화면은 -v가 아니어도 칸마다 마지막 줄을 보여 줘야
+// 멈춘 step이 어디서 걸렸는지 알 수 있으므로 host와 step을 함께 보낸다.
+func (display *remoteDisplay) writeStreamLine(host, step, prefix, line string) {
 	if display == nil {
 		return
 	}
 	if display.live != nil {
-		display.live.send(remoteLogMsg{prefix: prefix, line: line})
+		if display.redact {
+			line = redactIPAddresses(line)
+		}
+		display.live.send(remoteLogMsg{host: host, step: step, prefix: prefix, line: line})
 		return
 	}
 	display.mu.Lock()
@@ -146,9 +156,15 @@ func (display *remoteDisplay) Close() {
 	display.live = nil
 }
 
+// remoteStreamLineLimit는 줄바꿈을 기다리며 모아 두는 출력의 상한이다. 실시간 화면은 -v가 아니어도 출력을 읽으므로,
+// 줄바꿈 없이 이어지는 출력을 끝까지 모으면 메모리가 출력 크기만큼 는다.
+const remoteStreamLineLimit = 4096
+
 type remoteStreamWriter struct {
 	mu      sync.Mutex
 	display *remoteDisplay
+	host    string
+	step    string
 	prefix  string
 	pending string
 }
@@ -162,8 +178,20 @@ func (writer *remoteStreamWriter) Write(data []byte) (int, error) {
 		if index < 0 {
 			break
 		}
-		writer.display.WriteLine(writer.prefix, writer.pending[:index])
+		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending[:index])
 		writer.pending = writer.pending[index+1:]
+	}
+	for len(writer.pending) > remoteStreamLineLimit {
+		cut := remoteStreamLineLimit
+		for cut > 0 && !utf8.RuneStart(writer.pending[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			// 글자 경계가 없는 바이트열이면 상한에서 자른다. 0에서 멈추면 이 loop가 끝나지 않는다.
+			cut = remoteStreamLineLimit
+		}
+		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending[:cut])
+		writer.pending = writer.pending[cut:]
 	}
 	return len(data), nil
 }
@@ -172,7 +200,7 @@ func (writer *remoteStreamWriter) Flush() {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
 	if writer.pending != "" {
-		writer.display.WriteLine(writer.prefix, writer.pending)
+		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending)
 		writer.pending = ""
 	}
 }

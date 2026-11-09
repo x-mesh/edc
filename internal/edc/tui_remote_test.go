@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -286,8 +287,88 @@ func TestRemoteModelDropsTheProgressBarWhenNarrow(t *testing.T) {
 	if !strings.Contains(ansi.Strip(model.statusLine()), "░") {
 		t.Fatalf("wide status = %q", ansi.Strip(model.statusLine()))
 	}
-	model = remoteAfter(t, model, tea.WindowSizeMsg{Width: 55, Height: 30})
-	if line := strings.TrimSuffix(model.statusLine(), "\n"); strings.Contains(line, "░") || liveWidth(line) > 55 {
+	model = remoteAfter(t, model, tea.WindowSizeMsg{Width: 30, Height: 30})
+	if line := strings.TrimSuffix(model.statusLine(), "\n"); strings.Contains(line, "░") || liveWidth(line) > 30 {
 		t.Fatalf("narrow status = %q", ansi.Strip(line))
+	}
+}
+
+// 오래 걸리는 칸은 상태줄 아래에서 경과 시간과 마지막 출력으로 어디서 멈췄는지 알려야 한다.
+func TestRemoteModelShowsRunningCellsWithLastOutput(t *testing.T) {
+	now := time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC)
+	model := remoteFixtureModel(nil)
+	model.now = func() time.Time { return now }
+	model = remoteAfter(t, model, remoteStartMsg{host: "workstation", step: "brew", phase: remotePhaseCommand})
+	if !strings.Contains(model.View().Content, "workstation / brew / command  0s  ·  "+T("remote.label.no_output")) {
+		t.Fatalf("view = %q", model.View().Content)
+	}
+	now = now.Add(time.Minute)
+	model = remoteAfter(t, model,
+		remoteLogMsg{host: "workstation", step: "brew", prefix: "workstation/brew/command", line: "\x1b[1m==> Upgrading\x1b[0m 3 packages\r  \r"},
+		remoteStartMsg{host: "build-server", step: "git-kit", phase: remotePhaseCommand},
+	)
+	now = now.Add(4 * time.Minute)
+	lines := model.runningLines()
+	if len(lines) != 2 {
+		t.Fatalf("running lines = %#v", lines)
+	}
+	want := "workstation / brew / command  5m0s  ·  ==> Upgrading 3 packages  " + T("remote.label.output_age", 4*time.Minute)
+	if !strings.Contains(lines[0], want) || !strings.Contains(lines[1], "build-server / git-kit / command  4m0s") {
+		t.Fatalf("running lines = %#v", lines)
+	}
+	model = remoteAfter(t, model, remoteResultMsg{host: "workstation", step: "brew", status: StatusPass})
+	if lines := model.runningLines(); len(lines) != 1 || strings.Contains(lines[0], "brew") {
+		t.Fatalf("finished cell must leave the running list: %#v", lines)
+	}
+}
+
+// 실행 중에는 전체 화면을 쓰고, 남은 줄을 실행 중인 칸마다 따로 모은 출력으로 나눠 채운다.
+func TestRemoteModelFillsTheScreenWithOutputPerCell(t *testing.T) {
+	model := remoteFixtureModel(nil)
+	model = remoteAfter(t, model,
+		remoteStartMsg{host: "workstation", step: "brew", phase: remotePhaseCommand},
+		remoteStartMsg{host: "build-server", step: "git-kit", phase: remotePhaseCommand},
+	)
+	for index := 0; index < 60; index++ {
+		model = remoteAfter(t, model,
+			remoteLogMsg{host: "workstation", step: "brew", line: fmt.Sprintf("\x1b[32mbrew %02d\x1b[0m", index)},
+			remoteLogMsg{host: "build-server", step: "git-kit", line: fmt.Sprintf("gk %02d\r   \r", index)},
+		)
+	}
+	for _, height := range []int{24, 50} {
+		sized := remoteAfter(t, model, tea.WindowSizeMsg{Width: 100, Height: height})
+		view := sized.View()
+		if !view.AltScreen || liveLineCount(view.Content) != height {
+			t.Fatalf("height %d: alt=%v lines=%d", height, view.AltScreen, liveLineCount(view.Content))
+		}
+		content := view.Content
+		brew, gk := strings.Index(content, "── workstation / brew / command"), strings.Index(content, "── build-server / git-kit / command")
+		if brew < 0 || gk < brew || strings.Contains(content, "\x1b[32m") {
+			t.Fatalf("height %d: each running cell needs its own block, oldest first: %q", height, content)
+		}
+		if strings.Contains(content[brew:gk], "gk 59") || !strings.Contains(content[brew:gk], "brew 59") || !strings.HasSuffix(content, "  gk 59\n") {
+			t.Fatalf("height %d: outputs must not mix: %q", height, content[brew:])
+		}
+	}
+	tiny := remoteAfter(t, model, tea.WindowSizeMsg{Width: 100, Height: 5})
+	if strings.Contains(tiny.View().Content, "──") {
+		t.Fatalf("a short screen has no room for output: %q", tiny.View().Content)
+	}
+}
+
+// 확인은 inline으로 받고, 끝난 화면은 inline으로 돌아가 결과 표를 남긴다.
+func TestRemoteModelUsesTheFullScreenOnlyWhileRunning(t *testing.T) {
+	confirm := remoteAfter(t, remoteConfirmModel(nil), tea.WindowSizeMsg{Width: 100, Height: 3})
+	if view := confirm.View(); view.AltScreen || !strings.HasPrefix(view.Content, "\n") {
+		t.Fatalf("the confirm prompt must stay inline and start with the line bubbletea leaves behind: %q", view.Content)
+	}
+	running := remoteAfter(t, confirm, tea.KeyPressMsg{Code: 'y'})
+	if !running.View().AltScreen {
+		t.Fatal("the running screen must use the full screen")
+	}
+	done := remoteAfter(t, running, remoteDoneMsg{})
+	view := done.View()
+	if view.AltScreen || !strings.Contains(view.Content, "build-server") {
+		t.Fatalf("the finished table must stay inline with every host: %q", view.Content)
 	}
 }

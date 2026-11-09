@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -155,6 +156,10 @@ func (display *remoteDisplay) Close() {
 	display.live = nil
 }
 
+// remoteStreamLineLimit는 줄바꿈을 기다리며 모아 두는 출력의 상한이다. 실시간 화면은 -v가 아니어도 출력을 읽으므로,
+// 줄바꿈 없이 이어지는 출력을 끝까지 모으면 메모리가 출력 크기만큼 는다.
+const remoteStreamLineLimit = 4096
+
 type remoteStreamWriter struct {
 	mu      sync.Mutex
 	display *remoteDisplay
@@ -175,6 +180,18 @@ func (writer *remoteStreamWriter) Write(data []byte) (int, error) {
 		}
 		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending[:index])
 		writer.pending = writer.pending[index+1:]
+	}
+	for len(writer.pending) > remoteStreamLineLimit {
+		cut := remoteStreamLineLimit
+		for cut > 0 && !utf8.RuneStart(writer.pending[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			// 글자 경계가 없는 바이트열이면 상한에서 자른다. 0에서 멈추면 이 loop가 끝나지 않는다.
+			cut = remoteStreamLineLimit
+		}
+		writer.display.writeStreamLine(writer.host, writer.step, writer.prefix, writer.pending[:cut])
+		writer.pending = writer.pending[cut:]
 	}
 	return len(data), nil
 }

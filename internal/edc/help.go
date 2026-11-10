@@ -666,16 +666,17 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "tunnel", group: "record",
-		usage: []string{"edc tunnel", "edc tunnel list [options]", "edc tunnel up <name>", "edc tunnel up (-L [port|auto]:host:port | -R port:host:port | -D port|auto) <host>", "edc tunnel test <name>", "edc tunnel down <name>... | --all"},
+		usage: []string{"edc tunnel", "edc tunnel list [options]", "edc tunnel up", "edc tunnel up <name>", "edc tunnel up (-L [port|auto:]host:port | -R port:host:port | -D port|auto) <host>", "edc tunnel test <name>", "edc tunnel down <name>... | --all"},
 		options: []optionDoc{
 			{"--file <file>", "command.tunnel.option.file"},
 			{"--name <name>", "command.tunnel.option.name"},
-			{"-L [port|auto]:host:port", "command.tunnel.option.local"},
+			{"-L [port|auto:]host:port", "command.tunnel.option.local"},
 			{"-R port:host:port", "command.tunnel.option.reverse"},
 			{"-D port|auto", "command.tunnel.option.socks"},
 			{"--save", "command.tunnel.option.save"},
 			{"--all", "command.tunnel.option.all"},
 			{"--connect-timeout", "command.tunnel.option.connect_timeout"},
+			{"--ttl <duration>", "command.tunnel.option.ttl"},
 		},
 		usesCommon: true,
 		subcommands: []subcommandDoc{
@@ -687,7 +688,9 @@ var commandDocs = []commandDoc{
 		examples: []string{
 			"edc tunnel",
 			"edc tunnel up db",
+			"edc tunnel up",
 			"edc tunnel up -L auto:db.internal:5432 jump1",
+			"edc tunnel up -L db.internal:5432 --ttl 30m jump1",
 			"edc tunnel test db",
 			"edc tunnel down --all",
 		},

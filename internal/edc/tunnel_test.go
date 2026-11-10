@@ -86,6 +86,8 @@ func newTestTunnelManager(t *testing.T) (tunnelManager, *fakeTunnelRunner) {
 	manager.probe = func(int) string { return tunnelReachOK }
 	manager.dial = func(string) error { return nil }
 	manager.now = func() time.Time { return time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC) }
+	// 실제 expire는 실행 파일을 다시 띄운다. test에서는 그 실행 파일이 test binary라서 띄우지 않는다.
+	manager.expire = func(tunnelStore, tunnelRecord) error { return nil }
 	return manager, runner
 }
 
@@ -215,6 +217,27 @@ func TestParseTunnelAdhocAndName(t *testing.T) {
 	}
 	if name := tunnelAdhocName("ops@jump1", tunnelSpec{Local: "5432"}); name != "ops-jump1-5432" {
 		t.Errorf("name = %q", name)
+	}
+	for _, test := range []struct {
+		host string
+		spec tunnelSpec
+		want string
+	}{
+		{"jump1", tunnelSpec{Local: "auto", Remote: "db1:5432"}, "jump1-db1-5432"},
+		{"jump1", tunnelSpec{Local: "auto", Remote: "db2:5432"}, "jump1-db2-5432"},
+		{"jump1", tunnelSpec{Local: "auto", Remote: "[::1]:5432"}, "jump1-1-5432"},
+		{"jump1", tunnelSpec{Socks: "auto"}, "jump1-dauto"},
+		{"jump1", tunnelSpec{Reverse: "8080:localhost:3000"}, "jump1-r8080"},
+		{"ops@bastion.prod.example.com", tunnelSpec{Local: "auto", Remote: "db.internal:5432"}, "ops-bastion.pro-db.internal-5432"},
+		{"jump1", tunnelSpec{Local: "auto", Remote: "a-very-long-database-host.internal.example.com:5432"}, "e-host.internal.example.com-5432"},
+	} {
+		name := tunnelAdhocName(test.host, test.spec)
+		if name != test.want {
+			t.Errorf("tunnelAdhocName(%q, %+v) = %q, want %q", test.host, test.spec, name, test.want)
+		}
+		if len(name) > tunnelNameLimit || !tunnelNamePattern.MatchString(name) {
+			t.Errorf("name %q is not valid", name)
+		}
 	}
 	if _, err := parseTunnelAdhoc("h", "1:a:1", "", "1080"); err == nil {
 		t.Error("two forward kinds must fail")
@@ -597,7 +620,7 @@ func TestRunTunnelUpSavesAnAdhocTunnelOnlyWithSave(t *testing.T) {
 	environment := tunnelEnvironment{manager: manager, specs: map[string]tunnelSpec{}, file: file}
 	adhoc := [3]string{"6000:db:5432", "", ""}
 	if _, status := captureTunnelStdout(t, func() int {
-		return runTunnelUp(context.Background(), environment, []string{"jump1"}, "once", adhoc, false)
+		return runTunnelUp(context.Background(), environment, []string{"jump1"}, "once", adhoc, false, 0)
 	}); status != 0 {
 		t.Fatalf("status = %d", status)
 	}
@@ -605,7 +628,7 @@ func TestRunTunnelUpSavesAnAdhocTunnelOnlyWithSave(t *testing.T) {
 		t.Fatal("up without --save must not write the file")
 	}
 	output, status := captureTunnelStdout(t, func() int {
-		return runTunnelUp(context.Background(), environment, []string{"jump1"}, "kept", [3]string{"6001:db:5432", "", ""}, true)
+		return runTunnelUp(context.Background(), environment, []string{"jump1"}, "kept", [3]string{"6001:db:5432", "", ""}, true, 0)
 	})
 	if status != 0 || !strings.Contains(output, "kept") {
 		t.Fatalf("status %d, output %q", status, output)
@@ -620,10 +643,10 @@ func TestRunTunnelUpSaveRefusesNamedTunnelsAndDuplicates(t *testing.T) {
 	manager, runner := newTestTunnelManager(t)
 	environment := tunnelEnvironment{manager: manager, file: filepath.Join(t.TempDir(), "tunnels.yaml"),
 		specs: map[string]tunnelSpec{"db": {Host: "jump1", Local: "5432", Remote: "db:5432"}}}
-	if status := runTunnelUp(context.Background(), environment, []string{"db"}, "", [3]string{}, true); status != 2 {
+	if status := runTunnelUp(context.Background(), environment, []string{"db"}, "", [3]string{}, true, 0); status != 2 {
 		t.Errorf("--save with a defined name = %d", status)
 	}
-	if status := runTunnelUp(context.Background(), environment, []string{"jump1"}, "db", [3]string{"6000:x:1", "", ""}, true); status != 2 {
+	if status := runTunnelUp(context.Background(), environment, []string{"jump1"}, "db", [3]string{"6000:x:1", "", ""}, true, 0); status != 2 {
 		t.Errorf("--save over an existing name = %d", status)
 	}
 	if len(runner.started) != 0 {
@@ -820,5 +843,215 @@ func TestRunTunnelTestRunsThroughTheCLI(t *testing.T) {
 	}
 	if _, status := captureTunnelStdout(t, func() int { return runTunnel([]string{"test", "nobody"}, "test") }); status != 2 {
 		t.Fatalf("an unknown tunnel name must be an error: %d", status)
+	}
+}
+
+func TestParseTunnelLineReadsShortFormsAndPastedSSHCommands(t *testing.T) {
+	cases := []struct {
+		line string
+		want tunnelSpec
+	}{
+		{"jump1 db.internal:5432", tunnelSpec{Host: "jump1", Local: "auto", Remote: "db.internal:5432"}},
+		{"db.internal:5432 jump1", tunnelSpec{Host: "jump1", Local: "auto", Remote: "db.internal:5432"}},
+		{"ops@jump1 6000:db.internal:5432", tunnelSpec{Host: "ops@jump1", Local: "6000", Remote: "db.internal:5432"}},
+		{"jump1 6000:[::1]:5432", tunnelSpec{Host: "jump1", Local: "6000", Remote: "[::1]:5432"}},
+		{"ssh -L 5432:db.internal:5432 jump1", tunnelSpec{Host: "jump1", Local: "5432", Remote: "db.internal:5432"}},
+		{"ssh -N -f -L 127.0.0.1:5432:db.internal:5432 jump1", tunnelSpec{Host: "jump1", Local: "5432", Remote: "db.internal:5432"}},
+		{"ssh jump1 -Llocalhost:5432:db.internal:5432", tunnelSpec{Host: "jump1", Local: "5432", Remote: "db.internal:5432"}},
+		{"ssh -fN -R 8080:localhost:3000 jump1", tunnelSpec{Host: "jump1", Reverse: "8080:localhost:3000"}},
+		{"-D 1080 jump1", tunnelSpec{Host: "jump1", Socks: "1080"}},
+		{"jump1 -D auto", tunnelSpec{Host: "jump1", Socks: "auto"}},
+	}
+	for _, test := range cases {
+		spec, err := parseTunnelLine(test.line)
+		if err != nil || spec != test.want {
+			t.Errorf("%q: spec = %+v, err %v, want %+v", test.line, spec, err, test.want)
+			continue
+		}
+		if _, err := buildTunnelPlan("probe", spec, nil, func() (int, error) { return 40001, nil }); err != nil {
+			t.Errorf("%q: the spec does not build: %v", test.line, err)
+		}
+	}
+}
+
+func TestParseTunnelLineRejectsWhatATunnelCannotCarry(t *testing.T) {
+	cases := []struct{ line, want string }{
+		{"ssh -p 2222 -L 5432:db:5432 jump1", "-p"},
+		{"ssh -i key.pem -L 5432:db:5432 jump1", "-i"},
+		{"ssh -J bastion -L 5432:db:5432 jump1", "-J"},
+		{"ssh -o StrictHostKeyChecking=no -L 5432:db:5432 jump1", "-o"},
+		{"ssh -L 0.0.0.0:5432:db:5432 jump1", "0.0.0.0"},
+		{"ssh -L 5432:db:5432 -D 1080 jump1", "exactly one"},
+		{"jump1 db", "jump1 db.internal:5432"},
+		{"jump1 db:5432 extra", "jump1 db.internal:5432"},
+		{"ssh -L 5432:db:5432", "jump1 db.internal:5432"},
+		{"ssh jump1 -L", "jump1 db.internal:5432"},
+	}
+	for _, test := range cases {
+		if _, err := parseTunnelLine(test.line); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("%q: err = %v, want it to name %q", test.line, err, test.want)
+		}
+	}
+}
+
+func TestParseTunnelAdhocAcceptsAMissingLocalPortAndALoopbackBind(t *testing.T) {
+	for value, want := range map[string]tunnelPort{"db:5432": "auto", "127.0.0.1:6000:db:5432": "6000", "6000:db:5432": "6000"} {
+		spec, err := parseTunnelAdhoc("jump1", value, "", "")
+		if err != nil || spec.Local != want || spec.Remote != "db:5432" {
+			t.Errorf("-L %s: spec = %+v, err %v", value, spec, err)
+		}
+	}
+	if _, err := parseTunnelAdhoc("jump1", "10.0.0.1:6000:db:5432", "", ""); err == nil {
+		t.Error("a bind address that edc cannot honor must fail")
+	}
+}
+
+func TestTunnelManagerStartWithATimeLimitRecordsTheExpiryAndStartsTheTimer(t *testing.T) {
+	manager, _ := newTestTunnelManager(t)
+	var timed []tunnelRecord
+	manager.expire = func(_ tunnelStore, record tunnelRecord) error {
+		timed = append(timed, record)
+		return nil
+	}
+	spec := tunnelSpec{Host: "jump1", Local: "auto", Remote: "db:5432"}
+	row, err := manager.start(context.Background(), "db", spec, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := manager.now().Add(30 * time.Minute)
+	if row.Expires == nil || !row.Expires.Equal(want) {
+		t.Fatalf("row expires = %v, want %v", row.Expires, want)
+	}
+	record, found := manager.store.find("db")
+	if !found || record.Expires == nil || !record.Expires.Equal(want) || record.TTL != 30*time.Minute || !record.Auto {
+		t.Fatalf("record = %+v", record)
+	}
+	if len(timed) != 1 || timed[0].Name != "db" || !timed[0].Started.Equal(record.Started) {
+		t.Fatalf("timer got %+v", timed)
+	}
+	rows := manager.rows(context.Background(), nil)
+	if len(rows) != 1 || rows[0].Expires == nil || tunnelRemaining(rows[0].Expires, manager.now().Add(10*time.Minute)) != "20m0s" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if _, err := manager.up(context.Background(), "plain", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}); err != nil {
+		t.Fatal(err)
+	}
+	if plain, _ := manager.store.find("plain"); plain.Expires != nil || len(timed) != 1 {
+		t.Fatalf("a tunnel without a time limit must not get a timer: %+v, timers %d", plain, len(timed))
+	}
+}
+
+func TestTunnelManagerStopsTheTunnelWhenItsTimerCannotStart(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	manager.expire = func(tunnelStore, tunnelRecord) error { return errors.New("fork failed") }
+	_, err := manager.start(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "fork failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(runner.stopped) != 1 || len(manager.store.load()) != 0 {
+		t.Fatalf("a tunnel that nothing will stop must not stay: stopped %v, records %+v", runner.stopped, manager.store.load())
+	}
+}
+
+func TestTunnelExpireWhenDueStopsOnlyTheTunnelItWasStartedFor(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if _, err := manager.start(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := manager.store.find("db")
+	started := record.Started.UnixNano()
+	clock := manager.now()
+	manager.now = func() time.Time { return clock }
+	var naps []time.Duration
+	sleep := func(duration time.Duration) {
+		naps = append(naps, duration)
+		clock = clock.Add(duration)
+	}
+	if err := manager.expireWhenDue("db", started+1, sleep); err != nil || len(runner.stopped) != 0 || len(naps) != 0 {
+		t.Fatalf("a timer for another start must leave the tunnel: err %v, stopped %v, naps %v", err, runner.stopped, naps)
+	}
+	if err := manager.expireWhenDue("db", started, sleep); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.stopped) != 1 || len(manager.store.load()) != 0 {
+		t.Fatalf("stopped %v, records %+v", runner.stopped, manager.store.load())
+	}
+	if len(naps) != 4 {
+		t.Fatalf("one minute must be waited in short naps so that a sleeping machine cannot stall it: %v", naps)
+	}
+	for _, nap := range naps {
+		if nap > tunnelExpiryPoll {
+			t.Errorf("nap %v is longer than the poll interval", nap)
+		}
+	}
+}
+
+func TestTunnelExpireWhenDueLeavesWhenTheTunnelStoppedEarlier(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if _, err := manager.start(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := manager.store.find("db")
+	naps := 0
+	sleep := func(time.Duration) {
+		naps++
+		if _, err := manager.down(context.Background(), "db"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.expireWhenDue("db", record.Started.UnixNano(), sleep); err != nil || naps != 1 || len(runner.stopped) != 1 {
+		t.Fatalf("err %v, naps %d, stopped %v", err, naps, runner.stopped)
+	}
+}
+
+func TestTunnelRecordDefinitionKeepsAutoForTheSavedFile(t *testing.T) {
+	record := tunnelRecord{Host: "jump1", Kind: tunnelLocal, Port: 40001, Destination: "db:5432", Auto: true}
+	if spec := record.definition(); spec.Local != "auto" || spec.Remote != "db:5432" {
+		t.Errorf("definition = %+v", spec)
+	}
+	if spec := record.spec(); spec.Local != "40001" {
+		t.Errorf("the running tunnel keeps its port: %+v", spec)
+	}
+	record.Auto = false
+	if spec := record.definition(); spec.Local != "40001" {
+		t.Errorf("a fixed port stays fixed: %+v", spec)
+	}
+}
+
+func TestRunTunnelUpPrintsWhenATimeLimitedTunnelStops(t *testing.T) {
+	manager, _ := newTestTunnelManager(t)
+	environment := tunnelEnvironment{manager: manager, specs: map[string]tunnelSpec{}}
+	output, status := captureTunnelStdout(t, func() int {
+		return runTunnelUp(context.Background(), environment, []string{"jump1"}, "", [3]string{"db:5432", "", ""}, false, 30*time.Minute)
+	})
+	if status != 0 || !strings.Contains(output, "stops automatically in 30m0s") {
+		t.Fatalf("status %d, output %q", status, output)
+	}
+}
+
+func TestRunTunnelRejectsATimeLimitOutsideUp(t *testing.T) {
+	for _, args := range [][]string{{"list", "--ttl", "30m"}, {"down", "--ttl", "30m", "db"}, {"up", "--ttl", "-5m", "db"}} {
+		stderr := captureTraceStderr(t, func() {
+			if status := runTunnel(args, "test"); status != 2 {
+				t.Errorf("%v: status = %d, want 2", args, status)
+			}
+		})
+		if !strings.Contains(stderr, "--ttl works only with edc tunnel up") {
+			t.Errorf("%v: stderr = %q", args, stderr)
+		}
+	}
+}
+
+// 터미널이 아니면 이름 없는 up은 폼을 열지 않고 전과 같이 오류로 끝난다.
+func TestRunTunnelUpWithoutANameStillFailsOutsideATerminal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", shortTunnelDir(t))
+	stderr := captureTraceStderr(t, func() {
+		if status := runTunnel([]string{"up"}, "test"); status != 2 {
+			t.Errorf("status = %d, want 2", status)
+		}
+	})
+	if !strings.Contains(stderr, "give a tunnel name") {
+		t.Errorf("stderr = %q", stderr)
 	}
 }

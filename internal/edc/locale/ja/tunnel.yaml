@@ -34,6 +34,12 @@ tunnel:
     state_save_unstopped: "トンネル %s は動作中ですが、状態を保存できず (%s)、停止もできませんでした (%s)。次のコマンドで手動停止してください: ssh -S %s -O exit %s"
     save_up_only: "--save は edc tunnel up でのみ使えます"
     timeout_range: "--timeout と --connect-timeout は 0 より大きくしてください"
+    line_bind: "edc は 127.0.0.1 でのみポートを開くため、バインドアドレス %s は使えません"
+    line_shape: "ホストと宛先を一緒に入力してください。例: jump1 db.internal:5432"
+    line_option: "トンネルはホストとフォワード1つだけを保持するため、ssh オプション %s は使えません。~/.ssh/config に設定してください"
+    ttl_invalid: "維持時間 %q が正しくありません。30m、2h のように入力してください"
+    ttl_failed: "自動停止を担当するプロセスを開始できなかったため、トンネル %s を停止しました: %s"
+    ttl_up_only: "--ttl は edc tunnel up でのみ使え、0 より大きくしてください"
 
   list:
     empty: "トンネルがありません。tunnels.yaml に定義するか、edc tunnel up -L で開始してください"
@@ -49,10 +55,12 @@ tunnel:
     saved: "保存"
     command: "コマンド"
     uptime: "稼働"
+    expires: "期限"
 
   up:
     saved: "保存: %s -> %s"
     done: "開始: %s  %s -> %s"
+    expires: "自動停止: %s 後 (%s)"
 
   down:
     done: "停止: %s"
@@ -80,12 +88,16 @@ tunnel:
     hint_destination: "db.internal:5432 (踏み台から接続する host:port)"
     hint_local_target: "localhost:3000 (このマシンの host:port)"
     local_target: "ローカル対象"
+    ttl: "維持時間"
+    hint_ttl: "30m, 2h (空の場合は停止するまで実行)"
+    starting: "トンネルを開始しています…"
     name: "名前"
 
   help:
     host:
-      - "ssh の接続先です。←/→ でインベントリのホストと ~/.ssh/config のエイリアスを選びます。"
+      - "ssh の接続先です。文字を入力するとインベントリのホストと ~/.ssh/config のエイリアスを絞り込み、←/→ で選びます。"
       - "user@host など ssh が受け付ける名前も直接入力できます。"
+      - "1行で入力すると残りの項目を埋めます。例: jump1 db.internal:5432、または ssh -L コマンドの貼り付け"
     kind:
       local: "local    このマシンでポートを開き、ホストから見えるサービスに接続 (ssh -L)"
       reverse: "reverse  ホストでポートを開き、届いた通信をこのマシンへ転送 (ssh -R)"
@@ -107,6 +119,9 @@ tunnel:
       reverse:
         - "通信を受け取るこのマシンの host:port です。例: localhost:3000"
         - "同じネットワークの別のマシン名も使えます。"
+    ttl:
+      - "この時間が過ぎるとトンネルは自動で停止します。例: 30m、2h、90s"
+      - "単位のない数字は秒です。空にすると、停止するまで実行します。"
     save:
       - "「はい」を選ぶと tunnels.yaml に保存し、名前で再開始できます。"
       - "「いいえ」を選ぶと一度だけ開始し、停止すると一覧から消えます。"
@@ -124,6 +139,7 @@ tunnel:
     new: "n 新規"
     restart: "r 再起動"
     remove: "x 定義削除"
+    save: "s 保存"
     quit: "q 終了"
     remote_port: "ホストでポート %d がすでに使用されている可能性があります。別のポートを指定してください"
 

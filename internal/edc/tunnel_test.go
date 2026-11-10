@@ -1088,6 +1088,45 @@ func TestRunTunnelUpPrintsWhenATimeLimitedTunnelStops(t *testing.T) {
 	}
 }
 
+func TestRunTunnelUpWithATimeLimitRecordsItAndStartsItsTimer(t *testing.T) {
+	bin := shortTunnelDir(t)
+	script := "#!/bin/sh\nfor argument in \"$@\"; do\n  if [ \"$argument\" = check ]; then echo 'Master running (pid=4242)' >&2; fi\ndone\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", shortTunnelDir(t))
+	t.Chdir(t.TempDir())
+	var timed []tunnelRecord
+	spawner := tunnelExpirySpawner
+	tunnelExpirySpawner = func(_ tunnelStore, record tunnelRecord) error {
+		timed = append(timed, record)
+		return nil
+	}
+	t.Cleanup(func() { tunnelExpirySpawner = spawner })
+	args := []string{"up", "--ttl", "30m", "-L", "db.internal:5432", "--name", "timed", "jump1"}
+	output, status := captureTunnelStdout(t, func() int { return runTunnel(args, "test") })
+	if status != 0 || !strings.Contains(output, "stops automatically in 30m0s") {
+		t.Fatalf("status %d, output %q", status, output)
+	}
+	if len(timed) != 1 || timed[0].Name != "timed" || timed[0].TTL != 30*time.Minute {
+		t.Fatalf("timers = %+v", timed)
+	}
+	store, err := defaultTunnelStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found := store.find("timed")
+	if !found || record.Expires == nil || !record.Expires.Equal(record.Started.Add(30*time.Minute)) {
+		t.Fatalf("record = %+v, found %v", record, found)
+	}
+	output, status = captureTunnelStdout(t, func() int { return runTunnel([]string{"list"}, "test") })
+	if status != 0 || !strings.Contains(output, "timed") || !(strings.Contains(output, "30m") || strings.Contains(output, "29m")) {
+		t.Fatalf("the list must show the time that is left: status %d, output %q", status, output)
+	}
+}
+
 func TestRunTunnelRejectsATimeLimitOutsideUp(t *testing.T) {
 	for _, args := range [][]string{{"list", "--ttl", "30m"}, {"down", "--ttl", "30m", "db"}, {"up", "--ttl", "-5m", "db"}} {
 		stderr := captureTraceStderr(t, func() {

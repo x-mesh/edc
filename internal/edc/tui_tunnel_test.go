@@ -535,6 +535,73 @@ func TestTunnelScreenSavesARunningOneTimeTunnelWithS(t *testing.T) {
 	}
 }
 
+func TestTunnelScreenReportsWhyAOneTimeTunnelWasNotSaved(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(t *testing.T, screen tunnelScreen)
+		want    string
+		keeps   bool
+	}{
+		{"the tunnel stopped before the save", func(t *testing.T, screen tunnelScreen) {
+			if _, err := screen.environment.manager.down(context.Background(), "adhoc"); err != nil {
+				t.Fatal(err)
+			}
+		}, T("tunnel.error.not_running", "adhoc"), false},
+		{"the definition file cannot be written", func(t *testing.T, screen tunnelScreen) {
+			if err := os.MkdirAll(screen.environment.file, 0o755); err != nil { // 파일 자리에 디렉터리를 두어 저장이 실패하게 한다
+				t.Fatal(err)
+			}
+		}, "tunnels.yaml", true},
+		{"the saved file cannot be read back", func(t *testing.T, screen tunnelScreen) {
+			broken := "tunnels:\n  broken:\n    host: jump1\n    local: not-a-port\n    remote: db:5432\n"
+			if err := os.WriteFile(screen.environment.file, []byte(broken), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "broken", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			screen, _ := newTestTunnelScreen(t)
+			manager := screen.environment.manager
+			if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+				t.Fatal(err)
+			}
+			updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+			screen = updated.(tunnelScreen)
+			model, command := tunnelKey(screen, tea.KeyPressMsg{Code: 's', Text: "s"})
+			test.prepare(t, screen)
+			final := runTunnelCmd(t, model, command).(tunnelScreen)
+			if !final.failed || final.busy || !strings.Contains(final.notice, test.want) {
+				t.Fatalf("failed %v, busy %v, notice %q, want %q", final.failed, final.busy, final.notice, test.want)
+			}
+			if _, saved := final.environment.specs["adhoc"]; saved {
+				t.Errorf("a failed save must not mark the tunnel as saved: %+v", final.environment.specs)
+			}
+			if records := manager.store.load(); test.keeps && len(records) != 1 {
+				t.Errorf("a failed save must leave the running tunnel: %+v", records)
+			}
+		})
+	}
+}
+
+func TestTunnelScreenSavesOnlyARunningUnsavedTunnelWithS(t *testing.T) {
+	screen, _ := newTestTunnelScreen(t)
+	for _, test := range []struct {
+		row  tunnelRow
+		want bool
+	}{
+		{tunnelRow{Name: "adhoc", State: tunnelStateUp}, true},
+		{tunnelRow{Name: "adhoc", State: tunnelStateStale}, true},
+		{tunnelRow{Name: "adhoc", State: tunnelStateDown}, false},
+		{tunnelRow{Name: "adhoc", State: tunnelStateUp, Defined: true}, false},
+	} {
+		screen.rows, screen.cursor = []tunnelRow{test.row}, 0
+		model, command := tunnelKey(screen, tea.KeyPressMsg{Code: 's', Text: "s"})
+		if (command != nil) != test.want || model.(tunnelScreen).busy != test.want {
+			t.Errorf("s on %+v: command %v, busy %v, want %v", test.row, command != nil, model.(tunnelScreen).busy, test.want)
+		}
+	}
+}
+
 func newQuickTunnelScreen(t *testing.T) (tunnelScreen, *fakeTunnelRunner) {
 	t.Helper()
 	screen, runner := newTestTunnelScreen(t)

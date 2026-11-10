@@ -523,8 +523,11 @@ type tunnelManager struct {
 func newTunnelManager(store tunnelStore, runner tunnelRunner, targets map[string]string) tunnelManager {
 	return tunnelManager{store: store, runner: runner, targets: targets, now: time.Now,
 		pick: pickTunnelPort, available: tunnelPortAvailable, probe: probeTunnelPort, dial: dialTunnelTarget,
-		expire: spawnTunnelExpiry}
+		expire: tunnelExpirySpawner}
 }
+
+// tunnelExpirySpawner는 테스트가 바꿔 끼운다. 테스트 바이너리를 보조 프로세스로 다시 실행하면 테스트 전체가 다시 돈다.
+var tunnelExpirySpawner = spawnTunnelExpiry
 
 // spawnTunnelExpiry는 edc 자신을 터미널에서 떼어 낸 프로세스로 다시 실행한다. 터널을 시작한 셸이나 화면이 닫혀도 남아야 한다.
 // 입출력을 물려주면 edc의 출력을 pipe로 읽는 쪽이 이 프로세스가 끝날 때까지 기다리므로 물려주지 않는다.

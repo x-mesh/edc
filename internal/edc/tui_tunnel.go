@@ -288,7 +288,7 @@ func (screen tunnelScreen) act(action string, row tunnelRow) (tea.Model, tea.Cmd
 	running := row.State == tunnelStateUp || row.State == tunnelStateStale
 	switch {
 	case action == "s":
-		if row.Defined {
+		if row.Defined || !running {
 			return screen, nil
 		}
 		screen.busy, screen.notice = true, ""

@@ -39,6 +39,7 @@ tunnel:
     line_option: "a tunnel keeps only the host and one forward, so the ssh option %s cannot be used. Put it in ~/.ssh/config"
     ttl_invalid: "invalid time limit %q: use a duration such as 30m or 2h"
     ttl_failed: "tunnel %s was stopped because edc could not start its timer: %s"
+    ttl_failed_unstopped: "tunnel %s runs without a time limit: edc could not start its timer (%s) and could not stop it (%s). Stop it with: ssh -S %s -O exit %s"
     ttl_up_only: "--ttl works only with edc tunnel up and must be more than 0"
 
   list:

@@ -39,6 +39,7 @@ tunnel:
     line_option: "터널은 호스트와 포워딩 하나만 담으므로 ssh 옵션 %s을(를) 쓸 수 없습니다. ~/.ssh/config에 설정하십시오"
     ttl_invalid: "유지 시간 %q이(가) 올바르지 않습니다. 30m, 2h처럼 입력하십시오"
     ttl_failed: "자동 종료를 맡을 프로세스를 시작하지 못해 터널 %s을(를) 종료했습니다: %s"
+    ttl_failed_unstopped: "터널 %s이(가) 시간 제한 없이 실행 중입니다. 자동 종료를 맡을 프로세스를 시작하지 못했고(%s) 종료하지도 못했습니다(%s). 다음 명령으로 직접 종료하십시오: ssh -S %s -O exit %s"
     ttl_up_only: "--ttl은 edc tunnel up에서만 쓸 수 있고 0보다 커야 합니다"
 
   list:

@@ -579,6 +579,40 @@ func TestTunnelQuickFormStartsOneTunnelAndQuitsWithoutSaving(t *testing.T) {
 	}
 }
 
+func TestTunnelQuickFormCancelsTheStartAndWaitsForItsResult(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		failure error
+	}{
+		{"the tunnel came up anyway", nil},
+		{"the start stopped", errors.New("signal: killed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			screen, runner := newQuickTunnelScreen(t)
+			runner.failure = test.failure
+			cancelled := 0
+			screen.cancel = func() { cancelled++ }
+			model := typeTunnelText(screen, "jump1 6000:cache:6379")
+			model, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+			model, quit := tunnelKey(model, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+			if quit != nil || cancelled != 1 {
+				t.Fatalf("ctrl+c while starting must cancel the start and wait: quit %v, cancelled %d", quit != nil, cancelled)
+			}
+			model, quit = model.Update(command())
+			final := model.(tunnelScreen)
+			if quit == nil {
+				t.Fatal("the form must close when the cancelled start reports")
+			}
+			if test.failure == nil && (final.done == nil || final.aborted != nil) {
+				t.Fatalf("a tunnel that came up must be reported: %+v", final)
+			}
+			if test.failure != nil && (final.done != nil || final.aborted == nil) {
+				t.Fatalf("a stopped start must be reported as an error: %+v", final)
+			}
+		})
+	}
+}
+
 func TestTunnelQuickFormKeepsTheInputWhenTheStartFails(t *testing.T) {
 	screen, runner := newQuickTunnelScreen(t)
 	runner.failure = errors.New("Permission denied (publickey)")

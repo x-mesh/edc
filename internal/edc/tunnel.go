@@ -2,6 +2,8 @@ package edc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +22,10 @@ import (
 )
 
 const (
-	tunnelFileName  = "tunnels.yaml"
-	tunnelNameLimit = 32
+	tunnelFileName   = "tunnels.yaml"
+	tunnelNameLimit  = 32
+	tunnelNameDigest = 6
+	tunnelLockFile   = ".lock"
 	// unix socket 경로는 macOS에서 104바이트를 넘으면 ssh가 연결하지 못한다.
 	tunnelSocketPathLimit = 100
 	tunnelAutoPort        = "auto"
@@ -403,6 +407,23 @@ func (store tunnelStore) remove(name string) {
 	_ = os.Remove(filepath.Join(store.dir, name+".sock"))
 }
 
+// lock은 상태 디렉터리의 터널을 끝내는 구간을 한 번에 하나만 지나가게 한다. 잠그지 않으면 만료 보조 프로세스가
+// 기록을 확인한 뒤 종료하기 전에 같은 이름으로 다시 시작된 터널을 끝낼 수 있다. 디렉터리가 없으면 끝낼 터널도 없다.
+func (store tunnelStore) lock() (func(), error) {
+	file, err := os.OpenFile(filepath.Join(store.dir, tunnelLockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		file.Close()
+	}, nil
+}
+
 func (store tunnelStore) load() []tunnelRecord {
 	entries, err := os.ReadDir(store.dir)
 	if err != nil {
@@ -539,7 +560,7 @@ func (manager tunnelManager) expireWhenDue(name string, started int64, sleep fun
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), tunnelProbeTimeout)
 	defer cancel()
-	_, err := manager.down(ctx, name)
+	_, err := manager.downIf(ctx, name, func(record tunnelRecord) bool { return record.Started.UnixNano() == started })
 	return err
 }
 
@@ -703,7 +724,10 @@ func (manager tunnelManager) start(ctx context.Context, name string, spec tunnel
 	if ttl > 0 {
 		if err := manager.expire(manager.store, record); err != nil {
 			// 끝내 줄 프로세스가 없으면 시간 제한이 조용히 사라지므로, 터널을 끝내고 실패로 알린다.
-			_, _ = manager.down(ctx, name)
+			// 끝내지도 못하면 시간 제한 없는 터널이 남으므로 사용자가 직접 끝낼 수 있게 알린다.
+			if _, stopErr := manager.down(ctx, name); stopErr != nil {
+				return tunnelRow{}, tunnelError("tunnel.error.ttl_failed_unstopped", name, err.Error(), stopErr.Error(), socket, plan.Target)
+			}
 			return tunnelRow{}, tunnelError("tunnel.error.ttl_failed", name, err.Error())
 		}
 	}
@@ -798,9 +822,25 @@ func dialTunnelTarget(address string) error {
 
 // down은 실행 중인 터널을 끝내고 상태 파일을 지운다. 이미 죽은(stale) 터널은 상태 파일만 지운다.
 func (manager tunnelManager) down(ctx context.Context, name string) (bool, error) {
+	return manager.downIf(ctx, name, func(tunnelRecord) bool { return true })
+}
+
+// downIf는 잠근 채로 기록을 다시 읽어 match가 받아들인 터널만 끝낸다.
+func (manager tunnelManager) downIf(ctx context.Context, name string, match func(tunnelRecord) bool) (bool, error) {
+	unlock, err := manager.store.lock()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	for _, record := range manager.store.load() {
 		if record.Name != name {
 			continue
+		}
+		if !match(record) {
+			return false, nil
 		}
 		if _, err := manager.runner.Check(ctx, record.Target, record.Socket); err == nil {
 			if err := manager.runner.Stop(ctx, record.Target, record.Socket); err != nil {
@@ -936,13 +976,19 @@ func tunnelAdhocName(host string, spec tunnelSpec) string {
 		suffix = strings.Trim(unsafe.ReplaceAllString(spec.Remote, "-"), "._-")
 	}
 	prefix := unsafe.ReplaceAllString(host, "-")
-	// 길이를 넘으면 터널을 구분하는 뒷부분을 남기고 호스트 쪽을 줄인다.
-	if keep := tunnelNameLimit - len(suffix) - 1; keep < 1 {
-		return strings.TrimLeft(suffix[len(suffix)-tunnelNameLimit:], "._-")
-	} else if len(prefix) > keep {
-		prefix = prefix[:keep]
+	if name := prefix + "-" + suffix; len(name) <= tunnelNameLimit {
+		return strings.TrimLeft(name, "._-")
 	}
-	return strings.TrimLeft(prefix+"-"+suffix, "._-")
+	// 길이를 넘으면 터널을 구분하는 뒷부분을 남기고 호스트 쪽을 줄인다. 잘린 부분만 다른 이름끼리 겹치지 않게 전체의 해시를 붙인다.
+	digest := sha256.Sum256([]byte(prefix + "\x00" + suffix))
+	tag := "-" + hex.EncodeToString(digest[:])[:tunnelNameDigest]
+	room := tunnelNameLimit - len(tag)
+	if keep := room - len(suffix) - 1; keep < 1 {
+		suffix, prefix = suffix[len(suffix)-room:], ""
+	} else {
+		prefix = prefix[:keep] + "-"
+	}
+	return strings.TrimLeft(prefix+suffix, "._-") + tag
 }
 
 type tunnelEnvironment struct {

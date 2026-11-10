@@ -102,6 +102,10 @@ type tunnelScreen struct {
 	// quick은 edc tunnel up이 목록 없이 폼만 여는 화면이다. 시작에 성공하면 done에 결과를 담고 끝난다.
 	quick bool
 	done  *tunnelDoneMsg
+	// cancel은 quick 화면에서 진행 중인 시작을 끊는다. 끊은 뒤에도 결과를 기다려야 이미 올라온 터널을 알릴 수 있다.
+	cancel   context.CancelFunc
+	aborting bool
+	aborted  error
 }
 
 func runTunnelScreen(environment tunnelEnvironment, timeout time.Duration) int {
@@ -124,7 +128,7 @@ func runTunnelForm(environment tunnelEnvironment, timeout time.Duration, name st
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	screen := newTunnelScreen(environment, timeout, os.Getenv("NO_COLOR") == "")
-	screen.ctx, screen.quick, screen.mode = ctx, true, tunnelModeForm
+	screen.ctx, screen.cancel, screen.quick, screen.mode = ctx, cancel, true, tunnelModeForm
 	screen.form = screen.newForm()
 	screen.form.name, screen.form.save = name, save
 	if ttl > 0 {
@@ -138,7 +142,12 @@ func runTunnelForm(environment tunnelEnvironment, timeout time.Duration, name st
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if finished, ok := final.(tunnelScreen); ok && finished.done != nil {
+	finished, ok := final.(tunnelScreen)
+	if ok && finished.aborted != nil {
+		fmt.Fprintln(os.Stderr, finished.aborted)
+		return 1
+	}
+	if ok && finished.done != nil {
 		fmt.Println(finished.done.notice)
 		for _, line := range finished.done.details {
 			fmt.Println(line)
@@ -208,6 +217,10 @@ func (screen tunnelScreen) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		screen.busy = false
 		if screen.quick {
 			// 시작이 실패하면 입력을 그대로 둔 채 폼에 머문다. 한 번 쓰는 화면이라 돌아갈 목록이 없다.
+			if value.err != nil && screen.aborting {
+				screen.aborted = value.err
+				return screen, tea.Quit
+			}
 			if value.err != nil {
 				screen.form.problem = value.err.Error()
 				return screen, nil
@@ -632,8 +645,10 @@ func (form *tunnelForm) text() *string {
 func (screen tunnelScreen) updateForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	form := screen.form
 	if screen.quick && screen.busy {
-		if key.String() == "ctrl+c" {
-			return screen, tea.Quit
+		// 바로 끝내면 그사이 올라온 터널을 알리지 못한다. 시작을 끊고 그 결과가 올 때 끝낸다.
+		if key.String() == "ctrl+c" && screen.cancel != nil {
+			screen.cancel()
+			screen.aborting = true
 		}
 		return screen, nil
 	}

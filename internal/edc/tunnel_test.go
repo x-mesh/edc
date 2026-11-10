@@ -244,6 +244,13 @@ func TestParseTunnelAdhocAndName(t *testing.T) {
 	if one == two || len(one) > tunnelNameLimit || !tunnelNamePattern.MatchString(one) || !tunnelNamePattern.MatchString(two) {
 		t.Errorf("destinations that differ only in the cut part must get different names: %q, %q", one, two)
 	}
+	for length := 1; length <= 2*tunnelNameLimit; length++ {
+		remote := strings.Repeat("d", length) + ":5432"
+		name := tunnelAdhocName("bastion-host", tunnelSpec{Local: "auto", Remote: remote})
+		if len(name) > tunnelNameLimit || !tunnelNamePattern.MatchString(name) {
+			t.Errorf("destination %q: name %q is not valid", remote, name)
+		}
+	}
 	if _, err := parseTunnelAdhoc("h", "1:a:1", "", "1080"); err == nil {
 		t.Error("two forward kinds must fail")
 	}

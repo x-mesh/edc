@@ -987,7 +987,7 @@ func tunnelAdhocName(host string, spec tunnelSpec) string {
 	tag := "-" + hex.EncodeToString(digest[:])[:tunnelNameDigest]
 	room := tunnelNameLimit - len(tag)
 	if keep := room - len(suffix) - 1; keep < 1 {
-		suffix, prefix = suffix[len(suffix)-room:], ""
+		suffix, prefix = suffix[max(len(suffix)-room, 0):], ""
 	} else {
 		prefix = prefix[:keep] + "-"
 	}

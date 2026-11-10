@@ -2,6 +2,8 @@ package edc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,18 +16,24 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 )
 
 const (
-	tunnelFileName  = "tunnels.yaml"
-	tunnelNameLimit = 32
+	tunnelFileName   = "tunnels.yaml"
+	tunnelNameLimit  = 32
+	tunnelNameDigest = 6
+	tunnelLockFile   = ".lock"
 	// unix socket 경로는 macOS에서 104바이트를 넘으면 ssh가 연결하지 못한다.
 	tunnelSocketPathLimit = 100
 	tunnelAutoPort        = "auto"
 	tunnelProbeWindow     = 300 * time.Millisecond
 	tunnelAutoAttempts    = 3
+	// tunnelExpireCommand는 만료 시각에 터널을 끝내는 보조 프로세스의 하위 명령이다. 사용자가 쓰는 명령이 아니라 도움말에 없다.
+	tunnelExpireCommand = "__expire"
+	tunnelExpiryPoll    = 15 * time.Second
 )
 
 var (
@@ -329,6 +337,10 @@ type tunnelRecord struct {
 	Socket      string     `json:"socket"`
 	PID         int        `json:"pid,omitempty"`
 	Started     time.Time  `json:"started"`
+	// Auto는 포트를 auto로 골랐다는 뜻이다. 실행 중인 터널을 저장할 때 고른 번호 대신 auto를 적는다.
+	Auto    bool          `json:"auto,omitempty"`
+	TTL     time.Duration `json:"ttl,omitempty"`
+	Expires *time.Time    `json:"expires,omitempty"`
 }
 
 func (record tunnelRecord) spec() tunnelSpec {
@@ -341,6 +353,20 @@ func (record tunnelRecord) spec() tunnelSpec {
 	default:
 		return tunnelSpec{Host: record.Host, Local: tunnelPort(port), Remote: record.Destination}
 	}
+}
+
+// definition은 tunnels.yaml에 저장할 정의다. spec과 달리 auto로 고른 포트는 auto로 되돌린다.
+func (record tunnelRecord) definition() tunnelSpec {
+	spec := record.spec()
+	if record.Auto {
+		switch record.Kind {
+		case tunnelSocks:
+			spec.Socks = tunnelAutoPort
+		case tunnelLocal:
+			spec.Local = tunnelAutoPort
+		}
+	}
+	return spec
 }
 
 type tunnelStore struct{ dir string }
@@ -381,6 +407,23 @@ func (store tunnelStore) remove(name string) {
 	_ = os.Remove(filepath.Join(store.dir, name+".sock"))
 }
 
+// lock은 상태 디렉터리의 터널을 끝내는 구간을 한 번에 하나만 지나가게 한다. 잠그지 않으면 만료 보조 프로세스가
+// 기록을 확인한 뒤 종료하기 전에 같은 이름으로 다시 시작된 터널을 끝낼 수 있다. 디렉터리가 없으면 끝낼 터널도 없다.
+func (store tunnelStore) lock() (func(), error) {
+	file, err := os.OpenFile(filepath.Join(store.dir, tunnelLockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		file.Close()
+	}, nil
+}
+
 func (store tunnelStore) load() []tunnelRecord {
 	entries, err := os.ReadDir(store.dir)
 	if err != nil {
@@ -403,6 +446,15 @@ func (store tunnelStore) load() []tunnelRecord {
 	}
 	sort.Slice(records, func(left, right int) bool { return records[left].Name < records[right].Name })
 	return records
+}
+
+func (store tunnelStore) find(name string) (tunnelRecord, bool) {
+	for _, record := range store.load() {
+		if record.Name == name {
+			return record, true
+		}
+	}
+	return tunnelRecord{}, false
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
@@ -449,6 +501,7 @@ type tunnelRow struct {
 	State       tunnelState `json:"state"`
 	Reach       string      `json:"reach"`
 	Started     *time.Time  `json:"started,omitempty"`
+	Expires     *time.Time  `json:"expires,omitempty"`
 	Defined     bool        `json:"defined"`
 	Command     string      `json:"command,omitempty"`
 	Warnings    []string    `json:"warnings,omitempty"`
@@ -463,11 +516,70 @@ type tunnelManager struct {
 	available func(port int) error
 	probe     func(port int) string
 	dial      func(address string) error
+	// expire는 만료 시각에 터널을 끝낼 보조 프로세스를 띄운다.
+	expire func(store tunnelStore, record tunnelRecord) error
 }
 
 func newTunnelManager(store tunnelStore, runner tunnelRunner, targets map[string]string) tunnelManager {
 	return tunnelManager{store: store, runner: runner, targets: targets, now: time.Now,
-		pick: pickTunnelPort, available: tunnelPortAvailable, probe: probeTunnelPort, dial: dialTunnelTarget}
+		pick: pickTunnelPort, available: tunnelPortAvailable, probe: probeTunnelPort, dial: dialTunnelTarget,
+		expire: tunnelExpirySpawner}
+}
+
+// tunnelExpirySpawner는 테스트가 바꿔 끼운다. 테스트 바이너리를 보조 프로세스로 다시 실행하면 테스트 전체가 다시 돈다.
+var tunnelExpirySpawner = spawnTunnelExpiry
+
+// spawnTunnelExpiry는 edc 자신을 터미널에서 떼어 낸 프로세스로 다시 실행한다. 터널을 시작한 셸이나 화면이 닫혀도 남아야 한다.
+// 입출력을 물려주면 edc의 출력을 pipe로 읽는 쪽이 이 프로세스가 끝날 때까지 기다리므로 물려주지 않는다.
+func spawnTunnelExpiry(store tunnelStore, record tunnelRecord) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	command := exec.Command(self, "tunnel", tunnelExpireCommand, store.dir, record.Name, strconv.FormatInt(record.Started.UnixNano(), 10))
+	command.Dir = store.dir
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	// 터널 화면처럼 오래 사는 edc가 기다려 주지 않으면, 먼저 끝난 보조 프로세스가 zombie로 남는다.
+	go func() { _ = command.Wait() }()
+	return nil
+}
+
+// expireWhenDue는 만료 시각까지 기다렸다가 터널을 끝낸다. 긴 timer 하나는 컴퓨터가 잠든 동안 멈추므로 벽시계를 짧은 간격으로 다시 본다.
+// 기록이 사라졌거나 같은 이름의 다른 터널로 바뀌었으면 끝낼 대상이 아니므로 그대로 끝난다.
+func (manager tunnelManager) expireWhenDue(name string, started int64, sleep func(time.Duration)) error {
+	for {
+		record, found := manager.store.find(name)
+		if !found || record.Expires == nil || record.Started.UnixNano() != started {
+			return nil
+		}
+		remaining := record.Expires.Sub(manager.now())
+		if remaining <= 0 {
+			break
+		}
+		sleep(min(remaining, tunnelExpiryPoll))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tunnelProbeTimeout)
+	defer cancel()
+	_, err := manager.downIf(ctx, name, func(record tunnelRecord) bool { return record.Started.UnixNano() == started })
+	return err
+}
+
+func runTunnelExpire(args []string) int {
+	if len(args) != 3 {
+		return 2
+	}
+	started, err := strconv.ParseInt(args[2], 10, 64)
+	if err != nil {
+		return 2
+	}
+	manager := newTunnelManager(tunnelStore{dir: args[0]}, sshTunnelRunner{connectTimeout: 10 * time.Second}, nil)
+	if err := manager.expireWhenDue(args[1], started, time.Sleep); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func pickTunnelPort() (int, error) {
@@ -539,7 +651,7 @@ func (manager tunnelManager) rows(ctx context.Context, specs map[string]tunnelSp
 			row.Host, row.Kind, row.Port, row.Destination = record.Host, record.Kind, record.Port, record.Destination
 			row.Command = tunnelCommandLine(record.Target, tunnelForward(record.Kind, record.Port, record.Destination))
 			started := record.Started
-			row.Started = &started
+			row.Started, row.Expires = &started, record.Expires
 			row.State = tunnelStateStale
 			if _, err := manager.runner.Check(ctx, record.Target, record.Socket); err == nil {
 				row.State = tunnelStateUp
@@ -554,6 +666,11 @@ func (manager tunnelManager) rows(ctx context.Context, specs map[string]tunnelSp
 }
 
 func (manager tunnelManager) up(ctx context.Context, name string, spec tunnelSpec) (tunnelRow, error) {
+	return manager.start(ctx, name, spec, 0)
+}
+
+// start는 터널을 시작한다. ttl이 0보다 크면 그 시간이 지난 뒤 터널이 스스로 끝난다.
+func (manager tunnelManager) start(ctx context.Context, name string, spec tunnelSpec, ttl time.Duration) (tunnelRow, error) {
 	plan, err := buildTunnelPlan(name, spec, manager.targets, manager.pick)
 	if err != nil {
 		return tunnelRow{}, err
@@ -594,7 +711,12 @@ func (manager tunnelManager) up(ctx context.Context, name string, spec tunnelSpe
 	}
 	pid, _ := manager.runner.Check(ctx, plan.Target, socket)
 	record := tunnelRecord{Name: name, Host: plan.Host, Target: plan.Target, Kind: plan.Kind, Port: plan.Port,
-		Destination: plan.Destination, Socket: socket, PID: pid, Started: manager.now()}
+		Destination: plan.Destination, Socket: socket, PID: pid, Started: manager.now(),
+		Auto: spec.Local == tunnelAutoPort || spec.Socks == tunnelAutoPort}
+	if ttl > 0 {
+		expires := record.Started.Add(ttl)
+		record.TTL, record.Expires = ttl, &expires
+	}
 	if err := manager.store.save(record); err != nil {
 		// 기록을 못 남긴 터널은 edc가 다시 찾을 수 없으므로 끝내야 한다. 끝내지도 못하면 사용자가 직접 끝낼 수 있게 알린다.
 		if stopErr := manager.runner.Stop(ctx, plan.Target, socket); stopErr != nil {
@@ -602,9 +724,19 @@ func (manager tunnelManager) up(ctx context.Context, name string, spec tunnelSpe
 		}
 		return tunnelRow{}, err
 	}
+	if ttl > 0 {
+		if err := manager.expire(manager.store, record); err != nil {
+			// 끝내 줄 프로세스가 없으면 시간 제한이 조용히 사라지므로, 터널을 끝내고 실패로 알린다.
+			// 끝내지도 못하면 시간 제한 없는 터널이 남으므로 사용자가 직접 끝낼 수 있게 알린다.
+			if _, stopErr := manager.down(ctx, name); stopErr != nil {
+				return tunnelRow{}, tunnelError("tunnel.error.ttl_failed_unstopped", name, err.Error(), stopErr.Error(), socket, plan.Target)
+			}
+			return tunnelRow{}, tunnelError("tunnel.error.ttl_failed", name, err.Error())
+		}
+	}
 	started := record.Started
 	row := tunnelRow{Name: name, Host: plan.Host, Kind: plan.Kind, Port: plan.Port, Destination: plan.Destination,
-		State: tunnelStateUp, Reach: tunnelReachNone, Started: &started, Command: plan.Command()}
+		State: tunnelStateUp, Reach: tunnelReachNone, Started: &started, Expires: record.Expires, Command: plan.Command()}
 	if plan.Kind == tunnelReverse && manager.dial(plan.Destination) != nil {
 		row.Warnings = append(row.Warnings, T("tunnel.warning.target_down", plan.Destination))
 	}
@@ -693,9 +825,25 @@ func dialTunnelTarget(address string) error {
 
 // down은 실행 중인 터널을 끝내고 상태 파일을 지운다. 이미 죽은(stale) 터널은 상태 파일만 지운다.
 func (manager tunnelManager) down(ctx context.Context, name string) (bool, error) {
+	return manager.downIf(ctx, name, func(tunnelRecord) bool { return true })
+}
+
+// downIf는 잠근 채로 기록을 다시 읽어 match가 받아들인 터널만 끝낸다.
+func (manager tunnelManager) downIf(ctx context.Context, name string, match func(tunnelRecord) bool) (bool, error) {
+	unlock, err := manager.store.lock()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	for _, record := range manager.store.load() {
 		if record.Name != name {
 			continue
+		}
+		if !match(record) {
+			return false, nil
 		}
 		if _, err := manager.runner.Check(ctx, record.Target, record.Socket); err == nil {
 			if err := manager.runner.Stop(ctx, record.Target, record.Socket); err != nil {
@@ -725,7 +873,27 @@ func tunnelUptime(started *time.Time, now time.Time) string {
 	if started == nil {
 		return "-"
 	}
-	elapsed := now.Sub(*started).Round(time.Second)
+	return tunnelSpan(now.Sub(*started))
+}
+
+// tunnelRemaining은 자동 종료까지 남은 시간이다. 시간 제한이 없으면 -다.
+func tunnelRemaining(expires *time.Time, now time.Time) string {
+	if expires == nil {
+		return "-"
+	}
+	remaining := expires.Sub(now)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return tunnelSpan(remaining)
+}
+
+func tunnelExpiryText(row tunnelRow, now time.Time) string {
+	return T("tunnel.up.expires", tunnelRemaining(row.Expires, now), row.Expires.Local().Format("01-02 15:04"))
+}
+
+func tunnelSpan(elapsed time.Duration) string {
+	elapsed = elapsed.Round(time.Second)
 	switch {
 	case elapsed >= 24*time.Hour:
 		return fmt.Sprintf("%dd%dh", int(elapsed.Hours())/24, int(elapsed.Hours())%24)
@@ -746,7 +914,7 @@ func printTunnelRows(writer io.Writer, rows []tunnelRow, now time.Time, verbose 
 	table := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
 	headers := []string{
 		T("tunnel.column.name"), T("tunnel.column.kind"), T("tunnel.column.listen"), T("tunnel.column.destination"),
-		T("tunnel.column.host"), T("tunnel.column.state"), T("tunnel.column.reach"), T("tunnel.column.uptime"), T("tunnel.column.saved"),
+		T("tunnel.column.host"), T("tunnel.column.state"), T("tunnel.column.reach"), T("tunnel.column.uptime"), T("tunnel.column.expires"), T("tunnel.column.saved"),
 	}
 	if verbose {
 		headers = append(headers, T("tunnel.column.command"))
@@ -758,7 +926,7 @@ func printTunnelRows(writer io.Writer, rows []tunnelRow, now time.Time, verbose 
 			destination = "-"
 		}
 		cells := []string{row.Name, string(row.Kind), tunnelListen(row), destination,
-			row.Host, string(row.State), row.Reach, tunnelUptime(row.Started, now), tunnelSavedMark(row.Defined)}
+			row.Host, string(row.State), row.Reach, tunnelUptime(row.Started, now), tunnelRemaining(row.Expires, now), tunnelSavedMark(row.Defined)}
 		if verbose {
 			command := row.Command
 			if command == "" {
@@ -771,7 +939,7 @@ func printTunnelRows(writer io.Writer, rows []tunnelRow, now time.Time, verbose 
 	table.Flush()
 }
 
-// parseTunnelAdhoc는 -L, -R, -D 값을 정의 한 줄로 바꾼다. -L은 [local:]host:port 꼴이다.
+// parseTunnelAdhoc는 -L, -R, -D 값을 정의 한 줄로 바꾼다. -L은 [[127.0.0.1:]local:]host:port 꼴이다.
 func parseTunnelAdhoc(host, local, reverse, socks string) (tunnelSpec, error) {
 	count := 0
 	for _, value := range []string{local, reverse, socks} {
@@ -785,11 +953,11 @@ func parseTunnelAdhoc(host, local, reverse, socks string) (tunnelSpec, error) {
 	spec := tunnelSpec{Host: host}
 	switch {
 	case local != "":
-		port, remote, found := strings.Cut(local, ":")
-		if !found {
-			return tunnelSpec{}, tunnelError("tunnel.error.remote_invalid", host, local)
+		port, remote, err := parseTunnelLocalForward(host, local)
+		if err != nil {
+			return tunnelSpec{}, err
 		}
-		spec.Local, spec.Remote = tunnelPort(port), remote
+		spec.Local, spec.Remote = port, remote
 	case reverse != "":
 		spec.Reverse = reverse
 	default:
@@ -799,19 +967,31 @@ func parseTunnelAdhoc(host, local, reverse, socks string) (tunnelSpec, error) {
 }
 
 func tunnelAdhocName(host string, spec tunnelSpec) string {
+	unsafe := regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 	suffix := string(spec.Local)
 	switch {
 	case spec.Reverse != "":
 		suffix = "r" + strings.SplitN(spec.Reverse, ":", 2)[0]
 	case spec.Socks != "":
 		suffix = "d" + string(spec.Socks)
+	case spec.Local == tunnelAutoPort:
+		// auto 포트는 이름을 구분하지 못하므로, 같은 호스트를 거치는 터널끼리 겹치지 않게 목적지를 쓴다.
+		suffix = strings.Trim(unsafe.ReplaceAllString(spec.Remote, "-"), "._-")
 	}
-	name := regexp.MustCompile(`[^A-Za-z0-9._-]+`).ReplaceAllString(host, "-") + "-" + suffix
-	name = strings.TrimLeft(name, "._-")
-	if len(name) > tunnelNameLimit {
-		name = name[:tunnelNameLimit]
+	prefix := unsafe.ReplaceAllString(host, "-")
+	if name := prefix + "-" + suffix; len(name) <= tunnelNameLimit {
+		return strings.TrimLeft(name, "._-")
 	}
-	return name
+	// 길이를 넘으면 터널을 구분하는 뒷부분을 남기고 호스트 쪽을 줄인다. 잘린 부분만 다른 이름끼리 겹치지 않게 전체의 해시를 붙인다.
+	digest := sha256.Sum256([]byte(prefix + "\x00" + suffix))
+	tag := "-" + hex.EncodeToString(digest[:])[:tunnelNameDigest]
+	room := tunnelNameLimit - len(tag)
+	if keep := room - len(suffix) - 1; keep < 1 {
+		suffix, prefix = suffix[max(len(suffix)-room, 0):], ""
+	} else {
+		prefix = prefix[:keep] + "-"
+	}
+	return strings.TrimLeft(prefix+suffix, "._-") + tag
 }
 
 type tunnelEnvironment struct {
@@ -857,12 +1037,17 @@ func newTunnelEnvironment(filePath string, connectTimeout time.Duration, allowMi
 }
 
 func runTunnel(args []string, version string) int {
+	// 만료 보조 프로세스는 정의 파일도 제한 시간도 쓰지 않는다. 작업 디렉터리의 tunnels.yaml이 깨져 있어도 터널을 끝내야 한다.
+	if len(args) > 0 && args[0] == tunnelExpireCommand {
+		return runTunnelExpire(args[1:])
+	}
 	subcommand := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		subcommand, args = args[0], args[1:]
 	}
 	options := configuredCommon(30 * time.Second)
 	connectTimeout := 10 * time.Second
+	var ttl time.Duration
 	var filePath, name, local, reverse, socks string
 	var all, save bool
 	set := newFlagSet("tunnel")
@@ -876,6 +1061,7 @@ func runTunnel(args []string, version string) int {
 	set.BoolVar(&all, "all", false, T("command.tunnel.option.all"))
 	set.BoolVar(&save, "save", false, T("command.tunnel.option.save"))
 	durationFlagVar(set, &connectTimeout, "connect-timeout", connectTimeout, T("command.tunnel.option.connect_timeout"))
+	durationFlagVar(set, &ttl, "ttl", 0, T("command.tunnel.option.ttl"))
 	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
@@ -885,6 +1071,10 @@ func runTunnel(args []string, version string) int {
 	}
 	if save && subcommand != "up" {
 		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.save_up_only"))
+		return 2
+	}
+	if ttl < 0 || (ttl != 0 && subcommand != "up") {
+		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.ttl_up_only"))
 		return 2
 	}
 	environment, err := newTunnelEnvironment(filePath, connectTimeout, save && subcommand == "up")
@@ -903,7 +1093,11 @@ func runTunnel(args []string, version string) int {
 	case "list":
 		return runTunnelList(ctx, environment, options)
 	case "up":
-		return runTunnelUp(ctx, environment, set.Args(), name, [3]string{local, reverse, socks}, save)
+		adhoc := [3]string{local, reverse, socks}
+		if len(set.Args()) == 0 && adhoc == [3]string{} && options.jsonPath == "" && isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+			return runTunnelForm(environment, options.timeout, name, ttl, save)
+		}
+		return runTunnelUp(ctx, environment, set.Args(), name, adhoc, save, ttl)
 	case "test":
 		return runTunnelTest(ctx, environment, set.Args(), name, [3]string{local, reverse, socks}, options)
 	case "down":
@@ -959,7 +1153,7 @@ func resolveTunnelSpec(environment tunnelEnvironment, positional []string, name 
 	return positional[0], spec, true
 }
 
-func runTunnelUp(ctx context.Context, environment tunnelEnvironment, positional []string, name string, adhoc [3]string, save bool) int {
+func runTunnelUp(ctx context.Context, environment tunnelEnvironment, positional []string, name string, adhoc [3]string, save bool, ttl time.Duration) int {
 	name, spec, ok := resolveTunnelSpec(environment, positional, name, adhoc)
 	if !ok {
 		return 2
@@ -983,13 +1177,16 @@ func runTunnelUp(ctx context.Context, environment tunnelEnvironment, positional 
 			return 2
 		}
 	}
-	row, err := environment.manager.up(ctx, name, spec)
+	row, err := environment.manager.start(ctx, name, spec, ttl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	fmt.Println(T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row)))
 	fmt.Println("  $ " + row.Command)
+	if row.Expires != nil {
+		fmt.Println("  " + tunnelExpiryText(row, environment.manager.now()))
+	}
 	if adhoc == [3]string{} {
 		row.Warnings = append(row.Warnings, tunnelSharedWarnings(name, environment.specs, environment.manager.targets)...)
 	}

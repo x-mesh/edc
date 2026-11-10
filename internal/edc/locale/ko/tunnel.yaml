@@ -34,6 +34,13 @@ tunnel:
     state_save_unstopped: "터널 %s이(가) 실행 중이지만 상태를 저장하지 못했고(%s) 종료하지도 못했습니다(%s). 다음 명령으로 직접 종료하십시오: ssh -S %s -O exit %s"
     save_up_only: "--save는 edc tunnel up에서만 쓸 수 있습니다"
     timeout_range: "--timeout과 --connect-timeout은 0보다 커야 합니다"
+    line_bind: "edc는 127.0.0.1에서만 포트를 열므로 바인딩 주소 %s을(를) 쓸 수 없습니다"
+    line_shape: "호스트와 목적지를 함께 입력하십시오. 예: jump1 db.internal:5432"
+    line_option: "터널은 호스트와 포워딩 하나만 담으므로 ssh 옵션 %s을(를) 쓸 수 없습니다. ~/.ssh/config에 설정하십시오"
+    ttl_invalid: "유지 시간 %q이(가) 올바르지 않습니다. 30m, 2h처럼 입력하십시오"
+    ttl_failed: "자동 종료를 맡을 프로세스를 시작하지 못해 터널 %s을(를) 종료했습니다: %s"
+    ttl_failed_unstopped: "터널 %s이(가) 시간 제한 없이 실행 중입니다. 자동 종료를 맡을 프로세스를 시작하지 못했고(%s) 종료하지도 못했습니다(%s). 다음 명령으로 직접 종료하십시오: ssh -S %s -O exit %s"
+    ttl_up_only: "--ttl은 edc tunnel up에서만 쓸 수 있고 0보다 커야 합니다"
 
   list:
     empty: "터널이 없습니다. tunnels.yaml에 정의하거나 edc tunnel up -L로 시작하십시오"
@@ -49,10 +56,12 @@ tunnel:
     saved: "저장"
     command: "명령"
     uptime: "가동"
+    expires: "만료"
 
   up:
     saved: "저장: %s -> %s"
     done: "시작: %s  %s -> %s"
+    expires: "자동 종료: %s 뒤 (%s)"
 
   down:
     done: "종료: %s"
@@ -80,12 +89,16 @@ tunnel:
     hint_destination: "db.internal:5432 (접속 호스트에서 연결할 host:port)"
     hint_local_target: "localhost:3000 (이 컴퓨터의 host:port)"
     local_target: "로컬 대상"
+    ttl: "유지 시간"
+    hint_ttl: "30m, 2h (비우면 직접 종료할 때까지 실행)"
+    starting: "터널을 시작하는 중…"
     name: "이름"
 
   help:
     host:
-      - "ssh가 접속할 곳입니다. ←/→로 인벤토리 호스트와 ~/.ssh/config 별칭을 고릅니다."
+      - "ssh가 접속할 곳입니다. 글자를 입력하면 인벤토리 호스트와 ~/.ssh/config 별칭을 걸러 보이고, ←/→로 고릅니다."
       - "user@host나 ssh가 받는 다른 이름도 직접 입력할 수 있습니다."
+      - "한 줄로 입력하면 나머지 항목을 채웁니다. 예: jump1 db.internal:5432, 또는 ssh -L 명령 붙여 넣기"
     kind:
       local: "local    이 컴퓨터에서 포트를 열고, 호스트에서 보이는 서비스에 접속 (ssh -L)"
       reverse: "reverse  호스트에서 포트를 열고, 들어온 트래픽을 이 컴퓨터로 전달 (ssh -R)"
@@ -107,6 +120,9 @@ tunnel:
       reverse:
         - "트래픽을 받을 이 컴퓨터의 host:port입니다. 예: localhost:3000"
         - "같은 네트워크의 다른 컴퓨터 이름도 쓸 수 있습니다."
+    ttl:
+      - "이 시간이 지나면 터널이 스스로 종료됩니다. 예: 30m, 2h, 90s"
+      - "단위 없는 숫자는 초입니다. 비워 두면 직접 종료할 때까지 실행합니다."
     save:
       - "예를 고르면 tunnels.yaml에 저장해 이름으로 다시 시작할 수 있습니다."
       - "아니오를 고르면 한 번만 시작하고, 종료하면 목록에서 사라집니다."
@@ -124,6 +140,7 @@ tunnel:
     new: "n 새 터널"
     restart: "r 재시작"
     remove: "x 정의 삭제"
+    save: "s 저장"
     quit: "q 종료"
     remote_port: "호스트에서 포트 %d을(를) 이미 사용 중일 수 있습니다. 다른 포트를 지정하십시오"
 

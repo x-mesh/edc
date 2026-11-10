@@ -242,11 +242,30 @@ Run `edc tunnel` in a terminal to open the tunnel screen. The screen lists each 
 | `n` | Open the form for a new tunnel. |
 | `r` | Restart the selected tunnel. Only a saved tunnel has this key. |
 | `x` | Remove the definition of the selected tunnel after a question. Only a saved tunnel has this key. |
+| `s` | Save the selected tunnel in `tunnels.yaml`. Only a tunnel without a definition has this key. |
 | `q` | Quit. Running tunnels keep running. |
 
 In the form, `tab` moves to the next field. `←` and `→` choose the host and the kind. `ctrl+t` tests the connection. `enter` starts the tunnel. The form shows the `ssh` command and a help text for the active field.
 
+In the `host` field, type some letters to filter the inventory hosts and the `~/.ssh/config` aliases. `←` and `→` choose from the hosts that match.
+
+The `host` field also accepts one line for the full tunnel. Type the host and the destination, or paste an `ssh` command. `edc` fills the other fields from the line.
+
+```
+jump1 db.internal:5432                 # local forward on a free local port
+jump1 6000:db.internal:5432            # local forward on port 6000
+ssh -L 5432:db.internal:5432 jump1     # a pasted ssh command, also with -R or -D
+```
+
+A tunnel keeps only the host and one forward. If the line has a different `ssh` option, such as `-p` or `-J`, the form shows an error. Put that option in `~/.ssh/config`.
+
+The `time limit` field stops the tunnel after a time, such as `30m` or `2h`. If the field is empty, the tunnel runs until you stop it.
+
 The `save` field decides if `edc` keeps the tunnel. `yes` is the default. `edc` writes the definition to `tunnels.yaml` and shows the path below the field. If no file exists, `edc` creates `./.edc/tunnels.yaml`. `no` starts the tunnel once. The tunnel leaves the list when it stops. A name that already exists in the file is not replaced.
+
+To keep a tunnel that runs once, select it in the list and press `s`. If the tunnel started with `auto`, the definition keeps `auto`.
+
+Run `edc tunnel up` without a name in a terminal to open the form only. The form starts one tunnel, prints the result, and exits. In this form, `no` is the default of the `save` field.
 
 Define the tunnels that you use often in `tunnels.yaml`. `edc` looks in `./.edc`, in the current directory, and in the config directory. `--file` sets the file.
 
@@ -266,11 +285,17 @@ tunnels:
 
 Each tunnel needs exactly one of `remote`, `reverse`, or `socks`. Local ports bind to `127.0.0.1`. `auto` picks a free port.
 
+`-L` accepts `host:port`, `port:host:port`, and `127.0.0.1:port:host:port`. If you give no local port, `edc` picks a free port.
+
+`--ttl` sets a time limit for `edc tunnel up`. A detached `edc` process waits for the end time and then stops the tunnel. The `expires` column shows the time that remains. A restart with `r` uses the same limit again. `tunnels.yaml` does not store the limit.
+
 ```bash
 edc tunnel                                      # tunnel screen, or the list if no terminal
 edc tunnel list --json -                        # the list as JSON
+edc tunnel up                                   # open the form and start one tunnel
 edc tunnel up db                                # start a defined tunnel
 edc tunnel up -L auto:db.internal:5432 jump1    # start a tunnel that has no definition
+edc tunnel up -L db.internal:5432 --ttl 30m jump1   # use a free local port, stop after 30 minutes
 edc tunnel up -L 5432:db.internal:5432 --name db jump1 --save   # start it and save the definition
 edc tunnel test db                              # test the connection, start nothing
 edc tunnel down db

@@ -34,6 +34,13 @@ tunnel:
     state_save_unstopped: "tunnel %s runs, but edc could not save its state (%s) and could not stop it (%s). Stop it with: ssh -S %s -O exit %s"
     save_up_only: "--save works only with edc tunnel up"
     timeout_range: "--timeout and --connect-timeout must be more than 0"
+    line_bind: "edc listens on 127.0.0.1 only, so the bind address %s cannot be used"
+    line_shape: "type the host and the destination, for example: jump1 db.internal:5432"
+    line_option: "a tunnel keeps only the host and one forward, so the ssh option %s cannot be used. Put it in ~/.ssh/config"
+    ttl_invalid: "invalid time limit %q: use a duration such as 30m or 2h"
+    ttl_failed: "tunnel %s was stopped because edc could not start its timer: %s"
+    ttl_failed_unstopped: "tunnel %s runs without a time limit: edc could not start its timer (%s) and could not stop it (%s). Stop it with: ssh -S %s -O exit %s"
+    ttl_up_only: "--ttl works only with edc tunnel up and must be more than 0"
 
   list:
     empty: "no tunnels. Define them in tunnels.yaml, or start one with edc tunnel up -L"
@@ -49,10 +56,12 @@ tunnel:
     saved: "saved"
     command: "command"
     uptime: "uptime"
+    expires: "expires"
 
   up:
     saved: "saved: %s -> %s"
     done: "up: %s  %s -> %s"
+    expires: "stops automatically in %s, at %s"
 
   down:
     done: "down: %s"
@@ -80,12 +89,16 @@ tunnel:
     hint_destination: "db.internal:5432 (host:port the jump host connects to)"
     hint_local_target: "localhost:3000 (host:port on this machine)"
     local_target: "local target"
+    ttl: "time limit"
+    hint_ttl: "30m, 2h (empty: it runs until you stop it)"
+    starting: "starting the tunnel…"
     name: "name"
 
   help:
     host:
-      - "Where ssh connects. ←/→ cycles the inventory hosts and the ~/.ssh/config aliases."
+      - "Where ssh connects. Type to filter the inventory hosts and the ~/.ssh/config aliases, then choose with ←/→."
       - "You can also type user@host or any other name that ssh accepts."
+      - "One line fills the other fields: jump1 db.internal:5432, or a pasted ssh -L command."
     kind:
       local: "local    listen on this machine, reach a service that the host can see (ssh -L)"
       reverse: "reverse  listen on the host, send its traffic back to this machine (ssh -R)"
@@ -107,6 +120,9 @@ tunnel:
       reverse:
         - "The host:port on this machine that receives the traffic. Example: localhost:3000"
         - "A name of another machine in your network also works."
+    ttl:
+      - "The tunnel stops by itself after this time. Examples: 30m, 2h, 90s."
+      - "A number without a unit is seconds. Leave it empty to keep the tunnel until you stop it."
     save:
       - "Yes keeps the tunnel in tunnels.yaml. You can start it again by its name."
       - "No starts it once. It disappears from the list when it stops."
@@ -124,6 +140,7 @@ tunnel:
     new: "n new"
     restart: "r restart"
     remove: "x remove definition"
+    save: "s save"
     quit: "q quit"
     remote_port: "the port %d may already be in use on the host. Choose another port"
 

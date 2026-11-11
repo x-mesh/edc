@@ -92,8 +92,14 @@ type auditSources struct {
 	firewall func(context.Context) (auditFirewall, error)
 	kernel   func() string
 	owner    func(fs.FileInfo) (uint32, bool)
+	// ctime은 inode가 바뀐 시각이다. mtime은 touch로 되돌릴 수 있지만 ctime은 root도 시계를 바꾸지 않고는 되돌리지 못한다. nil이면 mtime만 쓴다.
+	ctime func(fs.FileInfo) (time.Time, bool)
 	// container는 edc가 도는 container runtime이다. 비어 있으면 ctr.* 점검을 하지 않는다.
 	container string
+	// journal은 systemd-logind와 sshd의 journal 항목을 읽는다. nil이면 journal을 쓰지 않는다.
+	journal func(ctx context.Context, since time.Time) ([]auditJournalEntry, bool, error)
+	// pid는 edc 자신이다. 내려받은 edc를 /tmp에서 실행하면 proc.unusual_exe가 자기를 잡는다.
+	pid int
 }
 
 type auditFirewall struct {
@@ -109,16 +115,22 @@ type auditFile struct {
 	Mode fs.FileMode
 	// BadOwner는 파일 주인이 계정 자신도 root도 아닌 경우다.
 	BadOwner bool
+	// Keys는 AuthorizedKeysFile에 해당하는 파일이다. User, ModTime, ChangeTime은 ~/.ssh 경로에만 채운다.
+	Keys                bool
+	User                string
+	ModTime, ChangeTime time.Time
 }
 
 type auditPasswd struct {
 	Name     string
 	UID, GID int
 	Home     string
+	Shell    string
 }
 
 type auditFacts struct {
 	Root bool
+	Now  time.Time
 
 	Listen    []listenSocket
 	ListenErr error
@@ -135,14 +147,34 @@ type auditFacts struct {
 	KeyFiles   []auditFile
 	KeySkipped int
 
-	Passwd     []auditPasswd
-	PasswdErr  error
-	EmptyPass  []string
-	ShadowErr  error
-	Sudo       []string
-	SudoErr    error
-	RootGroups map[string][]string
-	GroupErr   error
+	Passwd    []auditPasswd
+	PasswdErr error
+	// ExternalAccounts는 nsswitch.conf의 passwd에 적힌 /etc/passwd 밖의 계정 원천이다. 그 계정은 판정하지 않는다.
+	ExternalAccounts string
+	EmptyPass        []string
+	ShadowErr        error
+	Sudo             []string
+	SudoErr          error
+	RootGroups       map[string][]string
+	GroupErr         error
+
+	Logins     auditLoginRecords
+	LoginErr   error
+	Lastlog    map[int]auditLastlog
+	LastlogErr error
+	History    auditHistory
+	// Journal은 로그인 세션의 끝과 pty가 없는 ssh 접속을 찾는 원천이다. JournalLimited면 범위의 앞부분을 읽지 않았다.
+	Journal        []auditJournalEntry
+	JournalErr     error
+	JournalLimited bool
+	NoTTY          []auditNoTTY
+	// Joined면 wtmp 세션의 SSHD를 채웠다. AcceptedSince는 읽은 sshd 기록의 시작이다.
+	Joined        bool
+	AcceptedSince time.Time
+	// JoinedByTime은 PID가 하나도 맞지 않아 사용자, 출발지, 시각으로 짝지은 것이다. OpenSSH 9.8 미만은 wtmp에 shell의 PID를 남긴다.
+	// Unjoinable은 그렇게도 하나도 맞지 않아 짝짓지 않은 것이다.
+	JoinedByTime, Unjoinable bool
+	Processes                auditProcesses
 
 	Sensitive []auditFile
 	PathDirs  []string
@@ -203,8 +235,10 @@ func runAudit(args []string, version string) int {
 // auditCheckIDs는 evaluateAudit가 돌려줄 수 있는 모든 id다. 설정의 accept에 오타가 있으면 이 목록으로 거른다.
 var auditCheckIDs = []string{
 	"net.exposed", "net.firewall", "net.ip_forward",
-	"ssh.root_login", "ssh.password_auth", "ssh.key_files",
+	"ssh.root_login", "ssh.password_auth", "ssh.key_files", "ssh.key_changed",
 	"user.uid0", "user.empty_pass", "user.sudo_nopass", "user.root_groups",
+	"login.mismatch", "history.tampered", "history.disabled",
+	"proc.unusual_exe", "proc.preload",
 	"file.sensitive", "file.path_writable", "kernel.sysctl", "patch.reboot",
 	"ctr.privileged", "ctr.docker_sock", "ctr.root_user", "ctr.host_ns",
 }
@@ -236,7 +270,7 @@ func acceptAuditResult(result Result) Result {
 func (sources auditSources) file(path string) string { return filepath.Join(sources.root, path) }
 
 func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
-	facts := auditFacts{Root: sources.euid == 0}
+	facts := auditFacts{Root: sources.euid == 0, Now: time.Now()}
 	facts.Listen, facts.ListenErr = sources.listen()
 	if facts.Root {
 		facts.Firewall, facts.FirewallErr = sources.firewall(ctx)
@@ -255,12 +289,23 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 	facts.SSHD, facts.SSHDErr = readSSHDConfig(sources.root, facts.SSHDPath)
 
 	facts.Passwd, facts.PasswdErr = readAuditPasswd(sources.file("/etc/passwd"))
+	facts.ExternalAccounts = readAuditExternalAccounts(sources.file("/etc/nsswitch.conf"))
 	if facts.PasswdErr == nil {
-		facts.KeyFiles, facts.KeySkipped = collectAuditKeyFiles(sources, facts.Passwd)
+		facts.KeyFiles, facts.KeySkipped = collectAuditKeyFiles(sources, facts.Passwd, auditKeyFilePatterns(facts.SSHD))
 	}
 	facts.EmptyPass, facts.ShadowErr = readAuditEmptyPasswords(sources.file("/etc/shadow"))
 	facts.Sudo, facts.SudoErr = readSudoNoPasswdRules(sources.root)
 	facts.RootGroups, facts.GroupErr = readAuditRootGroups(sources.file("/etc/group"), facts.Passwd)
+	facts.Logins, facts.LoginErr = readAuditLogins(sources)
+	collectAuditJournal(ctx, sources, &facts)
+	if facts.PasswdErr == nil {
+		uids := make([]int, 0, len(facts.Passwd))
+		for _, entry := range facts.Passwd {
+			uids = append(uids, entry.UID)
+		}
+		facts.Lastlog, facts.LastlogErr = readAuditLastlog(sources, uids)
+		facts.History = collectAuditHistory(sources, facts.Passwd)
+	}
 
 	for _, file := range auditSensitiveFiles {
 		info, err := os.Stat(sources.file(file.path))
@@ -270,6 +315,7 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 		facts.Sensitive = append(facts.Sensitive, auditFile{Path: file.path, Mode: info.Mode().Perm() & file.deny})
 	}
 	facts.PathDirs, facts.PathBad = auditPathEntries(sources)
+	facts.Processes = collectAuditProcesses(sources)
 
 	facts.Sysctl = map[string]string{}
 	for _, rule := range auditSysctlRules {
@@ -411,9 +457,34 @@ func readAuditPasswd(path string) ([]auditPasswd, error) {
 		if uidErr != nil || gidErr != nil {
 			continue
 		}
-		entries = append(entries, auditPasswd{Name: fields[0], UID: uid, GID: gid, Home: fields[5]})
+		entries = append(entries, auditPasswd{Name: fields[0], UID: uid, GID: gid, Home: fields[5], Shell: fields[6]})
 	}
 	return entries, nil
+}
+
+// auditExternalAccountSources는 /etc/passwd 밖에서 계정을 가져오는 NSS 모듈이다. systemd는 DynamicUser 같은 서비스 계정만 준다.
+var auditExternalAccountSources = []string{"sss", "ldap", "winbind", "nis", "nisplus", "hesiod"}
+
+// readAuditExternalAccounts는 계정 목록을 받지 않는다. SSSD는 기본으로 목록 조회(enumerate)를 막아 getent passwd로도 모든 계정을 얻지 못한다.
+func readAuditExternalAccounts(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		name, services, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || strings.TrimSpace(name) != "passwd" {
+			continue
+		}
+		var external []string
+		for _, service := range strings.Fields(services) {
+			if slices.Contains(auditExternalAccountSources, service) {
+				external = append(external, service)
+			}
+		}
+		return strings.Join(external, ", ")
+	}
+	return ""
 }
 
 func readAuditEmptyPasswords(path string) ([]string, error) {
@@ -467,26 +538,61 @@ func readAuditRootGroups(path string, passwd []auditPasswd) (map[string][]string
 }
 
 // collectAuditKeyFiles는 로그인 계정의 ~/.ssh와 authorized_keys를 본다. 다른 사람이 쓸 수 있으면 자기 key를 넣어 그 계정으로 들어온다.
-func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd) ([]auditFile, int) {
+// auditDefaultKeyFiles는 AuthorizedKeysFile의 OpenSSH 기본값이다. authorized_keys2도 기본으로 읽힌다.
+const auditDefaultKeyFiles = ".ssh/authorized_keys .ssh/authorized_keys2"
+
+func auditKeyFilePatterns(config sshdConfig) []string {
+	value := auditDefaultKeyFiles
+	if raw, ok := config.raw["authorizedkeysfile"]; ok {
+		value = raw
+	}
+	if strings.EqualFold(strings.TrimSpace(value), "none") {
+		return nil
+	}
+	return strings.Fields(value)
+}
+
+// expandAuditKeyFile은 sshd_config의 %% %h %u %U를 펼친다. 상대 경로는 홈 디렉터리 기준이다.
+func expandAuditKeyFile(pattern string, entry auditPasswd) string {
+	path := strings.NewReplacer("%%", "%", "%h", entry.Home, "%u", entry.Name, "%U", strconv.Itoa(entry.UID)).Replace(pattern)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(entry.Home, path)
+	}
+	return filepath.Clean(path)
+}
+
+func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd, patterns []string) ([]auditFile, int) {
 	var files []auditFile
 	skipped := 0
 	seen := map[string]bool{}
+	seenPath := map[string]bool{}
 	for _, entry := range passwd {
 		// 1000 미만은 서비스 계정이다. 로그인 계정은 root와 일반 사용자뿐이다.
 		if (entry.UID != 0 && entry.UID < 1000) || entry.Home == "" || entry.Home == "/" || seen[entry.Home] {
 			continue
 		}
 		seen[entry.Home] = true
-		for _, path := range []string{filepath.Join(entry.Home, ".ssh"), filepath.Join(entry.Home, ".ssh", "authorized_keys")} {
+		paths := []string{filepath.Join(entry.Home, ".ssh")}
+		for _, pattern := range patterns {
+			paths = append(paths, expandAuditKeyFile(pattern, entry))
+		}
+		for index, path := range paths {
+			if seenPath[path] {
+				continue
+			}
+			seenPath[path] = true
 			info, err := os.Stat(sources.file(path))
 			if errors.Is(err, fs.ErrPermission) {
 				skipped++
 				break
 			}
 			if err != nil {
-				break
+				continue
 			}
-			file := auditFile{Path: path, Mode: info.Mode().Perm() & 0o022}
+			file := auditFile{Path: path, Mode: info.Mode().Perm() & 0o022, User: entry.Name, ModTime: info.ModTime(), Keys: index > 0}
+			if sources.ctime != nil {
+				file.ChangeTime, _ = sources.ctime(info)
+			}
 			if owner, ok := sources.owner(info); ok && owner != 0 && int(owner) != entry.UID {
 				file.BadOwner = true
 			}
@@ -530,14 +636,16 @@ func auditPathEntries(sources auditSources) ([]string, []string) {
 type sshdConfig struct {
 	values  map[string]string
 	sources map[string]string
-	Match   bool
+	// raw는 대소문자와 공백으로 나뉜 값을 그대로 둔 것이다. AuthorizedKeysFile처럼 경로를 여러 개 받는 설정에 쓴다.
+	raw   map[string]string
+	Match bool
 }
 
 // sshdMaxIncludeDepth는 서로를 Include하는 파일이 끝나지 않게 막는다.
 const sshdMaxIncludeDepth = 16
 
 func readSSHDConfig(root, path string) (sshdConfig, error) {
-	config := sshdConfig{values: map[string]string{}, sources: map[string]string{}}
+	config := sshdConfig{values: map[string]string{}, sources: map[string]string{}, raw: map[string]string{}}
 	return config, config.read(root, path, 0)
 }
 
@@ -579,6 +687,7 @@ func (config *sshdConfig) read(root, path string, depth int) error {
 		default:
 			if _, seen := config.values[key]; !seen {
 				config.values[key] = strings.ToLower(strings.Fields(value)[0])
+				config.raw[key] = value
 				config.sources[key] = path
 			}
 		}
@@ -826,10 +935,16 @@ func evaluateAudit(facts auditFacts) []Result {
 		auditSSHRootLogin(facts),
 		auditSSHPassword(facts),
 		auditAuthorizedKeys(facts),
+		auditKeyChanged(facts),
 		auditUID0(facts),
 		auditEmptyPasswords(facts),
 		auditSudo(facts),
 		auditRootGroups(facts),
+		auditLoginMismatch(facts),
+		auditHistoryTampered(facts),
+		auditHistoryDisabled(facts),
+		auditProcessExe(facts),
+		auditProcessPreload(facts),
 		auditSensitiveModes(facts),
 		auditPath(facts),
 		auditKernelSysctl(facts),
@@ -1035,7 +1150,7 @@ func auditAuthorizedKeys(facts auditFacts) Result {
 	var bad []string
 	keys := 0
 	for _, file := range facts.KeyFiles {
-		if filepath.Base(file.Path) == "authorized_keys" {
+		if file.Keys {
 			keys++
 		}
 		var problems []string

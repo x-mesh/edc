@@ -159,7 +159,7 @@ webhook이 2xx로 답하지 않으면 edc는 이유를 stderr에 적고, 점검�
 
 ## 호스트 점검 (Linux)
 
-`edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
+`edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓, 로그인 기록, `/proc`만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
 
 ```bash
 sudo edc audit
@@ -174,11 +174,17 @@ sudo edc audit --json -         # 점검마다 결과 하나
 | `net.ip_forward` | | forwarding이 켜져 있는데 컨테이너 런타임이 없음 |
 | `ssh.root_login` | | `PermitRootLogin yes` |
 | `ssh.password_auth` | 비밀번호 로그인이 켜져 있고 `PermitEmptyPasswords yes` | 비밀번호 로그인이 켜져 있음 |
-| `ssh.key_files` | 다른 사용자가 `~/.ssh`나 `authorized_keys`에 쓸 수 있음 | |
+| `ssh.key_files` | 다른 사용자가 `~/.ssh`나 `AuthorizedKeysFile`의 파일에 쓸 수 있음 | |
+| `ssh.key_changed` | | `AuthorizedKeysFile` 파일의 mtime이나 ctime이 최근 7일 안임 |
 | `user.uid0` | root 외에 UID 0인 계정이 있음 | |
 | `user.empty_pass` | 빈 비밀번호 계정이 있음 | |
 | `user.sudo_nopass` | | 비밀번호 없이 모든 명령을 허용하는 sudo 규칙이 있음 |
 | `user.root_groups` | | `docker`나 `lxd` 그룹에 멤버가 있음 |
+| `login.mismatch` | `lastlog`에 남은 로그인이 `wtmp`에 없거나, `wtmp`와 sshd journal에 `lastlog`보다 늦은 로그인이 있음 | `wtmp`의 원격 터미널 로그인에 sshd journal의 `Accepted`가 없거나, `wtmp`에 0으로 채운 레코드가 있거나, `wtmp`는 비어 있는데 `lastlog`에 로그인이 있음 |
+| `history.tampered` | bash나 zsh의 history 파일이 `/dev/null`을 가리키거나 문자 장치이거나, 1분 넘는 세션이 끝난 뒤에 비어 있거나 없음 | 1분 넘는 마지막 세션 동안 history 파일이 바뀌지 않음 |
+| `history.disabled` | | 시작 파일이 history를 끔: `unset HISTFILE`, `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, `set +o history` |
+| `proc.unusual_exe` | | process가 `/tmp`, `/var/tmp`, `/dev/shm`, 메모리(`memfd`)에서 실행 중이거나, 패키지 디렉터리 밖에서 지워진 파일이나 공유 라이브러리를 씀 |
+| `proc.preload` | | `/etc/ld.so.preload`에 항목이 있거나 `LD_PRELOAD`로 실행 중인 process가 있음 |
 | `file.sensitive` | 다른 사용자가 `/etc/shadow`를 읽거나 `/etc/passwd`, `/etc/sudoers`, `docker.sock`에 쓸 수 있음 | |
 | `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
 | `kernel.sysctl` | | 하드닝 값이 권장 값과 다름 |
@@ -191,6 +197,22 @@ sudo edc audit --json -         # 점검마다 결과 하나
 DB·제어 포트는 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, 27017입니다.
 
 `ctr.*` 점검은 컨테이너 안에서만 실행됩니다. 컨테이너인지는 `edc info`와 같은 표식(`KUBERNETES_SERVICE_HOST`, `/.dockerenv`, `/run/.containerenv`)으로 판단하고, 호스트에서는 보고서에 나오지 않습니다. 컨테이너가 호스트의 PID namespace를 쓰면 `ctr.host_ns`는 network namespace도 PID 1의 것과 비교합니다.
+
+로그인과 history 점검은 침입자가 고칠 수 있는 기록끼리 비교합니다. `fail`은 두 기록이 어긋난다는 뜻이며 침입의 증거는 아닙니다. `wtmp`가 시작하기 전의 로그인은 비교할 수 없으므로 결과마다 `wtmp`의 시작 시각을 적습니다.
+
+`login.mismatch`는 `/var/log/wtmp`, 압축되지 않은 `/var/log/wtmp.1`, `/var/log/lastlog`를 읽습니다. `lastlog`에 남은 계정별 마지막 로그인을 `wtmp`의 로그인과 비교하며, 사용자와 터미널이 같고 시각이 1초 안에 맞아야 합니다. `wtmp` 파일마다 마지막 64 MiB만 읽습니다. `wtmpdb`나 `lastlog2`의 SQLite 기록은 읽지 않으며, 그 기록만 있으면 로그인 점검은 `skip`입니다.
+
+root로 실행하면 최근 7일의 `systemd-logind`, `sshd`, `sshd-session` journal도 읽고, sshd process의 PID로 세 원천을 짝짓습니다. sshd는 터미널이 있는 세션만 `wtmp`에 남기므로 `scp`, `sftp`, `ssh host 명령`은 journal에만 보입니다. `-v`로 실행하면 `login.mismatch`가 이 접속을 사용자, 출발지, 방식별로 보여 줍니다. 이 접속은 판정을 바꾸지 않습니다.
+
+journal로 `wtmp`와 `lastlog`를 반대 방향으로도 비교합니다. sshd는 터미널 로그인마다 `lastlog`를 고치므로, `wtmp`와 journal에 더 늦은 로그인이 있으면 `lastlog`를 되돌린 것입니다. `wtmp`의 원격 터미널 로그인에 `Accepted`가 없으면 warn입니다. journald는 rate limit에 걸리면 항목을 버리므로 fail로 보지 않습니다. OpenSSH 9.8부터는 `wtmp`, `Accepted`, logind에 같은 PID가 남습니다. 9.8 미만은 `wtmp`에 shell의 PID를 남깁니다. PID가 하나도 맞지 않으면 사용자와 출발지가 같고 2초 안에 남은 `Accepted`로 짝짓고 경고로 알립니다. 후보가 둘 이상이면 journal에서 세션의 끝을 가져오지 않습니다. 이렇게도 맞지 않으면 두 원천을 짝짓지 않습니다.
+
+`history.tampered`는 UID 0이나 1000 이상이고 bash나 zsh를 쓰는 계정을 봅니다. history 파일을 `wtmp`의 `pts/*` 세션과 비교합니다. shell은 끝날 때 history를 쓰므로 세션이 시작된 뒤에 파일이 바뀌어야 합니다. `wtmp`에 로그아웃 기록을 남기지 않는 시스템에서는 세션의 끝을 `systemd-logind` journal에서 찾습니다. 두 원천 모두 세션의 끝이 없으면 `/dev/null` 연결만 확인하고, 시각을 비교하지 못한 계정 수를 경고로 알립니다. 시작 파일이 `HISTFILE`을 다른 경로로 바꾼 계정과 `HISTFILE`이 없는 zsh 계정은 판정하지 않고 계정마다 경고로 알립니다. 시작 파일에서는 `HISTFILE` 값만 읽고 shell을 실행하지 않습니다. `history.disabled`의 근거에는 파일, 줄 번호, 찾은 설정만 나오고 줄 전체는 나오지 않습니다.
+
+SSH 키 점검은 `AuthorizedKeysFile`의 파일을 읽습니다. 기본값은 `.ssh/authorized_keys .ssh/authorized_keys2`입니다. `AuthorizedKeysCommand`가 키를 주면 edc가 확인할 수 없으므로 경고로 알립니다. `ssh.key_changed`는 파일마다 mtime과 ctime 가운데 늦은 쪽을 봅니다. `touch`는 mtime을 되돌릴 수 있지만 ctime은 되돌리지 못합니다. 관리자도 로그인한 뒤 키를 넣으므로 warn만 냅니다. 근거에는 바뀌기 바로 전의 `wtmp` 로그인이 나옵니다.
+
+`proc.unusual_exe`는 `/proc/<pid>/exe`를 읽습니다. 패키지를 업그레이드하면 실행 중인 daemon의 binary가 지워진 채 남으므로 `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` 아래에서 지워진 binary는 판정하지 않습니다. `runc`가 자기를 메모리에 복제해 실행하는 것도 판정하지 않습니다. 같은 규칙으로 `/proc/<pid>/maps`에서 지워진 공유 라이브러리를 찾습니다. `proc.preload`는 `/etc/ld.so.preload`와 `/proc/<pid>/environ`의 `LD_PRELOAD`를 읽습니다. 다른 사용자 process의 환경은 root만 읽을 수 있습니다.
+
+계정 점검은 `/etc/passwd`를 읽습니다. `nsswitch.conf`가 `sss`, `ldap`, `winbind`, `nis`, `nisplus`, `hesiod`에서도 계정을 가져오면, 그 계정은 확인하지 않았다고 경고로 알립니다.
 
 root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoers`, 다른 사용자의 홈 디렉터리를 읽지 못합니다. 이 점검은 `pass`가 아니라 `skip`으로 나옵니다.
 

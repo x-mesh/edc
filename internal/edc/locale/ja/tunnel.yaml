@@ -30,6 +30,10 @@ tunnel:
     remote_port_taken: "リモートポート %d (%s) は実行中のトンネル %s がすでに使用しています"
     all_with_names: "--all はトンネル名と一緒に使えません"
     save_after_start: "%s は実行中ですが、定義を保存できませんでした: %s"
+    extend_failed: "%s の自動停止プロセスを開始できなかったため、停止時刻を変更しませんでした: %s"
+    shorten_untimed: "%s には短縮できる時間制限がありません。停止するには enter を押してください"
+    shorten_too_short: "%s の残り時間は %s で %s 以下のため、停止時刻を変更しませんでした。停止するには enter を押してください"
+    edit_restart: "%s の定義を変更しましたが、トンネルを再開できませんでした: %s"
     save_needs_adhoc: "--save は -L、-R、-D と一緒に使います"
     state_save_unstopped: "トンネル %s は動作中ですが、状態を保存できず (%s)、停止もできませんでした (%s)。次のコマンドで手動停止してください: ssh -S %s -O exit %s"
     save_up_only: "--save は edc tunnel up でのみ使えます"
@@ -69,10 +73,15 @@ tunnel:
   notice:
     not_defined: "%s は tunnels.yaml に定義がないため、再開始できません"
     removed: "%s の定義を削除しました"
+    extended: "%s は %s 後 (%s) に停止します"
+    copied: "%s をクリップボードにコピーしました"
+    copied_terminal: "%s を端末のクリップボード (OSC 52) に送りました。対応していない端末ではコピーされません"
+    edited: "%s の定義を変更しました"
 
   screen:
     name: "edc tunnel"
     form_title: "新しいトンネル   tab 次の項目   ←/→ 選択   ctrl+t 接続テスト   enter 開始   esc キャンセル"
+    edit_title: "%s を編集   tab 次の項目   ←/→ 選択   ctrl+t 接続テスト   enter 適用   esc キャンセル"
     confirm_remove: "%s の定義を削除しますか?   y 削除   n キャンセル"
 
   form:
@@ -138,9 +147,12 @@ tunnel:
   hint:
     toggle: "enter 開始・停止"
     new: "n 新規"
+    edit: "e 編集"
     restart: "r 再起動"
     remove: "x 定義削除"
     save: "s 保存"
+    extend: "+/- 30分"
+    copy: "c アドレスをコピー"
     quit: "q 終了"
     remote_port: "ホストでポート %d がすでに使用されている可能性があります。別のポートを指定してください"
 

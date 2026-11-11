@@ -1052,6 +1052,83 @@ func TestTunnelDownWithoutAStateDirectoryStopsNothing(t *testing.T) {
 	}
 }
 
+func TestTunnelManagerExtendsTheStopTime(t *testing.T) {
+	manager, _ := newTestTunnelManager(t)
+	timers := 0
+	manager.expire = func(tunnelStore, tunnelRecord) error { timers++; return nil }
+	spec := tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}
+	if _, err := manager.start(context.Background(), "timed", spec, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.start(context.Background(), "plain", tunnelSpec{Host: "jump1", Local: "6001", Remote: "db:5432"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	now := manager.now()
+	timed, err := manager.adjustExpiry("timed", 30*time.Minute)
+	if err != nil || !timed.Expires.Equal(now.Add(90*time.Minute)) || timed.TTL != 90*time.Minute || timers != 1 {
+		t.Fatalf("a timed tunnel must stop 30 minutes later with the same timer: %+v, err %v, timers %d", timed, err, timers)
+	}
+	plain, err := manager.adjustExpiry("plain", 30*time.Minute)
+	if err != nil || !plain.Expires.Equal(now.Add(30*time.Minute)) || timers != 2 {
+		t.Fatalf("a tunnel without a limit must get one from now and a timer: %+v, err %v, timers %d", plain, err, timers)
+	}
+	if record, _ := manager.store.find("plain"); record.Expires == nil || !record.Expires.Equal(*plain.Expires) {
+		t.Fatalf("the new stop time must be recorded: %+v", record)
+	}
+	if _, err := manager.adjustExpiry("nobody", 30*time.Minute); err == nil {
+		t.Error("a tunnel that does not run must not be extended")
+	}
+}
+
+func TestTunnelManagerKeepsNoStopTimeWhenItsTimerCannotStart(t *testing.T) {
+	manager, _ := newTestTunnelManager(t)
+	if _, err := manager.start(context.Background(), "plain", tunnelSpec{Host: "jump1", Local: "6001", Remote: "db:5432"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	manager.expire = func(tunnelStore, tunnelRecord) error { return errors.New("fork failed") }
+	if _, err := manager.adjustExpiry("plain", 30*time.Minute); err == nil || !strings.Contains(err.Error(), "fork failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if record, _ := manager.store.find("plain"); record.Expires != nil || record.TTL != 0 {
+		t.Fatalf("a stop time that nothing will act on must not stay: %+v", record)
+	}
+}
+
+func TestTunnelExpireWhenDueWaitsAgainWhenTheStopTimeMovesAtTheLastMoment(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if _, err := manager.start(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := manager.store.find("db")
+	clock := record.Expires.Add(time.Second)
+	manager.now = func() time.Time { return clock }
+	helper, calls := manager, 0
+	helper.now = func() time.Time {
+		calls++
+		// 만료를 확인한 바로 뒤, 잠그기 전에 사용자가 늘린 경우다.
+		if calls == 1 {
+			if _, err := manager.adjustExpiry("db", 30*time.Minute); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return clock
+	}
+	naps := 0
+	sleep := func(duration time.Duration) {
+		naps++
+		if len(runner.stopped) != 0 {
+			t.Fatal("the extended tunnel stopped before its new stop time")
+		}
+		clock = clock.Add(duration)
+	}
+	if err := helper.expireWhenDue("db", record.Started.UnixNano(), sleep); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.stopped) != 1 || naps == 0 || clock.Sub(record.Expires.Add(time.Second)) < 30*time.Minute {
+		t.Fatalf("stopped %v, naps %d, waited %v", runner.stopped, naps, clock.Sub(*record.Expires))
+	}
+}
+
 func TestTunnelExpireWhenDueLeavesWhenTheTunnelStoppedEarlier(t *testing.T) {
 	manager, runner := newTestTunnelManager(t)
 	if _, err := manager.start(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}, time.Hour); err != nil {

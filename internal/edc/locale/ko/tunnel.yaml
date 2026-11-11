@@ -30,6 +30,10 @@ tunnel:
     remote_port_taken: "원격 포트 %d(%s)은(는) 실행 중인 터널 %s이(가) 이미 사용 중입니다"
     all_with_names: "--all은 터널 이름과 함께 쓸 수 없습니다"
     save_after_start: "%s은(는) 실행 중이지만 정의를 저장하지 못했습니다: %s"
+    extend_failed: "%s의 자동 종료 프로세스를 시작하지 못해 종료 시각을 바꾸지 않았습니다: %s"
+    shorten_untimed: "%s은(는) 유지 시간이 없어 줄일 수 없습니다. 끄려면 enter를 누르십시오"
+    shorten_too_short: "%s은(는) %s 남아 %s 이하이므로 종료 시각을 바꾸지 않았습니다. 끄려면 enter를 누르십시오"
+    edit_restart: "%s의 정의를 고쳤지만 터널을 다시 시작하지 못했습니다: %s"
     save_needs_adhoc: "--save는 -L, -R, -D와 함께 써야 합니다"
     state_save_unstopped: "터널 %s이(가) 실행 중이지만 상태를 저장하지 못했고(%s) 종료하지도 못했습니다(%s). 다음 명령으로 직접 종료하십시오: ssh -S %s -O exit %s"
     save_up_only: "--save는 edc tunnel up에서만 쓸 수 있습니다"
@@ -69,10 +73,15 @@ tunnel:
   notice:
     not_defined: "%s은(는) tunnels.yaml에 정의가 없어 다시 시작할 수 없습니다"
     removed: "%s의 정의를 삭제했습니다"
+    extended: "%s은(는) %s 뒤(%s)에 종료합니다"
+    copied: "%s을(를) 클립보드에 복사했습니다"
+    copied_terminal: "%s을(를) 터미널 클립보드(OSC 52)로 보냈습니다. 지원하지 않는 터미널에서는 복사되지 않습니다"
+    edited: "%s의 정의를 고쳤습니다"
 
   screen:
     name: "edc tunnel"
     form_title: "새 터널   tab 다음 항목   ←/→ 선택   ctrl+t 연결 시험   enter 시작   esc 취소"
+    edit_title: "%s 수정   tab 다음 항목   ←/→ 선택   ctrl+t 연결 시험   enter 적용   esc 취소"
     confirm_remove: "%s의 정의를 삭제할까요?   y 삭제   n 취소"
 
   form:
@@ -138,9 +147,12 @@ tunnel:
   hint:
     toggle: "enter 시작·종료"
     new: "n 새 터널"
+    edit: "e 수정"
     restart: "r 재시작"
     remove: "x 정의 삭제"
     save: "s 저장"
+    extend: "+/- 30분"
+    copy: "c 주소 복사"
     quit: "q 종료"
     remote_port: "호스트에서 포트 %d을(를) 이미 사용 중일 수 있습니다. 다른 포트를 지정하십시오"
 

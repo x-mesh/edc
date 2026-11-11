@@ -240,9 +240,13 @@ Run `edc tunnel` in a terminal to open the tunnel screen. The screen lists each 
 |---|---|
 | `enter` | Start the selected tunnel. If it runs, stop it. |
 | `n` | Open the form for a new tunnel. |
+| `e` | Open the form with the values of the selected tunnel. For a saved tunnel, `enter` changes its definition in place. If the tunnel runs, it starts again with the new values. |
 | `r` | Restart the selected tunnel. Only a saved tunnel has this key. |
 | `x` | Remove the definition of the selected tunnel after a question. Only a saved tunnel has this key. |
 | `s` | Save the selected tunnel in `tunnels.yaml`. Only a tunnel without a definition has this key. |
+| `+` or `=` | Move the stop time of the selected running tunnel 30 minutes later. If the tunnel has no time limit, it stops 30 minutes from now. |
+| `-` or `_` | Move the stop time of the selected running tunnel 30 minutes earlier. If the tunnel has no time limit, or 30 minutes or less remain, nothing changes. To stop it now, press `enter`. |
+| `c` | Copy the address of the selected running tunnel, such as `127.0.0.1:64630`. edc uses `pbcopy`, `wl-copy`, `xclip`, or `xsel` if one is available, and also sends the address to the terminal with OSC 52. |
 | `q` | Quit. Running tunnels keep running. |
 
 In the form, `tab` moves to the next field. `←` and `→` choose the host and the kind. `ctrl+t` tests the connection. `enter` starts the tunnel. The form shows the `ssh` command and a help text for the active field.

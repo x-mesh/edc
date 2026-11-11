@@ -550,21 +550,75 @@ func spawnTunnelExpiry(store tunnelStore, record tunnelRecord) error {
 // expireWhenDue는 만료 시각까지 기다렸다가 터널을 끝낸다. 긴 timer 하나는 컴퓨터가 잠든 동안 멈추므로 벽시계를 짧은 간격으로 다시 본다.
 // 기록이 사라졌거나 같은 이름의 다른 터널로 바뀌었으면 끝낼 대상이 아니므로 그대로 끝난다.
 func (manager tunnelManager) expireWhenDue(name string, started int64, sleep func(time.Duration)) error {
+	due := func(record tunnelRecord) bool {
+		return record.Started.UnixNano() == started && record.Expires != nil && !record.Expires.After(manager.now())
+	}
 	for {
 		record, found := manager.store.find(name)
 		if !found || record.Expires == nil || record.Started.UnixNano() != started {
 			return nil
 		}
-		remaining := record.Expires.Sub(manager.now())
-		if remaining <= 0 {
-			break
+		if remaining := record.Expires.Sub(manager.now()); remaining > 0 {
+			sleep(min(remaining, tunnelExpiryPoll))
+			continue
 		}
-		sleep(min(remaining, tunnelExpiryPoll))
+		ctx, cancel := context.WithTimeout(context.Background(), tunnelProbeTimeout)
+		stopped, err := manager.downIf(ctx, name, due)
+		cancel()
+		// 끝내지 않았다면 확인한 뒤 잠그기 전에 종료 시각이 늦춰졌거나 터널이 사라진 것이다. 처음부터 다시 본다.
+		if err != nil || stopped {
+			return err
+		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelProbeTimeout)
-	defer cancel()
-	_, err := manager.downIf(ctx, name, func(record tunnelRecord) bool { return record.Started.UnixNano() == started })
-	return err
+}
+
+// adjustExpiry는 실행 중인 터널의 종료 시각을 step만큼 옮긴다. 시간 제한이 없던 터널을 늦추면 지금부터 step 뒤에
+// 끝나도록 보조 프로세스를 띄운다. 앞당기는 쪽은 실수로 터널이 바로 끊기지 않도록, 시간 제한이 없거나 남은 시간이
+// step 이하이면 바꾸지 않는다. 보조 프로세스가 종료 직전에 기록을 다시 읽으므로 같은 잠금 안에서 고친다.
+func (manager tunnelManager) adjustExpiry(name string, step time.Duration) (tunnelRecord, error) {
+	unlock, err := manager.store.lock()
+	if errors.Is(err, os.ErrNotExist) {
+		return tunnelRecord{}, tunnelError("tunnel.error.not_running", name)
+	}
+	if err != nil {
+		return tunnelRecord{}, err
+	}
+	defer unlock()
+	record, found := manager.store.find(name)
+	if !found {
+		return tunnelRecord{}, tunnelError("tunnel.error.not_running", name)
+	}
+	timed := record.Expires != nil
+	now := manager.now()
+	if step < 0 {
+		if !timed {
+			return tunnelRecord{}, tunnelError("tunnel.error.shorten_untimed", name)
+		}
+		if remaining := record.Expires.Sub(now); remaining <= -step {
+			return tunnelRecord{}, tunnelError("tunnel.error.shorten_too_short", name, tunnelRemaining(record.Expires, now), tunnelSpan(-step))
+		}
+	}
+	base := now
+	if timed && record.Expires.After(base) {
+		base = *record.Expires
+	}
+	expires := base.Add(step)
+	updated := record
+	updated.Expires, updated.TTL = &expires, expires.Sub(record.Started)
+	if err := manager.store.save(updated); err != nil {
+		return tunnelRecord{}, err
+	}
+	if timed {
+		return updated, nil
+	}
+	if err := manager.expire(manager.store, updated); err != nil {
+		// 끝내 줄 프로세스가 없는데 종료 시각만 남으면 목록이 거짓 시각을 보이므로 되돌린다.
+		if restoreErr := manager.store.save(record); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
+		}
+		return tunnelRecord{}, tunnelError("tunnel.error.extend_failed", name, err.Error())
+	}
+	return updated, nil
 }
 
 func runTunnelExpire(args []string) int {

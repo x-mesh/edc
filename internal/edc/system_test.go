@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParseResolvConf(t *testing.T) {
@@ -139,5 +140,17 @@ func TestCountSocketRows(t *testing.T) {
 				t.Fatalf("countSocketRows = %d, want %d", got, testCase.want)
 			}
 		})
+	}
+}
+
+// 결과 줄은 요약을 160 byte에서 자른다. 한국어와 일본어는 글자 하나가 3 byte이므로 글자 중간에서 자르면 깨진 글자가 보인다.
+func TestFirstLineCutsAtARuneBoundary(t *testing.T) {
+	line := "ab" + strings.Repeat("가", 60)
+	got := firstLine(line + "\nsecond")
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, "가…") || len(got) > 160+len("…") {
+		t.Fatalf("firstLine = %q (%d bytes)", got, len(got))
+	}
+	if got := firstLine("short\nsecond"); got != "short" {
+		t.Errorf("firstLine = %q", got)
 	}
 }

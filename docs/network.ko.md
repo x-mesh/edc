@@ -206,12 +206,22 @@ sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] 
 | 판정 | 뜻 | 상태 | exit code |
 |---|---|---|---|
 | `completed` | client가 마지막 ACK를 보냈습니다. 경로가 동작합니다. | pass | `0` |
-| `rst` | host가 RST를 보냈습니다. listener가 없거나 host firewall이 거부합니다. | fail | `1` |
+| `rst` | host가 RST를 보냈습니다. 요약이 이유를 말합니다. 표 아래 목록을 참고하세요. | fail | `1` |
 | `synack_no_ack` | SYN-ACK를 보냈지만 ACK가 돌아오지 않았습니다. 역방향 route와 역방향 IPsec selector를 확인하세요. | fail | `1` |
 | `syn_no_reply` | SYN은 왔지만 host가 답하지 않았습니다. firewall, rp_filter, 가득 찬 listen queue 중 하나가 버립니다. | fail | `1` |
 | `dropped_unseen` | packet socket에는 SYN이 보이지 않았지만 kernel이 그 port의 packet을 버렸습니다. | fail | `1` |
 | `reply_hidden_ipsec` | 답이 IPsec policy를 타고 ESP로 나가 edc가 볼 수 없습니다. | warn | `1` |
 | `no_syn` | SYN이 오지 않았습니다. | fail | 관측 시간이 끝나면 `2`, Ctrl-C면 `4` |
+
+`rst` 판정이면 맨 앞에 보이는 출발지의 kernel drop 이유로 RST를 보낸 이유를 좁힙니다.
+
+- `NETFILTER_DROP`: host firewall 규칙이 SYN을 거부했습니다. 다음 단계에 규칙을 보는 명령이 나옵니다.
+- `NO_SOCKET`이고 port에 listener가 없으면: port에서 기다리는 process가 없습니다.
+- `NO_SOCKET`이고 listener가 `127.0.0.1` 같은 다른 주소에만 묶여 있으면: 요약에 listener의 주소가 나옵니다. listener가 `docker-proxy`이면 다음 단계에 SYN이 온 주소를 넣은 `-p` 값이 나옵니다.
+- 그 밖의 `NO_SOCKET`: kernel이 그 주소와 port를 받을 socket을 찾지 못했습니다.
+
+drop 이유가 없으면 요약은 listener가 없는 경우와 host firewall이 거부하는 경우를 함께 말합니다. port에 listener가 있으면 다음 단계에 `--listen`을 넣지 않습니다. 이미 쓰는 port에서는 `--listen`이 exit code `2`로 멈추기 때문입니다.
+metrics의 `rst_cause`는 `firewall`, `no_listener`, `loopback_only`, `other_address`, `no_socket` 중 하나입니다. 이유를 좁히지 못하면 `rst_cause`가 없습니다.
 
 출발지가 여럿이면 모든 출발지가 한 번 이상 연결되어야 exit code가 `0`입니다.
 

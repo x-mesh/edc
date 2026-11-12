@@ -134,9 +134,21 @@ func TestRunFindGroupNeedsAPatternAndAPath(t *testing.T) {
 	}
 }
 
-func TestWriteFindGroupReportsAWriteError(t *testing.T) {
-	rows := []findHostRow{{Host: "web1", Status: findHostFound, Matches: []findJSONMatch{{Path: "/etc/nginx/nginx.conf"}}}}
-	if err := writeFindGroup(findFailingWriter{}, io.Discard, rows, false); err == nil {
-		t.Error("a failed write must be an error")
+// 일치를 stdout에 쓰지 못하면 찾았더라도 exit 2와 오류로 끝나야 한다. 일부만 쓴 목록을 성공으로 넘기지 않는다.
+func TestRunFindGroupReportsAWriteError(t *testing.T) {
+	inventory := filepath.Join(t.TempDir(), "inventory.yaml")
+	if err := os.WriteFile(inventory, []byte("hosts:\n  - name: web1\ngroups:\n  web: [web1]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(context.Context, string, string, time.Duration) remoteCapture {
+		return remoteCapture{Stdout: findTestJSON(t, "/etc/nginx/nginx.conf")}
+	}
+	options, err := parseFindOptions([]string{"--group", "web", "--inventory", inventory, "nginxconf", "/etc"}, io.Discard, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if code := runFindGroup(options, testFindEnv(findFailingWriter{}, &stderr), run); code != 2 || !strings.Contains(stderr.String(), "edc find: no space left on device") {
+		t.Errorf("code %d, stderr %q", code, stderr.String())
 	}
 }

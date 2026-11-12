@@ -1,6 +1,7 @@
 # view コマンドの日本語メッセージ。
 view:
   failed: "edc view: %v"
+  stats_conflict: "edc view: --stats は入力全体を数えます。-n や -f と一緒に使いません"
   truncated_lines: "edc view: %d 行が %s より長いため先頭部分だけを残しました"
   reset:
     replaced: "edc view: %s が置き換わったため、新しいファイルを追従します"

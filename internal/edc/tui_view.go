@@ -2,6 +2,7 @@ package edc
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,8 @@ type viewScreenModel struct {
 	// 순서가 바뀌어도 같은 항목을 가리키도록 순서가 아니라 항목으로 기억한다.
 	picking bool
 	pick    viewPanelPick
+	// notice는 n이나 N으로 더 갈 오류가 없을 때 머리 줄에 보이는 안내다. 다음 키를 누르면 지운다.
+	notice string
 	// detail은 상세 화면에 연 줄의 번호다. -1이면 목록이다.
 	detail       int
 	detailOffset int
@@ -227,6 +230,9 @@ func (model *viewScreenModel) redetect(raw []string) {
 			line = parseViewLine(line.text, format, previous)
 			line.arrived = arrived
 		}
+		if line.exceptionHead {
+			model.attachException(line.exception)
+		}
 		model.lines = append(model.lines, line)
 		model.stats.add(line)
 		previous = &model.lines[len(model.lines)-1]
@@ -245,12 +251,15 @@ func (model viewScreenModel) lastLine() *viewLine {
 
 func (model *viewScreenModel) appendLines(lines []viewLine) {
 	for _, line := range lines {
+		if line.exceptionHead {
+			model.attachException(line.exception)
+		}
 		model.stats.add(line)
 		if model.filter != "" && model.matches(line) {
 			model.matched.add(line)
 		}
+		model.lines = append(model.lines, line)
 	}
-	model.lines = append(model.lines, lines...)
 	if drop := len(model.lines) - model.keep; drop > 0 {
 		for _, line := range model.lines[:drop] {
 			model.stats.remove(line)
@@ -266,6 +275,38 @@ func (model *viewScreenModel) appendLines(lines []viewLine) {
 	}
 	if model.detail >= 0 && model.detail < model.first {
 		model.detail = -1
+	}
+}
+
+// attachException은 예외 줄의 열쇠를 그 줄이 속한 event 줄에 붙이고 통계에 더한다. event 줄은 예외 줄보다 먼저 들어와
+// 이미 세었으므로 여기서 더한다. event 줄에도 열쇠가 있어야 exception: filter가 event와 그 stack trace를 함께 남긴다.
+func (model *viewScreenModel) attachException(key string) {
+	for index := len(model.lines) - 1; index >= 0; index-- {
+		event := &model.lines[index]
+		if event.marker {
+			return
+		}
+		if event.cont {
+			continue
+		}
+		if event.exception != "" {
+			return
+		}
+		before := *event
+		event.exception = key
+		model.stats.addException(key)
+		if model.filter != "" {
+			was, now := model.matches(before), model.matches(*event)
+			switch {
+			case was && now:
+				model.matched.addException(key)
+			case now:
+				model.matched.add(*event)
+			case was:
+				model.matched.remove(before)
+			}
+		}
+		return
 	}
 }
 
@@ -358,6 +399,7 @@ func (model viewScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	if key.String() == "ctrl+c" {
 		return model, tea.Quit
 	}
+	model.notice = ""
 	if model.detail >= 0 {
 		return model.updateDetailKey(key.String())
 	}
@@ -413,6 +455,23 @@ func (model viewScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return model, nil
 	case "end", "l":
 		model.selected = -1
+		return model, nil
+	case "n", "N":
+		step := 1
+		if key.String() == "N" {
+			step = -1
+		}
+		if number, found := model.errorStep(step); found {
+			model.selected = number
+		} else {
+			model.notice = model.errorStepNotice(step)
+		}
+		return model, nil
+	case "x":
+		if model.filter != "" {
+			_ = model.applyFilter("")
+			model.selected = -1
+		}
 		return model, nil
 	case "esc":
 		// Mac 자판에는 End가 없는 경우가 많다. 고른 줄이 있으면 Esc가 먼저 선택을 풀고 다시 따라간다.
@@ -503,6 +562,10 @@ func (model viewScreenModel) updatePickKey(key string) (tea.Model, tea.Cmd) {
 		return model, nil
 	case "backspace":
 		model.undoFilter()
+	case "x":
+		if model.filter != "" {
+			_ = model.applyFilter("")
+		}
 	case "i":
 		model.picking, model.panel = false, false
 		return model, nil
@@ -513,6 +576,40 @@ func (model viewScreenModel) updatePickKey(key string) (tea.Model, tea.Cmd) {
 		model.pick = picks[min(max(at, 0), len(picks)-1)]
 	}
 	return model, nil
+}
+
+// errorStep은 고른 줄에서 step 방향(-1은 위, 1은 아래)으로 가장 가까운 오류 event다. 목록에 보이는 줄만 본다. 따라가는
+// 중이면 방향과 관계없이 가장 최근 오류다. stack trace처럼 앞 줄에 이어지는 줄은 앞 줄의 level을 물려받으므로 건너뛴다.
+func (model viewScreenModel) errorStep(step int) (int, bool) {
+	shown := model.shown()
+	position := len(shown) - 1
+	if model.selected >= 0 {
+		for index, number := range shown {
+			if number >= model.selected {
+				position = index
+				break
+			}
+		}
+		position += step
+	} else {
+		step = -1
+	}
+	for ; position >= 0 && position < len(shown); position += step {
+		if line, _ := model.line(shown[position]); !line.marker && !line.cont && viewFailed(line) {
+			return shown[position], true
+		}
+	}
+	return 0, false
+}
+
+func (model viewScreenModel) errorStepNotice(step int) string {
+	switch {
+	case model.selected < 0:
+		return "no error"
+	case step < 0:
+		return "no older error"
+	}
+	return "no newer error"
 }
 
 // pickIndex는 고른 항목의 picks 안 순서다. 그 항목이 패널에서 빠졌으면 첫 항목이다.
@@ -578,8 +675,9 @@ type viewPanelTop struct {
 	counts map[string]int
 }
 
+// viewPanelTops는 패널의 상위 목록이다. 예외가 있으면 무엇이 실패했는지가 가장 먼저 필요하므로 맨 앞에 둔다.
 func viewPanelTops(stats viewStats) []viewPanelTop {
-	return []viewPanelTop{{"TOP PATHS", "path", stats.paths}, {"TOP CLIENTS", "client", stats.clients}, {"TOP PROGRAMS", "program", stats.programs}}
+	return []viewPanelTop{{"TOP EXCEPTIONS", "exception", stats.exceptions}, {"TOP PATHS", "path", stats.paths}, {"TOP CLIENTS", "client", stats.clients}, {"TOP PROGRAMS", "program", stats.programs}}
 }
 
 // viewPickedRow는 패널에서 고른 행이다. 색이 있으면 목록의 고른 줄과 같은 바탕이고, 없으면 ▸로 표시한다.
@@ -610,7 +708,8 @@ func (model viewScreenModel) updateDetailKey(key string) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
-const viewScreenHelp = "/ filter  tab pick  ↑↓ select  ←→ scroll  enter detail  c compact  i stats  l live  esc back  q quit"
+// viewScreenHelp는 100열 안에 든다. ↑↓는 따로 적지 않는다. x clear는 filter가 있을 때만 머리 줄의 filter 뒤에 보인다.
+const viewScreenHelp = "/ filter  n/N error  tab pick  ←→ scroll  enter open  c compact  i stats  l live  esc back  q quit"
 
 func (model viewScreenModel) View() tea.View {
 	color := traceScreenColor()
@@ -635,9 +734,16 @@ func (model viewScreenModel) header(color bool) []string {
 	case model.selected >= 0:
 		status = traceText{text: fmt.Sprintf("paused · %s new", groupThousands(int64(model.last()-model.selected))), color: richYellow}
 	}
+	if model.notice != "" {
+		status = traceText{text: status.text + " · " + model.notice, color: richYellow}
+	}
 	// filter를 앞에 둔다. 줄이 폭을 넘으면 뒤부터 잘리는데, 지금 무엇을 보는지가 형식보다 중요하다.
 	line := append(traceTitleSpans("edc view "+model.title), traceSeparator, status, traceSeparator)
 	line = append(line, traceField("filter ", emptyAs(viewSanitize(model.filter), "all"), "")...)
+	if model.filter != "" {
+		line = append(line, traceText{text: "  "})
+		line = append(line, traceKeySpans("x clear")...)
+	}
 	line = append(line, traceSeparator)
 	line = append(line, traceField("events ", model.eventsText(), "")...)
 	line = append(line, traceSeparator)
@@ -797,13 +903,13 @@ func (model viewScreenModel) panelWidth() int {
 		width = max(width, 10+len(value))
 	}
 	if last := stats.lastError; last.text != "" {
-		width = max(width, ansi.StringWidth(viewLinePlain(last, model.format)))
+		width = max(width, ansi.StringWidth(viewPanelError(last, model.format)))
 	}
 	if model.filter != "" {
 		width = max(width, 10+ansi.StringWidth(viewSanitize(model.filter)))
 	}
-	for _, counts := range []map[string]int{stats.paths, stats.clients, stats.programs} {
-		for _, entry := range viewTop(counts) {
+	for _, top := range viewPanelTops(stats) {
+		for _, entry := range viewTop(top.counts) {
 			width = max(width, 8+ansi.StringWidth(viewSanitize(entry.label)))
 		}
 	}
@@ -901,7 +1007,7 @@ func (model viewScreenModel) panelColumn(width int, color bool) (rows []string, 
 	}
 	if last := stats.lastError; last.text != "" {
 		rows = append(rows, "", dim("LAST ERROR"))
-		rows = append(rows, strings.Split(ansi.Hardwrap(viewLinePlain(last, model.format), width, true), "\n")...)
+		rows = append(rows, strings.Split(ansi.Hardwrap(viewPanelError(last, model.format), width, true), "\n")...)
 	}
 	for _, top := range viewPanelTops(stats) {
 		entries := viewTop(top.counts)
@@ -910,18 +1016,48 @@ func (model viewScreenModel) panelColumn(width int, color bool) (rows []string, 
 		}
 		rows = append(rows, "", dim(top.title))
 		for _, entry := range entries {
-			row := fmt.Sprintf("%7s ", groupThousands(int64(entry.count))) + viewSanitize(entry.label)
-			if pickAt == chosen {
-				picked = len(rows)
-				row = viewPickedRow(row, width, color)
-			} else {
-				row = traceFit(row, width)
+			for index, part := range viewPanelLabel(top.field, viewSanitize(entry.label), width-8) {
+				row := strings.Repeat(" ", 8) + part
+				if index == 0 {
+					row = fmt.Sprintf("%7s ", groupThousands(int64(entry.count))) + part
+				}
+				switch {
+				case pickAt != chosen:
+					row = traceFit(row, width)
+				case index == 0:
+					row = viewPickedRow(row, width, color)
+				default:
+					row = traceSelectedEvent(traceFit(row, width), width, color)
+				}
+				if pickAt == chosen {
+					// 고른 항목이 두 줄이면 아랫줄을 고른 행으로 둔다. 패널을 밀 때 두 줄이 모두 보인다.
+					picked = len(rows)
+				}
+				rows = append(rows, row)
 			}
-			rows = append(rows, row)
 			pickAt++
 		}
 	}
 	return rows, picked
+}
+
+// viewPanelLabel은 TOP 목록 항목 하나의 줄이다. 예외는 "클래스: 메시지"라 패널 폭에서 클래스 이름만으로 다 차므로, 두
+// 줄까지 낱말 단위로 줄을 바꾼다. 다른 항목은 한 줄이고 넘치면 자른다.
+func viewPanelLabel(field, label string, width int) []string {
+	if field != "exception" {
+		return []string{label}
+	}
+	parts := strings.Split(ansi.Wrap(label, max(1, width), ""), "\n")
+	if len(parts) > 2 {
+		parts = []string{parts[0], strings.Join(parts[1:], " ")}
+	}
+	return parts
+}
+
+// viewPanelError는 패널의 마지막 오류다. Spring Boot처럼 logger를 정렬하려고 넣은 공백이 패널 폭을 차지하지 않게 이어진
+// 공백을 하나로 줄인다.
+func viewPanelError(last viewLine, format viewFormat) string {
+	return strings.Join(strings.Fields(viewLinePlain(last, format)), " ")
 }
 
 // panelRows는 좁은 화면에서 목록 아래에 붙이는 통계다. 항목을 한 줄씩 가로로 늘어놓는다. picked는 고른 항목이 든 줄이고,
@@ -960,7 +1096,7 @@ func (model viewScreenModel) panelRows(width int, color bool) (rows []string, pi
 		rows = append(rows, traceTexts(viewKeepPickVisible(spans, pickedSpan, width), width, color))
 	}
 	if last := stats.lastError; last.text != "" {
-		rows = append(rows, traceTexts([]traceText{traceLabelSpan("last error  "), {text: viewLinePlain(last, model.format)}}, width, color))
+		rows = append(rows, traceTexts([]traceText{traceLabelSpan("last error  "), {text: viewPanelError(last, model.format)}}, width, color))
 	}
 	for _, top := range viewPanelTops(stats) {
 		entries := viewTop(top.counts)
@@ -1000,17 +1136,19 @@ type viewBreakdownRow struct {
 	color string
 }
 
-func (model viewScreenModel) breakdownTitle() string {
-	stats := model.panelStats()
+func (model viewScreenModel) breakdownTitle() string { return viewBreakdownTitle(model.panelStats()) }
+
+func (model viewScreenModel) breakdown() []viewBreakdownRow { return viewBreakdown(model.panelStats()) }
+
+func viewBreakdownTitle(stats viewStats) string {
 	if stats.classes != [6]int{} {
 		return "STATUS"
 	}
 	return "LEVEL"
 }
 
-// breakdown은 status 범주나 level별 줄 수다. status가 있으면 status를 쓴다. 없는 항목은 뺀다.
-func (model viewScreenModel) breakdown() []viewBreakdownRow {
-	stats := model.panelStats()
+// viewBreakdown은 status 범주나 level별 줄 수다. status가 있으면 status를 쓴다. 없는 항목은 뺀다.
+func viewBreakdown(stats viewStats) []viewBreakdownRow {
 	var rows []viewBreakdownRow
 	if stats.classes != [6]int{} {
 		for class := 1; class <= 5; class++ {
@@ -1042,11 +1180,15 @@ func (model viewScreenModel) detailRows(width int) []viewDetailRow {
 	}
 	width = max(20, width)
 	var rows []viewDetailRow
+	fields := line.fields
+	if line.exception != "" && !line.cont {
+		fields = append(slices.Clone(fields), viewField{"exception", line.exception})
+	}
 	nameWidth := 0
-	for _, field := range line.fields {
+	for _, field := range fields {
 		nameWidth = max(nameWidth, len(field.name))
 	}
-	for _, field := range line.fields {
+	for _, field := range fields {
 		name := fmt.Sprintf("%-*s  ", nameWidth, field.name)
 		value := ansi.Hardwrap(viewSanitize(field.value), max(10, width-len(name)), true)
 		for index, part := range strings.Split(value, "\n") {
@@ -1056,7 +1198,7 @@ func (model viewScreenModel) detailRows(width int) []viewDetailRow {
 			rows = append(rows, viewDetailRow{name: name, text: part})
 		}
 	}
-	if len(line.fields) != 0 {
+	if len(fields) != 0 {
 		rows = append(rows, viewDetailRow{})
 	}
 	rows = append(rows, viewDetailRow{name: "raw"})

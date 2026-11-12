@@ -1,0 +1,20 @@
+2026-11-12 13:51:11.246 INFO  --- [cheduled-pool 8] [36m            c.i.m.i.s.ScoreSyncScheduler[0;39m : sync start
+2026-11-12 13:51:11.258 ERROR --- [cheduled-pool 8] [36m   o.s.s.s.TaskUtils$LoggingErrorHandler[0;39m : Unexpected error occurred in scheduled task
+java.lang.IllegalArgumentException: Invalid URI path
+	at foundation.icon.icx.transport.http.HttpProvider$Parser.getChannel(HttpProvider.java:146)
+	at java.base/java.lang.Thread.run(Thread.java:840)
+2026-11-12 13:51:12.001 DEBUG --- [cheduled-pool 8] [36m            c.i.m.i.s.ScoreSyncScheduler[0;39m : next round
+2026-11-12 13:51:12.258 ERROR --- [cheduled-pool 8] [36m   o.s.s.s.TaskUtils$LoggingErrorHandler[0;39m : Unexpected error occurred in scheduled task
+java.lang.IllegalArgumentException: Invalid URI path
+	at foundation.icon.icx.transport.http.HttpProvider$Parser.getChannel(HttpProvider.java:146)
+2026-11-12 13:51:13.100 WARN  --- [http-nio-8080-exec-1] [36m            c.i.m.i.c.IconServiceManager[0;39m : retry block 14124
+2026-11-12 13:51:13.200 ERROR --- [http-nio-8080-exec-1] [36m            c.i.m.i.c.IconServiceManager[0;39m : getLastBlock failed
+com.iconloop.myidtracker.icon.exception.ScoreSyncerException: block 14124 not found
+	at com.iconloop.myidtracker.icon.sync.ScoreSyncScheduler.run(ScoreSyncScheduler.java:88)
+Caused by: foundation.icon.icx.transport.jsonrpc.RpcError: ERROR -32602 invalid params
+	... 12 more
+2026-11-12 13:51:14.100 ERROR --- [http-nio-8080-exec-2] [36m            c.i.m.i.c.IconServiceManager[0;39m : getLastBlock failed
+com.iconloop.myidtracker.icon.exception.ScoreSyncerException: block 14125 not found
+	at com.iconloop.myidtracker.icon.sync.ScoreSyncScheduler.run(ScoreSyncScheduler.java:88)
+2026-11-12 13:51:15.000 ERROR --- [main] [36m                     c.i.m.i.Application[0;39m : shutdown requested
+2026-11-12 13:51:15.500 INFO  --- [main] [36m                     c.i.m.i.Application[0;39m : bye

@@ -373,12 +373,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "view", group: "observe",
-		usage: []string{"edc view [-n N] [-f] [file]", "<command> | edc view"},
+		usage: []string{"edc view [-n N] [-f] [file]", "edc view --stats [file]", "<command> | edc view"},
 		options: []optionDoc{
 			{"-n N", "command.view.option.lines"},
 			{"-f, -F", "command.view.option.follow"},
+			{"--stats", "command.view.option.stats"},
 		},
-		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
+		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "edc view --stats boot.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
 	},
 	{
 		name: "grep", group: "observe",

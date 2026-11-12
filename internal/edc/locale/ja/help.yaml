@@ -226,18 +226,20 @@ command:
     option:
       lines: "末尾 N 行、画面は N 行を保持 (既定 10,000)"
       follow: "pipe では tail -F のように追従、画面は常に追従"
+      stats: "画面を開かずに入力全体の統計を出力して終了"
     notes:
       - "端末ではファイル末尾で画面を開き、新しい行を追従します。"
       - "↑ や PgUp で一覧が止まり、見出し行に新しい行数を数えます。End、l、Esc で再び追従します。"
       - "access log では一覧に時刻、status、method、bytes、path を表示します。保持した行ですべて同じ host、client、日付は隠し、見出し行にその値を示します。c は元の行を表示し、← → で一覧を横にずらします。"
       - "nginx と Apache の access log、JSON lines、ERROR や WARN などの level がある行を読みます。"
-      - "統計パネルは status 区分や level 別の数、上位の path と client、最後のエラーを表示します。"
+      - "統計パネルは status 区分や level 別の数、上位の例外・path・client・プログラム、最後のエラーを表示します。"
       - "統計は画面が保持する行だけを数えます。i でパネルを隠します。"
       - "画面が 120 列以上ならパネルを右に、狭ければ一覧の下に置きます。"
       - "Enter はフィールドと行全体、その下に続く stack trace の行を表示します。"
       - "ファイルがローテートまたは切り詰められると、その位置を示し、新しいファイルを先頭から読みます。"
       - "pipe や NO_COLOR では cat のようにバイトをそのまま出力します。-f は tail -F のように追従します。"
       - "edc alias は ev、evn、evf のような短い alias を出力します。"
+      - "--stats は入力全体を一度読み、level や status 別の数、上位の例外・path・client・プログラム、時間範囲を出力します。"
   grep:
     summary: "ログ、コード、ファイルパスを検索"
     option:

@@ -438,23 +438,27 @@ edc view -f app.log | grep timeout
 
 JSON-RPC 노드 앞의 nginx는 요청을 따옴표 없이 적고 요청 본문과 처리 시간을 붙이는 일이 많습니다: `127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005`. `edc view`는 이 줄을 access 형식으로 읽습니다. JSON 본문의 `method`는 청록으로 칠하고, path만으로는 무엇을 요청했는지 알 수 없으므로 상위 path에서는 `/api/v3 icx_sendTransaction`처럼 path 뒤에 붙입니다. 상세 화면에는 `body`, `rpc method`, `request time`이 나옵니다.
 
-level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다.
+level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다. `2026-11-12 13:51:11.258 ERROR --- [main] c.e.Job : failed` 같은 Spring Boot 줄도 level 형식으로 읽고, logger가 상위 프로그램이 됩니다.
 
 syslog 형식은 `auth.log`, `syslog`, `journalctl` 출력을 읽습니다. 이 줄에는 level이 없으므로 메시지의 낱말로 level을 정합니다. `error`, `fail`, `failed`, `failure`, `invalid`, `refused`, `denied`, `fatal`, `panic`, `segfault`는 오류이고, `warning`, `warn`, `timeout`, `timed out`, `deprecated`는 경고입니다. `accepted`와 `success`는 초록으로 칠하고 level은 두지 않습니다. 메시지에 대문자 level 낱말이 있으면 그것을 씁니다. 소문자 낱말이 level을 정하는 형식은 이것뿐입니다. sshd가 적는 `from` 뒤의 주소는 상위 client가 되고, 패널은 상위 프로그램도 보입니다.
 
 goloop 형식은 ICON goloop 노드의 로그입니다. level 글자(`P`, `F`, `E`, `W`, `I`, `D`, `T`), 시각, wallet, chain id, module을 `|`로 잇고, 그 뒤에 소스 위치와 메시지가 옵니다. module은 상위 프로그램이 됩니다. panic 뒤의 stack trace처럼 level 글자로 시작하지 않는 줄은 바로 위 줄에 속합니다.
 
-↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
+↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `n`은 다음 오류 줄로, `N`은 이전 오류 줄로 갑니다. 오류 줄은 level이 `error`나 `fatal`이거나 status가 5xx인 줄입니다. 새 줄을 따라가는 중이면 두 키 모두 가장 최근 오류로 갑니다. filter가 있으면 filter에 맞는 줄에서만 찾습니다. `/`로 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
 
 access log는 목록에 시각, status, method, bytes, path를 보입니다. 보관한 줄에서 모두 같은 host, client, 날짜는 숨기고 머리 줄에 `hidden: host int.example.com · client 203.0.113.9`처럼 적습니다. `c`는 원문 줄을 보이고, ←/→는 목록을 가로로 밉니다.
 
-통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 path·client·프로그램을 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 터미널이 120열 이상이면 패널을 오른쪽에 둡니다. 패널 폭은 가장 긴 줄에 맞추고 38열을 넘지 않으므로, 통계가 적은 로그에서는 줄을 보일 자리가 넓어집니다. 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
+통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 예외·path·client·프로그램을 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 파일 전체를 세려면 `--stats`를 쓰거나, `edc view -n 500000 boot.log`처럼 보관할 줄을 늘립니다.
+
+`edc view --stats boot.log`는 화면 없이 입력 전체의 통계를 출력합니다. 입력을 한 번 읽고 줄을 보관하지 않으므로 큰 파일도 셉니다. 줄 수, event 수, 처음과 마지막 event의 시각, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 10개 예외·path·client·프로그램을 출력합니다. `.gz`와 `.zst`는 풀어서 읽습니다. `--stats`는 입력 전체를 세므로 `-n`이나 `-f`와 함께 쓸 수 없습니다.
+
+stack trace에서 예외를 적은 첫 줄이 그 event의 예외가 됩니다(예: `java.lang.IllegalArgumentException: Invalid URI path`). 상위 예외는 패키지를 뺀 클래스 이름과 메시지로 event를 셉니다. 메시지에서 숫자가 든 낱말은 `N`으로 바꾸므로 `block 14124 not found`와 `block 14125 not found`는 한 항목입니다. 첫 예외 뒤의 `Caused by:` 줄은 따로 세지 않습니다. `Exception in thread "main" ...`과 Python, JavaScript의 예외 줄도 셉니다. event의 상세 화면에도 `exception`이 보입니다. 터미널이 120열 이상이면 패널을 오른쪽에 둡니다. 패널 폭은 가장 긴 줄에 맞추고 38열을 넘지 않으므로, 통계가 적은 로그에서는 줄을 보일 자리가 넓어집니다. 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
 
 filter를 걸면 패널은 filter에 맞는 줄만 셉니다. 패널 제목에 `filtered`가 붙고 그 아래 `filter` 행에 filter 전체가 보입니다. 머리 줄에도 상태 바로 뒤에 filter가 보입니다. `events` 행은 `3 / 6`처럼 맞는 줄 수와 보관한 전체 줄 수를 함께 보입니다. status 범주와 level 행에는 패널이 센 줄에서 차지하는 비율이 붙습니다.
 
 Tab을 누르면 패널의 행을 고릅니다. ↑/↓로 옮기고 Enter를 누르면 `path:/api/users`나 `status:5xx`처럼 그 행이 filter에 더해집니다. filter에 같은 필드의 조건이 이미 있으면 새 조건으로 바꿉니다. 패널에 머무르므로 이어서 client를 고를 수 있습니다. Backspace는 목록의 Esc처럼 filter를 마지막으로 바꾸기 전으로 되돌립니다. Esc나 Tab을 누르면 목록으로 돌아갑니다.
 
-목록에서 Esc는 한 단계씩 뒤로 갑니다. 고른 줄이 있으면 먼저 새 줄을 다시 따라가고, 그다음부터는 누를 때마다 filter를 바로 전 filter로 되돌립니다. 예를 들어 `score status:2xx`는 `score`로, 그다음은 모든 줄로 돌아갑니다.
+목록에서 Esc는 한 단계씩 뒤로 갑니다. 고른 줄이 있으면 먼저 새 줄을 다시 따라가고, 그다음부터는 누를 때마다 filter를 바로 전 filter로 되돌립니다. 예를 들어 `score status:2xx`는 `score`로, 그다음은 모든 줄로 돌아갑니다. `x`는 filter를 한 번에 모두 지웁니다. filter가 걸려 있는 동안 머리 줄에 `x clear`가 보이고, 지운 filter는 Esc로 되돌릴 수 있습니다.
 
 filter는 공백으로 나눈 조건이고, 줄은 모든 조건에 맞아야 합니다.
 
@@ -465,6 +469,7 @@ filter는 공백으로 나눈 조건이고, 줄은 모든 조건에 맞아야 �
 | `path:/api/*` | path가 `/api/`로 시작하는 줄. `*`는 아무 글자나 대신합니다. |
 | `status:5xx`, `status:404` | status 범주나 status 코드가 맞는 줄 |
 | `client:`, `method:`, `rpc:`, `level:`, `program:` | client 주소, HTTP method, JSON-RPC method, level, 프로그램이 맞는 줄 |
+| `exception:IllegalArgument*` | 상위 예외에 보이는 이름으로 그 예외가 난 event와 그 stack trace 줄 |
 | `-path:/health`, `-healthz` | `-` 뒤의 조건에 맞지 않는 줄 |
 
 공백이 든 구절을 한 덩어리로 찾으려면 `"connection refused"`처럼 따옴표로 감쌉니다. 따옴표가 없으면 단어마다 따로 조건이 됩니다. 필드 값에 공백이 있을 때도 `path:"/api/v3 icx_sendTransaction"`처럼 감쌉니다. `*`, `"`, `\`, 공백을 글자로 쓰려면 `path:/api/a\*b`처럼 앞에 `\`를 붙입니다. 패널에서 더한 조건도 이 escape를 쓰므로 패널에 보인 값만 고릅니다. 모르는 필드 이름은 글자로 찾으므로 `10:00:01`은 시각을 찾습니다. filter를 읽지 못하면 입력 칸이 열린 채로 문제를 보여 줍니다.

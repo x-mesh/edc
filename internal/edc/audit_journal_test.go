@@ -336,3 +336,49 @@ func TestCollectAuditJournalJoinsConnectionsOpenedBeforeTheRange(t *testing.T) {
 		t.Fatalf("facts = %+v", facts)
 	}
 }
+
+func TestJoinAuditLoginsByPIDChecksTheSource(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/0", Host: "198.51.100.4", PID: 100, Start: testLoginAt(30)},
+		// UseDNS yes면 wtmp에 이름이 남는다. 주소와 비교할 수 없어 PID와 사용자로 짝짓는다.
+		{User: "root", Line: "pts/1", Host: "admin.example.net", PID: 200, Start: testLoginAt(30)},
+		{User: "root", Line: "pts/2", Host: "::ffff:203.0.113.7", PID: 300, Start: testLoginAt(30)},
+	}
+	journal := testAcceptedLine(testLoginAt(10), "sshd-session", 100, "Accepted publickey for root from 203.0.113.7 port 1 ssh2") +
+		testAcceptedLine(testLoginAt(10), "sshd-session", 200, "Accepted publickey for root from 203.0.113.7 port 2 ssh2") +
+		testAcceptedLine(testLoginAt(10), "sshd-session", 300, "Accepted publickey for root from 203.0.113.7 port 3 ssh2")
+	facts := testCrossFacts(sessions, journal)
+	if got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD, facts.Logins.Sessions[2].SSHD}; !reflect.DeepEqual(got, []int{0, 200, 300}) {
+		t.Fatalf("sshd = %v", got)
+	}
+}
+
+func TestCollectAuditJournalChecksTheUserOfAConnectionOpenedBeforeTheRange(t *testing.T) {
+	sessions := []auditLogin{{User: "deploy", Line: "pts/13", Host: "203.0.113.7", PID: 100, Start: testLoginAt(30)}}
+	journal := testAcceptedLine(testLoginAt(10), "sshd-session", 50, "Accepted publickey for root from 203.0.113.7 port 1 ssh2") +
+		testClosedLine(testLoginAt(80), 100, "root")
+	if facts := testCrossFacts(sessions, journal); facts.Logins.Sessions[0].SSHD != 0 {
+		t.Fatalf("sshd = %d", facts.Logins.Sessions[0].SSHD)
+	}
+}
+
+// 같은 사용자가 같은 곳에서 같은 초에 두 번 들어오면 두 로그인의 후보가 같다. 앞 로그인이 후보를 모두 가져가도 뒤 로그인은 sshd 기록이 있다.
+func TestJoinAuditLoginsByTimeSharesCandidates(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/0", Host: "10.0.0.5", PID: 3800, Start: testLoginAt(20)},
+		{User: "root", Line: "pts/1", Host: "10.0.0.5", PID: 3801, Start: testLoginAt(20).Add(time.Second)},
+		{User: "root", Line: "pts/2", Host: "10.0.0.6", PID: 3900, Start: testLoginAt(40)},
+		{User: "root", Line: "pts/3", Host: "10.0.0.6", PID: 3901, Start: testLoginAt(40)},
+	}
+	journal := testAcceptedLine(testLoginAt(20), "sshd", 3790, "Accepted publickey for root from 10.0.0.5 port 1 ssh2") +
+		testAcceptedLine(testLoginAt(20).Add(time.Second), "sshd", 3791, "Accepted publickey for root from 10.0.0.5 port 2 ssh2") +
+		testAcceptedLine(testLoginAt(40), "sshd", 3890, "Accepted publickey for root from 10.0.0.6 port 3 ssh2")
+	facts := testCrossFacts(sessions, journal)
+	var got []int
+	for _, session := range facts.Logins.Sessions {
+		got = append(got, session.SSHD)
+	}
+	if !reflect.DeepEqual(got, []int{auditSSHDAmbiguous, auditSSHDAmbiguous, 3890, auditSSHDAmbiguous}) || facts.JoinedByTime != 4 {
+		t.Fatalf("sshd = %v, by time = %d", got, facts.JoinedByTime)
+	}
+}

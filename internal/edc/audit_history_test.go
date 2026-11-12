@@ -26,7 +26,7 @@ func TestScanAuditHistoryFileFindsOnlySettingsThatTurnHistoryOff(t *testing.T) {
 		"export HISTFILE=/dev/null",
 		"HISTFILE=~/.bash_history",
 	}, "\n")+"\n", 0o644)
-	settings, histfile, found, err := scanAuditHistoryFile(filepath.Join(root, "/home/deploy/.bashrc"), "/home/deploy/.bashrc")
+	settings, histfile, found, _, err := scanAuditHistoryFile(filepath.Join(root, "/home/deploy/.bashrc"), "/home/deploy/.bashrc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,10 +250,13 @@ func TestAuditHistoryTamperedDoesNotFailWithoutLogins(t *testing.T) {
 
 func TestCollectAuditHistoryDoesNotJudgeAccountsThatTurnHistoryOff(t *testing.T) {
 	root := t.TempDir()
-	writeAuditFile(t, root, "/etc/passwd", "deploy:x:1000:1000::/home/deploy:/bin/bash\nops:x:1001:1001::/home/ops:/bin/zsh\nqa:x:1002:1002::/home/qa:/bin/bash\n", 0o644)
+	writeAuditFile(t, root, "/etc/passwd", "deploy:x:1000:1000::/home/deploy:/bin/bash\nops:x:1001:1001::/home/ops:/bin/zsh\nqa:x:1002:1002::/home/qa:/bin/bash\ndev:x:1004:1004::/home/dev:/bin/zsh\nsh:x:1005:1005::/home/sh:/bin/bash\n", 0o644)
 	writeAuditFile(t, root, "/home/deploy/.bashrc", "HISTFILESIZE=0\n", 0o644)
 	writeAuditFile(t, root, "/home/qa/.bashrc", "HISTFILE=~/.bash_history\n", 0o644)
 	writeAuditFile(t, root, "/etc/zsh/zshrc", "HISTFILE=~/.zsh_history\nSAVEHIST=0\n", 0o644)
+	// 나중에 읽는 사용자 파일이 다시 켜면 판정한다.
+	writeAuditFile(t, root, "/home/dev/.zshrc", "SAVEHIST=1000\n", 0o644)
+	writeAuditFile(t, root, "/home/sh/.bashrc", "set +o history\nset -o history\n", 0o644)
 	passwd, err := readAuditPasswd(filepath.Join(root, "/etc/passwd"))
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +265,7 @@ func TestCollectAuditHistoryDoesNotJudgeAccountsThatTurnHistoryOff(t *testing.T)
 	for _, account := range collectAuditHistory(auditSources{root: root}, passwd).Accounts {
 		got = append(got, account.User+":"+account.NotJudged)
 	}
-	if !reflect.DeepEqual(got, []string{"deploy:history_off", "ops:history_off", "qa:"}) {
+	if !reflect.DeepEqual(got, []string{"deploy:history_off", "ops:history_off", "qa:", "dev:", "sh:"}) {
 		t.Fatalf("accounts = %v", got)
 	}
 	if message := T("audit.history.not_judged.history_off", "deploy"); strings.HasPrefix(message, "audit.") {

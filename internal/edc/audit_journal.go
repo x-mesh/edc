@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -188,7 +190,7 @@ func auditSSHDAcceptedLogins(entries []auditJournalEntry) []auditAccepted {
 // joinAuditLoginsByPID는 OpenSSH 9.8부터 쓰는 짝짓기다. wtmp의 PID, Accepted의 PID, logind의 LEADER가 모두 sshd-session이다.
 // 연결 하나가 pty를 여러 번 열 수 있어(ControlMaster) 로그인은 Accepted부터 그 접속이 끝날 때까지 어느 때나 올 수 있다.
 // 그 밖의 로그인은 PID가 같아도 재사용된 PID라 짝짓지 않는다. consumed에는 짝지은 Accepted의 번호를 넣는다. pty 없는 접속은 그 나머지다.
-func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, earlier map[int]time.Time, since time.Time, consumed map[int]bool) (int, int) {
+func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, earlier map[int]auditSSHDEarlier, since time.Time, consumed map[int]bool) (int, int) {
 	recorded, joined := 0, 0
 	for index := range records.Sessions {
 		session := &records.Sessions[index]
@@ -199,7 +201,7 @@ func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, 
 		found := false
 		for number := len(accepted) - 1; number >= 0; number-- {
 			login := accepted[number]
-			if login.PID != session.PID || login.User != session.User || login.Time.Sub(session.Start) > auditJoinSkew {
+			if login.PID != session.PID || login.User != session.User || !auditSameSource(session.Host, login.Host) || login.Time.Sub(session.Start) > auditJoinSkew {
 				continue
 			}
 			found = true
@@ -211,7 +213,8 @@ func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, 
 			break
 		}
 		// 범위 앞에서 Accepted를 받은 연결이 범위 안에서 pty를 연 것이다. 그 PID는 로그인 뒤에도 sshd였으므로 재사용된 PID가 아니다.
-		if alive, ok := earlier[session.PID]; !found && ok && !alive.Before(session.Start.Add(-auditJoinSkew)) {
+		if connection, ok := earlier[session.PID]; !found && ok && !connection.Last.Before(session.Start.Add(-auditJoinSkew)) &&
+			(connection.User == "" || connection.User == session.User) {
 			session.SSHD = auditSSHDAmbiguous
 			joined++
 		}
@@ -219,9 +222,15 @@ func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, 
 	return recorded, joined
 }
 
-// auditSSHDOpenedEarlier는 첫 Accepted보다 먼저 기록이 나온 sshd PID다. journal 범위보다 먼저 시작한 연결이다.
-// 값은 그 연결의 마지막 기록 시각이다. 그때까지 연결이 살아 있었다.
-func auditSSHDOpenedEarlier(entries []auditJournalEntry) map[int]time.Time {
+// auditSSHDEarlier는 journal 범위보다 먼저 시작한 sshd 연결이다. Last는 그 연결의 마지막 기록 시각이고, 그때까지 연결이 살아 있었다.
+// User는 "session closed for user"에서 읽은 사용자이고, 그 기록이 없으면 비어 있다.
+type auditSSHDEarlier struct {
+	Last time.Time
+	User string
+}
+
+// auditSSHDOpenedEarlier는 첫 Accepted보다 먼저 기록이 나온 sshd PID다.
+func auditSSHDOpenedEarlier(entries []auditJournalEntry) map[int]auditSSHDEarlier {
 	acceptedAt := map[int]time.Time{}
 	for _, entry := range entries {
 		if slices.Contains(auditSSHDIdentifiers, entry.Identifier) && strings.HasPrefix(entry.Message, "Accepted ") {
@@ -230,7 +239,7 @@ func auditSSHDOpenedEarlier(entries []auditJournalEntry) map[int]time.Time {
 			}
 		}
 	}
-	last := map[int]time.Time{}
+	earlier := map[int]auditSSHDEarlier{}
 	for _, entry := range entries {
 		if !slices.Contains(auditSSHDIdentifiers, entry.Identifier) || entry.PID == 0 {
 			continue
@@ -238,16 +247,33 @@ func auditSSHDOpenedEarlier(entries []auditJournalEntry) map[int]time.Time {
 		if accepted, ok := acceptedAt[entry.PID]; ok && !entry.Time.Before(accepted) {
 			continue
 		}
-		if at, ok := last[entry.PID]; !ok || entry.Time.After(at) {
-			last[entry.PID] = entry.Time
+		connection := earlier[entry.PID]
+		if entry.Time.After(connection.Last) {
+			connection.Last = entry.Time
 		}
+		if user, ok := strings.CutPrefix(entry.Message, auditSSHDSessionClosed); ok {
+			connection.User = strings.TrimSpace(user)
+		}
+		earlier[entry.PID] = connection
 	}
-	return last
+	return earlier
+}
+
+// auditSameSource는 wtmp의 출발지가 Accepted의 주소와 같은지다. UseDNS yes면 wtmp에 이름이 남아 주소와 비교할 수 없으므로 같다고 본다.
+func auditSameSource(wtmpHost, acceptedHost string) bool {
+	wtmp, err := netip.ParseAddr(wtmpHost)
+	if err != nil {
+		return true
+	}
+	accepted, err := netip.ParseAddr(acceptedHost)
+	return err != nil || wtmp.Unmap() == accepted.Unmap()
 }
 
 // joinAuditLoginsByTime은 PID로 짝짓지 못한 로그인을 사용자, 출발지, 시각으로 짝짓는다. OpenSSH 9.8 미만은 wtmp에 shell의 PID를 남긴다.
 // 후보가 여럿이면 모두 짝지은 것으로 센다. 그래서 pty 없는 접속 수는 실제보다 작거나 같다.
+// 후보는 PID로 짝지은 Accepted만 뺀다. 앞의 모호한 로그인이 후보를 모두 가져가면, 같은 후보를 가진 뒤 로그인이 sshd 기록 없는 로그인으로 보인다.
 func joinAuditLoginsByTime(records *auditLoginRecords, accepted []auditAccepted, since time.Time, consumed map[int]bool) int {
+	byPID := maps.Clone(consumed)
 	joined := 0
 	for index := range records.Sessions {
 		session := &records.Sessions[index]
@@ -257,7 +283,7 @@ func joinAuditLoginsByTime(records *auditLoginRecords, accepted []auditAccepted,
 		var candidates []int
 		for number, login := range accepted {
 			gap := login.Time.Sub(session.Start)
-			if !consumed[number] && login.User == session.User && login.Host == session.Host && gap <= auditJoinSkew && gap >= -auditJoinSkew {
+			if !byPID[number] && login.User == session.User && login.Host == session.Host && gap <= auditJoinSkew && gap >= -auditJoinSkew {
 				candidates = append(candidates, number)
 			}
 		}
@@ -266,6 +292,10 @@ func joinAuditLoginsByTime(records *auditLoginRecords, accepted []auditAccepted,
 			continue
 		case 1:
 			session.SSHD = accepted[candidates[0]].PID
+			// 앞 로그인이 이미 가져간 Accepted면 어느 로그인의 것인지 모른다. 세션의 끝을 붙이지 않는다.
+			if consumed[candidates[0]] {
+				session.SSHD = auditSSHDAmbiguous
+			}
 		default:
 			session.SSHD = auditSSHDAmbiguous
 		}

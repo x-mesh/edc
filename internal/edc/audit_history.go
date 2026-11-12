@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,6 +43,12 @@ type auditHistorySetting struct {
 	Statement string
 }
 
+// auditHistoryToggle은 history를 끄거나 다시 켜는 대입 하나다. Name은 변수 이름이나 "set history"다.
+type auditHistoryToggle struct {
+	Name string
+	Off  bool
+}
+
 type auditHistoryAccount struct {
 	User, Shell string
 	// Path는 history 파일이다. 비어 있으면 판정하지 않았고, 그 이유는 NotJudged에 있다.
@@ -66,31 +73,33 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 	var history auditHistory
 	seenFile := map[string]bool{}
 	// scan은 시작 파일 하나에서 history 설정을 찾고 HISTFILE의 마지막 값을 돌려준다. 같은 파일은 한 번만 근거에 넣는다.
-	// off는 HISTFILE 말고 history를 남기지 않게 하는 설정(HISTSIZE=0, set +o history 등)이 있는지다.
-	scan := func(path string) (string, bool, bool, error) {
-		settings, histfile, found, err := scanAuditHistoryFile(sources.file(path), path)
+	// state에는 HISTSIZE 같은 변수와 set -o history가 history를 끄는지를 읽은 순서대로 덮어쓴다. 나중 파일이 다시 켜면 그 값을 따른다.
+	scan := func(path string, state map[string]bool) (string, bool, error) {
+		settings, histfile, found, toggles, err := scanAuditHistoryFile(sources.file(path), path)
 		if err == nil && !seenFile[path] {
 			seenFile[path] = true
 			history.Settings = append(history.Settings, settings...)
 		}
-		off := slices.ContainsFunc(settings, func(setting auditHistorySetting) bool {
-			return !strings.HasPrefix(setting.Statement, "HISTFILE=") && setting.Statement != "unset HISTFILE"
-		})
-		return histfile, found, off, err
+		for _, toggle := range toggles {
+			state[toggle.Name] = toggle.Off
+		}
+		return histfile, found, err
 	}
 	globals := map[string]string{}
-	globalOff := map[string]bool{}
+	globalState := map[string]map[string]bool{}
 	for shell, spec := range auditHistoryShells {
 		for _, pattern := range spec.global {
 			matches, _ := filepath.Glob(sources.file(pattern))
 			slices.Sort(matches)
 			for _, match := range matches {
 				path := "/" + strings.TrimPrefix(filepath.ToSlash(strings.TrimPrefix(match, filepath.Clean(sources.root))), "/")
-				value, found, off, err := scan(path)
+				if globalState[shell] == nil {
+					globalState[shell] = map[string]bool{}
+				}
+				value, found, err := scan(path, globalState[shell])
 				if err == nil && found {
 					globals[shell] = value
 				}
-				globalOff[shell] = globalOff[shell] || off
 			}
 		}
 	}
@@ -103,10 +112,13 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 		}
 		account := auditHistoryAccount{User: entry.Name, Shell: shell}
 		histfile, set := globals[shell]
-		off := globalOff[shell]
+		state := maps.Clone(globalState[shell])
+		if state == nil {
+			state = map[string]bool{}
+		}
 		denied := false
 		for _, name := range spec.local {
-			value, found, localOff, err := scan(filepath.Join(entry.Home, name))
+			value, found, err := scan(filepath.Join(entry.Home, name), state)
 			if errors.Is(err, fs.ErrPermission) {
 				denied = true
 				break
@@ -114,7 +126,6 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 			if found {
 				histfile, set = value, true
 			}
-			off = off || localOff
 		}
 		if denied {
 			history.Skipped++
@@ -122,7 +133,7 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 		}
 		path, reason := auditHistoryPath(spec.history, histfile, set, entry.Home)
 		// history를 끄는 설정이 있으면 빈 history는 그 설정 때문일 수 있다. 설정은 history.disabled가 알린다.
-		if reason == "" && off {
+		if reason == "" && slices.Contains(slices.Collect(maps.Values(state)), true) {
 			reason = "history_off"
 		}
 		if reason != "" {
@@ -185,13 +196,14 @@ func auditHistoryPath(fallback, histfile string, set bool, home string) (string,
 }
 
 // scanAuditHistoryFile은 history를 끄는 설정을 찾는다. 조건문 안의 설정도 실행된다고 본다. shell을 해석하지 않으므로 어느 분기인지 알 수 없다.
-func scanAuditHistoryFile(full, path string) ([]auditHistorySetting, string, bool, error) {
+func scanAuditHistoryFile(full, path string) ([]auditHistorySetting, string, bool, []auditHistoryToggle, error) {
 	file, err := os.Open(full)
 	if err != nil {
-		return nil, "", false, err
+		return nil, "", false, nil, err
 	}
 	defer file.Close()
 	var settings []auditHistorySetting
+	var toggles []auditHistoryToggle
 	histfile, found := "", false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -207,6 +219,9 @@ func scanAuditHistoryFile(full, path string) ([]auditHistorySetting, string, boo
 				histfile, found = "", true
 			case fields[0] == "set" && len(fields) >= 3 && fields[1] == "+o" && fields[2] == "history":
 				settings = append(settings, auditHistorySetting{Path: path, Line: number, Statement: "set +o history"})
+				toggles = append(toggles, auditHistoryToggle{Name: "set history", Off: true})
+			case fields[0] == "set" && len(fields) >= 3 && fields[1] == "-o" && fields[2] == "history":
+				toggles = append(toggles, auditHistoryToggle{Name: "set history"})
 			default:
 				for _, field := range auditAssignmentFields(fields) {
 					name, value, ok := strings.Cut(field, "=")
@@ -220,14 +235,17 @@ func scanAuditHistoryFile(full, path string) ([]auditHistorySetting, string, boo
 						if value == "/dev/null" || value == "" {
 							settings = append(settings, auditHistorySetting{Path: path, Line: number, Statement: fmt.Sprintf("HISTFILE=%s", value)})
 						}
-					case slices.Contains(auditHistoryLimits, name) && value == "0":
-						settings = append(settings, auditHistorySetting{Path: path, Line: number, Statement: name + "=0"})
+					case slices.Contains(auditHistoryLimits, name):
+						toggles = append(toggles, auditHistoryToggle{Name: name, Off: value == "0"})
+						if value == "0" {
+							settings = append(settings, auditHistorySetting{Path: path, Line: number, Statement: name + "=0"})
+						}
 					}
 				}
 			}
 		}
 	}
-	return settings, histfile, found, scanner.Err()
+	return settings, histfile, found, toggles, scanner.Err()
 }
 
 // auditShellStatements는 주석을 지우고 ;로 나눈 명령이다. # 앞이 공백일 때만 주석이다. 값 안의 #은 주석이 아니다.

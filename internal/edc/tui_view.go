@@ -294,12 +294,12 @@ func (model *viewScreenModel) attachException(key string) {
 		}
 		before := *event
 		event.exception = key
-		viewCount(model.stats.exceptions, key, 1)
+		model.stats.addException(key)
 		if model.filter != "" {
 			was, now := model.matches(before), model.matches(*event)
 			switch {
 			case was && now:
-				viewCount(model.matched.exceptions, key, 1)
+				model.matched.addException(key)
 			case now:
 				model.matched.add(*event)
 			case was:

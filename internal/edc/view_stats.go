@@ -55,6 +55,8 @@ func (stats *viewStats) remove(line viewLine) {
 	}
 }
 
+// apply는 event 줄 하나를 step만큼 센다. add와 remove가 이어지는 줄을 거르므로 event 줄만 받는다. 이어지는 줄도 event의
+// exception을 물려받지만, 여기서 세면 stack trace 줄 수만큼 늘어난다.
 func (stats *viewStats) apply(line viewLine, step int) {
 	stats.lines += step
 	if viewFailed(line) {
@@ -75,9 +77,17 @@ func (stats *viewStats) apply(line viewLine, step int) {
 	if line.program != "" {
 		viewCount(stats.programs, line.program, step)
 	}
+	// event 줄의 exception은 예외 줄이 들어온 뒤에야 붙는다. 붙는 때는 addException이 세고, 여기서는 이미 예외가 붙은 event를
+	// 다시 세거나(filter를 바꿀 때) 뺄 때(오래되어 밀려날 때) 센다.
 	if line.exception != "" {
 		viewCount(stats.exceptions, line.exception, step)
 	}
+}
+
+// addException은 이미 센 event에 예외가 붙었을 때 그 예외를 더한다. event 줄은 예외 줄보다 먼저 들어와 add로 세었으므로,
+// 예외만 따로 하나 더한다.
+func (stats *viewStats) addException(key string) {
+	viewCount(stats.exceptions, key, 1)
 }
 
 func viewCount(counts map[string]int, key string, step int) {

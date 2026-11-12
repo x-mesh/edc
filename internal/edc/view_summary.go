@@ -41,8 +41,9 @@ func (summary *viewSummary) add(text string) {
 	}
 	line := parseViewLine(text, summary.format, previous)
 	summary.lines++
+	// 예외 줄은 이어지는 줄이라 아래 stats.add가 세지 않는다. 그 event의 예외는 여기서 한 번만 센다.
 	if line.exceptionHead && summary.eventOpen {
-		viewCount(summary.stats.exceptions, line.exception, 1)
+		summary.stats.addException(line.exception)
 	}
 	if !line.cont {
 		summary.eventOpen = true

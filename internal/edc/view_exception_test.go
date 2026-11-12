@@ -171,3 +171,30 @@ func TestViewScreenAttachesALateExceptionLine(t *testing.T) {
 		t.Fatalf("evicted event keeps its exception: %v %+v", model.stats.exceptions, model.panelStats())
 	}
 }
+
+// 이어지는 줄은 event의 exception을 물려받지만 통계에 세지 않는다. 예외는 addException으로 event당 한 번만 센다.
+func TestViewStatsCountAnExceptionOncePerEvent(t *testing.T) {
+	stats := newViewStats()
+	event := viewLine{text: "2026-11-12 13:51:11.258 ERROR --- [main] c.e.Job : failed", level: "error"}
+	head := viewLine{text: "java.lang.IllegalStateException: boom", cont: true, level: "error", exception: "IllegalStateException: boom", exceptionHead: true}
+	frame := viewLine{text: "\tat c.e.Job.run(Job.java:1)", cont: true, level: "error", exception: head.exception}
+	stats.add(event)
+	stats.addException(head.exception)
+	stats.add(head)
+	stats.add(frame)
+	if stats.lines != 1 || stats.exceptions[head.exception] != 1 || len(stats.exceptions) != 1 {
+		t.Fatalf("lines %d exceptions %v", stats.lines, stats.exceptions)
+	}
+	event.exception = head.exception
+	stats.remove(head)
+	stats.remove(frame)
+	stats.remove(event)
+	if stats.lines != 0 || len(stats.exceptions) != 0 {
+		t.Fatalf("after remove: lines %d exceptions %v", stats.lines, stats.exceptions)
+	}
+	// --stats와 화면이 같은 수를 낸다. 예외 줄과 stack trace 줄이 있어도 event 수만큼이다.
+	summary, err := viewSummarize(strings.NewReader(event.text + "\n" + head.text + "\n" + frame.text + "\n" + frame.text + "\n"))
+	if err != nil || summary.stats.exceptions[head.exception] != 1 {
+		t.Fatalf("--stats exceptions %v %v", summary.stats.exceptions, err)
+	}
+}

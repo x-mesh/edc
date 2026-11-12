@@ -45,7 +45,7 @@ expect:
     syn_no_reply: "%[1]s on %[2]s: SYN %[3]d arrived, but this host sent no SYN-ACK or RST. A host firewall, rp_filter, or a full listen queue drops it"
     reply_hidden_ipsec: "%[1]s on %[2]s: SYN %[3]d arrived and no handshake completed. The reply leaves through an IPsec policy as ESP, so edc cannot see it"
     rst_cause: "%[1]s on %[2]s: SYN %[3]d arrived, RST %[4]d sent. %[5]s"
-    rst_hidden: "%[1]s on %[2]s: SYN %[3]d arrived, and the RST left as ESP through an IPsec policy, so edc cannot see it. %[4]s"
+    rst_hidden: "%[1]s on %[2]s: SYN %[3]d arrived. %[4]s. The RST leaves through an IPsec policy as ESP, so edc cannot see it"
     dropped_unseen: "%[1]s: the packet socket saw no SYN for port %[2]d, but the kernel dropped packets for it. Packets reach this host"
     drops: "(kernel drops: %s)"
     more_sources: "(+%d more sources)"

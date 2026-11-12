@@ -844,6 +844,48 @@ func TestExpectEventOrderPrintsByTime(t *testing.T) {
 	}
 }
 
+// 모든 언어와 이유에서 문구의 인자가 맞아야 하고, 결과 줄이 요약을 160 byte에서 잘라도 이유 문장은 남아야 한다.
+func TestExpectRSTCauseTextInEveryLanguage(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	docker := &expectListener{State: expectListenerPresent, Process: "docker-proxy", PID: 3577529, Address: "127.0.0.1:5432", Scope: "loopback", bound: []string{"127.0.0.1"}}
+	nginx := &expectListener{State: expectListenerPresent, Process: "nginx", PID: 812, Address: "20.20.3.222:5432", Scope: "specific", bound: []string{"20.20.3.222"}}
+	causes := []expectRSTCause{
+		explainExpectRST(5432, "20.20.0.50", map[string]int{"NETFILTER_DROP": 5}, docker),
+		explainExpectRST(8000, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, &expectListener{State: expectListenerNone}),
+		explainExpectRST(5432, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, docker),
+		explainExpectRST(5432, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, nginx),
+		explainExpectRST(8000, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, nil),
+		explainExpectRST(5432, "20.20.0.50", nil, docker),
+		explainExpectRST(8000, "20.20.0.50", nil, nil),
+	}
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		for _, cause := range causes {
+			lead := &expectSource{Address: "20.20.0.69", Local: "20.20.0.50", Interface: "eno1", expectCounts: expectCounts{Attempts: 5, SYNIn: 5, RSTOut: 5}, DropReasons: map[string]int{"NO_SOCKET": 5}}
+			texts := map[string]string{"next": cause.nextStep(), "summary": expectSummary(expectVerdictRST, lead, cause, 1, cause.port, time.Second)}
+			if cause.kind != "" {
+				texts["hint"] = cause.hint()
+			}
+			if cause.kind != "" && cause.kind != expectRSTFirewall {
+				lead.RSTOut = 0
+				texts["hidden"] = expectSummary(expectVerdictRST, lead, cause, 1, cause.port, time.Second)
+			}
+			for name, text := range texts {
+				if text == "" || strings.Contains(text, "%!") {
+					t.Errorf("%s %q %s: %q", language, cause.kind, name, text)
+				}
+			}
+			sentence := cause.sentence()
+			for _, name := range []string{"summary", "hidden"} {
+				if summary, ok := texts[name]; ok && sentence != "" && !strings.Contains(firstLine(summary), sentence) {
+					t.Errorf("%s %q %s: the result line cuts the cause: %q", language, cause.kind, name, firstLine(summary))
+				}
+			}
+		}
+	}
+}
+
 func TestExpectResultCarriesTheListener(t *testing.T) {
 	scenario := newExpectScenario("")
 	scenario.session.listener = &expectListener{State: expectListenerNone}

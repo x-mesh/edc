@@ -499,14 +499,9 @@ func codecKeepMetadata(out *os.File, target string, info fs.FileInfo) error {
 }
 
 func compressGzip(dst io.Writer, src io.Reader, level, jobs int) error {
-	writer, err := gzip.NewWriterLevel(dst, level)
+	writer, err := newGzipWriter(dst, level, jobs)
 	if err != nil {
 		return err
-	}
-	if jobs > 1 {
-		if err := writer.SetConcurrency(jobs); err != nil {
-			return err
-		}
 	}
 	if _, err := io.CopyBuffer(writer, src, make([]byte, codecBufferSize)); err != nil {
 		writer.Close()
@@ -515,8 +510,24 @@ func compressGzip(dst io.Writer, src io.Reader, level, jobs int) error {
 	return writer.Close()
 }
 
+func newZstdWriter(dst io.Writer, level int) io.WriteCloser { return zstd.NewWriter(dst, level) }
+
+// newGzipWriter는 jobs개 goroutine으로 압축하는 gzip writer다. edc pack은 tar를 이 writer에 바로 쓴다.
+func newGzipWriter(dst io.Writer, level, jobs int) (io.WriteCloser, error) {
+	writer, err := gzip.NewWriterLevel(dst, level)
+	if err != nil {
+		return nil, err
+	}
+	if jobs > 1 {
+		if err := writer.SetConcurrency(jobs); err != nil {
+			return nil, err
+		}
+	}
+	return writer, nil
+}
+
 func compressZstd(dst io.Writer, src io.Reader, level int) error {
-	writer := zstd.NewWriter(dst, level)
+	writer := newZstdWriter(dst, level)
 	if _, err := io.CopyBuffer(writer, src, make([]byte, codecBufferSize)); err != nil {
 		writer.Close()
 		return err
@@ -526,28 +537,49 @@ func compressZstd(dst io.Writer, src io.Reader, level int) error {
 
 // decompressStream은 앞 4바이트로 형식을 고른다. 이름을 바꾼 파일이나 stdin은 확장자로 알 수 없다.
 func decompressStream(dst io.Writer, src io.Reader) error {
-	magic := make([]byte, 4)
-	n, err := io.ReadFull(src, magic)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return err
-	}
-	magic = magic[:n]
-	whole := io.MultiReader(bytes.NewReader(magic), src)
-	var reader io.ReadCloser
-	switch {
-	case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
-		reader, err = gzip.NewReader(whole)
-	case len(magic) == 4 && (bytes.Equal(magic, []byte{0x28, 0xb5, 0x2f, 0xfd}) || magic[0]&0xf0 == 0x50 && bytes.Equal(magic[1:], []byte{0x2a, 0x4d, 0x18})):
-		reader, err = zstd.NewReader(whole)
-	default:
-		return errCodecUnknown
-	}
+	reader, err := codecOpenStream(src)
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
 	_, err = io.CopyBuffer(dst, reader, make([]byte, codecBufferSize))
 	return err
+}
+
+// codecFormat은 앞 4바이트가 가리키는 압축 형식이다. gzip, zstd가 아니면 빈 문자열이다. zstd의 skippable frame도 zstd로 본다.
+func codecFormat(magic []byte) string {
+	switch {
+	case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
+		return "gzip"
+	case len(magic) == 4 && (bytes.Equal(magic, []byte{0x28, 0xb5, 0x2f, 0xfd}) || magic[0]&0xf0 == 0x50 && bytes.Equal(magic[1:], []byte{0x2a, 0x4d, 0x18})):
+		return "zstd"
+	}
+	return ""
+}
+
+// codecOpenStream은 src의 앞 4바이트로 형식을 골라 푸는 reader를 연다. 읽은 4바이트는 되돌려 넣는다.
+func codecOpenStream(src io.Reader) (io.ReadCloser, error) {
+	magic := make([]byte, 4)
+	n, err := io.ReadFull(src, magic)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	magic = magic[:n]
+	whole := io.MultiReader(bytes.NewReader(magic), src)
+	var reader io.ReadCloser
+	switch codecFormat(magic) {
+	case "gzip":
+		reader, err = gzip.NewReader(whole)
+	case "zstd":
+		reader, err = zstd.NewReader(whole)
+	default:
+		return nil, errCodecUnknown
+	}
+	// NewReader는 실패하면 nil 포인터를 돌려준다. 그대로 interface에 담으면 nil이 아닌 값이 되어 Close를 부를 수 있다.
+	if err != nil {
+		return nil, err
+	}
+	return reader, nil
 }
 
 type codecCounter struct {

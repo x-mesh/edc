@@ -1575,8 +1575,12 @@ func expectSummary(verdict string, lead *expectSource, rst expectRSTCause, sourc
 	case expectVerdictRST:
 		cause := rst.sentence()
 		switch {
-		// RST가 보이지 않는 RST 판정은 NO_SOCKET에서만 나오므로 이유가 늘 있다.
+		// RST가 보이지 않는 RST 판정은 NO_SOCKET에서만 나온다. 같은 출발지에 NETFILTER_DROP도 있으면 이유를 하나로 정하지
+		// 않으므로, 빈 자리 대신 RST가 보이는 요약처럼 두 가능성을 말한다.
 		case lead.RSTOut == 0:
+			if cause == "" {
+				cause = T("expect.cause.unknown")
+			}
 			text = T("expect.summary.rst_hidden", lead.Address, lead.Interface, lead.SYNIn, cause)
 		case cause != "":
 			text = T("expect.summary.rst_cause", lead.Address, lead.Interface, lead.SYNIn, lead.RSTOut, cause)

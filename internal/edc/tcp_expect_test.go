@@ -891,6 +891,22 @@ func TestExpectRSTCauseTextInEveryLanguage(t *testing.T) {
 	}
 }
 
+// RST가 IPsec에 가려 보이지 않고 drop 이유가 섞여 원인을 하나로 정하지 못해도, 요약은 빈 원인 대신 두 가능성을 말한다.
+func TestExpectHiddenRSTWithoutACause(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	drops := map[string]int{"NETFILTER_DROP": 1, "NO_SOCKET": 1}
+	cause := explainExpectRST(8000, "20.20.0.50", drops, nil)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		lead := &expectSource{Address: "20.20.0.69", Local: "20.20.0.50", Interface: "eno1", expectCounts: expectCounts{Attempts: 2, SYNIn: 2}, DropReasons: drops}
+		summary := expectSummary(expectVerdictRST, lead, cause, 1, 8000, time.Second)
+		if strings.Contains(summary, ". .") || strings.Contains(summary, "。。") || !strings.Contains(summary, T("expect.cause.unknown")) {
+			t.Errorf("%s: %q", language, summary)
+		}
+	}
+}
+
 func TestExpectResultCarriesTheListener(t *testing.T) {
 	scenario := newExpectScenario("")
 	scenario.session.listener = &expectListener{State: expectListenerNone}

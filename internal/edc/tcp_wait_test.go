@@ -118,6 +118,15 @@ func TestTCPWaitProgressWritesOnChange(t *testing.T) {
 	if lines := strings.Count(out.String(), "\n"); lines != 0 || strings.Count(out.String(), "\r\033[K") != 3 || !strings.Contains(out.String(), "attempt 2 · connection refused") {
 		t.Fatalf("live progress %q", out.String())
 	}
+	// 명령줄의 대상에 든 제어 문자는 진행 줄에 그대로 나오지 않는다. 줄을 고쳐 쓰는 \r\033[K만 남는다.
+	for _, live := range []bool{false, true} {
+		out.Reset()
+		progress := &tcpWaitProgress{out: &out, live: live, address: "h\x1b[2J\x07:1", started: time.Now()}
+		progress.attempted(1, refused)
+		if text := strings.ReplaceAll(out.String(), "\r\033[K", ""); strings.ContainsAny(text, "\x1b\x07") {
+			t.Errorf("live %v: %q", live, out.String())
+		}
+	}
 }
 
 func tcpWaitFreeAddress(t *testing.T) string {

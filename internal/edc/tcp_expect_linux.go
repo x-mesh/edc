@@ -3,6 +3,7 @@
 package edc
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -69,6 +70,10 @@ func runExpectCapture(run expectRun) error {
 		}
 	}
 	buffer := make([]byte, 2*expectSnapLength)
+	// packet이 kernel에 닿은 시각을 받는다. DROP 줄은 kernel 시각이므로, user space가 읽은 시각을 쓰면 RST와 DROP 줄의 순서가
+	// 뒤바뀐다. 켜지 못하면 control message가 없어 읽은 시각을 쓴다.
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TIMESTAMPNS, 1)
+	control := make([]byte, unix.CmsgSpace(16))
 	session := run.session
 	locals := &expectLocalAddresses{entries: map[netip.Addr]expectLocalEntry{}}
 	session.isLocal = locals.contains
@@ -90,7 +95,7 @@ func runExpectCapture(run expectRun) error {
 			return fmt.Errorf("poll packet socket: %w", err)
 		}
 		for read := 0; ready > 0 && read < expectReadBatch; read++ {
-			size, from, err := unix.Recvfrom(fd, buffer, unix.MSG_DONTWAIT)
+			size, controlSize, _, from, err := unix.Recvmsg(fd, buffer, control, unix.MSG_DONTWAIT)
 			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
 				break
 			}
@@ -113,7 +118,7 @@ func runExpectCapture(run expectRun) error {
 			if !ok {
 				continue
 			}
-			packet.at = time.Now()
+			packet.at = expectPacketTime(control[:controlSize], time.Now())
 			packet.iface = names.name(link.Ifindex)
 			session.packet(packet)
 		}
@@ -176,6 +181,24 @@ func readExpectOtherSYNs(fd int, buffer []byte, port uint16, session *expectSess
 			session.otherSYN(remote, local, destinationPort)
 		}
 	}
+}
+
+// expectPacketTime은 SO_TIMESTAMPNS가 붙인 kernel 수신 시각이다. 64-bit timespec이 없으면(32-bit host나 timestamp를 켜지 못한
+// socket) 읽은 시각 now를 쓴다.
+func expectPacketTime(control []byte, now time.Time) time.Time {
+	messages, err := unix.ParseSocketControlMessage(control)
+	if err == nil {
+		for _, message := range messages {
+			if message.Header.Level == unix.SOL_SOCKET && message.Header.Type == unix.SO_TIMESTAMPNS && len(message.Data) >= 16 {
+				seconds := int64(binary.NativeEndian.Uint64(message.Data[0:8]))
+				nanoseconds := int64(binary.NativeEndian.Uint64(message.Data[8:16]))
+				if seconds > 0 {
+					return time.Unix(seconds, nanoseconds)
+				}
+			}
+		}
+	}
+	return now
 }
 
 func expectHostToNetwork(value uint16) uint16 {

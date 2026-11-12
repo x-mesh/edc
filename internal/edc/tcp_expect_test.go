@@ -821,6 +821,29 @@ func TestExpectHintNamesTheRefusalOnce(t *testing.T) {
 	}
 }
 
+// packet과 kernel drop은 서로 다른 goroutine에서 순서 없이 온다. 실행 중 줄은 시각순으로 내보내야 SYN, RST, DROP 순서가
+// 시도마다 같다.
+func TestExpectEventOrderPrintsByTime(t *testing.T) {
+	base := time.Date(2026, 11, 12, 17, 18, 42, 0, time.UTC)
+	var printed []string
+	order := &expectEventOrder{print: func(event expectEvent) { printed = append(printed, event.kind) }}
+	order.add(expectEvent{at: base, kind: expectEventSYN})
+	order.add(expectEvent{at: base.Add(6 * time.Microsecond), kind: expectEventDrop})
+	order.add(expectEvent{at: base.Add(2 * time.Microsecond), kind: expectEventRSTOut})
+	order.add(expectEvent{at: base.Add(time.Second), kind: expectEventRoute})
+	order.add(expectEvent{at: base.Add(time.Second), kind: expectEventHint})
+	order.flush(base.Add(time.Millisecond))
+	if got := strings.Join(printed, ","); got != "syn,rst_out,drop" {
+		t.Fatalf("first flush = %s", got)
+	}
+	// 이미 찍은 줄보다 이른 줄이 늦게 오면 버리지 않고 다음에 찍는다.
+	order.add(expectEvent{at: base.Add(time.Microsecond), kind: expectEventDuplicate})
+	order.flushAll()
+	if got := strings.Join(printed, ","); got != "syn,rst_out,drop,duplicate,route,hint" {
+		t.Fatalf("all = %s", got)
+	}
+}
+
 func TestExpectResultCarriesTheListener(t *testing.T) {
 	scenario := newExpectScenario("")
 	scenario.session.listener = &expectListener{State: expectListenerNone}

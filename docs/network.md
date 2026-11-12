@@ -218,6 +218,7 @@ sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] 
 - `--from` counts only packets from one address or from one CIDR range.
 
 Each event shows on one line: `SYN in`, `SYN-ACK out`, `RST out`, `ESTABLISHED`, `DROP`, and `ROUTE`.
+The time on a packet line is the time when the kernel received or sent the packet. edc holds the lines for 100 ms and shows them in time order, so `RST out` comes before the `DROP` line of the same SYN.
 A second SYN-ACK for the same attempt shows as a retransmit. This is a sign of a broken return path.
 If this host refuses an attempt, a `HINT` line follows the `ROUTE` line. It gives the cause, the drop reason, and the error that the client sees. edc shows it one time for each source. edc uses the same rules as the `rst` cause below, so there is no `HINT` line without a drop reason.
 At the end, the command shows a table for each source and arrival interface, the route back, and a verdict.

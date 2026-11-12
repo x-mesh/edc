@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1726,6 +1727,46 @@ func formatExpectElapsed(elapsed time.Duration) string {
 	return elapsed.Round(100 * time.Millisecond).String()
 }
 
+// expectOrderWindow는 실행 중 줄을 시각순으로 맞추려고 잡아 두는 시간이다. packet과 kernel drop은 서로 다른 goroutine에서
+// 오므로 도착 순서로 찍으면 RST와 DROP 줄이 뒤바뀐다. jw-server(kernel 6.17)에서 줄이 kernel 시각보다 늦게 도착한 정도는
+// 1.3ms 이하였다.
+const expectOrderWindow = 100 * time.Millisecond
+
+// expectEventOrder는 실행 중 줄을 kernel 시각순으로 내보낸다. session은 받은 순서대로 넘기고, 순서는 출력에서만 바꾼다.
+// expectOrderWindow보다 늦게 온 줄은 버리지 않고 온 때에 찍는다.
+type expectEventOrder struct {
+	mu      sync.Mutex
+	pending []expectEvent
+	print   func(expectEvent)
+}
+
+func (order *expectEventOrder) add(event expectEvent) {
+	order.mu.Lock()
+	order.pending = append(order.pending, event)
+	order.mu.Unlock()
+}
+
+// flush는 until까지의 줄을 시각순으로 내보낸다. 시각이 같으면 받은 순서를 지킨다. 찍는 동안 잠그지 않아 packet 읽기를
+// 막지 않으며, 부르는 goroutine은 하나뿐이다.
+func (order *expectEventOrder) flush(until time.Time) {
+	order.mu.Lock()
+	sort.SliceStable(order.pending, func(i, j int) bool { return order.pending[i].at.Before(order.pending[j].at) })
+	count := 0
+	for count < len(order.pending) && !order.pending[count].at.After(until) {
+		count++
+	}
+	ready := slices.Clone(order.pending[:count])
+	order.pending = slices.Delete(order.pending, 0, count)
+	order.mu.Unlock()
+	for _, event := range ready {
+		order.print(event)
+	}
+}
+
+func (order *expectEventOrder) flushAll() {
+	order.flush(time.Unix(1<<62, 0))
+}
+
 // expectLivePrinter는 실행 중의 한 줄 출력이다. --json -이면 stdout을 JSON에 비워 두려고 stderr에 쓴다.
 type expectLivePrinter struct {
 	writer io.Writer
@@ -1892,7 +1933,8 @@ func runTCPExpect(args []string, version string) int {
 		liveWriter = status
 	}
 	printer := expectLivePrinter{writer: liveWriter, style: newTextStyle(helpColor(liveOutput)), redact: options.common.redact}
-	session := newExpectSession(options.port, options.from, printer.event)
+	order := &expectEventOrder{print: printer.event}
+	session := newExpectSession(options.port, options.from, order.add)
 	session.verbose = options.common.verbose
 	session.until, session.stopAfter = options.until, options.stopAfter
 	sockets, listenErr := collectListenSockets(listenFamilies{TCP: true})
@@ -1918,6 +1960,22 @@ func runTCPExpect(args []string, version string) int {
 	}
 	session.listener = &listener
 	started := time.Now()
+	orderDone := make(chan struct{})
+	var orderLoop sync.WaitGroup
+	orderLoop.Add(1)
+	go func() {
+		defer orderLoop.Done()
+		ticker := time.NewTicker(expectOrderWindow / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-orderDone:
+				return
+			case now := <-ticker.C:
+				order.flush(now.Add(-expectOrderWindow))
+			}
+		}
+	}()
 	statusDone := make(chan struct{})
 	var statusLoop sync.WaitGroup
 	err := runExpectCapture(expectRun{ctx: ctx, port: options.port, session: session, ready: func(dropTrace expectDropTrace) {
@@ -1942,6 +2000,10 @@ func runTCPExpect(args []string, version string) int {
 			}()
 		}
 	}})
+	// 어떤 이유로 끝나도 잡아 둔 줄을 결과보다 먼저 내보낸다.
+	close(orderDone)
+	orderLoop.Wait()
+	order.flushAll()
 	close(statusDone)
 	statusLoop.Wait()
 	if status != nil {

@@ -440,14 +440,25 @@ func TestPackWorksWithSystemTar(t *testing.T) {
 // 표시와 같아도 버전과 항목 수가 맞지 않으면 보통 파일이다.
 func TestPackSkipsAppleDoubleEntries(t *testing.T) {
 	dir := t.TempDir()
-	appleDouble := "\x00\x05\x16\x07" + "\x00\x02\x00\x00" + "Mac OS X        " + "\x00\x02" + strings.Repeat("\x00", 24)
-	packTarGz(t, filepath.Join(dir, "mac.tgz"),
-		packEntry{name: "._made", kind: tar.TypeReg, body: appleDouble},
-		packEntry{name: "made/", kind: tar.TypeDir, mode: 0o755},
-		packEntry{name: "made/._note", kind: tar.TypeReg, body: "plain text"},
-		packEntry{name: "made/._magic", kind: tar.TypeReg, body: "\x00\x05\x16\x07rest of a user file"},
-		packEntry{name: "made/c.txt", kind: tar.TypeReg, body: "c"},
-	)
+	header := "\x00\x05\x16\x07" + "\x00\x02\x00\x00" + "Mac OS X        "
+	// 항목 2개: Finder 정보(9)와 resource fork(2). offset은 항목 표(26+24바이트) 뒤다.
+	appleDouble := header + "\x00\x02" + "\x00\x00\x00\x09\x00\x00\x00\x32\x00\x00\x00\x20" + "\x00\x00\x00\x02\x00\x00\x00\x52\x00\x00\x00\x00" + strings.Repeat("\x00", 32)
+	plain := map[string]string{
+		"made/._magic":      "\x00\x05\x16\x07rest of a user file",
+		"made/._version":    "\x00\x05\x16\x07" + "\x00\x03\x00\x00" + "Mac OS X        " + "\x00\x01" + strings.Repeat("x", 40),
+		"made/._no_entries": header + "\x00\x01" + "short",
+		"made/._inside":     header + "\x00\x01" + "\x00\x00\x00\x09\x00\x00\x00\x04\x00\x00\x00\x20" + strings.Repeat("y", 32),
+	}
+	entries := []packEntry{
+		{name: "._made", kind: tar.TypeReg, body: appleDouble},
+		{name: "made/", kind: tar.TypeDir, mode: 0o755},
+		{name: "made/._note", kind: tar.TypeReg, body: "plain text"},
+		{name: "made/c.txt", kind: tar.TypeReg, body: "c"},
+	}
+	for name, body := range plain {
+		entries = append(entries, packEntry{name: name, kind: tar.TypeReg, body: body})
+	}
+	packTarGz(t, filepath.Join(dir, "mac.tgz"), entries...)
 	code, _, stderr := packTest(t, dir, "mac.tgz")
 	if code != 0 || !strings.Contains(stderr, "mac.tgz → made/") || !strings.Contains(stderr, "1 special files skipped") {
 		t.Fatalf("%d %s", code, stderr)
@@ -455,8 +466,11 @@ func TestPackSkipsAppleDoubleEntries(t *testing.T) {
 	if packRead(t, filepath.Join(dir, "made", "._note")) != "plain text" || packExists(filepath.Join(dir, "._made")) {
 		t.Fatal("a plain ._ file stays, the AppleDouble entry goes")
 	}
-	if packRead(t, filepath.Join(dir, "made", "._magic")) != "\x00\x05\x16\x07rest of a user file" {
-		t.Fatal("a ._ file that only starts with the AppleDouble magic stays")
+	// 머리말이 다 있어도 버전, 항목 표, 항목의 위치가 AppleDouble이 아니면 보통 파일로 푼다.
+	for name, body := range plain {
+		if !packExists(filepath.Join(dir, name)) || packRead(t, filepath.Join(dir, name)) != body {
+			t.Errorf("%s: a plain ._ file must stay", name)
+		}
 	}
 }
 

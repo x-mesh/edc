@@ -436,13 +436,16 @@ func TestPackWorksWithSystemTar(t *testing.T) {
 	}
 }
 
-// macOS tar가 넣는 AppleDouble 항목(._이름)은 건너뛴다. 이름만 "._"로 시작하는 보통 파일은 푼다.
+// macOS tar가 넣는 AppleDouble 항목(._이름)은 건너뛴다. 이름만 "._"로 시작하는 보통 파일은 푼다. 앞 4바이트가 AppleDouble의
+// 표시와 같아도 버전과 항목 수가 맞지 않으면 보통 파일이다.
 func TestPackSkipsAppleDoubleEntries(t *testing.T) {
 	dir := t.TempDir()
+	appleDouble := "\x00\x05\x16\x07" + "\x00\x02\x00\x00" + "Mac OS X        " + "\x00\x02" + strings.Repeat("\x00", 24)
 	packTarGz(t, filepath.Join(dir, "mac.tgz"),
-		packEntry{name: "._made", kind: tar.TypeReg, body: "\x00\x05\x16\x07rest"},
+		packEntry{name: "._made", kind: tar.TypeReg, body: appleDouble},
 		packEntry{name: "made/", kind: tar.TypeDir, mode: 0o755},
 		packEntry{name: "made/._note", kind: tar.TypeReg, body: "plain text"},
+		packEntry{name: "made/._magic", kind: tar.TypeReg, body: "\x00\x05\x16\x07rest of a user file"},
 		packEntry{name: "made/c.txt", kind: tar.TypeReg, body: "c"},
 	)
 	code, _, stderr := packTest(t, dir, "mac.tgz")
@@ -451,6 +454,9 @@ func TestPackSkipsAppleDoubleEntries(t *testing.T) {
 	}
 	if packRead(t, filepath.Join(dir, "made", "._note")) != "plain text" || packExists(filepath.Join(dir, "._made")) {
 		t.Fatal("a plain ._ file stays, the AppleDouble entry goes")
+	}
+	if packRead(t, filepath.Join(dir, "made", "._magic")) != "\x00\x05\x16\x07rest of a user file" {
+		t.Fatal("a ._ file that only starts with the AppleDouble magic stays")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -642,20 +643,28 @@ func packRemoveTemp(temp string) {
 // packAppleDoubleMagic은 AppleDouble 파일의 앞 4바이트다.
 var packAppleDoubleMagic = []byte{0x00, 0x05, 0x16, 0x07}
 
+// packAppleDoubleHeader는 AppleDouble 고정 머리말의 길이다. 표시 4바이트, 버전 4바이트, filler 16바이트, 항목 수 2바이트다.
+const packAppleDoubleHeader = 26
+
 // packAppleDouble은 macOS tar가 확장 속성을 담으려고 넣는 "._이름" 항목인지 본다. macOS tar는 이것을 보여 주지 않고 속성으로
 // 되돌리지만, 그대로 풀면 "._made" 같은 파일이 생기고 최상위가 둘로 보여 압축 파일 이름의 디렉터리에 한 번 더 감싸 푼다.
-// 이름만으로 고르면 "._"로 시작하는 보통 파일을 잃으므로 내용의 표시도 본다. 아니면 읽은 앞부분을 되돌린 reader를 준다.
+// 이름만으로 고르면 "._"로 시작하는 보통 파일을 잃으므로 내용의 머리말도 본다. 건너뛴 항목은 풀지 않으므로, 앞 4바이트만
+// 같은 보통 파일까지 버리지 않게 버전(1 또는 2)과 항목 수까지 맞아야 AppleDouble로 본다. 아니면 읽은 앞부분을 되돌린
+// reader를 준다.
 func packAppleDouble(name string, reader io.Reader) (io.Reader, bool, error) {
 	if !strings.HasPrefix(path.Base(name), "._") {
 		return reader, false, nil
 	}
-	head := make([]byte, len(packAppleDoubleMagic))
+	head := make([]byte, packAppleDoubleHeader)
 	n, err := io.ReadFull(reader, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, false, err
 	}
-	if n == len(head) && bytes.Equal(head, packAppleDoubleMagic) {
-		return nil, true, nil
+	if n == len(head) && bytes.Equal(head[:4], packAppleDoubleMagic) {
+		version := binary.BigEndian.Uint32(head[4:8])
+		if (version == 0x00010000 || version == 0x00020000) && binary.BigEndian.Uint16(head[24:26]) > 0 {
+			return nil, true, nil
+		}
 	}
 	return io.MultiReader(bytes.NewReader(head[:n]), reader), false, nil
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -90,6 +91,30 @@ func TestViewStatsCountsTheRestOfALongList(t *testing.T) {
 	}
 	if report := out.String(); !strings.Contains(report, "13  /pa\n") || !strings.Contains(report, " 4  /pj\n    (3 more)\n") || strings.Contains(report, "/pk") {
 		t.Fatalf("report:\n%s", report)
+	}
+}
+
+// 순환된 로그는 예외 이름 줄에서 시작할 수 있다. 앞 줄이 없는 그 줄은 그 자체가 event이고, 그 예외를 --stats와 화면이 똑같이
+// 한 번 센다.
+func TestViewCountsAnExceptionOnTheFirstLine(t *testing.T) {
+	lines := []string{"java.lang.IllegalStateException: boom", "\tat com.example.Job.run(Job.java:1)", "Caused by: java.io.IOException: closed"}
+	lines = append(lines, viewLinesAfterAStackTrace(0)...)
+	summary, err := viewSummarize(strings.NewReader(strings.Join(lines, "\n") + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := newViewScreenModel("app.log", viewKeepLines)
+	screen.ingest(lines, time.Now(), false)
+	for name, stats := range map[string]viewStats{"--stats": summary.stats, "screen": screen.stats} {
+		if !viewSameCounts(stats.exceptions, map[string]int{"IllegalStateException: boom": 1}) {
+			t.Errorf("%s: exceptions %v", name, stats.exceptions)
+		}
+	}
+	if err := screen.setFilter("exception:IllegalStateException*"); err != nil {
+		t.Fatal(err)
+	}
+	if screen.panelStats().lines != 1 {
+		t.Errorf("exception filter: %d events", screen.panelStats().lines)
 	}
 }
 

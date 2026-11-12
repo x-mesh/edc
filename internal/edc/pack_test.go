@@ -448,6 +448,8 @@ func TestPackSkipsAppleDoubleEntries(t *testing.T) {
 		"made/._version":    "\x00\x05\x16\x07" + "\x00\x03\x00\x00" + "Mac OS X        " + "\x00\x01" + strings.Repeat("x", 40),
 		"made/._no_entries": header + "\x00\x01" + "short",
 		"made/._inside":     header + "\x00\x01" + "\x00\x00\x00\x09\x00\x00\x00\x04\x00\x00\x00\x20" + strings.Repeat("y", 32),
+		// 표는 맞지만 항목의 데이터(38부터 32바이트)가 파일에 없다.
+		"made/._truncated": header + "\x00\x01" + "\x00\x00\x00\x09\x00\x00\x00\x26\x00\x00\x00\x20",
 	}
 	entries := []packEntry{
 		{name: "._made", kind: tar.TypeReg, body: appleDouble},

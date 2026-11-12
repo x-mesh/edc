@@ -242,8 +242,9 @@ func newTCPWaitProgress(address string, options commonOptions) *tcpWaitProgress 
 
 func (progress *tcpWaitProgress) attempted(attempt int, result Result) {
 	cause := tcpWaitCause(result)
+	// 대상은 명령줄 값이고 cause의 오류 문구에도 들어갈 수 있다. 줄을 고쳐 쓰는 \r\033[K 말고 다른 제어 문자는 내보내지 않는다.
 	if progress.live {
-		line := T("observe.tcp_wait.waiting", progress.address, tcpWaitDuration(time.Since(progress.started)), attempt, cause)
+		line := viewSanitize(T("observe.tcp_wait.waiting", progress.address, tcpWaitDuration(time.Since(progress.started)), attempt, cause))
 		if progress.color {
 			line = richDim(line)
 		}
@@ -252,7 +253,7 @@ func (progress *tcpWaitProgress) attempted(attempt int, result Result) {
 		return
 	}
 	if cause != progress.cause {
-		fmt.Fprintln(progress.out, T("observe.tcp_wait.waiting_line", progress.address, attempt, cause))
+		fmt.Fprintln(progress.out, viewSanitize(T("observe.tcp_wait.waiting_line", progress.address, attempt, cause)))
 	}
 	progress.cause = cause
 }

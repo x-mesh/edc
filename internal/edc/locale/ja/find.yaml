@@ -25,6 +25,7 @@ find:
     limited: "%d 項目で停止しました"
     query_cut: "クエリの先頭 %d バイトだけを使います"
     long_line: "%d バイトを超える行は先頭だけを使います"
+    stdin_error: "stdin を読めなかったため、候補はそこで途切れました: %s"
     mount_error: "マウント表を読めないため (%s)、/proc、/sys、/dev、/run だけをスキップします"
     skipped_short: "スキップ %s"
   picker:

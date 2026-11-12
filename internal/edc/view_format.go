@@ -192,13 +192,20 @@ func viewLooksJSON(line string) bool {
 // parseViewLine은 raw 한 줄을 format으로 읽는다. previous는 바로 앞 줄로, 이어지는 줄이 level과 예외를 물려받는 데 쓴다.
 func parseViewLine(raw string, format viewFormat, previous *viewLine) viewLine {
 	line := viewParseFormat(raw, format, previous)
-	if line.cont && previous != nil {
+	switch {
+	case line.cont && previous != nil:
 		line.exception = previous.exception
 		// event 하나에서는 첫 예외만 센다. 뒤의 "Caused by:"는 그 예외의 원인이라 따로 세면 같은 실패를 두 번 센다.
 		if line.exception == "" {
 			if key, ok := viewExceptionHead(line.text); ok {
 				line.exception, line.exceptionHead = key, true
 			}
+		}
+	// 앞 줄이 없는 예외 줄은 붙을 event가 없어 그 자체가 event다. 순환된 로그처럼 예외 줄에서 시작하는 파일의 첫 예외를 그
+	// event의 예외로 센다. 붙일 앞 event가 없으므로 exceptionHead는 두지 않고, stats.add가 event와 함께 센다.
+	case previous == nil:
+		if key, ok := viewExceptionHead(line.text); ok {
+			line.exception = key
 		}
 	}
 	return line

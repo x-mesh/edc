@@ -103,8 +103,10 @@ type findWalkReport struct {
 	// Partial은 시간이 다 됐거나 응답 없는 디렉터리 때문에 끝까지 읽지 못했다는 뜻이다. Stopped는 받는 쪽이 그만 받겠다고 한 것이다.
 	Partial, Stopped bool
 	MountErr         error
-	Problems         []string
-	Directories      int
+	// ReadErr는 stdin 후보를 읽다 난 EOF가 아닌 오류다. 후보가 거기서 끊겼으므로 목록은 실패로 끝난다.
+	ReadErr     error
+	Problems    []string
+	Directories int
 }
 
 // findRoot는 시작 경로 하나의 순회 설정이다.

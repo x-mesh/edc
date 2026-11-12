@@ -340,7 +340,7 @@ func packUntar(ctx context.Context, root *os.Root, stream io.Reader, durable boo
 			report.line("x " + viewSanitize(name) + "/")
 		// archive/tar는 GNU sparse 항목의 빈 구간을 0으로 채워 읽어 준다. 내용은 일반 파일과 같다.
 		case tar.TypeReg, tar.TypeGNUSparse:
-			data, appleDouble, err := packAppleDouble(name, reader)
+			data, appleDouble, err := packAppleDouble(name, header.Size, reader)
 			if err != nil {
 				return counts, err
 			}
@@ -656,9 +656,9 @@ const (
 // packAppleDouble은 macOS tar가 확장 속성을 담으려고 넣는 "._이름" 항목인지 본다. macOS tar는 이것을 보여 주지 않고 속성으로
 // 되돌리지만, 그대로 풀면 "._made" 같은 파일이 생기고 최상위가 둘로 보여 압축 파일 이름의 디렉터리에 한 번 더 감싸 푼다.
 // 이름만으로 고르면 "._"로 시작하는 보통 파일을 잃으므로 내용도 본다. 건너뛴 항목은 풀지 않으므로, 앞부분만 닮은 보통
-// 파일까지 버리지 않게 버전(1 또는 2), 항목 수, 항목 표가 다 있고 각 항목이 표 뒤를 가리켜야 AppleDouble로 본다. 아니면
-// 읽은 앞부분을 되돌린 reader를 준다.
-func packAppleDouble(name string, reader io.Reader) (io.Reader, bool, error) {
+// 파일까지 버리지 않게 버전(1 또는 2), 항목 수, 항목 표가 다 있고 각 항목의 데이터가 표 뒤에서 항목 크기(size) 안에 있어야
+// AppleDouble로 본다. 아니면 읽은 앞부분을 되돌린 reader를 준다.
+func packAppleDouble(name string, size int64, reader io.Reader) (io.Reader, bool, error) {
 	if !strings.HasPrefix(path.Base(name), "._") {
 		return reader, false, nil
 	}
@@ -678,7 +678,7 @@ func packAppleDouble(name string, reader io.Reader) (io.Reader, bool, error) {
 				return nil, false, err
 			}
 			read = append(read, table[:got]...)
-			if got == len(table) && packAppleDoubleTable(table, packAppleDoubleHeader+len(table)) {
+			if got == len(table) && packAppleDoubleTable(table, packAppleDoubleHeader+len(table), size) {
 				return nil, true, nil
 			}
 		}
@@ -686,10 +686,13 @@ func packAppleDouble(name string, reader io.Reader) (io.Reader, bool, error) {
 	return io.MultiReader(bytes.NewReader(read), reader), false, nil
 }
 
-// packAppleDoubleTable은 descriptor마다 id가 0이 아니고 offset이 항목 표 뒤인지 본다.
-func packAppleDoubleTable(table []byte, end int) bool {
+// packAppleDoubleTable은 descriptor마다 id가 0이 아니고, 데이터가 항목 표(end) 뒤에서 시작해 항목 크기(size) 안에서 끝나는지
+// 본다. offset과 길이는 4바이트라 더해도 int64를 넘지 않는다.
+func packAppleDoubleTable(table []byte, end int, size int64) bool {
 	for at := 0; at < len(table); at += packAppleDoubleDescriptor {
-		if binary.BigEndian.Uint32(table[at:]) == 0 || binary.BigEndian.Uint32(table[at+4:]) < uint32(end) {
+		offset := int64(binary.BigEndian.Uint32(table[at+4:]))
+		length := int64(binary.BigEndian.Uint32(table[at+8:]))
+		if binary.BigEndian.Uint32(table[at:]) == 0 || offset < int64(end) || offset+length > size {
 			return false
 		}
 	}

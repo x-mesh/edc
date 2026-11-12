@@ -155,18 +155,32 @@ func TestRunFindGroupReportsAWriteError(t *testing.T) {
 
 // 원격 호스트가 돌려준 경로와 인벤토리의 호스트 이름은 터미널에 정리해 쓴다. 파이프에는 그대로 쓴다.
 func TestWriteFindGroupEscapesOnATerminal(t *testing.T) {
-	rows := []findHostRow{{Host: "web\x1b1", Status: findHostFound, Matches: []findJSONMatch{{Path: "/srv/a\x1b]0;owned\x07"}}}}
-	var terminal, pipe bytes.Buffer
-	if err := writeFindGroup(&terminal, io.Discard, rows, false, true); err != nil {
+	rows := []findHostRow{
+		{Host: "web\x1b1", Status: findHostFound, Matches: []findJSONMatch{{Path: "/srv/a\x1b]0;owned\x07"}}},
+		{Host: "db\x1b]0;owned\x07", Status: findHostFailed, Detail: "exit 255"},
+	}
+	var terminal, pipe, null, stderr bytes.Buffer
+	if err := writeFindGroup(&terminal, &stderr, rows, findGroupOutput{terminal: true}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.ContainsAny(terminal.String(), "\x1b\x07") || !strings.HasPrefix(terminal.String(), "web") {
 		t.Errorf("terminal: %q", terminal.String())
 	}
-	if err := writeFindGroup(&pipe, io.Discard, rows, false, false); err != nil {
+	// stderr는 사람이 읽는 줄이라 stdout이 파이프여도 정리한다.
+	if strings.ContainsAny(stderr.String(), "\x1b\x07") || !strings.Contains(stderr.String(), "exit 255") {
+		t.Errorf("stderr: %q", stderr.String())
+	}
+	if err := writeFindGroup(&pipe, io.Discard, rows, findGroupOutput{}); err != nil {
 		t.Fatal(err)
 	}
 	if pipe.String() != "web\x1b1:/srv/a\x1b]0;owned\x07\n" {
 		t.Errorf("pipe: %q", pipe.String())
+	}
+	// -0은 로컬 목록처럼 NUL로 끝내고, 터미널이어도 원래 바이트를 쓴다.
+	if err := writeFindGroup(&null, io.Discard, rows, findGroupOutput{terminal: true, null: true}); err != nil {
+		t.Fatal(err)
+	}
+	if null.String() != "web\x1b1:/srv/a\x1b]0;owned\x07\x00" {
+		t.Errorf("null: %q", null.String())
 	}
 }

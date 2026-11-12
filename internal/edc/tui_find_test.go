@@ -294,3 +294,24 @@ func TestFindModelKeepsTheGrepTarget(t *testing.T) {
 		t.Errorf("grep path %q, prompt %q", model.grepPath, model.promptLine())
 	}
 }
+
+// 선택기는 후보가 상한을 넘으면 순회를 멈춘다. 넘은 묶음까지는 화면으로 보내서 화면이 상한에 닿았다고 알린다.
+func TestFindPickerSenderStopsTheWalkAtTheLimit(t *testing.T) {
+	feed := make(chan []findEntry, 8)
+	quit := make(chan struct{})
+	send := findPickerSender(findFilter{}, feed, quit, 3)
+	batch := []findEntry{{path: "a"}, {path: "b"}}
+	if !send(batch) {
+		t.Fatal("2 of 3: the walk must go on")
+	}
+	if send(batch) {
+		t.Fatal("4 of 3: the walk must stop")
+	}
+	if len(feed) != 2 {
+		t.Fatalf("%d batches reached the screen", len(feed))
+	}
+	close(quit)
+	if send := findPickerSender(findFilter{}, make(chan []findEntry), quit, 3); send(batch) {
+		t.Fatal("a closed screen stops the walk")
+	}
+}

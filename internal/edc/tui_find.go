@@ -136,18 +136,7 @@ func runFindPicker(options findOptions, env findEnv) (int, bool) {
 	go findFeedProgram(program, feed, done)
 	go func() {
 		var report findWalkReport
-		send := func(batch []findEntry) bool {
-			kept := filter.apply(batch)
-			if len(kept) == 0 {
-				return true
-			}
-			select {
-			case feed <- kept:
-				return true
-			case <-quit:
-				return false
-			}
-		}
+		send := findPickerSender(filter, feed, quit, findCandidateLimit)
 		if stdinMode {
 			report = findReadStdin(env.stdin, send)
 		} else {
@@ -189,6 +178,26 @@ func writeFindChoice(env findEnv, null bool, chosen string) int {
 		return 2
 	}
 	return 0
+}
+
+// findPickerSender는 순회한 묶음을 걸러 화면으로 보낸다. 화면이 끝났거나 보낸 후보가 limit을 넘으면 false를 돌려 순회를
+// 멈춘다. 화면은 limit을 넘는 후보를 버리므로 더 읽어도 쓰이지 않는다. 넘은 묶음까지 보내야 화면이 상한에 닿았다고 알린다.
+// findWalk와 findReadStdin은 emit을 한 goroutine에서만 부르므로 sent에 잠금이 필요 없다.
+func findPickerSender(filter findFilter, feed chan<- []findEntry, quit <-chan struct{}, limit int) func([]findEntry) bool {
+	sent := 0
+	return func(batch []findEntry) bool {
+		kept := filter.apply(batch)
+		if len(kept) == 0 {
+			return true
+		}
+		select {
+		case feed <- kept:
+			sent += len(kept)
+			return sent <= limit
+		case <-quit:
+			return false
+		}
+	}
 }
 
 // findFeedProgram은 순회 결과를 모아 findFeedInterval마다 한 번 화면으로 보낸다. feed가 닫히면 남은 것을 보내고 끝을 알린다.

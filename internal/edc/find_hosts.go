@@ -138,7 +138,7 @@ func runFindGroup(options findOptions, env findEnv, run cleanRemoteRunner) int {
 		}
 		return findGroupCode(rows)
 	}
-	if err := writeFindGroup(env.stdout, env.stderr, rows, options.common.verbose, env.stdoutTerminal); err != nil {
+	if err := writeFindGroup(env.stdout, env.stderr, rows, findGroupOutput{verbose: options.common.verbose, terminal: env.stdoutTerminal, null: options.null}); err != nil {
 		fmt.Fprintln(env.stderr, "edc find: "+err.Error())
 		return 2
 	}
@@ -238,19 +238,28 @@ func findHostFromCapture(capture remoteCapture) findHostRow {
 	return row
 }
 
+// findGroupOutput은 --group 결과를 쓰는 방식이다. terminal은 stdout이 터미널이라는 뜻이고 null은 -0이다.
+type findGroupOutput struct {
+	verbose, terminal, null bool
+}
+
 // writeFindGroup은 일치를 host:path로 stdout에 쓰고, 찾지 못한 호스트의 이유를 stderr에 쓴다. stdout만 파이프로 넘길 수 있다.
 // stdout에 쓰지 못하면 오류를 돌려준다. 일부만 쓴 목록을 성공으로 끝내지 않는다. 경로는 원격 호스트가 돌려준 값이라,
-// 터미널에는 제어 문자를 정리해 쓴다.
-func writeFindGroup(stdout, stderr io.Writer, rows []findHostRow, verbose, terminal bool) error {
+// 터미널에는 제어 문자를 정리해 쓴다. -0이면 로컬 목록처럼 NUL로 끝내고 원래 바이트를 쓴다.
+func writeFindGroup(stdout, stderr io.Writer, rows []findHostRow, output findGroupOutput) error {
 	found := 0
 	writer := bufio.NewWriter(stdout)
+	end := "\n"
+	if output.null {
+		end = "\x00"
+	}
 	for _, row := range rows {
 		for _, match := range row.Matches {
 			host, path := row.Host, match.Path
-			if terminal {
+			if output.terminal && !output.null {
 				host, path = viewSanitize(host), viewSanitize(path)
 			}
-			fmt.Fprintf(writer, "%s:%s\n", host, path)
+			fmt.Fprintf(writer, "%s:%s%s", host, path, end)
 		}
 		if row.Status == findHostFound {
 			found++
@@ -267,7 +276,7 @@ func writeFindGroup(stdout, stderr io.Writer, rows []findHostRow, verbose, termi
 				line = T("find.group.partial")
 			}
 		case findHostNone:
-			if verbose || row.Partial {
+			if output.verbose || row.Partial {
 				line = T("find.group.none")
 				if row.Partial {
 					line += ", " + T("find.group.partial")
@@ -279,8 +288,9 @@ func writeFindGroup(stdout, stderr io.Writer, rows []findHostRow, verbose, termi
 				line += ": " + viewSanitize(row.Detail)
 			}
 		}
+		// stderr는 사람이 읽는 줄이라 stdout이 파이프여도 호스트 이름을 정리한다. Detail도 그렇게 정리한다.
 		if line != "" {
-			fmt.Fprintf(stderr, "%s  %s\n", row.Host, line)
+			fmt.Fprintf(stderr, "%s  %s\n", viewSanitize(row.Host), line)
 		}
 	}
 	fmt.Fprintln(stderr, T("find.group.summary", found, len(rows)))

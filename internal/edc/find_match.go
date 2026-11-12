@@ -89,6 +89,7 @@ func (findRegexMatcher) ranked() bool { return false }
 
 // findTerm은 공백으로 나눈 질의 단어 하나다. text는 대소문자를 무시할 때 소문자로 바꾼 값이다.
 // 질의에 ASCII가 아닌 글자가 있으면 runes로 비교한다. 바이트로 비교하면 한 글자의 UTF-8 바이트를 서로 다른 글자에서 골라 맞춘다.
+// 경로마다 값으로 넘기므로 필드를 늘리지 않는다. 접기에 쓰는 것은 findFuzzy.folds에 둔다.
 type findTerm struct {
 	text  string
 	runes []rune
@@ -98,27 +99,71 @@ type findFuzzy struct {
 	terms []findTerm
 	// exact는 대문자가 있는 질의다. 이때만 대소문자를 구분한다.
 	exact bool
+	// folds는 terms와 같은 차례로, 대소문자를 무시하는 ASCII 단어를 runes로 다시 견줄 때 쓴다. 없으면 nil이다.
+	folds []findFold
+}
+
+// findFold는 ASCII 단어를 접기로 다시 견주는 방법이다. Kelvin sign(U+212A)과 k, ſ(U+017F)와 s, İ(U+0130)와 i처럼 ASCII가
+// 아닌 글자와 접기가 같은 ASCII 글자는 이 셋뿐이고(Unicode 전체를 훑어 확인), 바이트로는 견줄 수 없다. 바이트로 먼저 견주고,
+// 맞지 않은 경로에 others 중 하나가 있을 때만 term(runes)으로 다시 견준다. ASCII 바이트는 UTF-8의 여러 바이트 글자 안에
+// 나오지 않으므로 바이트로 맞은 구간은 그대로 맞다.
+type findFold struct {
+	term   findTerm
+	others []string
+}
+
+// retry는 i번째 단어가 바이트로 맞지 않은 path를 runes로 다시 견줄지와 그 단어를 준다.
+func (fuzzy findFuzzy) retry(i int, path string) (findTerm, bool) {
+	if fuzzy.folds == nil {
+		return findTerm{}, false
+	}
+	fold := fuzzy.folds[i]
+	for _, other := range fold.others {
+		if strings.Contains(path, other) {
+			return fold.term, true
+		}
+	}
+	return findTerm{}, false
 }
 
 func newFindFuzzy(query string) findFuzzy {
 	fuzzy := findFuzzy{exact: findHasUpper(query)}
+	var folds []findFold
+	retries := false
 	for _, word := range strings.Fields(query) {
 		if !fuzzy.exact {
 			word = findLowerASCII(word)
 		}
 		term := findTerm{text: word}
-		for index := 0; index < len(word); index++ {
-			if word[index] >= utf8.RuneSelf {
-				term.runes = []rune(word)
-				if !fuzzy.exact {
-					for position, r := range term.runes {
-						term.runes[position] = findCaseFold(r)
-					}
+		var fold findFold
+		if !findIsASCII(word) {
+			term.runes = []rune(word)
+			if !fuzzy.exact {
+				for position, r := range term.runes {
+					term.runes[position] = findCaseFold(r)
 				}
-				break
+			}
+		} else if !fuzzy.exact {
+			for _, pair := range []struct{ letter, other string }{{"i", "\u0130"}, {"k", "\u212a"}, {"s", "\u017f"}} {
+				if strings.Contains(word, pair.letter) {
+					fold.others = append(fold.others, pair.other)
+				}
+			}
+			if fold.others != nil {
+				fold.term = findTerm{text: word, runes: []rune(word)}
+				for position, r := range fold.term.runes {
+					fold.term.runes[position] = findCaseFold(r)
+				}
 			}
 		}
 		fuzzy.terms = append(fuzzy.terms, term)
+		folds = append(folds, fold)
+		if fold.others != nil {
+			retries = true
+		}
+	}
+	if retries {
+		fuzzy.folds = folds
 	}
 	return fuzzy
 }
@@ -142,8 +187,13 @@ func (fuzzy findFuzzy) ranked() bool { return len(fuzzy.terms) > 0 }
 
 func (fuzzy findFuzzy) score(path string, base int) (int, bool) {
 	total := 0
-	for _, term := range fuzzy.terms {
+	for i, term := range fuzzy.terms {
 		score, ok := fuzzy.termScore(path, base, term)
+		if !ok {
+			if folded, retry := fuzzy.retry(i, path); retry {
+				score, ok = fuzzy.termScore(path, base, folded)
+			}
+		}
 		if !ok {
 			return 0, false
 		}
@@ -182,6 +232,15 @@ func (fuzzy findFuzzy) equal(name string, term findTerm) bool {
 		return len(name) == len(term.text) && findLowerASCII(name) == term.text
 	}
 	return strings.EqualFold(name, term.text)
+}
+
+func findIsASCII(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if text[index] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // window는 from 뒤에서 단어가 순서대로 맞는 가장 짧은 구간을 찾는다. 앞에서 끝을 찾고, 그 끝에서 거꾸로 시작을 줄인다(fzf v1).
@@ -335,8 +394,14 @@ func findSeparator(c byte) bool {
 // spans는 강조할 바이트 구간이다. 점수를 매긴 것과 같은 구간을 고른다.
 func (fuzzy findFuzzy) spans(path string, base int) [][2]int {
 	var positions []int
-	for _, term := range fuzzy.terms {
+	for i, term := range fuzzy.terms {
 		start, end, ok := fuzzy.window(path, 0, term)
+		if !ok {
+			if folded, retry := fuzzy.retry(i, path); retry {
+				term = folded
+				start, end, ok = fuzzy.window(path, 0, term)
+			}
+		}
 		if !ok {
 			return nil
 		}

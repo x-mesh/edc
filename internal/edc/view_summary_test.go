@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,38 @@ func TestViewStatsCountsTheRestOfALongList(t *testing.T) {
 	}
 	if report := out.String(); !strings.Contains(report, "13  /pa\n") || !strings.Contains(report, " 4  /pj\n    (3 more)\n") || strings.Contains(report, "/pk") {
 		t.Fatalf("report:\n%s", report)
+	}
+}
+
+// 요청마다 다른 path가 끝없이 나와도 --stats가 세는 값의 수에는 상한이 있다. 자주 나온 값은 남고, 목록은 근사라고 적는다.
+func TestViewStatsBoundsDistinctValues(t *testing.T) {
+	line := func(path string) string {
+		return `192.0.2.1 - - [26/Oct/2026:10:00:00 +0900] "GET ` + path + ` HTTP/1.1" 200 1 "-" "x"` + "\n"
+	}
+	var input strings.Builder
+	for index := range 2*viewSummaryKeyLimit + 10 {
+		if index%1000 == 0 {
+			input.WriteString(line("/health"))
+		}
+		input.WriteString(line(fmt.Sprintf("/item/%d", index)))
+	}
+	summary, err := viewSummarize(strings.NewReader(input.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.stats.paths) > viewSummaryKeyLimit {
+		t.Fatalf("%d distinct paths kept", len(summary.stats.paths))
+	}
+	var out bytes.Buffer
+	if err := summary.write(&out, "access", false); err != nil {
+		t.Fatal(err)
+	}
+	report := out.String()
+	if want := fmt.Sprintf("%d  /health\n", (2*viewSummaryKeyLimit+10+999)/1000); !strings.Contains(report, want) || !strings.Contains(report, "approximate") {
+		t.Fatalf("want %q and an approximate note:\n%s", want, report)
+	}
+	if strings.Contains(report[strings.Index(report, "TOP CLIENTS"):], "approximate") {
+		t.Fatalf("clients were not trimmed:\n%s", report)
 	}
 }
 

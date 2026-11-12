@@ -450,7 +450,7 @@ access log는 목록에 시각, status, method, bytes, path를 보입니다. 보
 
 통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 예외·path·client·프로그램을 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 파일 전체를 세려면 `--stats`를 쓰거나, `edc view -n 500000 boot.log`처럼 보관할 줄을 늘립니다.
 
-`edc view --stats boot.log`는 화면 없이 입력 전체의 통계를 출력합니다. 입력을 한 번 읽고 줄을 보관하지 않으므로 큰 파일도 셉니다. 줄 수, event 수, 처음과 마지막 event의 시각, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 10개 예외·path·client·프로그램을 출력합니다. `.gz`와 `.zst`는 풀어서 읽습니다. `--stats`는 입력 전체를 세므로 `-n`이나 `-f`와 함께 쓸 수 없습니다.
+`edc view --stats boot.log`는 화면 없이 입력 전체의 통계를 출력합니다. 입력을 한 번 읽고 줄을 보관하지 않으므로 큰 파일도 셉니다. 줄 수, event 수, 처음과 마지막 event의 시각, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 10개 예외·path·client·프로그램을 출력합니다. `.gz`와 `.zst`는 풀어서 읽습니다. 상위 목록마다 서로 다른 값은 65,536개까지만 셉니다. 요청 ID가 든 path처럼 값이 그보다 많으면 많이 나온 절반만 남기고 목록에 `approximate counts`라고 적습니다. 이 목록의 수는 실제보다 적을 수 있습니다. `--stats`는 입력 전체를 세므로 `-n`이나 `-f`와 함께 쓸 수 없습니다.
 
 stack trace에서 예외를 적은 첫 줄이 그 event의 예외가 됩니다(예: `java.lang.IllegalArgumentException: Invalid URI path`). 상위 예외는 패키지를 뺀 클래스 이름과 메시지로 event를 셉니다. 메시지에서 숫자가 든 낱말은 `N`으로 바꾸므로 `block 14124 not found`와 `block 14125 not found`는 한 항목입니다. 첫 예외 뒤의 `Caused by:` 줄은 따로 세지 않습니다. `Exception in thread "main" ...`과 Python, JavaScript의 예외 줄도 셉니다. event의 상세 화면에도 `exception`이 보입니다. 터미널이 120열 이상이면 패널을 오른쪽에 둡니다. 패널 폭은 가장 긴 줄에 맞추고 38열을 넘지 않으므로, 통계가 적은 로그에서는 줄을 보일 자리가 넓어집니다. 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
 

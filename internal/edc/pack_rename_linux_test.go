@@ -17,6 +17,7 @@ func TestPackRenameRefusesWithoutNoReplace(t *testing.T) {
 	}{
 		{unix.EINVAL, errPackNoReplace},
 		{unix.ENOSYS, errPackNoReplace},
+		{unix.EOPNOTSUPP, errPackNoReplace},
 		{unix.EEXIST, errCodecExists},
 		{unix.ENOTEMPTY, errCodecExists},
 	} {

@@ -23,7 +23,7 @@ func packRenameResult(source, target string, err error) error {
 		return nil
 	case errors.Is(err, unix.EEXIST), errors.Is(err, unix.ENOTEMPTY):
 		return fmt.Errorf("%s: %w", target, errCodecExists)
-	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOSYS):
+	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOSYS), errors.Is(err, unix.EOPNOTSUPP):
 		return fmt.Errorf("%s: %w", target, errPackNoReplace)
 	}
 	return &os.LinkError{Op: "rename", Old: source, New: target, Err: err}

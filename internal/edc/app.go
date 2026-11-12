@@ -91,6 +91,8 @@ func Run(args []string, version string) int {
 		return runView(args[1:])
 	case "grep":
 		return runGrep(args[1:])
+	case "find":
+		return runFind(args[1:], version)
 	case "search":
 		return runSearch(args[1:])
 	case "compress":

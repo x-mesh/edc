@@ -2,7 +2,7 @@
 
 # Live resource monitoring
 
-[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs)
+[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs) · [Find files](#find-files)
 
 ![Live resource dashboard](media/top.png)
 
@@ -554,3 +554,92 @@ The index assumes a log that only grows. A file edited in place keeps its index 
 `--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.
 
 Exit codes: 0 when a line matched, 1 when no line matched, 2 on an error.
+
+## Find files
+
+`edc find [pattern] [path...]` finds files and directories by name. To search the contents of files, use `edc grep`.
+
+```bash
+# open a picker in the current directory
+edc find
+# open the file that you pick
+vim "$(edc find)"
+# go to the directory that you pick
+cd "$(edc find -t d)"
+# write the best matches for a pattern
+edc find nginxconf /etc
+# files of 100 MB or more that changed in the last 10 minutes
+edc find --changed 10m --size +100M /var
+# pick from the lines of another command
+git ls-files | edc find
+```
+
+| Command | Result |
+| --- | --- |
+| `edc find` in a terminal | A picker opens. Enter writes the path to stdout. |
+| `vim "$(edc find)"` | The picker uses the terminal, and stdout gets only the path. |
+| `edc find <pattern> [path...]` | The matches go to stdout, best first. |
+| `edc find .`, `edc find /etc`, `edc find src/` | One argument that is `.` or `..`, or that contains `/` and names a directory, is the path, not the pattern. |
+| `<command> \| edc find` | If you give no path, the lines of stdin are the candidates. `--type`, `--size`, and `--changed` need paths on disk, so they cause an error here. |
+| No terminal and no pattern | All candidates go to stdout in path order. |
+
+### Picker
+
+Type to filter the list. The top line shows the number of matches and candidates. While `edc find` reads directories, the list grows. With an empty query, the files that changed last come first. Each row shows the path, the size of a file, and the time since the last change. A directory ends with `/`, and a symlink ends with `@`.
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Write the selected path to stdout and exit. |
+| `Esc`, `ctrl+c` | Exit without output, with exit code 130. |
+| `↑` `↓`, `ctrl+p` `ctrl+n`, `PgUp` `PgDn`, `Home` `End` | Move the selection. |
+| `Backspace`, `ctrl+w`, `ctrl+u` | Delete a letter, a word, or the query. |
+| `ctrl+o` | Open the selection in `$VISUAL` or `$EDITOR`. If both are empty, `vi` opens it. |
+| `ctrl+v` | Open the selected file in `edc view`. |
+| `ctrl+g` | Type a pattern, and read the `edc grep` result for the selection in `edc view`. |
+| `Tab` | Show or hide the preview of the selection. |
+
+The preview shows the mode, the size, and the age of the selection. For a regular file, it shows the lines in the first 64 KiB. A file with a NUL byte shows as binary. For a directory, it shows the first 200 names, and for a symlink, its target. The preview does not open a FIFO, a socket, or a device file, because a read can block or change the device. If the terminal is 120 columns or wider, the preview is on the right. Otherwise it is below the list.
+
+When the editor or `edc view` exits, the picker comes back. If stdout is not a terminal, `ctrl+o`, `ctrl+v`, and `ctrl+g` do nothing, because the output goes to the command that called `edc find`.
+
+### Matches
+
+The letters of the pattern must appear in the path in the same order, so `adjrn` finds `audit_journal.go`. If you separate words with spaces, all words must match. A match in the file name, at the start of a word, or in consecutive letters gets a higher score. A skipped `_`, `-`, `.`, or `/` does not break consecutive letters, so `sshdconfig` finds `sshd_config` first. If two scores are equal, the shorter path comes first. If the pattern has no capital letter, case does not matter.
+
+`-E` makes the pattern a regular expression over the path. Then the matches go out in path order.
+
+### What edc find reads
+
+- Hidden files are included. `.git` is skipped.
+- `.gitignore` applies only if the search starts inside a git work tree. If the search starts in `/srv`, the `.gitignore` of a deployed checkout does not apply, so ignored logs stay in the result. `--no-ignore` turns off the rules.
+- The search stays on the file system of the path and does not go into other mounts. `--cross-mounts` goes into them. Kernel file systems such as `/proc`, `/sys`, and `/dev` are always skipped.
+- Container image layers under `/var/lib/docker/overlay2`, `/var/lib/docker/image`, `/var/lib/containerd/io.containerd.snapshotter.v1.*`, and `/var/lib/containers/storage/overlay*` are skipped, because each image holds a copy of `/etc` and `/usr`. `--layers` includes them. Container logs under `/var/lib/docker/containers` stay in the result.
+- Symlinks are not followed.
+- If a directory does not answer for 5 seconds and no other work is left, `edc find` names the directory on stderr and stops with the result that it has. `--timeout` (default 60s) limits the whole search.
+- When stderr is a terminal, a summary line names the skipped mounts, kernel file systems, and layers. `-v` lists each path.
+
+`--type` takes `f`, `d`, or `l`. `--size +100M` keeps regular files of 100 MiB or more, and `--size -1K` keeps files under 1 KiB. `--changed 10m` keeps the entries that changed in the last 10 minutes. `edc find` reads the size and the time of each entry only for `--size`, `--changed`, and the picker. `-0` ends each path with NUL for `xargs -0`. `--json <path>` writes the matches, the skipped directories, and the unread directories.
+
+### Find on more hosts
+
+`edc find --group <group> <pattern> <path...>` runs `edc find` on each host of an `edc remote` group. It uses the same inventory and OpenSSH settings as `edc remote`. You must give a path, because `.` on a remote host is the home directory of the SSH user.
+
+```bash
+edc find --group web nginx.conf /etc
+```
+
+stdout gets one `host:path` line for each match, so you can pipe it. stderr names each host that `edc find` could not search, and the reason. If the remote `edc` is older than `edc find`, the host shows `edc is too old`. Then run `edc update` on that host. `edc find` does not use `find(1)` on a host without `edc`, because its matches and defaults are different. `--json <path>` writes the result of each host.
+
+### Speed
+
+These values come from Ubuntu 25.10 with 12 CPUs and a warm cache (2026-11-12).
+
+| Search | `edc find` | `find` |
+| --- | --- | --- |
+| `/usr`, 254,334 entries | 0.21–0.24 s with 4 workers, 0.12 s with 12 workers | 0.47–0.50 s (`-name`) |
+| `/`, one file system, with `--layers` | 1.26–1.31 s, 807,298 entries | 1.76–2.0 s (`-xdev`), 807,834 entries |
+| `/`, one file system, default | 0.60–0.62 s, 387,419 entries | — |
+
+With `--layers`, `find` lists 536 entries more: the 535 entries under `.git`, which `edc find` skips, and the start path `/`. With the default, the list was equal to the list of `find / -xdev` without the image layers and `.git`. A query over 800,000 paths takes 11–16 ms. `edc find` uses 4 workers by default to keep the CPU load low on a production host. `--workers` changes the number.
+
+Exit codes: 0 when a path matched or you picked one, 1 when no path matched, 2 on an error, 130 when you cancelled the picker.

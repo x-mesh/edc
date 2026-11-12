@@ -276,6 +276,30 @@ command:
       - "Files of 64 MB or more get an index in the cache directory on the second search within 24h. It records which 1 MB blocks hold which letters, times, levels, and statuses, so later searches read only the blocks that can match. The index assumes a log that only grows: a file edited in place keeps its index until it shrinks or its first or last indexed block changes, so use --no-index or --verify-index for such a file."
       - "Every search tells on stderr whether it used, built, or skipped the index, when stderr is a terminal."
       - "In a pipe or with NO_COLOR, the bytes of a line stay unchanged. Exit codes: 0 found, 1 none, 2 error."
+  find:
+    summary: "Find files and directories by name, with a picker"
+    option:
+      type: "only this type: f file, d directory, l symlink; repeat or join with commas"
+      size: "files of N or more (+N or N) or less than N (-N); K, M, G, T are powers of 1024"
+      changed: "changed within this time: 10m, 2h, 1d"
+      regex: "the pattern is a regular expression over the path"
+      no_ignore: "do not apply .gitignore rules inside a git work tree"
+      cross_mounts: "also search other file systems below the path"
+      layers: "also search container image layers"
+      nul: "end each path with NUL instead of a newline, for xargs -0"
+      workers: "directories to read at the same time (default 4)"
+      group: "search the hosts of an edc remote group; needs a pattern and a path"
+      inventory: "inventory file for --group"
+    notes:
+      - "Without a pattern in a terminal, edc find opens a picker. Type to filter, Enter prints the path, Esc cancels."
+      - "The picker draws on the terminal, not on stdout, so vim \"$(edc find)\" and cd \"$(edc find -t d)\" work."
+      - "In the picker, Tab shows a preview, ctrl+o opens $EDITOR, ctrl+v opens edc view, and ctrl+g searches the selection with edc grep."
+      - "With a pattern, it prints the matches, best first. The letters must appear in order, so adjrn finds audit_journal.go. Words separated by spaces must all match."
+      - "It includes hidden files and skips .git. It applies .gitignore only when the search starts inside a git work tree."
+      - "It stays on one file system and skips kernel file systems and container image layers. stderr names what it skipped."
+      - "A directory that does not answer for 5 seconds is named on stderr and not read."
+      - "If stdin is a pipe and you give no path, its lines are the candidates."
+      - "edc grep searches file contents. Exit codes: 0 found or picked, 1 none, 2 error, 130 cancelled."
   search:
     summary: "Search code by meaning with the local semantic engine"
     option:

@@ -24,7 +24,7 @@ type viewFilterTerm struct {
 	status int
 }
 
-var viewFilterFields = []string{"path", "status", "client", "level", "program", "method", "rpc"}
+var viewFilterFields = []string{"path", "status", "client", "level", "program", "method", "rpc", "exception"}
 
 func parseViewFilter(text string) (viewFilter, error) {
 	tokens, err := viewFilterTokens(text)
@@ -204,6 +204,8 @@ func viewFilterFieldValue(line viewLine, field string) string {
 		return line.method
 	case "rpc":
 		return line.rpc
+	case "exception":
+		return line.exception
 	}
 	return ""
 }

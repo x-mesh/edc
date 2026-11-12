@@ -22,6 +22,8 @@ type viewStats struct {
 	paths    map[string]int
 	clients  map[string]int
 	programs map[string]int
+	// exceptions는 예외가 난 event를 예외 열쇠별로 센다.
+	exceptions map[string]int
 	// arrivals는 화면을 연 뒤 새로 들어온 줄 수를 초 단위로 모은 것이다. 처음 읽은 줄은 넣지 않는다. 그 줄들은 한꺼번에
 	// 읽혀서 초당 줄 수를 부풀린다.
 	arrivals  []viewArrival
@@ -29,7 +31,7 @@ type viewStats struct {
 }
 
 func newViewStats() viewStats {
-	return viewStats{levels: map[string]int{}, paths: map[string]int{}, clients: map[string]int{}, programs: map[string]int{}}
+	return viewStats{levels: map[string]int{}, paths: map[string]int{}, clients: map[string]int{}, programs: map[string]int{}, exceptions: map[string]int{}}
 }
 
 func (stats *viewStats) add(line viewLine) {
@@ -72,6 +74,9 @@ func (stats *viewStats) apply(line viewLine, step int) {
 	}
 	if line.program != "" {
 		viewCount(stats.programs, line.program, step)
+	}
+	if line.exception != "" {
+		viewCount(stats.exceptions, line.exception, step)
 	}
 }
 
@@ -121,8 +126,10 @@ type viewCountRow struct {
 	count int
 }
 
-// top은 counts에서 많은 순서로 viewTopRows개다. 수가 같으면 이름 순서라 화면을 다시 그려도 순서가 흔들리지 않는다.
-func viewTop(counts map[string]int) []viewCountRow {
+func viewTop(counts map[string]int) []viewCountRow { return viewTopN(counts, viewTopRows) }
+
+// viewTopN은 counts에서 많은 순서로 limit개다. 수가 같으면 이름 순서라 화면을 다시 그려도 순서가 흔들리지 않는다.
+func viewTopN(counts map[string]int, limit int) []viewCountRow {
 	rows := make([]viewCountRow, 0, len(counts))
 	for label, count := range counts {
 		rows = append(rows, viewCountRow{label, count})
@@ -133,5 +140,5 @@ func viewTop(counts map[string]int) []viewCountRow {
 		}
 		return rows[left].label < rows[right].label
 	})
-	return rows[:min(len(rows), viewTopRows)]
+	return rows[:min(len(rows), limit)]
 }

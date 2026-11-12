@@ -226,18 +226,20 @@ command:
     option:
       lines: "last N lines; the screen keeps N lines (default 10,000)"
       follow: "in a pipe, follow the file like tail -F; the screen always follows"
+      stats: "print the stats of the whole input and exit, without the screen"
     notes:
       - "In a terminal, it opens a screen at the end of the file and follows new lines."
       - "Up or PgUp stops the list, and the header counts the new lines. End, l, or Esc follows again."
       - "In an access log, the list shows time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden and named in the header. c shows the raw lines, and ← → scroll the list sideways."
       - "It reads nginx and Apache access logs, JSON lines, and lines with a level such as ERROR or WARN."
-      - "The stats panel counts status classes or levels, top paths and clients, and the last error."
+      - "The stats panel counts status classes or levels, the top exceptions, paths, clients, and programs, and the last error."
       - "The stats count only the lines that the screen keeps. i hides the panel."
       - "The panel sits on the right in 120 columns or more, and below the list otherwise."
       - "Enter shows the fields and the whole line, with the stack trace lines below it."
       - "When the file is rotated or truncated, it marks the place and reads the new file from the start."
       - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
       - "edc alias prints short aliases such as ev, evn, and evf."
+      - "--stats reads the whole input once and prints the level or status counts, the top exceptions, paths, clients, and programs, and the time range."
   grep:
     summary: "Search logs, code, and file paths"
     option:

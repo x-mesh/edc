@@ -58,6 +58,10 @@ type viewLine struct {
 	// message는 JSON 줄을 "time level message key=value"로 줄여 보여 줄 때의 본문이다.
 	message string
 	fields  []viewField
+	// exception은 이 줄이 속한 event에서 난 첫 예외의 열쇠다("IllegalArgumentException: Invalid URI path"). event 줄은
+	// 예외 줄이 들어올 때 받고, 그 뒤의 stack trace 줄은 앞 줄에서 물려받는다. exceptionHead는 그 예외를 처음 적은 줄이다.
+	exception     string
+	exceptionHead bool
 	// arrived는 화면을 연 뒤 이 줄을 받은 Unix 초다. 화면을 열 때 읽은 줄은 0이다. filter를 바꾸면 이 값으로 filter에 맞는
 	// 줄의 초당 수를 다시 센다.
 	arrived int64
@@ -111,6 +115,11 @@ func detectViewFormat(lines []string) viewFormat {
 		if seen == viewDetectLines {
 			break
 		}
+		// stack trace 줄은 형식을 가리지 않고 앞 줄에 붙는다. 오류만 모은 로그는 ERROR 줄 하나에 stack trace가 수십 줄이라,
+		// 이 줄까지 세면 level 줄이 표본의 4분의 1에 못 미쳐 plain으로 읽는다.
+		if viewContinues(line) || viewIsExceptionHead(line) {
+			continue
+		}
 		line = strings.TrimSpace(line)
 		if line == "" || len(line) > viewParseLimit {
 			continue
@@ -149,8 +158,22 @@ func viewLooksJSON(line string) bool {
 	return strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") && json.Valid([]byte(line))
 }
 
-// parseViewLine은 raw 한 줄을 format으로 읽는다. previous는 바로 앞 줄로, 이어지는 줄이 level을 물려받는 데 쓴다.
+// parseViewLine은 raw 한 줄을 format으로 읽는다. previous는 바로 앞 줄로, 이어지는 줄이 level과 예외를 물려받는 데 쓴다.
 func parseViewLine(raw string, format viewFormat, previous *viewLine) viewLine {
+	line := viewParseFormat(raw, format, previous)
+	if line.cont && previous != nil {
+		line.exception = previous.exception
+		// event 하나에서는 첫 예외만 센다. 뒤의 "Caused by:"는 그 예외의 원인이라 따로 세면 같은 실패를 두 번 센다.
+		if line.exception == "" {
+			if key, ok := viewExceptionHead(line.text); ok {
+				line.exception, line.exceptionHead = key, true
+			}
+		}
+	}
+	return line
+}
+
+func viewParseFormat(raw string, format viewFormat, previous *viewLine) viewLine {
 	if len(raw) > viewStoreLimit {
 		raw = raw[:viewStoreLimit]
 	}
@@ -175,8 +198,9 @@ func parseViewLine(raw string, format viewFormat, previous *viewLine) viewLine {
 			line.cont, line.level = true, previous.level
 		}
 	case viewFormatLevel:
-		// level 형식의 로그에서 level이 없는 줄은 앞 event의 일부다. 예외 이름 줄도 들여 쓰지 않는다.
-		if previous != nil && (viewContinues(line.text) || viewFindLevel(line.text) == "") {
+		// level 형식의 로그에서 level이 없는 줄은 앞 event의 일부다. 예외 이름 줄도 들여 쓰지 않는다. 예외 메시지에 ERROR 같은
+		// 대문자 낱말이 있어도 예외 줄은 앞 event에 속한다.
+		if previous != nil && (viewContinues(line.text) || viewFindLevel(line.text) == "" || viewIsExceptionHead(line.text)) {
 			line.cont, line.level = true, previous.level
 			return line
 		}
@@ -455,8 +479,50 @@ func viewParseLevel(text string, line *viewLine) {
 	}
 	line.level = level
 	line.time = strings.TrimRight(strings.TrimSpace(text[:start]), "[|-:")
+	if thread, logger, message, ok := viewSpringParts(text[end:]); ok {
+		line.program, line.message = logger, message
+		line.fields = []viewField{{"time", line.time}, {"level", text[start:end]}, {"thread", thread}, {"logger", logger}, {"message", message}}
+		return
+	}
 	line.message = strings.TrimLeft(text[end:], " ]|:-")
 	line.fields = []viewField{{"time", line.time}, {"level", text[start:end]}, {"message", line.message}}
+}
+
+// viewSpringParts는 Spring Boot 기본 형식에서 level 뒤를 나눈다. logger는 통계의 상위 프로그램이 된다.
+//
+//	2026-11-12 00:00:00.000 INFO  --- [cheduled-pool 8] c.i.m.i.v.VcScoreService : message
+//	2026-11-12 00:00:00.000  INFO 4242 --- [app] [main] o.s.b.SpringApplication : message
+//
+// 대괄호가 여럿이면 마지막이 thread다. Spring Boot 3.2부터 앞에 application 이름이 붙는다.
+func viewSpringParts(rest string) (thread, logger, message string, ok bool) {
+	rest = strings.TrimLeft(rest, " ")
+	if digits := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' }); digits > 0 {
+		rest = strings.TrimLeft(rest[digits:], " ")
+	}
+	rest, found := strings.CutPrefix(rest, "--- ")
+	if !found {
+		return "", "", "", false
+	}
+	for {
+		rest = strings.TrimLeft(rest, " ")
+		if !strings.HasPrefix(rest, "[") {
+			break
+		}
+		closing := strings.IndexByte(rest, ']')
+		if closing < 0 {
+			return "", "", "", false
+		}
+		thread, rest = strings.TrimSpace(rest[1:closing]), rest[closing+1:]
+	}
+	logger, rest, found = strings.Cut(rest, " ")
+	if !found || logger == "" || logger == ":" {
+		return "", "", "", false
+	}
+	rest, found = strings.CutPrefix(strings.TrimLeft(rest, " "), ":")
+	if !found {
+		return "", "", "", false
+	}
+	return thread, logger, strings.TrimPrefix(rest, " "), true
 }
 
 func viewFindLevel(text string) string {

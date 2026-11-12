@@ -226,18 +226,20 @@ command:
     option:
       lines: "마지막 N줄, 화면은 N줄을 보관 (기본 10,000)"
       follow: "pipe에서 tail -F처럼 따라감, 화면은 항상 따라감"
+      stats: "화면 없이 입력 전체의 통계를 출력하고 끝냄"
     notes:
       - "터미널에서는 파일 끝에서 화면을 열고 새 줄을 따라갑니다."
       - "↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 새 줄 수를 셉니다. End, l, Esc를 누르면 다시 따라갑니다."
       - "access log는 목록에 시각, status, method, bytes, path를 보입니다. 보관한 줄에서 모두 같은 host, client, 날짜는 숨기고 머리 줄에 그 값을 적습니다. c는 원문 줄을 보이고, ← →는 목록을 가로로 밉니다."
       - "nginx와 Apache access log, JSON lines, ERROR나 WARN 같은 level이 있는 줄을 읽습니다."
-      - "통계 패널은 status 범주나 level별 수, 상위 path와 client, 마지막 오류를 보여 줍니다."
+      - "통계 패널은 status 범주나 level별 수, 상위 예외·path·client·프로그램, 마지막 오류를 보여 줍니다."
       - "통계는 화면이 보관한 줄만 셉니다. i로 패널을 숨깁니다."
       - "화면이 120열 이상이면 패널을 오른쪽에, 그보다 좁으면 목록 아래에 둡니다."
       - "Enter는 필드와 줄 전체, 그 아래로 이어지는 stack trace 줄을 보여 줍니다."
       - "파일이 회전되거나 잘리면 그 자리를 표시하고 새 파일을 처음부터 읽습니다."
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
       - "edc alias는 ev, evn, evf 같은 짧은 alias를 출력합니다."
+      - "--stats는 입력 전체를 한 번 읽어 level이나 status별 수, 상위 예외·path·client·프로그램, 시간 범위를 출력합니다."
   grep:
     summary: "로그, 코드와 파일 경로 검색"
     option:

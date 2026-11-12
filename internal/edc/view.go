@@ -17,7 +17,7 @@ import (
 // viewFollowDefaultLines는 -f에 -n이 없을 때 처음 보여 주는 줄 수다. tail -f와 같다.
 const viewFollowDefaultLines = 10
 
-const viewUsage = "edc view [-n N] [-f] [file]"
+const viewUsage = "edc view [-n N] [-f] [--stats] [file]"
 
 func runView(args []string) int {
 	set := newFlagSet("view")
@@ -25,6 +25,7 @@ func runView(args []string) int {
 	lines := set.Int("n", -1, T("command.view.option.lines"))
 	follow := set.Bool("f", false, T("command.view.option.follow"))
 	set.BoolVar(follow, "F", false, T("command.view.option.follow"))
+	stats := set.Bool("stats", false, T("command.view.option.stats"))
 	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
@@ -39,6 +40,18 @@ func runView(args []string) int {
 	if path == "" && isTerminal(os.Stdin) {
 		fmt.Fprintln(os.Stderr, T("cli.usage", viewUsage))
 		return 2
+	}
+	if *stats {
+		// --stats는 입력 전체를 센다. 마지막 N줄이나 따라가기와 섞으면 무엇을 센 수인지 흐려진다.
+		if *lines != -1 || *follow {
+			fmt.Fprintln(os.Stderr, T("view.stats_conflict"))
+			return 2
+		}
+		if err := runViewStats(os.Stdout, path, richEnabled(os.Stdout)); err != nil {
+			fmt.Fprintln(os.Stderr, T("view.failed", err))
+			return 1
+		}
+		return 0
 	}
 	// 화면은 사람이 보는 터미널에서만 연다. pipe와 NO_COLOR에서는 cat, tail -F처럼 받은 바이트를 그대로 낸다.
 	// stdin이 pipe여도 키는 bubbletea가 터미널을 직접 열어 읽는다.

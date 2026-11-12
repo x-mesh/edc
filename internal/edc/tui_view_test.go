@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func viewScreenWith(t *testing.T, fixture string, width, height int) viewScreenModel {
@@ -116,7 +117,7 @@ func TestViewScreenDetailShowsStackTrace(t *testing.T) {
 	model.selected = 2
 	model = viewPress(model, "enter")
 	joined := strings.Join(model.detailView(false), "\n")
-	for _, want := range []string{"level    ERROR", "message  [http-7] c.e.Api - request failed", "java.lang.IllegalStateException", "Caused by: java.io.IOException", "... 12 more"} {
+	for _, want := range []string{"level      ERROR", "message    [http-7] c.e.Api - request failed", "exception  IllegalStateException: connection closed", "java.lang.IllegalStateException", "Caused by: java.io.IOException", "... 12 more"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("detail misses %q:\n%s", want, joined)
 		}
@@ -444,5 +445,93 @@ func TestViewScreenShowsALongFilter(t *testing.T) {
 	_ = narrow.applyFilter("users")
 	if rows, _ := narrow.panelRows(90, false); !strings.Contains(rows[0], "filter users") {
 		t.Fatalf("narrow stats: %q", rows[0])
+	}
+}
+
+// 키 안내 줄은 100열 안에 든다. 켜진 항목 표시가 뒤에 있어서, 잘리면 상태를 알 수 없다.
+func TestViewScreenHelpFitsOneHundredColumns(t *testing.T) {
+	if width := ansi.StringWidth(viewScreenHelp); width > 100 {
+		t.Fatalf("help is %d columns", width)
+	}
+	model := viewScreenWith(t, "access.log", 100, 30)
+	if help := model.header(false)[1]; !strings.HasSuffix(help, "q quit") {
+		t.Fatalf("help at 100 columns: %q", help)
+	}
+}
+
+// x는 filter를 모두 지운다. 지운 것도 한 단계라서 Esc로 되돌린다. x 안내는 filter가 있을 때만 머리 줄에 보인다.
+func TestViewScreenXClearsTheFilter(t *testing.T) {
+	model := viewScreenWith(t, "access.log", 140, 30)
+	if strings.Contains(model.header(false)[0], "x clear") {
+		t.Fatal("no filter, no x hint")
+	}
+	if err := model.applyFilter("users status:2xx"); err != nil {
+		t.Fatal(err)
+	}
+	if header := model.header(false)[0]; !strings.Contains(header, "filter users status:2xx  x clear") {
+		t.Fatalf("header %q", header)
+	}
+	model = viewPress(model, "x")
+	if model.filter != "" || model.panelStats().lines != 6 {
+		t.Fatalf("x clears the filter: %q", model.filter)
+	}
+	model = viewPress(model, "esc")
+	if model.filter != "users status:2xx" {
+		t.Fatalf("esc brings the filter back: %q", model.filter)
+	}
+	model = viewPress(model, "tab", "x")
+	if !model.picking || model.filter != "" {
+		t.Fatalf("x in the panel: picking %v filter %q", model.picking, model.filter)
+	}
+}
+
+// n과 N은 보이는 줄 가운데 다음과 이전 오류 event로 간다. stack trace 줄은 건너뛴다.
+func TestViewScreenJumpsBetweenErrors(t *testing.T) {
+	model := newViewScreenModel("app", viewKeepLines)
+	model.width, model.height = 140, 30
+	model.ingest([]string{
+		"2026-10-26 10:00:00 INFO start",       // 0
+		"2026-10-26 10:00:01 ERROR first boom", // 1
+		"2026-10-26 10:00:02 INFO ok",          // 2
+		"2026-10-26 10:00:03 ERROR second",     // 3
+		"\tat com.example.Api.call",            // 4: 앞 줄의 stack trace
+		"2026-10-26 10:00:04 INFO ok",          // 5
+	}, time.Now(), false)
+	if line, _ := model.line(4); !line.cont {
+		t.Fatal("line 4 must continue line 3")
+	}
+	model = viewPress(model, "n")
+	if model.selected != 3 {
+		t.Fatalf("n while following picks the newest error: %d", model.selected)
+	}
+	model = viewPress(model, "N")
+	if model.selected != 1 {
+		t.Fatalf("N goes to the older error: %d", model.selected)
+	}
+	model = viewPress(model, "N")
+	if model.selected != 1 || !strings.Contains(model.header(false)[0], "no older error") {
+		t.Fatalf("no older error: selected %d header %q", model.selected, model.header(false)[0])
+	}
+	model = viewPress(model, "n")
+	if model.selected != 3 || strings.Contains(model.header(false)[0], "no older error") {
+		t.Fatalf("n goes to the newer error and clears the notice: %d", model.selected)
+	}
+	if model = viewPress(model, "n"); model.selected != 3 || !strings.Contains(model.header(false)[0], "no newer error") {
+		t.Fatalf("no newer error: %d %q", model.selected, model.header(false)[0])
+	}
+	// filter가 있으면 보이는 줄에서만 찾는다.
+	model = viewPress(model, "end")
+	if err := model.applyFilter("second"); err != nil {
+		t.Fatal(err)
+	}
+	if model = viewPress(model, "N"); model.selected != 3 {
+		t.Fatalf("filtered N: %d", model.selected)
+	}
+	if err := model.applyFilter("ok"); err != nil {
+		t.Fatal(err)
+	}
+	model.selected = -1
+	if model = viewPress(model, "N"); model.selected != -1 || !strings.Contains(model.header(false)[0], "no error") {
+		t.Fatalf("no error among the shown lines: %d %q", model.selected, model.header(false)[0])
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // unsupportedOSReason은 probe가 이 OS에서 돌지 않는 이유다.
@@ -416,7 +417,12 @@ func unsupported(probe, reason string) Result {
 func firstLine(value string) string {
 	line, _, _ := strings.Cut(value, "\n")
 	if len(line) > 160 {
-		return line[:160] + "…"
+		cut := 160
+		// 한국어와 일본어는 글자 하나가 여러 byte다. 글자 중간에서 자르면 깨진 글자가 보인다.
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
+		}
+		return line[:cut] + "…"
 	}
 	return line
 }

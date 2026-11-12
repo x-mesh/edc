@@ -174,6 +174,44 @@ func TestViewDetectStopsAfterTheScanLimit(t *testing.T) {
 	}
 }
 
+// viewLinesAfterAStackTrace는 stack trace 줄 stack개로 시작하고 level event가 뒤따르는 줄이다. 순환된 로그는 stack trace 중간에서
+// 시작할 수 있다.
+func viewLinesAfterAStackTrace(stack int) []string {
+	var lines []string
+	for range stack {
+		lines = append(lines, "\tat com.example.Job.run(Job.java:1)")
+	}
+	for range viewDetectLines {
+		lines = append(lines, "2026-11-12 12:14:47.000  INFO 1 --- [main] c.e.App : ok")
+	}
+	return lines
+}
+
+// 첫 viewDetectLines줄이 모두 stack trace여도 --stats는 grep처럼 viewDetectScanLines줄까지 보고 형식을 정한다. 앞 줄이 없는
+// 첫 stack trace 줄은 event 하나가 되고, 나머지 stack trace 줄은 거기에 붙는다.
+func TestViewStatsDetectsAFileThatStartsInAStackTrace(t *testing.T) {
+	for _, test := range []struct {
+		stack  int
+		format viewFormat
+		events int
+	}{
+		{viewDetectLines + 6, viewFormatLevel, 1 + viewDetectLines},
+		{viewDetectScanLines + 10, viewFormatPlain, viewDetectScanLines + 10 + viewDetectLines},
+	} {
+		text := strings.Join(viewLinesAfterAStackTrace(test.stack), "\n") + "\n"
+		summary, err := viewSummarize(strings.NewReader(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if grep := grepDetectFormat([]byte(text), true); summary.format != test.format || grep != test.format {
+			t.Errorf("%d stack lines: --stats %q, grep %q, want %q", test.stack, summary.format, grep, test.format)
+		}
+		if summary.stats.lines != test.events {
+			t.Errorf("%d stack lines: %d events, want %d", test.stack, summary.stats.lines, test.events)
+		}
+	}
+}
+
 // 파일 이름에 든 escape는 --stats 제목에 그대로 나오지 않는다.
 func TestViewStatsSanitizesTheFileName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evil\x1b]0;owned\x07\x1b[31m.log")

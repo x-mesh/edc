@@ -54,6 +54,51 @@ func (wait *tcpWaitLimit) Set(value string) error {
 // IsBoolFlag가 있어야 flag package가 값 없는 -w를 받는다. 그래서 시간은 -w=5m처럼 붙여 써야 한다.
 func (wait *tcpWaitLimit) IsBoolFlag() bool { return true }
 
+// tcpWaitRequested는 -w나 --wait가 켜져 있는지다. 여러 번 주면 마지막 값을 따르고, -w=false면 꺼진다. -w=0은 끝없이
+// 기다리는 값이라 켜진 것이다. bool처럼 받는 flag라 뒤의 낱말을 값으로 가져가지 않는다.
+func tcpWaitRequested(args []string) bool {
+	on := false
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if _, value, ok := tcpWaitFlag(arg); ok {
+			on = value != "false"
+		}
+	}
+	return on
+}
+
+// tcpWithoutWait는 args에서 -w와 --wait를 뺀다. --wait=false로 꺼진 뒤 보통 check에 넘길 때 쓴다.
+func tcpWithoutWait(args []string) []string {
+	kept := make([]string, 0, len(args))
+	for index, arg := range args {
+		if arg == "--" {
+			return append(kept, args[index:]...)
+		}
+		if _, _, ok := tcpWaitFlag(arg); !ok {
+			kept = append(kept, arg)
+		}
+	}
+	return kept
+}
+
+// tcpWaitFlag는 arg가 -w, --wait, 또는 그 =값 꼴인지 본다. 값이 없으면 "true"다.
+func tcpWaitFlag(arg string) (string, string, bool) {
+	trimmed := strings.TrimLeft(arg, "-")
+	if len(trimmed) == len(arg) || len(arg)-len(trimmed) > 2 {
+		return "", "", false
+	}
+	name, value, found := strings.Cut(trimmed, "=")
+	if name != "w" && name != "wait" {
+		return "", "", false
+	}
+	if !found {
+		value = "true"
+	}
+	return name, value, true
+}
+
 // runTCPWait는 tcp check -w다. 연결될 때까지 tcpWaitInterval마다 다시 시도하고, 끝나면 마지막 시도를 보통 check 결과처럼
 // 출력한다. 연결되면 0, 기다린 시간이 지나면 1, Ctrl-C면 4로 끝난다.
 func runTCPWait(args []string, version string) int {

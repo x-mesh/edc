@@ -3,8 +3,11 @@ package edc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
+	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -126,4 +129,90 @@ func tcpWaitFreeAddress(t *testing.T) string {
 	address := listener.Addr().String()
 	listener.Close()
 	return address
+}
+
+// -w는 마지막 값을 따른다. --wait=false면 꺼지고 그 flag를 빼서 보통 check로 넘긴다. -w=0은 끝없이 기다리는 값이다.
+func TestTCPWaitRequested(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		on   bool
+		rest string
+	}{
+		{[]string{"-w", "h:1"}, true, "h:1"},
+		{[]string{"--wait=false", "h:1"}, false, "h:1"},
+		{[]string{"-w", "--wait=false", "h:1"}, false, "h:1"},
+		{[]string{"--wait=false", "-w=5m", "h:1"}, true, "h:1"},
+		{[]string{"-w=0", "h:1"}, true, "h:1"},
+		{[]string{"--count", "3", "-wait=false", "h:1"}, false, "--count 3 h:1"},
+		{[]string{"h:1", "--", "-w"}, false, "h:1 -- -w"},
+		{[]string{"-v", "h:1"}, false, "-v h:1"},
+	} {
+		if got := tcpWaitRequested(test.args); got != test.on {
+			t.Errorf("%v: requested %v", test.args, got)
+		}
+		if rest := strings.Join(tcpWithoutWait(test.args), " "); !test.on && rest != test.rest {
+			t.Errorf("%v: without -w %q, want %q", test.args, rest, test.rest)
+		}
+	}
+}
+
+// runTCP부터 실제 명령 경로로 실행한다. -w=2500ms는 닫힌 포트에 1초마다 시도하다 2.5초 뒤 실패하고, -w는 늦게 뜬 서버에 연결하며,
+// --wait=false는 기다리지 않고 한 번만 시도한다.
+func TestRunTCPWaitCommand(t *testing.T) {
+	run := func(args ...string) (int, map[string]interface{}, time.Duration) {
+		t.Helper()
+		previousOut, previousErr := os.Stdout, os.Stderr
+		read, write, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer devNull.Close()
+		os.Stdout, os.Stderr = write, devNull
+		output := make(chan []byte, 1)
+		go func() {
+			data, _ := io.ReadAll(read)
+			output <- data
+		}()
+		started := time.Now()
+		code := runTCP(append([]string{"check", "--json", "-"}, args...), "test")
+		elapsed := time.Since(started)
+		os.Stdout, os.Stderr = previousOut, previousErr
+		write.Close()
+		data := <-output
+		var report struct {
+			Results []struct {
+				Metrics map[string]interface{} `json:"metrics"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(data, &report); err != nil || len(report.Results) != 1 {
+			t.Fatalf("%v: %v %s", args, err, data)
+		}
+		return code, report.Results[0].Metrics, elapsed
+	}
+	closed := tcpWaitFreeAddress(t)
+	if code, metrics, elapsed := run("-w=2500ms", closed); code != 1 || elapsed < 2500*time.Millisecond || metrics["attempts"].(float64) < 3 {
+		t.Fatalf("-w=2500ms: code %d elapsed %v metrics %v", code, elapsed, metrics)
+	}
+	if code, metrics, elapsed := run("--wait=false", closed); code != 1 || elapsed > 900*time.Millisecond || metrics["attempts"] != nil {
+		t.Fatalf("--wait=false: code %d elapsed %v metrics %v", code, elapsed, metrics)
+	}
+	late := tcpWaitFreeAddress(t)
+	listening := make(chan net.Listener, 1)
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+		listener, _ := net.Listen("tcp", late)
+		listening <- listener
+	}()
+	defer func() {
+		if listener := <-listening; listener != nil {
+			listener.Close()
+		}
+	}()
+	if code, metrics, _ := run("-w=10s", late); code != 0 || metrics["attempts"].(float64) < 2 {
+		t.Fatalf("-w: code %d metrics %v", code, metrics)
+	}
 }

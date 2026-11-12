@@ -518,7 +518,7 @@ The stats panel shows the lines per second, the errors, the status classes or th
 
 When a filter is on, the panel counts only the lines that match it. The panel title shows `filtered`, and the `filter` row under it shows the whole filter. The header also shows the filter after the status. The `events` row shows the matched lines and all kept lines, for example `3 / 6`. Each status class or level shows its percent of the counted lines.
 
-Press Tab to select a row in the panel. Use Up and Down to move. Press Enter to add the row to the filter, for example `path:/api/users` or `status:5xx`. If the filter has a term for the same field, the new term replaces it. You stay in the panel, so you can select a client next. Press Backspace to remove the last term that you added. Press Esc or Tab to go back to the list.
+Press Tab to select a row in the panel. Use Up and Down to move. Press Enter to add the row to the filter, for example `path:/api/users` or `status:5xx`. If the filter has a term for the same field, the new term replaces it. You stay in the panel, so you can select a client next. Press Backspace to go back to the filter before the last change, as Esc does in the list. Press Esc or Tab to go back to the list.
 
 In the list, Esc goes back one step. If a line is selected, Esc follows the new lines again. Then each Esc changes the filter back to the filter before it. For example, `score status:2xx` goes back to `score`, and then to all lines.
 

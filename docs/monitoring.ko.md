@@ -452,7 +452,7 @@ access log는 목록에 시각, status, method, bytes, path를 보입니다. 보
 
 filter를 걸면 패널은 filter에 맞는 줄만 셉니다. 패널 제목에 `filtered`가 붙고 그 아래 `filter` 행에 filter 전체가 보입니다. 머리 줄에도 상태 바로 뒤에 filter가 보입니다. `events` 행은 `3 / 6`처럼 맞는 줄 수와 보관한 전체 줄 수를 함께 보입니다. status 범주와 level 행에는 패널이 센 줄에서 차지하는 비율이 붙습니다.
 
-Tab을 누르면 패널의 행을 고릅니다. ↑/↓로 옮기고 Enter를 누르면 `path:/api/users`나 `status:5xx`처럼 그 행이 filter에 더해집니다. filter에 같은 필드의 조건이 이미 있으면 새 조건으로 바꿉니다. 패널에 머무르므로 이어서 client를 고를 수 있습니다. Backspace는 마지막에 더한 조건을 되돌립니다. Esc나 Tab을 누르면 목록으로 돌아갑니다.
+Tab을 누르면 패널의 행을 고릅니다. ↑/↓로 옮기고 Enter를 누르면 `path:/api/users`나 `status:5xx`처럼 그 행이 filter에 더해집니다. filter에 같은 필드의 조건이 이미 있으면 새 조건으로 바꿉니다. 패널에 머무르므로 이어서 client를 고를 수 있습니다. Backspace는 목록의 Esc처럼 filter를 마지막으로 바꾸기 전으로 되돌립니다. Esc나 Tab을 누르면 목록으로 돌아갑니다.
 
 목록에서 Esc는 한 단계씩 뒤로 갑니다. 고른 줄이 있으면 먼저 새 줄을 다시 따라가고, 그다음부터는 누를 때마다 filter를 바로 전 filter로 되돌립니다. 예를 들어 `score status:2xx`는 `score`로, 그다음은 모든 줄로 돌아갑니다.
 

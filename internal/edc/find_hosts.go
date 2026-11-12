@@ -201,6 +201,13 @@ func findHostFromCapture(capture remoteCapture) findHostRow {
 		if len(report.Problems) > 0 {
 			row.Detail = report.Problems[0]
 		}
+		// 원격 edc는 일치가 없으면 1, 찾을 곳을 하나도 읽지 못하면 2로 끝난다. 2는 검색하지 못한 것이다.
+		if capture.ExitCode == 2 && len(row.Matches) == 0 {
+			row.Status = findHostFailed
+			if row.Detail == "" {
+				row.Detail = "exit 2"
+			}
+		}
 		return row
 	}
 	detail := cleanFirstLine(capture.Stderr)

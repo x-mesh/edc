@@ -282,3 +282,15 @@ func TestFindModelEnterWaitsForThePendingSearch(t *testing.T) {
 		t.Errorf("chosen %q", model.chosen)
 	}
 }
+
+// ctrl+g를 누른 뒤 계산이 끝나 선택이 바뀌어도 grep 대상은 누를 때 고른 경로다.
+func TestFindModelKeepsTheGrepTarget(t *testing.T) {
+	model := testFindModel(false)
+	model, _ = findUpdate(t, model, findBatchMsg{entries: []findEntry{findTestEntry("old.log", findKindFile, 0), findTestEntry("app.log", findKindFile, time.Hour)}})
+	model, search := findUpdate(t, model, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model, _ = findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	model, _ = findUpdate(t, model, search())
+	if model.grepPath != "old.log" || !strings.Contains(ansi.Strip(model.promptLine()), "old.log") {
+		t.Errorf("grep path %q, prompt %q", model.grepPath, model.promptLine())
+	}
+}

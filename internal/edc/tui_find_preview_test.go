@@ -149,3 +149,37 @@ func findRunBatch(cmd tea.Cmd) tea.Msg {
 	}
 	return msg
 }
+
+// Lstat 뒤에 경로가 FIFO로 바뀌어도 막히지 않아야 한다. 일반 파일을 여는 함수에 FIFO를 직접 넘겨 확인한다.
+func TestFindPreviewOpenDoesNotBlockOnASwappedPath(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		_, note := findPreviewFile(fifo, 0)
+		done <- note
+	}()
+	select {
+	case note := <-done:
+		if !strings.Contains(note, "FIFO") {
+			t.Errorf("note = %q", note)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("opening a FIFO blocked")
+	}
+}
+
+func TestLoadFindPreviewKeepsTheFirstNamesOfALargeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	// 이름 순서와 만든 순서를 다르게 해, 묶음마다 앞 이름만 남기는지 본다.
+	for index := range 3 * findReadBatch {
+		writeFindTree(t, dir, fmt.Sprintf("many/f%05d", (index*7919)%(3*findReadBatch)))
+	}
+	preview := loadFindPreview(filepath.Join(dir, "many"), time.Now())
+	if len(preview.lines) != findPreviewEntries || preview.lines[0] != "f00000" || preview.lines[findPreviewEntries-1] != fmt.Sprintf("f%05d", findPreviewEntries-1) ||
+		preview.note != T("find.preview.more", 3*findReadBatch-findPreviewEntries) {
+		t.Errorf("first %q, last %q, note %q", preview.lines[0], preview.lines[len(preview.lines)-1], preview.note)
+	}
+}

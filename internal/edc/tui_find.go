@@ -89,6 +89,8 @@ type findModel struct {
 
 	grepMode    bool
 	grepPattern string
+	// grepPath는 ctrl+g를 누를 때 고른 경로다. 패턴을 치는 동안 계산이 끝나 선택이 바뀌어도 대상은 그대로다.
+	grepPath string
 
 	chosen    string
 	cancelled bool
@@ -335,8 +337,8 @@ func (model findModel) key(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.status = T("find.picker.open_pipe")
 			return model, nil
 		}
-		if _, ok := model.selected(); ok {
-			model.grepMode, model.grepPattern, model.status = true, "", ""
+		if hit, ok := model.selected(); ok {
+			model.grepMode, model.grepPattern, model.grepPath, model.status = true, "", model.paths[hit], ""
 		}
 		return model, nil
 	default:
@@ -367,7 +369,12 @@ func (model findModel) grepKey(key tea.KeyPressMsg, name string) (tea.Model, tea
 			return model, nil
 		}
 		model.grepMode = false
-		return model.open(model.grepCommand, "grep")
+		if !model.config.stdoutTerminal {
+			model.status = T("find.picker.open_pipe")
+			return model, nil
+		}
+		command, _ := model.grepCommand(model.grepPath, findKindOther)
+		return model, tea.ExecProcess(command, func(err error) tea.Msg { return findExecDoneMsg{err: err, what: "grep"} })
 	default:
 		if key.Text != "" && !strings.ContainsAny(key.Text, "\x00\x1b") {
 			model.grepPattern += key.Text
@@ -663,8 +670,7 @@ func (model findModel) paint(text, color string, bold bool) string {
 
 func (model findModel) promptLine() string {
 	if model.grepMode {
-		hit, _ := model.selected()
-		prompt := T("find.picker.grep_prompt", viewSanitize(model.paths[hit])) + " "
+		prompt := T("find.picker.grep_prompt", viewSanitize(model.grepPath)) + " "
 		return ansi.Truncate(model.paint(prompt, richCyan, true)+viewSanitize(model.grepPattern)+"█", model.width, "…")
 	}
 	count := fmt.Sprintf("%d/%d", model.total, len(model.paths))
@@ -792,4 +798,3 @@ func findAge(elapsed time.Duration) string {
 	}
 	return fmt.Sprintf("%dy", int(elapsed/(365*24*time.Hour)))
 }
-

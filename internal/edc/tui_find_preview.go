@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -96,8 +97,30 @@ func findPreviewKind(mode fs.FileMode) string {
 	return mode.Type().String()
 }
 
+// findPreviewOpen은 미리보기용으로 연다. Lstat 뒤에 경로가 FIFO로 바뀌어도 막히지 않도록 O_NONBLOCK으로 열고, 연 것을 다시 확인한다.
+// symlink는 따라가지 않는다.
+func findPreviewOpen(path string, directory bool) (*os.File, error) {
+	flags := os.O_RDONLY | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
+	if directory {
+		flags |= syscall.O_DIRECTORY
+	}
+	file, err := os.OpenFile(path, flags, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && (directory && !info.IsDir() || !directory && !info.Mode().IsRegular()) {
+		err = errors.New(T("find.preview.special", findPreviewKind(info.Mode())))
+	}
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
 func findPreviewFile(path string, size int64) ([]string, string) {
-	file, err := os.Open(path)
+	file, err := findPreviewOpen(path, false)
 	if err != nil {
 		return nil, T("find.preview.error", findPreviewError(err))
 	}
@@ -128,19 +151,30 @@ func findPreviewFile(path string, size int64) ([]string, string) {
 	return lines, note
 }
 
+// findPreviewDir는 이름순으로 앞 findPreviewEntries개만 남기며 목록을 묶음으로 읽는다. 전부 메모리에 올리면 큰 디렉터리에서 멈춘다.
 func findPreviewDir(path string) ([]string, string) {
-	file, err := os.Open(path)
+	file, err := findPreviewOpen(path, true)
 	if err != nil {
 		return nil, T("find.preview.error", findPreviewError(err))
 	}
 	defer file.Close()
-	entries, err := file.ReadDir(-1)
-	if err != nil && len(entries) == 0 {
-		return nil, T("find.preview.error", findPreviewError(err))
+	var kept []fs.DirEntry
+	total := 0
+	for {
+		batch, err := file.ReadDir(findReadBatch)
+		total += len(batch)
+		kept = append(kept, batch...)
+		slices.SortFunc(kept, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+		kept = kept[:min(len(kept), findPreviewEntries)]
+		if err != nil {
+			if !errors.Is(err, io.EOF) && total == 0 {
+				return nil, T("find.preview.error", findPreviewError(err))
+			}
+			break
+		}
 	}
-	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	var lines []string
-	for _, entry := range entries[:min(len(entries), findPreviewEntries)] {
+	for _, entry := range kept {
 		name := viewSanitize(entry.Name())
 		switch {
 		case entry.IsDir():
@@ -151,9 +185,9 @@ func findPreviewDir(path string) ([]string, string) {
 		lines = append(lines, name)
 	}
 	note := ""
-	if len(entries) == 0 {
+	if total == 0 {
 		note = T("find.preview.empty_dir")
-	} else if extra := len(entries) - findPreviewEntries; extra > 0 {
+	} else if extra := total - findPreviewEntries; extra > 0 {
 		note = T("find.preview.more", extra)
 	}
 	return lines, note

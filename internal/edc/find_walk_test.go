@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -312,4 +313,20 @@ func findTestReal(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return real
+}
+
+// 큰 디렉터리 하나도 묶음으로 보내야 후보 상한과 받는 쪽의 중단이 바로 걸린다.
+func TestFindWalkSendsALargeDirectoryInBatches(t *testing.T) {
+	root := t.TempDir()
+	for index := range 3*findReadBatch + 10 {
+		writeFindTree(t, root, fmt.Sprintf("big/f%05d", index))
+	}
+	var sizes []int
+	findWalk(context.Background(), findWalkOptions{roots: []string{filepath.Join(root, "big")}, workers: 1, noIgnore: true}, testFindSources(nil), func(batch []findEntry) bool {
+		sizes = append(sizes, len(batch))
+		return len(sizes) < 2
+	})
+	if len(sizes) != 2 || sizes[0] > findReadBatch || sizes[1] > findReadBatch {
+		t.Errorf("batch sizes = %v", sizes)
+	}
 }

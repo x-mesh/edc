@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -92,7 +93,7 @@ func parseFindSize(text string) (minimum, maximum int64, err error) {
 		}
 	}
 	number, parseErr := strconv.ParseFloat(body, 64)
-	if parseErr != nil || number < 0 || number*float64(unit) > float64(1<<62) {
+	if parseErr != nil || math.IsNaN(number) || number < 0 || number*float64(unit) > float64(1<<62) {
 		return 0, 0, invalid
 	}
 	limit := int64(number * float64(unit))
@@ -367,9 +368,10 @@ func runFindList(options findOptions, env findEnv) int {
 			writer.WriteByte('\n')
 		}
 	}
-	if err := writer.Flush(); err != nil && !errors.Is(err, os.ErrClosed) {
-		// 파이프를 먼저 닫은 head 같은 경우다. 쓰지 못한 나머지는 버린다.
-		return code
+	// 파이프를 먼저 닫은 head는 SIGPIPE로 이 프로세스를 끝낸다. 여기까지 온 쓰기 오류는 디스크가 찬 파일 같은 것이라 알린다.
+	if err := writer.Flush(); err != nil {
+		fmt.Fprintln(env.stderr, "edc find: "+err.Error())
+		return 2
 	}
 	findWriteNotes(env.stderr, options, report, findNoteCounts{matches: len(matches), seen: seen, elapsed: elapsed, limited: limited, truncated: truncated}, env.stderrTerminal)
 	return code

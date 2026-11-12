@@ -501,13 +501,15 @@ func (walker *findWalker) read(worker int, dir findDir, arena *findArena) {
 		return
 	default:
 	}
-	walker.progress(worker, findDisplayPath(dir.display))
+	shown := findDisplayPath(dir.display)
+	walker.progress(worker, shown)
 	// 결과를 보내려고 기다리는 동안은 읽는 중이 아니다. 받는 쪽이 느릴 때 응답 없는 디렉터리로 보지 않도록 먼저 지운다.
 	idle := func() {
 		walker.mu.Lock()
 		delete(walker.busy, worker)
 		walker.mu.Unlock()
 	}
+	defer idle()
 	walker.sources.beforeRead(dir.abs)
 	file, err := os.Open(dir.abs)
 	if err != nil {
@@ -515,45 +517,60 @@ func (walker *findWalker) read(worker int, dir findDir, arena *findArena) {
 		walker.markUnreadable(dir.display, err)
 		return
 	}
-	var entries []fs.DirEntry
-	var readErr error
-	for {
-		walker.sources.beforeRead(dir.abs)
-		batch, err := file.ReadDir(findReadBatch)
-		walker.progress(worker, findDisplayPath(dir.display))
-		entries = append(entries, batch...)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				readErr = err
-			}
-			break
-		}
-	}
-	file.Close()
+	defer file.Close()
 	walker.mu.Lock()
 	walker.directories++
 	walker.mu.Unlock()
+	// 목록은 묶음마다 처리하므로 .gitignore가 어느 묶음에 있을지 모른다. 규칙은 저장소 안에서만 쓰므로 그때만 먼저 열어 본다.
 	patterns := dir.patterns
 	if dir.root.ignore {
-		for _, entry := range entries {
-			if entry.Name() == ".gitignore" {
-				patterns = slices.Clip(patterns)
-				_ = grepReadIgnore(dir.abs, dir.parts, &patterns)
-				break
-			}
+		if _, err := os.Lstat(filepath.Join(dir.abs, ".gitignore")); err == nil {
+			patterns = slices.Clip(patterns)
+			_ = grepReadIgnore(dir.abs, dir.parts, &patterns)
 		}
 	}
 	var matcher gitignore.Matcher
 	if dir.root.ignore && len(patterns) > 0 {
 		matcher = gitignore.NewMatcher(patterns)
 	}
-	found := make([]findEntry, 0, len(entries))
+	// 큰 디렉터리도 묶음마다 보낸다. 한 디렉터리를 끝까지 모으면 후보 상한이 늦게 걸리고, 받는 쪽이 멈춰도 끝까지 읽는다.
+	for {
+		walker.sources.beforeRead(dir.abs)
+		batch, err := file.ReadDir(findReadBatch)
+		walker.progress(worker, shown)
+		found, subdirs := walker.entries(worker, dir, batch, patterns, matcher, arena)
+		if len(subdirs) > 0 {
+			walker.queue.push(subdirs...)
+		}
+		if len(found) > 0 {
+			idle()
+			select {
+			case walker.results <- found:
+			case <-walker.quit:
+				return
+			}
+			walker.progress(worker, shown)
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				walker.markUnreadable(dir.display, err)
+			}
+			return
+		}
+	}
+}
+
+// entries는 목록 한 묶음을 후보와 읽을 하위 디렉터리로 나눈다.
+func (walker *findWalker) entries(worker int, dir findDir, batch []fs.DirEntry, patterns []gitignore.Pattern, matcher gitignore.Matcher, arena *findArena) ([]findEntry, []findDir) {
+	shown := findDisplayPath(dir.display)
+	found := make([]findEntry, 0, len(batch))
 	var subdirs []findDir
-	for _, entry := range entries {
+	for _, entry := range batch {
 		name := entry.Name()
 		if name == ".git" {
 			continue
 		}
+		// 파일 시스템이 종류를 주지 않으면(DT_UNKNOWN) os 패키지가 lstat로 채우므로 Type은 비어 있지 않다.
 		kind := findKindOf(entry.Type())
 		var childParts []string
 		if dir.root.ignore {
@@ -565,7 +582,7 @@ func (walker *findWalker) read(worker int, dir findDir, arena *findArena) {
 		candidate := findEntry{path: arena.join(dir.display, name), kind: kind}
 		if walker.options.stat {
 			info, err := entry.Info()
-			walker.progress(worker, findDisplayPath(dir.display))
+			walker.progress(worker, shown)
 			if err != nil {
 				// 읽는 사이에 지워진 항목은 후보가 아니다.
 				continue
@@ -585,20 +602,7 @@ func (walker *findWalker) read(worker int, dir findDir, arena *findArena) {
 		}
 		subdirs = append(subdirs, findDir{root: dir.root, abs: abs, display: candidate.path, parts: childParts, patterns: patterns})
 	}
-	idle()
-	if readErr != nil {
-		walker.markUnreadable(dir.display, readErr)
-	}
-	if len(subdirs) > 0 {
-		walker.queue.push(subdirs...)
-	}
-	if len(found) == 0 {
-		return
-	}
-	select {
-	case walker.results <- found:
-	case <-walker.quit:
-	}
+	return found, subdirs
 }
 
 func (walker *findWalker) skip(root *findRoot, abs, display string) (findSkip, bool) {

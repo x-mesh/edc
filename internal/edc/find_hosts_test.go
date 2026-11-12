@@ -55,6 +55,8 @@ func TestFindHostFromCapture(t *testing.T) {
 		{"garbage", remoteCapture{Stdout: "hello"}, findHostInvalid},
 		{"truncated", remoteCapture{Stdout: findTestJSON(t, "/x"), Truncated: true}, findHostInvalid},
 		{"failed", remoteCapture{ExitCode: 2, Stderr: "edc find: permission denied", Err: io.EOF}, findHostFailed},
+		// JSON을 냈어도 2로 끝났으면 찾을 곳을 하나도 읽지 못한 것이다.
+		{"no root", remoteCapture{Stdout: findTestJSON(t), ExitCode: 2, Err: io.EOF}, findHostFailed},
 	} {
 		row := findHostFromCapture(tc.capture)
 		if row.Status != tc.status {

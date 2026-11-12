@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -70,6 +71,8 @@ func TestParseFindSize(t *testing.T) {
 		{"+", 0, 0, false},
 		{"10X", 0, 0, false},
 		{"-5-", 0, 0, false},
+		{"NaN", 0, 0, false},
+		{"+Inf", 0, 0, false},
 	} {
 		minimum, maximum, err := parseFindSize(tc.text)
 		if (err == nil) != tc.ok || tc.ok && (minimum != tc.min || maximum != tc.max) {
@@ -275,5 +278,40 @@ func TestRunFindRejectsFiltersOnStdinLines(t *testing.T) {
 		if code := runFindWith(args, env); code != 2 || !strings.Contains(stderr.String(), "--type") {
 			t.Errorf("%v: code %d, %q", args, code, stderr.String())
 		}
+	}
+}
+
+func TestRunFindHonorsTheTimeoutOption(t *testing.T) {
+	root := t.TempDir()
+	writeFindTree(t, root, "slow/a", "fast.txt")
+	t.Chdir(root)
+	block := make(chan struct{})
+	defer close(block)
+	env := testFindEnv(nil, nil)
+	var stdout, stderr bytes.Buffer
+	env.stdout, env.stderr = &stdout, &stderr
+	env.sources.beforeRead = func(path string) {
+		if strings.HasSuffix(path, "/slow") {
+			<-block
+		}
+	}
+	started := time.Now()
+	code := runFindWith([]string{"--timeout", "100ms", "-E", "."}, env)
+	if code != 0 || !strings.Contains(stdout.String(), "fast.txt") || !strings.Contains(stderr.String(), T("find.note.partial", 100*time.Millisecond)) || time.Since(started) > 3*time.Second {
+		t.Errorf("code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
+type findFailingWriter struct{}
+
+func (findFailingWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+func TestRunFindReportsAWriteError(t *testing.T) {
+	root := t.TempDir()
+	writeFindTree(t, root, "a.txt")
+	t.Chdir(root)
+	var stderr bytes.Buffer
+	if code := runFindWith([]string{"a"}, testFindEnv(findFailingWriter{}, &stderr)); code != 2 || !strings.Contains(stderr.String(), "no space left") {
+		t.Errorf("code %d, stderr %q", code, stderr.String())
 	}
 }

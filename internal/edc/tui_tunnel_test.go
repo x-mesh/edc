@@ -784,6 +784,25 @@ func TestTunnelScreenEditRefusesARenameOntoARunningTunnel(t *testing.T) {
 	}
 }
 
+func TestTunnelScreenEditRefusesToRenameAnUnsavedTunnelOntoADefinition(t *testing.T) {
+	screen, runner := newEditTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	model, _ := tunnelKey(selectTunnelRow(t, updated.(tunnelScreen), "adhoc"), tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	// db는 멈춰 있는 저장 정의다. 저장하지 않아도 같은 이름이면 목록의 한 줄을 두 터널이 나눠 쓴다.
+	edit.form.name, edit.form.save = "db", false
+	if next, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter}); command != nil || !strings.Contains(next.(tunnelScreen).form.problem, "db") {
+		t.Fatalf("problem %q", next.(tunnelScreen).form.problem)
+	}
+	if len(runner.stopped) != 0 {
+		t.Errorf("nothing may stop: %v", runner.stopped)
+	}
+}
+
 func TestTunnelScreenExtendsARunningTunnelWithPlus(t *testing.T) {
 	screen, runner := newTestTunnelScreen(t)
 	model, command := tunnelKey(screen, tea.KeyPressMsg{Code: '+', Text: "+"})

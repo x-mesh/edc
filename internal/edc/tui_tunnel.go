@@ -1041,7 +1041,11 @@ func (screen tunnelScreen) duplicateProblem(form tunnelForm) error {
 			}
 		}
 	}
-	if !form.save || (form.editing != nil && name == form.editing.name) {
+	if form.editing != nil && name == form.editing.name {
+		return nil
+	}
+	// 저장하지 않는 임시 터널을 고칠 때도 정의 이름으로 바꾸면, 목록에서 실행 중인 임시 터널과 멈춘 정의가 한 이름을 나눠 쓴다.
+	if !form.save && form.editing == nil {
 		return nil
 	}
 	if _, exists := screen.environment.specs[name]; exists {

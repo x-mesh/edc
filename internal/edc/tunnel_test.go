@@ -1064,10 +1064,21 @@ func TestTunnelManagerExtendsTheStopTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := manager.now()
+	started, _ := manager.store.find("timed")
+	release, held, err := manager.store.holdExpiry("timed", started.Started.UnixNano())
+	if err != nil || !held {
+		t.Fatalf("held %v, err %v", held, err)
+	}
 	timed, err := manager.adjustExpiry("timed", 30*time.Minute)
 	if err != nil || !timed.Expires.Equal(now.Add(90*time.Minute)) || timed.TTL != 90*time.Minute || timers != 1 {
 		t.Fatalf("a timed tunnel must stop 30 minutes later with the same timer: %+v, err %v, timers %d", timed, err, timers)
 	}
+	// 보조 프로세스가 죽어 잠금이 풀렸으면, 시간을 옮길 때 새로 띄워야 터널이 끝난다.
+	release()
+	if _, err := manager.adjustExpiry("timed", 30*time.Minute); err != nil || timers != 2 {
+		t.Fatalf("a timed tunnel without a live timer must get a new one: err %v, timers %d", err, timers)
+	}
+	timers = 1
 	plain, err := manager.adjustExpiry("plain", 30*time.Minute)
 	if err != nil || !plain.Expires.Equal(now.Add(30*time.Minute)) || timers != 2 {
 		t.Fatalf("a tunnel without a limit must get one from now and a timer: %+v, err %v, timers %d", plain, err, timers)
@@ -1235,5 +1246,32 @@ func TestRunTunnelUpWithoutANameStillFailsOutsideATerminal(t *testing.T) {
 	})
 	if !strings.Contains(stderr, "give a tunnel name") {
 		t.Errorf("stderr = %q", stderr)
+	}
+}
+
+func TestTunnelExpiryLockTellsWhetherTheTimerLives(t *testing.T) {
+	store := tunnelStore{dir: t.TempDir()}
+	record := tunnelRecord{Name: "db", Started: time.Unix(1700000000, 5)}
+	if store.expiryRunning(record) {
+		t.Fatal("no timer has started")
+	}
+	release, held, err := store.holdExpiry("db", record.Started.UnixNano())
+	if err != nil || !held || !store.expiryRunning(record) {
+		t.Fatalf("held %v, err %v", held, err)
+	}
+	// 두 번째 보조 프로세스는 잠금을 얻지 못해 바로 끝난다.
+	if _, again, err := store.holdExpiry("db", record.Started.UnixNano()); again || err != nil {
+		t.Fatalf("again %v, err %v", again, err)
+	}
+	// 같은 이름으로 다시 시작한 터널은 다른 잠금을 쓴다.
+	if store.expiryRunning(tunnelRecord{Name: "db", Started: time.Unix(1700000001, 0)}) {
+		t.Fatal("a new start must not see the old timer")
+	}
+	release()
+	if store.expiryRunning(record) {
+		t.Fatal("the timer ended")
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(store.dir, "*"+tunnelExpiryLockSuffix)); len(leftovers) != 0 {
+		t.Fatalf("leftovers = %v", leftovers)
 	}
 }

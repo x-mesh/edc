@@ -405,6 +405,56 @@ func (store tunnelStore) save(record tunnelRecord) error {
 func (store tunnelStore) remove(name string) {
 	_ = os.Remove(store.recordPath(name))
 	_ = os.Remove(filepath.Join(store.dir, name+".sock"))
+	// 강제로 끝난 보조 프로세스는 잠금 파일을 지우지 못한다.
+	leftovers, _ := filepath.Glob(filepath.Join(store.dir, name+".*"+tunnelExpiryLockSuffix))
+	for _, path := range leftovers {
+		_ = os.Remove(path)
+	}
+}
+
+// tunnelExpiryLockSuffix는 만료 보조 프로세스가 살아 있는 동안 잠가 두는 파일의 확장자다.
+const tunnelExpiryLockSuffix = ".expire"
+
+// expiryLockPath는 터널을 시작할 때마다 다른 파일이다. 같은 이름의 앞 터널을 기다리던 보조 프로세스와 섞이지 않는다.
+func (store tunnelStore) expiryLockPath(name string, started int64) string {
+	return filepath.Join(store.dir, name+"."+strconv.FormatInt(started, 10)+tunnelExpiryLockSuffix)
+}
+
+// holdExpiry는 보조 프로세스가 끝날 때까지 쥐는 잠금이다. 보조 프로세스가 죽으면 커널이 잠금을 푸므로 PID 재사용과 상관없이 살아 있는지 알 수 있다.
+// 다른 보조 프로세스가 이미 쥐고 있으면 held가 false다.
+func (store tunnelStore) holdExpiry(name string, started int64) (release func(), held bool, err error) {
+	path := store.expiryLockPath(name, started)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return func() {
+		_ = os.Remove(path)
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		file.Close()
+	}, true, nil
+}
+
+// expiryRunning은 만료 보조 프로세스가 이 터널의 잠금을 쥐고 있는지다. 잠금을 잡아 볼 수 있으면 보조 프로세스가 없다.
+func (store tunnelStore) expiryRunning(record tunnelRecord) bool {
+	path := store.expiryLockPath(record.Name, record.Started.UnixNano())
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		return errors.Is(err, syscall.EWOULDBLOCK)
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return false
 }
 
 // lock은 상태 디렉터리의 터널을 끝내는 구간을 한 번에 하나만 지나가게 한다. 잠그지 않으면 만료 보조 프로세스가
@@ -516,14 +566,15 @@ type tunnelManager struct {
 	available func(port int) error
 	probe     func(port int) string
 	dial      func(address string) error
-	// expire는 만료 시각에 터널을 끝낼 보조 프로세스를 띄운다.
-	expire func(store tunnelStore, record tunnelRecord) error
+	// expire는 만료 시각에 터널을 끝낼 보조 프로세스를 띄우고, expiring은 그 보조 프로세스가 살아 있는지 본다.
+	expire   func(store tunnelStore, record tunnelRecord) error
+	expiring func(store tunnelStore, record tunnelRecord) bool
 }
 
 func newTunnelManager(store tunnelStore, runner tunnelRunner, targets map[string]string) tunnelManager {
 	return tunnelManager{store: store, runner: runner, targets: targets, now: time.Now,
 		pick: pickTunnelPort, available: tunnelPortAvailable, probe: probeTunnelPort, dial: dialTunnelTarget,
-		expire: tunnelExpirySpawner}
+		expire: tunnelExpirySpawner, expiring: tunnelStore.expiryRunning}
 }
 
 // tunnelExpirySpawner는 테스트가 바꿔 끼운다. 테스트 바이너리를 보조 프로세스로 다시 실행하면 테스트 전체가 다시 돈다.
@@ -608,7 +659,8 @@ func (manager tunnelManager) adjustExpiry(name string, step time.Duration) (tunn
 	if err := manager.store.save(updated); err != nil {
 		return tunnelRecord{}, err
 	}
-	if timed {
+	// 보조 프로세스가 죽었으면 종료 시각만 바뀌고 터널은 끝나지 않는다. 그때는 새로 띄운다.
+	if timed && manager.expiring(manager.store, updated) {
 		return updated, nil
 	}
 	if err := manager.expire(manager.store, updated); err != nil {
@@ -629,7 +681,17 @@ func runTunnelExpire(args []string) int {
 	if err != nil {
 		return 2
 	}
-	manager := newTunnelManager(tunnelStore{dir: args[0]}, sshTunnelRunner{connectTimeout: 10 * time.Second}, nil)
+	store := tunnelStore{dir: args[0]}
+	release, held, err := store.holdExpiry(args[1], started)
+	if err != nil {
+		return 1
+	}
+	// 시간을 늘리며 다시 띄운 보조 프로세스가 아직 살아 있는 보조 프로세스와 겹치면 하나만 남는다.
+	if !held {
+		return 0
+	}
+	defer release()
+	manager := newTunnelManager(store, sshTunnelRunner{connectTimeout: 10 * time.Second}, nil)
 	if err := manager.expireWhenDue(args[1], started, time.Sleep); err != nil {
 		return 1
 	}

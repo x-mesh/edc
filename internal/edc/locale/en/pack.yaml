@@ -16,6 +16,7 @@ pack:
     exists: "the output exists; delete it or give -o"
     exists_named: "%s exists; delete it or give -o"
     kept: "%d entries were skipped, so edc kept the archive; delete it yourself"
+    no_replace: "this file system cannot move a directory without replacing one that exists, so edc does not extract here; give -o a directory on another file system"
     unsafe_path: "the archive has an entry outside the output directory: %s"
     unsafe_link: "the archive has a link that points outside the output directory: %s"
   verbose:

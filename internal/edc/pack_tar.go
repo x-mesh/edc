@@ -561,16 +561,6 @@ func packPlace(temp, archivePath, output string, crossTop bool) (string, error) 
 	return final, os.Chmod(final, 0o755)
 }
 
-func packClaim(final string) error {
-	if err := os.Mkdir(final, 0o700); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("%s: %w", final, errCodecExists)
-		}
-		return err
-	}
-	return nil
-}
-
 // packList는 -l이다. tar면 항목을, 압축한 파일 하나면 형식과 푼 크기를 stdout에 쓴다. 끝까지 읽어 체크섬도 확인한다.
 func packList(archivePath string, kind packKind, stdout io.Writer) error {
 	if !kind.archive() {

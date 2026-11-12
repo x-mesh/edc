@@ -25,6 +25,7 @@ var (
 	errPackInside    = errors.New("the output is inside the directory")
 	errPackRoot      = errors.New("edc pack does not pack /")
 	errPackListDir   = errors.New("-l reads an archive, not a directory")
+	errPackNoReplace = errors.New("this file system cannot rename without replacing")
 )
 
 // packUnsafeError는 tar 항목이 풀 디렉터리 밖을 가리키는 경우다. name은 그 항목 이름이다.
@@ -174,6 +175,8 @@ func packErrorText(err error) string {
 		return T("pack.error.root")
 	case errors.Is(err, errPackListDir):
 		return T("pack.error.list_directory")
+	case errors.Is(err, errPackNoReplace):
+		return T("pack.error.no_replace")
 	case errors.Is(err, errCodecExists):
 		// codecPath와 packPlace는 겹친 이름을 "이름: output exists"로 감싼다. 압축 파일 안의 최상위 이름은 압축 파일 이름과 다를
 		// 수 있어 무엇이 겹쳤는지 알려야 한다.

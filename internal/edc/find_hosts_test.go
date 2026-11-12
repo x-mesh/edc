@@ -133,3 +133,10 @@ func TestRunFindGroupNeedsAPatternAndAPath(t *testing.T) {
 		t.Errorf("none: code %d", code)
 	}
 }
+
+func TestWriteFindGroupReportsAWriteError(t *testing.T) {
+	rows := []findHostRow{{Host: "web1", Status: findHostFound, Matches: []findJSONMatch{{Path: "/etc/nginx/nginx.conf"}}}}
+	if err := writeFindGroup(findFailingWriter{}, io.Discard, rows, false); err == nil {
+		t.Error("a failed write must be an error")
+	}
+}

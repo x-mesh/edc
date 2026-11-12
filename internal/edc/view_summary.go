@@ -107,21 +107,21 @@ func viewOpenStats(path string) (io.Reader, func(), error) {
 	return reader, func() { reader.Close(); file.Close() }, nil
 }
 
-// viewSummarize는 처음 viewDetectLines줄로 형식을 정한 뒤 모든 줄을 센다. 끝까지 읽지 못하면(잘린 .gz 등) 그때까지 센
+// viewSummarize는 처음 줄들(viewDetectSample)로 형식을 정한 뒤 모든 줄을 센다. 끝까지 읽지 못하면(잘린 .gz 등) 그때까지 센
 // 통계와 오류를 함께 돌려준다. 통계를 버리지 않는 것은 화면이 잘린 압축 파일을 다루는 방식과 같다.
 func viewSummarize(input io.Reader) (*viewSummary, error) {
 	reader := bufio.NewReaderSize(input, viewBlockSize)
-	var sample []string
+	var sample viewDetectSample
 	var summary *viewSummary
 	push := func(text string) {
 		if summary != nil {
 			summary.add(text)
 			return
 		}
-		sample = append(sample, text)
-		if len(sample) == viewDetectLines {
-			summary = newViewSummary(detectViewFormat(sample))
-			for _, line := range sample {
+		sample.add(text)
+		if sample.full() {
+			summary = newViewSummary(detectViewFormat(sample.lines))
+			for _, line := range sample.lines {
 				summary.add(line)
 			}
 		}
@@ -141,8 +141,8 @@ func viewSummarize(input io.Reader) (*viewSummary, error) {
 		}
 	}
 	if summary == nil {
-		summary = newViewSummary(detectViewFormat(sample))
-		for _, line := range sample {
+		summary = newViewSummary(detectViewFormat(sample.lines))
+		for _, line := range sample.lines {
 			summary.add(line)
 		}
 	}

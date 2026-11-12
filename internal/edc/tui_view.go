@@ -202,19 +202,17 @@ func (model *viewScreenModel) ingest(raw []string, now time.Time, arrived bool) 
 // redetect는 처음 줄들로 형식을 다시 정하고, 형식이 바뀌면 보관한 줄을 다시 읽는다. 빈 파일을 열고 나중에 줄이 쌓이는
 // 경우에도 형식을 맞춘다.
 func (model *viewScreenModel) redetect(raw []string) {
-	sample := make([]string, 0, viewDetectLines)
+	var sample viewDetectSample
 	for _, line := range model.lines {
-		if !line.marker && len(sample) < viewDetectLines {
-			sample = append(sample, line.text)
+		if !line.marker {
+			sample.add(line.text)
 		}
 	}
 	for _, line := range raw {
-		if len(sample) < viewDetectLines {
-			sample = append(sample, line)
-		}
+		sample.add(line)
 	}
-	model.formatFixed = len(sample) >= viewDetectLines
-	format := detectViewFormat(sample)
+	model.formatFixed = sample.full()
+	format := detectViewFormat(sample.lines)
 	if format == model.format {
 		return
 	}

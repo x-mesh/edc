@@ -119,15 +119,10 @@ func detectViewFormat(lines []string) viewFormat {
 		if seen == viewDetectLines || index == viewDetectScanLines {
 			break
 		}
-		// stack trace 줄은 형식을 가리지 않고 앞 줄에 붙는다. 오류만 모은 로그는 ERROR 줄 하나에 stack trace가 수십 줄이라,
-		// 이 줄까지 세면 level 줄이 표본의 4분의 1에 못 미쳐 plain으로 읽는다.
-		if viewContinues(line) || viewIsExceptionHead(line) {
+		if !viewDetectCounts(line) {
 			continue
 		}
 		line = strings.TrimSpace(line)
-		if line == "" || len(line) > viewParseLimit {
-			continue
-		}
 		seen++
 		switch {
 		case viewLooksJSON(line):
@@ -156,6 +151,38 @@ func detectViewFormat(lines []string) viewFormat {
 		return best
 	}
 	return viewFormatPlain
+}
+
+// viewDetectCounts는 형식을 정할 때 세는 줄인지 알려 준다. stack trace 줄은 형식을 가리지 않고 앞 줄에 붙는다. 오류만 모은
+// 로그는 ERROR 줄 하나에 stack trace가 수십 줄이라, 이 줄까지 세면 level 줄이 표본의 4분의 1에 못 미쳐 plain으로 읽는다.
+func viewDetectCounts(line string) bool {
+	if viewContinues(line) || viewIsExceptionHead(line) {
+		return false
+	}
+	line = strings.TrimSpace(line)
+	return line != "" && len(line) <= viewParseLimit
+}
+
+// viewDetectSample은 detectViewFormat에 넘길 처음 줄들을 모은다. detectViewFormat이 보는 만큼, 곧 세는 줄이 viewDetectLines개가
+// 되거나 줄이 viewDetectScanLines개가 될 때까지 모은다. 물리 줄 viewDetectLines개에서 멈추면 stack trace 중간에서 시작하는
+// 파일은 셀 줄이 없어 plain이 된다.
+type viewDetectSample struct {
+	lines []string
+	seen  int
+}
+
+func (sample *viewDetectSample) add(line string) {
+	if sample.full() {
+		return
+	}
+	sample.lines = append(sample.lines, line)
+	if viewDetectCounts(line) {
+		sample.seen++
+	}
+}
+
+func (sample *viewDetectSample) full() bool {
+	return sample.seen == viewDetectLines || len(sample.lines) == viewDetectScanLines
 }
 
 func viewLooksJSON(line string) bool {

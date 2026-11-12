@@ -359,6 +359,30 @@ func TestViewScreenScrollsSideways(t *testing.T) {
 	}
 }
 
+// 화면도 --stats와 같이 stack trace 줄을 세지 않고 형식을 정한다. stack trace만 받은 동안에는 형식을 굳히지 않아서, 뒤에 들어온
+// event로 다시 정한다.
+func TestViewScreenDetectsAFileThatStartsInAStackTrace(t *testing.T) {
+	stack := viewDetectLines + 6
+	lines := viewLinesAfterAStackTrace(stack)
+	model := newViewScreenModel("app.log", viewKeepLines)
+	model.ingest(lines[:stack], time.Now(), false)
+	if model.formatFixed {
+		t.Fatalf("format fixed as %q from stack trace lines alone", model.format)
+	}
+	model.ingest(lines[stack:], time.Now(), true)
+	if model.format != viewFormatLevel || !model.formatFixed {
+		t.Fatalf("format %q, fixed %v", model.format, model.formatFixed)
+	}
+	if model.stats.lines != 1+viewDetectLines {
+		t.Fatalf("%d events", model.stats.lines)
+	}
+	whole := newViewScreenModel("app.log", viewKeepLines)
+	whole.ingest(lines, time.Now(), false)
+	if whole.format != viewFormatLevel {
+		t.Fatalf("whole file: format %q", whole.format)
+	}
+}
+
 // filter를 바꾸면 이미 받은 줄의 받은 시각으로 초당 줄 수를 바로 다시 센다. 화면을 열 때 읽은 줄은 세지 않는다.
 func TestViewScreenFilteredRateCountsLinesBeforeTheFilter(t *testing.T) {
 	model := viewScreenWith(t, "access.log", 140, 30)

@@ -689,6 +689,8 @@ func TestExplainExpectRST(t *testing.T) {
 		{"no listener", "10.0.0.5", noSocket, none, expectRSTNoListener},
 		{"loopback only", "10.0.0.5", noSocket, loopback, expectRSTLoopbackOnly},
 		{"other address", "10.0.0.5", noSocket, other, expectRSTOtherAddress},
+		// 머리말에 loopback listener가 보여도 다른 주소에 묶인 listener가 있으면 loopback만의 문제가 아니다.
+		{"loopback and another address", "10.0.0.5", noSocket, &expectListener{State: expectListenerPresent, Address: "127.0.0.1:5432", Scope: "loopback", bound: []string{"127.0.0.1", "10.0.3.2"}}, expectRSTOtherAddress},
 		{"ipv4 any does not take ipv6", "2001:db8::5", noSocket, any4, expectRSTOtherAddress},
 		// 받는 주소의 listener가 있었는데 socket이 없었다. 시작한 뒤에 바뀐 것일 수 있으므로 kernel이 본 것만 말한다.
 		{"loopback to loopback", "127.0.0.1", noSocket, loopback, expectRSTNoSocket},

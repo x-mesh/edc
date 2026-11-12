@@ -555,6 +555,19 @@ type expectListener struct {
 	bound []string
 }
 
+// loopbackOnly는 이 port의 listener가 모두 loopback에 묶였는지다. 머리말에 보인 listener 하나의 범위로 정하지 않는다.
+func (listener expectListener) loopbackOnly() bool {
+	if len(listener.bound) == 0 {
+		return listener.Scope == "loopback"
+	}
+	for _, address := range listener.bound {
+		if listenBindingScope("tcp", address) != "loopback" {
+			return false
+		}
+	}
+	return true
+}
+
 // accepts는 local로 온 SYN을 받을 listener가 있는지다. 모든 주소에 묶인 IPv6 socket은 IPv4도 받는다고 본다. IPV6_V6ONLY는
 // listener 목록에 나오지 않는다. 주소를 모르면 받는다고 보고, 다른 주소에 묶였다고 단정하지 않는다.
 func (listener expectListener) accepts(local string) bool {
@@ -1299,7 +1312,7 @@ func explainExpectRST(port uint16, local string, drops map[string]int, listener 
 		cause.kind = expectRSTNoListener
 	case cause.listening && !listener.accepts(local):
 		cause.kind = expectRSTOtherAddress
-		if listener.Scope == "loopback" {
+		if listener.loopbackOnly() {
 			cause.kind = expectRSTLoopbackOnly
 		}
 	// listener를 모르거나, 시작할 때 본 listener가 이 주소를 받는데도 socket이 없었다. kernel이 본 것만 말한다.

@@ -147,7 +147,8 @@ func TestCountSocketRows(t *testing.T) {
 func TestFirstLineCutsAtARuneBoundary(t *testing.T) {
 	line := "ab" + strings.Repeat("가", 60)
 	got := firstLine(line + "\nsecond")
-	if !utf8.ValidString(got) || !strings.HasSuffix(got, "가…") || len(got) > 160+len("…") {
+	// "ab"와 3 byte 글자 52개가 160 byte를 넘지 않는 가장 긴 앞부분이다.
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, "가…") || len(strings.TrimSuffix(got, "…")) != 2+3*52 {
 		t.Fatalf("firstLine = %q (%d bytes)", got, len(got))
 	}
 	if got := firstLine("short\nsecond"); got != "short" {

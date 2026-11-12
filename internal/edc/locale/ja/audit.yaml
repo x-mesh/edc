@@ -68,7 +68,7 @@ audit:
     journal_limited: "範囲内の journal が %d 件を超えるため、新しいものだけを読みました"
     later_login: "sshd と wtmp にはより後のログインがあります (%s %s、%s)"
     unlogged: "wtmp のリモート端末ログイン %d 件に sshd journal の Accepted がありません (journal は %s から)"
-    joined_by_time: "sshd journal の PID が wtmp のログインと一致しないため (OpenSSH 9.8 未満)、ユーザー、接続元、時刻で照合しました"
+    joined_by_time: "wtmp のログイン %d 件が sshd journal の PID と一致しないため (OpenSSH 9.8 未満)、ユーザー、接続元、時刻で照合しました"
     unjoinable: "sshd journal が wtmp のログインと PID でもユーザー・接続元・時刻でも一致しないため、照合しませんでした"
     compressed: "%s は圧縮されているため、次のファイルから判定しました"
     limited: "%s の末尾 64 MiB だけを読みました"
@@ -90,6 +90,7 @@ audit:
     not_judged:
       zsh_no_histfile: "%s: zsh は HISTFILE がないと history を保存しないため、確認しませんでした"
       histfile_off: "%s: HISTFILE が history を止めています。history.disabled を見てください"
+      history_off: "%s: 起動ファイルが history を止めています。history.disabled を見てください"
       histfile_custom: "%s: HISTFILE が別のパスを指すため、確認しませんでした"
   proc:
     exe_ok: "一時ディレクトリ、メモリ、パッケージディレクトリ以外で削除されたファイルやライブラリから実行中の process なし (%d 個を確認)"
@@ -98,6 +99,7 @@ audit:
     preload_ok: "事前に読み込むライブラリなし (%d 個の process を確認)"
     preload_bad: "/etc/ld.so.preload に %d 個の項目があり、LD_PRELOAD で実行中の process が %d 個あります"
     env_unreadable: "root ではないため、%d 個の process の環境を読めませんでした"
+    proc_unreadable: "/proc を読めないため (%s)、process の LD_PRELOAD は確認していません"
     reason:
       temp: "一時ディレクトリから実行"
       deleted: "実行ファイルが削除済み"

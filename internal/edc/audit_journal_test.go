@@ -92,7 +92,7 @@ func TestAuditNoTTYAccessCountsAcceptedLoginsMissingFromWtmp(t *testing.T) {
 		{User: "deploy", Host: "203.0.113.7", Method: "password", Count: 1},
 		{User: "root", Host: "100.65.168.177", Method: "publickey", Count: 1},
 	}
-	if got := auditNoTTYAccess(map[int]bool{101: true}, auditSSHDAcceptedLogins(entries)); !reflect.DeepEqual(got, want) {
+	if got := auditNoTTYAccess(map[int]bool{1: true}, auditSSHDAcceptedLogins(entries)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("accesses = %+v", got)
 	}
 }
@@ -133,10 +133,14 @@ func TestAuditLoginMismatchShowsJournalFindings(t *testing.T) {
 	if !reflect.DeepEqual(result.Warnings, []string{T("audit.login.journal_limited", auditJournalMaxEntries)}) {
 		t.Fatalf("warnings = %v", result.Warnings)
 	}
-	for _, err := range []error{errAuditNeedsRoot, errEventsNoJournal, errors.New("exit status 1")} {
+	for err, want := range map[error]string{
+		errAuditNeedsRoot:              T("audit.login.journal_root"),
+		errEventsNoJournal:             T("audit.login.journal_none"),
+		errors.New("exit status 1\nx"): T("audit.login.journal_error", "exit status 1 x"),
+	} {
 		facts := testLoginFacts(nil, nil)
 		facts.JournalErr = err
-		if warnings := auditLoginMismatch(facts).Warnings; len(warnings) != 1 || strings.HasPrefix(warnings[0], "audit.") {
+		if warnings := auditLoginMismatch(facts).Warnings; !reflect.DeepEqual(warnings, []string{want}) || strings.HasPrefix(want, "audit.") {
 			t.Fatalf("%v: warnings = %v", err, warnings)
 		}
 	}
@@ -219,7 +223,7 @@ func TestCollectAuditJournalJoinsOpenSSH89ByTime(t *testing.T) {
 	if !reflect.DeepEqual(facts.NoTTY, []auditNoTTY{{User: "root", Host: "::1", Method: "publickey", Count: 1}}) {
 		t.Fatalf("no tty = %+v", facts.NoTTY)
 	}
-	if !facts.Joined || !facts.JoinedByTime || facts.Unjoinable {
+	if !facts.Joined || facts.JoinedByTime != 2 || facts.Unjoinable {
 		t.Fatalf("facts = %+v", facts)
 	}
 	got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD, facts.Logins.Sessions[2].SSHD}
@@ -230,7 +234,105 @@ func TestCollectAuditJournalJoinsOpenSSH89ByTime(t *testing.T) {
 		t.Fatalf("ends = %v, %v", facts.Logins.Sessions[0].End, facts.Logins.Sessions[1].End)
 	}
 	result := auditLoginMismatch(facts)
-	if result.Status != StatusWarn || !strings.HasPrefix(result.Evidence[0].Value, "deploy  ") || !slices.Contains(result.Warnings, T("audit.login.joined_by_time")) {
+	if result.Status != StatusWarn || !strings.HasPrefix(result.Evidence[0].Value, "deploy  ") || !slices.Contains(result.Warnings, T("audit.login.joined_by_time", 2)) {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func testClosedLine(at time.Time, pid int, user string) string {
+	return testAcceptedLine(at, "sshd-session", pid, auditSSHDSessionClosed+user)
+}
+
+// 이 호스트에서 잰 모양이다. ControlMaster 연결 하나가 몇 시간에 걸쳐 pty를 여러 번 열고, wtmp에는 모두 같은 PID가 남는다.
+func TestCollectAuditJournalJoinsPIDsOnlyWhileTheConnectionLives(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/13", Host: "203.0.113.7", PID: 100, Start: testLoginAt(10)},
+		{User: "root", Line: "pts/15", Host: "203.0.113.7", PID: 100, Start: testLoginAt(40)},
+		{User: "root", Line: "pts/21", Host: "203.0.113.7", PID: 100, Start: testLoginAt(70)},
+		// 접속이 끝난 뒤에 같은 PID로 온 로그인은 재사용된 PID다.
+		{User: "root", Line: "pts/3", Host: "203.0.113.7", PID: 100, Start: testLoginAt(90)},
+		// Accepted보다 앞선 로그인도 그 접속의 것이 아니다.
+		{User: "root", Line: "pts/4", Host: "203.0.113.7", PID: 200, Start: testLoginAt(5)},
+		// 다음 Accepted가 다른 사용자면 앞 접속은 그때 끝났다.
+		{User: "root", Line: "pts/6", Host: "203.0.113.7", PID: 300, Start: testLoginAt(60)},
+	}
+	journal := testAcceptedLine(testLoginAt(1), "sshd-session", 50, "Accepted publickey for root from 203.0.113.7 port 1 ssh2") +
+		testAcceptedLine(testLoginAt(10), "sshd-session", 100, "Accepted publickey for root from 203.0.113.7 port 2 ssh2") +
+		testClosedLine(testLoginAt(80), 100, "root") +
+		testAcceptedLine(testLoginAt(20), "sshd-session", 200, "Accepted publickey for root from 203.0.113.7 port 3 ssh2") +
+		testAcceptedLine(testLoginAt(30), "sshd-session", 300, "Accepted publickey for root from 203.0.113.7 port 4 ssh2") +
+		testAcceptedLine(testLoginAt(50), "sshd-session", 300, "Accepted password for deploy from 192.0.2.9 port 5 ssh2")
+	facts := testCrossFacts(sessions, journal)
+	facts.Lastlog = nil
+	var got []int
+	for _, session := range facts.Logins.Sessions {
+		got = append(got, session.SSHD)
+	}
+	if !reflect.DeepEqual(got, []int{100, 100, 100, 0, 0, 0}) || facts.JoinedByTime != 0 {
+		t.Fatalf("sshd = %v, facts = %+v", got, facts)
+	}
+	// PID 100의 Accepted는 짝을 찾았으므로 pty 없는 접속이 아니다. 나머지 넷은 짝이 없다.
+	want := []auditNoTTY{{User: "root", Host: "203.0.113.7", Method: "publickey", Count: 3}, {User: "deploy", Host: "192.0.2.9", Method: "password", Count: 1}}
+	if !reflect.DeepEqual(facts.NoTTY, want) {
+		t.Fatalf("no tty = %+v", facts.NoTTY)
+	}
+	result := auditLoginMismatch(facts)
+	if result.Status != StatusWarn || !strings.HasPrefix(result.Summary, T("audit.login.unlogged", 3, auditLoginTime(testLoginAt(1)))) {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// OpenSSH를 9.8로 올린 호스트에는 두 모양이 섞인다. PID로 짝짓지 못한 로그인만 시각으로 짝짓는다.
+func TestCollectAuditJournalJoinsTheRestByTime(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/0", Host: "203.0.113.7", PID: 3750, Start: testLoginAt(10)},
+		{User: "root", Line: "pts/1", Host: "203.0.113.7", PID: 500, Start: testLoginAt(30)},
+	}
+	journal := testAcceptedLine(testLoginAt(10), "sshd", 3739, "Accepted publickey for root from 203.0.113.7 port 1 ssh2") +
+		testAcceptedLine(testLoginAt(30), "sshd-session", 500, "Accepted publickey for root from 203.0.113.7 port 2 ssh2")
+	facts := testCrossFacts(sessions, journal)
+	if facts.Logins.Sessions[0].SSHD != 3739 || facts.Logins.Sessions[1].SSHD != 500 || facts.JoinedByTime != 1 || len(facts.NoTTY) != 0 {
+		t.Fatalf("facts = %+v", facts)
+	}
+}
+
+func TestCollectAuditJournalWithoutAcceptedComparesFromTheFirstEntry(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/0", Host: "203.0.113.7", PID: 10, Start: testLoginAt(10)},
+		{User: "root", Line: "pts/1", Host: "203.0.113.7", PID: 11, Start: testLoginAt(2)},
+	}
+	facts := testCrossFacts(sessions, testLogindLine(testLoginAt(5), auditLogindNewSession, "New session 3 of user root.", "3", 7))
+	facts.Lastlog = nil
+	if !facts.Joined || facts.Unjoinable || !facts.AcceptedSince.Equal(testLoginAt(5)) {
+		t.Fatalf("facts = %+v", facts)
+	}
+	result := auditLoginMismatch(facts)
+	if result.Status != StatusWarn || !strings.Contains(result.Evidence[0].Value, "pts/0") || strings.Contains(result.Evidence[0].Value, "pts/1") {
+		t.Fatalf("result = %+v", result)
+	}
+	// journal이 비었으면 조회를 시작한 시각부터 비교한다. 여기서는 기간보다 늦은 wtmp의 시작이다.
+	facts = testCrossFacts(sessions, "")
+	if !facts.Joined || !facts.AcceptedSince.Equal(testLoginAt(0)) {
+		t.Fatalf("facts = %+v", facts)
+	}
+}
+
+// 이 호스트에서 잰 모양이다. 범위 앞에서 Accepted를 받은 연결이 범위 안에서 pty를 열면, 그 PID의 다른 기록만 범위 안에 있다.
+func TestCollectAuditJournalJoinsConnectionsOpenedBeforeTheRange(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/13", Host: "203.0.113.7", PID: 100, Start: testLoginAt(30)},
+		// 범위 앞의 연결이 끝난 뒤에 같은 PID로 온 로그인은 짝짓지 않는다.
+		{User: "root", Line: "pts/14", Host: "203.0.113.7", PID: 200, Start: testLoginAt(50)},
+	}
+	journal := testAcceptedLine(testLoginAt(10), "sshd-session", 50, "Accepted publickey for root from 203.0.113.7 port 1 ssh2") +
+		testAcceptedLine(testLoginAt(20), "sshd-session", 100, "syslogin_perform_logout: logout() returned an error") +
+		testClosedLine(testLoginAt(80), 100, "root") +
+		testClosedLine(testLoginAt(40), 200, "root")
+	facts := testCrossFacts(sessions, journal)
+	if got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD}; !reflect.DeepEqual(got, []int{auditSSHDAmbiguous, 0}) {
+		t.Fatalf("sshd = %v", got)
+	}
+	if !facts.Logins.Sessions[0].End.IsZero() || facts.JoinedByTime != 0 {
+		t.Fatalf("facts = %+v", facts)
 	}
 }

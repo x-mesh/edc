@@ -388,3 +388,40 @@ func TestReadAuditExternalAccounts(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestCollectAuditKeyFilesForAccountsSharingAHome(t *testing.T) {
+	root := t.TempDir()
+	passwd := []auditPasswd{{Name: "app1", UID: 1001, Home: "/srv/shared"}, {Name: "app2", UID: 1002, Home: "/srv/shared"}}
+	writeAuditFile(t, root, "/etc/ssh/keys/app1", "ssh-ed25519 AAAA\n", 0o644)
+	writeAuditFile(t, root, "/etc/ssh/keys/app2", "ssh-ed25519 BBBB\n", 0o644)
+	owner := func(fs.FileInfo) (uint32, bool) { return 0, false }
+	config := sshdConfig{raw: map[string]string{"authorizedkeysfile": "/etc/ssh/keys/%u"}}
+	files, _ := collectAuditKeyFiles(auditSources{root: root, owner: owner}, passwd, auditKeyFilePatterns(config))
+	var got []string
+	for _, file := range files {
+		got = append(got, file.User+":"+file.Path)
+	}
+	if !reflect.DeepEqual(got, []string{"app1:/etc/ssh/keys/app1", "app2:/etc/ssh/keys/app2"}) {
+		t.Fatalf("files = %v", got)
+	}
+}
+
+func TestCollectAuditKeyFilesReadsOtherPathsWhenTheHomeIsLocked(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory without permission bits")
+	}
+	root := t.TempDir()
+	writeAuditFile(t, root, "/home/deploy/.ssh/authorized_keys", "ssh-ed25519 AAAA\n", 0o600)
+	writeAuditFile(t, root, "/etc/ssh/keys/deploy", "ssh-ed25519 BBBB\n", 0o644)
+	locked := filepath.Join(root, "home/deploy")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	owner := func(fs.FileInfo) (uint32, bool) { return 0, false }
+	config := sshdConfig{raw: map[string]string{"authorizedkeysfile": ".ssh/authorized_keys /etc/ssh/keys/%u"}}
+	files, skipped := collectAuditKeyFiles(auditSources{root: root, owner: owner}, []auditPasswd{{Name: "deploy", UID: 1000, Home: "/home/deploy"}}, auditKeyFilePatterns(config))
+	if skipped != 1 || len(files) != 1 || files[0].Path != "/etc/ssh/keys/deploy" {
+		t.Fatalf("files = %+v, skipped = %d", files, skipped)
+	}
+}

@@ -321,8 +321,8 @@ func auditLoginMismatch(facts auditFacts) Result {
 	result.Warnings = auditLoginWarnings(records)
 	if facts.Unjoinable {
 		result.Warnings = append(result.Warnings, T("audit.login.unjoinable"))
-	} else if facts.JoinedByTime {
-		result.Warnings = append(result.Warnings, T("audit.login.joined_by_time"))
+	} else if facts.JoinedByTime > 0 {
+		result.Warnings = append(result.Warnings, T("audit.login.joined_by_time", facts.JoinedByTime))
 	}
 	if facts.JournalErr != nil {
 		result.Warnings = append(result.Warnings, auditJournalSkipReason(facts.JournalErr))

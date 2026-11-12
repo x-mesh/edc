@@ -171,10 +171,11 @@ type auditFacts struct {
 	// Joined면 wtmp 세션의 SSHD를 채웠다. AcceptedSince는 읽은 sshd 기록의 시작이다.
 	Joined        bool
 	AcceptedSince time.Time
-	// JoinedByTime은 PID가 하나도 맞지 않아 사용자, 출발지, 시각으로 짝지은 것이다. OpenSSH 9.8 미만은 wtmp에 shell의 PID를 남긴다.
+	// JoinedByTime은 PID가 맞지 않아 사용자, 출발지, 시각으로 짝지은 로그인 수다. OpenSSH 9.8 미만은 wtmp에 shell의 PID를 남긴다.
 	// Unjoinable은 그렇게도 하나도 맞지 않아 짝짓지 않은 것이다.
-	JoinedByTime, Unjoinable bool
-	Processes                auditProcesses
+	JoinedByTime int
+	Unjoinable   bool
+	Processes    auditProcesses
 
 	Sensitive []auditFile
 	PathDirs  []string
@@ -564,27 +565,28 @@ func expandAuditKeyFile(pattern string, entry auditPasswd) string {
 func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd, patterns []string) ([]auditFile, int) {
 	var files []auditFile
 	skipped := 0
-	seen := map[string]bool{}
+	// 홈을 함께 써도 %u, %U가 든 경로는 계정마다 다르다. 그래서 홈이 아니라 펼친 경로로 한 번씩만 본다.
 	seenPath := map[string]bool{}
 	for _, entry := range passwd {
 		// 1000 미만은 서비스 계정이다. 로그인 계정은 root와 일반 사용자뿐이다.
-		if (entry.UID != 0 && entry.UID < 1000) || entry.Home == "" || entry.Home == "/" || seen[entry.Home] {
+		if (entry.UID != 0 && entry.UID < 1000) || entry.Home == "" || entry.Home == "/" {
 			continue
 		}
-		seen[entry.Home] = true
 		paths := []string{filepath.Join(entry.Home, ".ssh")}
 		for _, pattern := range patterns {
 			paths = append(paths, expandAuditKeyFile(pattern, entry))
 		}
+		denied := false
 		for index, path := range paths {
 			if seenPath[path] {
 				continue
 			}
 			seenPath[path] = true
 			info, err := os.Stat(sources.file(path))
+			// 홈의 .ssh를 읽지 못해도 /etc/ssh/authorized_keys/%u 같은 다른 경로는 읽을 수 있다.
 			if errors.Is(err, fs.ErrPermission) {
-				skipped++
-				break
+				denied = true
+				continue
 			}
 			if err != nil {
 				continue
@@ -597,6 +599,9 @@ func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd, patterns [
 				file.BadOwner = true
 			}
 			files = append(files, file)
+		}
+		if denied {
+			skipped++
 		}
 	}
 	return files, skipped

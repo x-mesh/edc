@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -89,26 +90,41 @@ func collectAuditJournal(ctx context.Context, sources auditSources, facts *audit
 	}
 	accepted := auditSSHDAcceptedLogins(facts.Journal)
 	if len(accepted) == 0 {
+		// Accepted가 없으면 범위 안의 원격 pty 로그인은 모두 sshd 기록이 없는 것이다. 범위는 journal이 실제로 가진 첫 기록부터다.
+		facts.AcceptedSince = auditJournalCoverage(facts.Journal, since)
+		facts.Joined = true
+		applyAuditJournalEnds(&facts.Logins, facts.Journal)
 		return
 	}
 	facts.AcceptedSince = accepted[0].Time
-	for _, login := range accepted {
-		if login.Time.Before(facts.AcceptedSince) {
-			facts.AcceptedSince = login.Time
-		}
+	consumed := map[int]bool{}
+	recorded, byPID := joinAuditLoginsByPID(&facts.Logins, accepted, auditSSHDOpenedEarlier(facts.Journal), facts.AcceptedSince, consumed)
+	byTime := 0
+	if byPID < recorded {
+		byTime = joinAuditLoginsByTime(&facts.Logins, accepted, facts.AcceptedSince, consumed)
 	}
-	consumed, recorded := joinAuditLoginsByPID(&facts.Logins, accepted, facts.AcceptedSince)
-	if recorded > 0 && len(consumed) == 0 {
-		consumed = joinAuditLoginsByTime(&facts.Logins, accepted, facts.AcceptedSince)
-		if len(consumed) == 0 {
-			facts.Unjoinable = true
-			return
-		}
-		facts.JoinedByTime = true
+	if recorded > 0 && byPID+byTime == 0 {
+		facts.Unjoinable = true
+		return
 	}
+	facts.JoinedByTime = byTime
 	facts.Joined = true
 	applyAuditJournalEnds(&facts.Logins, facts.Journal)
 	facts.NoTTY = auditNoTTYAccess(consumed, accepted)
+}
+
+// auditJournalCoverage는 journal이 가진 첫 기록의 시각이다. sshd 기록을 먼저 보고, 없으면 다른 기록, 그것도 없으면 조회를 시작한 시각이다.
+func auditJournalCoverage(entries []auditJournalEntry, since time.Time) time.Time {
+	var sshd, any time.Time
+	for _, entry := range entries {
+		if any.IsZero() || entry.Time.Before(any) {
+			any = entry.Time
+		}
+		if slices.Contains(auditSSHDIdentifiers, entry.Identifier) && (sshd.IsZero() || entry.Time.Before(sshd)) {
+			sshd = entry.Time
+		}
+	}
+	return cmp.Or(sshd, any, since)
 }
 
 // auditRemotePTY는 원격에서 pty를 연 로그인이다. sshd가 남긴 로그인만 journal과 비교할 수 있다.
@@ -126,13 +142,23 @@ type auditAccepted struct {
 	PID                int
 	User, Host, Method string
 	Time               time.Time
+	// Until은 이 접속이 끝난 시각이다. 같은 PID의 "session closed"나 그 PID의 다음 Accepted다. 0이면 범위 안에서 끝나지 않았다.
+	Until time.Time
 }
 
-// auditSSHDAcceptedLogins는 sshd가 받아들인 로그인이다. 형식은 "Accepted <method> for <user> from <host> port <port> ssh2[: <key>]"다.
+// auditSSHDSessionClosed는 sshd 접속 하나가 끝날 때 PAM이 남기는 기록이다. UsePAM no면 없고, 그때는 같은 PID의 다음 Accepted로 끝을 정한다.
+const auditSSHDSessionClosed = "pam_unix(sshd:session): session closed for user "
+
+// auditSSHDAcceptedLogins는 sshd가 받아들인 로그인을 시각 순으로 돌려준다. 형식은 "Accepted <method> for <user> from <host> port <port> ssh2[: <key>]"다.
 func auditSSHDAcceptedLogins(entries []auditJournalEntry) []auditAccepted {
 	var accepted []auditAccepted
+	var closed []auditJournalEntry
 	for _, entry := range entries {
 		if !slices.Contains(auditSSHDIdentifiers, entry.Identifier) {
+			continue
+		}
+		if strings.HasPrefix(entry.Message, auditSSHDSessionClosed) {
+			closed = append(closed, entry)
 			continue
 		}
 		fields := strings.Fields(entry.Message)
@@ -141,59 +167,114 @@ func auditSSHDAcceptedLogins(entries []auditJournalEntry) []auditAccepted {
 		}
 		accepted = append(accepted, auditAccepted{PID: entry.PID, User: fields[3], Host: fields[5], Method: fields[1], Time: entry.Time})
 	}
+	slices.SortStableFunc(accepted, func(a, b auditAccepted) int { return a.Time.Compare(b.Time) })
+	for index := range accepted {
+		login := &accepted[index]
+		for _, next := range accepted[index+1:] {
+			if next.PID == login.PID {
+				login.Until = next.Time
+				break
+			}
+		}
+		for _, entry := range closed {
+			if entry.PID == login.PID && !entry.Time.Before(login.Time) && (login.Until.IsZero() || entry.Time.Before(login.Until)) {
+				login.Until = entry.Time
+			}
+		}
+	}
 	return accepted
 }
 
 // joinAuditLoginsByPID는 OpenSSH 9.8부터 쓰는 짝짓기다. wtmp의 PID, Accepted의 PID, logind의 LEADER가 모두 sshd-session이다.
-// 두 짝짓기 모두 wtmp 로그인과 짝지은 Accepted의 PID를 돌려준다. pty 없는 접속은 그 나머지다.
-func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, since time.Time) (map[int]bool, int) {
-	pids := map[int]bool{}
-	for _, login := range accepted {
-		pids[login.PID] = true
-	}
-	consumed := map[int]bool{}
-	recorded := 0
+// 연결 하나가 pty를 여러 번 열 수 있어(ControlMaster) 로그인은 Accepted부터 그 접속이 끝날 때까지 어느 때나 올 수 있다.
+// 그 밖의 로그인은 PID가 같아도 재사용된 PID라 짝짓지 않는다. consumed에는 짝지은 Accepted의 번호를 넣는다. pty 없는 접속은 그 나머지다.
+func joinAuditLoginsByPID(records *auditLoginRecords, accepted []auditAccepted, earlier map[int]time.Time, since time.Time, consumed map[int]bool) (int, int) {
+	recorded, joined := 0, 0
 	for index := range records.Sessions {
 		session := &records.Sessions[index]
 		if !auditRemotePTY(*session) || session.Start.Before(since) {
 			continue
 		}
 		recorded++
-		if pids[session.PID] {
-			session.SSHD = session.PID
-			consumed[session.PID] = true
+		found := false
+		for number := len(accepted) - 1; number >= 0; number-- {
+			login := accepted[number]
+			if login.PID != session.PID || login.User != session.User || login.Time.Sub(session.Start) > auditJoinSkew {
+				continue
+			}
+			found = true
+			if login.Until.IsZero() || !session.Start.After(login.Until.Add(auditJoinSkew)) {
+				session.SSHD = session.PID
+				consumed[number] = true
+				joined++
+			}
+			break
+		}
+		// 범위 앞에서 Accepted를 받은 연결이 범위 안에서 pty를 연 것이다. 그 PID는 로그인 뒤에도 sshd였으므로 재사용된 PID가 아니다.
+		if alive, ok := earlier[session.PID]; !found && ok && !alive.Before(session.Start.Add(-auditJoinSkew)) {
+			session.SSHD = auditSSHDAmbiguous
+			joined++
 		}
 	}
-	return consumed, recorded
+	return recorded, joined
 }
 
-// joinAuditLoginsByTime은 후보가 여럿이면 모두 짝지은 것으로 센다. 그래서 pty 없는 접속 수는 실제보다 작거나 같다.
-func joinAuditLoginsByTime(records *auditLoginRecords, accepted []auditAccepted, since time.Time) map[int]bool {
-	consumed := map[int]bool{}
+// auditSSHDOpenedEarlier는 첫 Accepted보다 먼저 기록이 나온 sshd PID다. journal 범위보다 먼저 시작한 연결이다.
+// 값은 그 연결의 마지막 기록 시각이다. 그때까지 연결이 살아 있었다.
+func auditSSHDOpenedEarlier(entries []auditJournalEntry) map[int]time.Time {
+	acceptedAt := map[int]time.Time{}
+	for _, entry := range entries {
+		if slices.Contains(auditSSHDIdentifiers, entry.Identifier) && strings.HasPrefix(entry.Message, "Accepted ") {
+			if at, ok := acceptedAt[entry.PID]; !ok || entry.Time.Before(at) {
+				acceptedAt[entry.PID] = entry.Time
+			}
+		}
+	}
+	last := map[int]time.Time{}
+	for _, entry := range entries {
+		if !slices.Contains(auditSSHDIdentifiers, entry.Identifier) || entry.PID == 0 {
+			continue
+		}
+		if accepted, ok := acceptedAt[entry.PID]; ok && !entry.Time.Before(accepted) {
+			continue
+		}
+		if at, ok := last[entry.PID]; !ok || entry.Time.After(at) {
+			last[entry.PID] = entry.Time
+		}
+	}
+	return last
+}
+
+// joinAuditLoginsByTime은 PID로 짝짓지 못한 로그인을 사용자, 출발지, 시각으로 짝짓는다. OpenSSH 9.8 미만은 wtmp에 shell의 PID를 남긴다.
+// 후보가 여럿이면 모두 짝지은 것으로 센다. 그래서 pty 없는 접속 수는 실제보다 작거나 같다.
+func joinAuditLoginsByTime(records *auditLoginRecords, accepted []auditAccepted, since time.Time, consumed map[int]bool) int {
+	joined := 0
 	for index := range records.Sessions {
 		session := &records.Sessions[index]
-		if !auditRemotePTY(*session) || session.Start.Before(since) {
+		if !auditRemotePTY(*session) || session.Start.Before(since) || session.SSHD != 0 {
 			continue
 		}
 		var candidates []int
-		for _, login := range accepted {
+		for number, login := range accepted {
 			gap := login.Time.Sub(session.Start)
-			if login.User == session.User && login.Host == session.Host && gap <= auditJoinSkew && gap >= -auditJoinSkew {
-				candidates = append(candidates, login.PID)
+			if !consumed[number] && login.User == session.User && login.Host == session.Host && gap <= auditJoinSkew && gap >= -auditJoinSkew {
+				candidates = append(candidates, number)
 			}
-		}
-		for _, pid := range candidates {
-			consumed[pid] = true
 		}
 		switch len(candidates) {
 		case 0:
+			continue
 		case 1:
-			session.SSHD = candidates[0]
+			session.SSHD = accepted[candidates[0]].PID
 		default:
 			session.SSHD = auditSSHDAmbiguous
 		}
+		for _, number := range candidates {
+			consumed[number] = true
+		}
+		joined++
 	}
-	return consumed
+	return joined
 }
 
 // applyAuditJournalEnds는 로그아웃 레코드가 없는 wtmp 세션에 logind의 세션 끝을 채운다. 끝은 sshd가 끝난 "logged out" 시각이다.
@@ -253,10 +334,10 @@ type auditNoTTY struct {
 // auditNoTTYShown은 근거에 적는 접속 묶음 수다.
 const auditNoTTYShown = 5
 
-func auditNoTTYAccess(recorded map[int]bool, accepted []auditAccepted) []auditNoTTY {
+func auditNoTTYAccess(consumed map[int]bool, accepted []auditAccepted) []auditNoTTY {
 	counts := map[[3]string]int{}
-	for _, login := range accepted {
-		if !recorded[login.PID] {
+	for number, login := range accepted {
+		if !consumed[number] {
 			counts[[3]string{login.User, login.Host, login.Method}]++
 		}
 	}

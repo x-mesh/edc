@@ -52,6 +52,8 @@ func TestAuditHistoryPath(t *testing.T) {
 	}{
 		{fallback: ".bash_history", path: "/home/a/.bash_history"},
 		{fallback: "", reason: "zsh_no_histfile"},
+		{histfile: "~/.bash_history", set: true, path: "/home/a/.bash_history"},
+		{histfile: "~/.zsh_history", set: true, path: "/home/a/.zsh_history"},
 		{histfile: "$HOME/.zsh_history", set: true, path: "/home/a/.zsh_history"},
 		{histfile: "${HOME}/h/zsh", set: true, path: "/home/a/h/zsh"},
 		{histfile: "/dev/null", set: true, reason: "histfile_off"},
@@ -84,7 +86,7 @@ func TestCollectAuditHistoryAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeAuditFile(t, root, "/home/dev/.zshrc", "HISTFILE=~/.zsh_history\n", 0o644)
-	writeAuditFile(t, root, "/etc/profile.d/quiet.sh", "export HISTSIZE=0\n", 0o644)
+	writeAuditFile(t, root, "/home/ops/.zshrc", "export SAVEHIST=0\n", 0o644)
 	passwd, err := readAuditPasswd(filepath.Join(root, "/etc/passwd"))
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +111,7 @@ func TestCollectAuditHistoryAccounts(t *testing.T) {
 	if account := byUser["dev"]; account.Path != "/home/dev/.zsh_history" || account.Exists {
 		t.Fatalf("dev = %+v", account)
 	}
-	if len(history.Settings) != 1 || history.Settings[0].Path != "/etc/profile.d/quiet.sh" {
+	if len(history.Settings) != 1 || history.Settings[0].Path != "/home/ops/.zshrc" {
 		t.Fatalf("settings = %+v", history.Settings)
 	}
 }
@@ -202,5 +204,68 @@ func TestAuditHistoryDisabled(t *testing.T) {
 	}
 	if result := auditHistoryDisabled(auditFacts{}); result.Status != StatusPass {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCollectAuditHistoryJudgesOnlyRegularFiles(t *testing.T) {
+	root := t.TempDir()
+	writeAuditFile(t, root, "/etc/passwd", strings.Join([]string{
+		"app1:x:1001:1001::/srv/shared:/bin/bash",
+		"app2:x:1002:1002::/srv/shared:/bin/bash",
+		"deploy:x:1000:1000::/home/deploy:/bin/bash",
+		"ops:x:1003:1003::/home/ops:/bin/bash",
+	}, "\n")+"\n", 0o644)
+	writeAuditFile(t, root, "/srv/shared/.bash_history", "ls\n", 0o600)
+	if err := os.MkdirAll(filepath.Join(root, "home/deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/nonexistent/history", filepath.Join(root, "home/deploy/.bash_history")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "home/ops/.bash_history"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	passwd, err := readAuditPasswd(filepath.Join(root, "/etc/passwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, account := range collectAuditHistory(auditSources{root: root}, passwd).Accounts {
+		got = append(got, fmt.Sprintf("%s:%v:%s", account.User, account.Exists, account.Target))
+	}
+	// 홈을 함께 쓰는 계정은 각자 판정한다. 끊어진 symlink와 디렉터리는 history가 없는 것이다.
+	if !reflect.DeepEqual(got, []string{"app1:true:", "app2:true:", "deploy:false:/nonexistent/history", "ops:false:"}) {
+		t.Fatalf("accounts = %v", got)
+	}
+}
+
+func TestAuditHistoryTamperedDoesNotFailWithoutLogins(t *testing.T) {
+	facts := testHistoryFacts([]auditHistoryAccount{{User: "deploy", Shell: "bash", Path: "/home/deploy/.bash_history"}}, nil)
+	facts.LoginErr = errors.New("unreadable")
+	result := auditHistoryTampered(facts)
+	if result.Status != StatusPass || !reflect.DeepEqual(result.Warnings, []string{T("audit.history.no_logins")}) {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCollectAuditHistoryDoesNotJudgeAccountsThatTurnHistoryOff(t *testing.T) {
+	root := t.TempDir()
+	writeAuditFile(t, root, "/etc/passwd", "deploy:x:1000:1000::/home/deploy:/bin/bash\nops:x:1001:1001::/home/ops:/bin/zsh\nqa:x:1002:1002::/home/qa:/bin/bash\n", 0o644)
+	writeAuditFile(t, root, "/home/deploy/.bashrc", "HISTFILESIZE=0\n", 0o644)
+	writeAuditFile(t, root, "/home/qa/.bashrc", "HISTFILE=~/.bash_history\n", 0o644)
+	writeAuditFile(t, root, "/etc/zsh/zshrc", "HISTFILE=~/.zsh_history\nSAVEHIST=0\n", 0o644)
+	passwd, err := readAuditPasswd(filepath.Join(root, "/etc/passwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, account := range collectAuditHistory(auditSources{root: root}, passwd).Accounts {
+		got = append(got, account.User+":"+account.NotJudged)
+	}
+	if !reflect.DeepEqual(got, []string{"deploy:history_off", "ops:history_off", "qa:"}) {
+		t.Fatalf("accounts = %v", got)
+	}
+	if message := T("audit.history.not_judged.history_off", "deploy"); strings.HasPrefix(message, "audit.") {
+		t.Fatalf("missing message: %q", message)
 	}
 }

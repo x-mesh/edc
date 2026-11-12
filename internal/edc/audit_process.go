@@ -45,6 +45,8 @@ type auditProcesses struct {
 
 func collectAuditProcesses(sources auditSources) auditProcesses {
 	var processes auditProcesses
+	// /etc/ld.so.preload는 /proc를 읽지 못해도 판정할 수 있다.
+	processes.PreloadFile, processes.PreloadFileErr = readAuditPreloadFile(sources.file("/etc/ld.so.preload"))
 	procRoot := sources.file("/proc")
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -88,7 +90,6 @@ func collectAuditProcesses(sources auditSources) auditProcesses {
 			}
 		}
 	}
-	processes.PreloadFile, processes.PreloadFileErr = readAuditPreloadFile(sources.file("/etc/ld.so.preload"))
 	slices.SortFunc(processes.Suspicious, func(a, b auditProcess) int { return a.PID - b.PID })
 	return processes
 }
@@ -153,6 +154,9 @@ func auditProcessPreload(facts auditFacts) Result {
 	if extra := len(processes.Preloads) - auditProcessShown; extra > 0 {
 		lines = append(lines, fmt.Sprintf("+%d", extra))
 	}
+	if processes.Err != nil && len(lines) == 0 {
+		return auditSkip(id, "/proc", processes.Err)
+	}
 	var result Result
 	if len(lines) == 0 {
 		result = auditResult(id, StatusPass, T("audit.proc.preload_ok", processes.Checked))
@@ -164,8 +168,11 @@ func auditProcessPreload(facts auditFacts) Result {
 			result.Next = fmt.Sprintf("tr '\\0' '\\n' < /proc/%d/environ | grep LD_PRELOAD", processes.Preloads[0].PID)
 		}
 	}
+	if processes.Err != nil {
+		result.Warnings = append(result.Warnings, T("audit.proc.proc_unreadable", infoSingleLine(processes.Err.Error())))
+	}
 	if processes.EnvUnreadable > 0 {
-		result.Warnings = []string{T("audit.proc.env_unreadable", processes.EnvUnreadable)}
+		result.Warnings = append(result.Warnings, T("audit.proc.env_unreadable", processes.EnvUnreadable))
 	}
 	return result
 }

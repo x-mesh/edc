@@ -68,7 +68,7 @@ audit:
     journal_limited: "the journal has more than %d entries in the range, edc read only the newest"
     later_login: "sshd and wtmp record a later login at %s %s from %s"
     unlogged: "%d remote terminal logins in wtmp have no sshd Accepted entry in the journal (journal from %s)"
-    joined_by_time: "the sshd journal PIDs match no wtmp login (OpenSSH before 9.8), so edc joined them by user, host, and time"
+    joined_by_time: "%d wtmp logins match no sshd journal PID (OpenSSH before 9.8), so edc joined them by user, host, and time"
     unjoinable: "the sshd journal matches no wtmp login by PID or by user, host, and time, so edc did not join the journal with wtmp"
     compressed: "%s is compressed, the check starts at the next file"
     limited: "edc read only the last 64 MiB of %s"
@@ -90,6 +90,7 @@ audit:
     not_judged:
       zsh_no_histfile: "%s: zsh saves no history without HISTFILE, edc did not check it"
       histfile_off: "%s: HISTFILE turns off the history, see history.disabled"
+      history_off: "%s: a start file turns off the history, see history.disabled"
       histfile_custom: "%s: HISTFILE names another path, edc did not check it"
   proc:
     exe_ok: "no process runs from a temporary directory, from memory, or from a file or library deleted outside the package directories (%d checked)"
@@ -98,6 +99,7 @@ audit:
     preload_ok: "no preloaded library (%d processes checked)"
     preload_bad: "/etc/ld.so.preload has %d entries, and %d processes run with LD_PRELOAD"
     env_unreadable: "%d process environments are unreadable without root"
+    proc_unreadable: "cannot read /proc (%s), edc did not check LD_PRELOAD of processes"
     reason:
       temp: "runs from a temporary directory"
       deleted: "the binary was deleted"

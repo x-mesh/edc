@@ -124,3 +124,20 @@ func TestCollectAuditProcessesFindsDeletedLibrariesAndPreload(t *testing.T) {
 		t.Fatalf("pass = %+v", result)
 	}
 }
+
+func TestAuditProcessPreloadWithoutProc(t *testing.T) {
+	root := t.TempDir()
+	writeAuditFile(t, root, "/etc/ld.so.preload", "/lib/libsnoopy.so\n", 0o644)
+	processes := collectAuditProcesses(auditSources{root: root})
+	if processes.Err == nil || !reflect.DeepEqual(processes.PreloadFile, []string{"/lib/libsnoopy.so"}) {
+		t.Fatalf("processes = %+v", processes)
+	}
+	result := auditProcessPreload(auditFacts{Processes: processes})
+	if result.Status != StatusWarn || len(result.Warnings) != 1 || strings.HasPrefix(result.Warnings[0], "audit.") {
+		t.Fatalf("result = %+v", result)
+	}
+	// 확인한 것이 없으면 pass가 아니라 skip이다.
+	if result := auditProcessPreload(auditFacts{Processes: auditProcesses{Err: processes.Err}}); result.Status != StatusSkip {
+		t.Fatalf("result = %+v", result)
+	}
+}

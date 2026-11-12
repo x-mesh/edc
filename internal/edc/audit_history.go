@@ -66,40 +66,47 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 	var history auditHistory
 	seenFile := map[string]bool{}
 	// scan은 시작 파일 하나에서 history 설정을 찾고 HISTFILE의 마지막 값을 돌려준다. 같은 파일은 한 번만 근거에 넣는다.
-	scan := func(path string) (string, bool, error) {
+	// off는 HISTFILE 말고 history를 남기지 않게 하는 설정(HISTSIZE=0, set +o history 등)이 있는지다.
+	scan := func(path string) (string, bool, bool, error) {
 		settings, histfile, found, err := scanAuditHistoryFile(sources.file(path), path)
 		if err == nil && !seenFile[path] {
 			seenFile[path] = true
 			history.Settings = append(history.Settings, settings...)
 		}
-		return histfile, found, err
+		off := slices.ContainsFunc(settings, func(setting auditHistorySetting) bool {
+			return !strings.HasPrefix(setting.Statement, "HISTFILE=") && setting.Statement != "unset HISTFILE"
+		})
+		return histfile, found, off, err
 	}
 	globals := map[string]string{}
+	globalOff := map[string]bool{}
 	for shell, spec := range auditHistoryShells {
 		for _, pattern := range spec.global {
 			matches, _ := filepath.Glob(sources.file(pattern))
 			slices.Sort(matches)
 			for _, match := range matches {
 				path := "/" + strings.TrimPrefix(filepath.ToSlash(strings.TrimPrefix(match, filepath.Clean(sources.root))), "/")
-				if value, found, err := scan(path); err == nil && found {
+				value, found, off, err := scan(path)
+				if err == nil && found {
 					globals[shell] = value
 				}
+				globalOff[shell] = globalOff[shell] || off
 			}
 		}
 	}
-	seenHome := map[string]bool{}
+	// 홈을 함께 쓰는 계정도 각자의 세션과 비교한다. 한 계정만 보면 다른 계정이 비운 history를 놓친다.
 	for _, entry := range passwd {
 		shell := filepath.Base(entry.Shell)
 		spec, ok := auditHistoryShells[shell]
-		if (entry.UID != 0 && entry.UID < 1000) || !ok || entry.Home == "" || entry.Home == "/" || seenHome[entry.Home] {
+		if (entry.UID != 0 && entry.UID < 1000) || !ok || entry.Home == "" || entry.Home == "/" {
 			continue
 		}
-		seenHome[entry.Home] = true
 		account := auditHistoryAccount{User: entry.Name, Shell: shell}
 		histfile, set := globals[shell]
+		off := globalOff[shell]
 		denied := false
 		for _, name := range spec.local {
-			value, found, err := scan(filepath.Join(entry.Home, name))
+			value, found, localOff, err := scan(filepath.Join(entry.Home, name))
 			if errors.Is(err, fs.ErrPermission) {
 				denied = true
 				break
@@ -107,12 +114,17 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 			if found {
 				histfile, set = value, true
 			}
+			off = off || localOff
 		}
 		if denied {
 			history.Skipped++
 			continue
 		}
 		path, reason := auditHistoryPath(spec.history, histfile, set, entry.Home)
+		// history를 끄는 설정이 있으면 빈 history는 그 설정 때문일 수 있다. 설정은 history.disabled가 알린다.
+		if reason == "" && off {
+			reason = "history_off"
+		}
 		if reason != "" {
 			account.NotJudged = reason
 			history.Accounts = append(history.Accounts, account)
@@ -125,17 +137,23 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 			continue
 		}
 		if err == nil {
-			account.Exists = true
-			account.Size = info.Size()
-			account.ModTime = info.ModTime()
-			account.CharDevice = info.Mode()&fs.ModeCharDevice != 0
 			if info.Mode()&fs.ModeSymlink != 0 {
 				account.Target, _ = os.Readlink(sources.file(path))
-				if target, err := os.Stat(sources.file(path)); err == nil {
-					account.Size = target.Size()
-					account.ModTime = target.ModTime()
-					account.CharDevice = target.Mode()&fs.ModeCharDevice != 0
+				// 끊어진 symlink는 history가 없는 것이다. 링크 자체의 크기와 시각을 쓰면 빈 history를 놓친다.
+				info, err = os.Stat(sources.file(path))
+				if errors.Is(err, fs.ErrPermission) {
+					history.Skipped++
+					continue
 				}
+			}
+		}
+		if err == nil {
+			account.CharDevice = info.Mode()&fs.ModeCharDevice != 0
+			// 디렉터리처럼 일반 파일이 아닌 것에는 shell이 history를 쓰지 못한다.
+			account.Exists = info.Mode().IsRegular()
+			if account.Exists {
+				account.Size = info.Size()
+				account.ModTime = info.ModTime()
 			}
 		}
 		history.Accounts = append(history.Accounts, account)

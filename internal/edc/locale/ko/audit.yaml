@@ -68,7 +68,7 @@ audit:
     journal_limited: "범위 안의 journal 항목이 %d개를 넘어 최근 것만 읽었습니다"
     later_login: "sshd와 wtmp에는 더 늦은 로그인이 있습니다 (%s %s, %s)"
     unlogged: "wtmp의 원격 터미널 로그인 %d건에 sshd journal의 Accepted가 없습니다 (journal은 %s부터)"
-    joined_by_time: "sshd journal의 PID가 wtmp 로그인과 맞지 않아(OpenSSH 9.8 미만) 사용자, 출발지, 시각으로 짝지었습니다"
+    joined_by_time: "wtmp 로그인 %d개가 sshd journal의 PID와 맞지 않아(OpenSSH 9.8 미만) 사용자, 출발지, 시각으로 짝지었습니다"
     unjoinable: "sshd journal이 wtmp 로그인과 PID로도, 사용자·출발지·시각으로도 맞지 않아 짝짓지 않았습니다"
     compressed: "%s는 압축되어 있어 다음 파일부터 판정했습니다"
     limited: "%s의 마지막 64 MiB만 읽었습니다"
@@ -90,6 +90,7 @@ audit:
     not_judged:
       zsh_no_histfile: "%s: zsh는 HISTFILE이 없으면 history를 저장하지 않아 확인하지 않았습니다"
       histfile_off: "%s: HISTFILE이 history를 끕니다. history.disabled를 보세요"
+      history_off: "%s: 시작 파일이 history를 끕니다. history.disabled를 보세요"
       histfile_custom: "%s: HISTFILE이 다른 경로를 가리켜 확인하지 않았습니다"
   proc:
     exe_ok: "임시 디렉터리, 메모리, 패키지 디렉터리 밖에서 지워진 파일이나 라이브러리로 실행 중인 process 없음 (%d개 확인)"
@@ -98,6 +99,7 @@ audit:
     preload_ok: "미리 넣은 라이브러리 없음 (process %d개 확인)"
     preload_bad: "/etc/ld.so.preload에 항목이 %d개 있고, LD_PRELOAD로 실행 중인 process가 %d개 있습니다"
     env_unreadable: "root가 아니라 process %d개의 환경을 읽지 못했습니다"
+    proc_unreadable: "/proc를 읽지 못해(%s) process의 LD_PRELOAD는 확인하지 않았습니다"
     reason:
       temp: "임시 디렉터리에서 실행"
       deleted: "실행 파일이 지워짐"

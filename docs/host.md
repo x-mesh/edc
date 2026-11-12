@@ -169,7 +169,7 @@ If a webhook does not answer with a 2xx status, edc writes the reason to stderr 
 
 ## Host audit (Linux)
 
-`edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, and the listening sockets. It changes nothing, and it sends nothing over the network. It ends in less than one second.
+`edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, the listening sockets, the login records, and `/proc`. It changes nothing, and it sends nothing over the network. It ends in less than one second.
 
 ```bash
 sudo edc audit
@@ -184,11 +184,17 @@ sudo edc audit --json -         # one result for each check
 | `net.ip_forward` | | forwarding is on, and edc finds no container runtime |
 | `ssh.root_login` | | `PermitRootLogin yes` |
 | `ssh.password_auth` | `PermitEmptyPasswords yes` with password login | password login is on |
-| `ssh.key_files` | another user can write `~/.ssh` or `authorized_keys` | |
+| `ssh.key_files` | another user can write `~/.ssh` or a file of `AuthorizedKeysFile` | |
+| `ssh.key_changed` | | the mtime or the ctime of a file of `AuthorizedKeysFile` is in the last 7 days |
 | `user.uid0` | an account other than root has UID 0 | |
 | `user.empty_pass` | an account has an empty password | |
 | `user.sudo_nopass` | | a sudo rule runs every command without a password |
 | `user.root_groups` | | the `docker` or `lxd` group has members |
+| `login.mismatch` | `lastlog` records a login that `wtmp` does not record, or `wtmp` and the sshd journal record a later login than `lastlog` | a remote terminal login in `wtmp` has no sshd `Accepted` entry in the journal, `wtmp` has records filled with zeros, or `wtmp` is empty and `lastlog` has logins |
+| `history.tampered` | a bash or zsh history file links to `/dev/null` or is a character device, or it is empty or missing after a session of more than one minute | the history file did not change during the last session of more than one minute |
+| `history.disabled` | | a start file turns off the history: `unset HISTFILE`, `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, or `set +o history` |
+| `proc.unusual_exe` | | a process runs from `/tmp`, `/var/tmp`, or `/dev/shm`, from memory (`memfd`), or from a file or a shared library that was deleted outside the package directories |
+| `proc.preload` | | `/etc/ld.so.preload` has an entry, or a process runs with `LD_PRELOAD` |
 | `file.sensitive` | other users can read `/etc/shadow`, or write `/etc/passwd`, `/etc/sudoers`, or `docker.sock` | |
 | `file.path_writable` | other users can write a directory in the root `PATH`, or `PATH` has a relative entry | |
 | `kernel.sysctl` | | a hardening value differs from the recommended value |
@@ -201,6 +207,22 @@ sudo edc audit --json -         # one result for each check
 The database and control ports are 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, and 27017.
 
 The `ctr.*` checks run only inside a container. edc finds the container with the same markers as `edc info`: `KUBERNETES_SERVICE_HOST`, `/.dockerenv`, or `/run/.containerenv`. On a host, the report does not show these checks. If the container uses the PID namespace of the host, `ctr.host_ns` also compares the network namespace with the namespace of PID 1.
+
+The login and history checks compare records that an intruder can change. A `fail` tells you that two records disagree. It is not proof of an intrusion. Each result names the start of `wtmp`, because edc cannot compare a login before that time.
+
+`login.mismatch` reads `/var/log/wtmp`, the uncompressed `/var/log/wtmp.1`, and `/var/log/lastlog`. It compares the last login of each account in `lastlog` with the `wtmp` logins. The user, the terminal, and the time must agree within one second. edc reads only the last 64 MiB of each `wtmp` file. It does not read the SQLite records of `wtmpdb` or `lastlog2`. If only those records exist, the login checks show `skip`.
+
+As root, edc also reads the `systemd-logind`, `sshd`, and `sshd-session` journal entries of the last 7 days. The PID of the sshd process joins the three sources. sshd writes only sessions with a terminal to `wtmp`, so `scp`, `sftp`, and `ssh host command` show only in the journal. With `-v`, `login.mismatch` lists these logins by user, host, and method. They do not change the result.
+
+The journal also checks `wtmp` and `lastlog` in the other direction. sshd writes `lastlog` at each terminal login, so a later login in `wtmp` and in the journal means that `lastlog` went back. A remote terminal login in `wtmp` without an `Accepted` entry gives a warning. journald can drop entries under its rate limit, so this is not a `fail`. OpenSSH 9.8 and later write the same PID to `wtmp`, to the `Accepted` entry, and to logind. One connection can open several terminals, for example with `ControlMaster`. Thus edc joins a `wtmp` login with the `Accepted` entry of the same PID, user, and address if the login starts before the connection ends. If `wtmp` holds a host name instead of an address (`UseDNS yes`), edc does not compare the address. The connection ends at the `session closed` entry of that PID, or at the next `Accepted` entry of that PID. A later login has a reused PID, and edc does not join it. If a connection started before the 7 days, edc uses the other journal entries of its PID and the user in its `session closed` entry. Before 9.8, `wtmp` holds the PID of the shell. If the PID of a login does not match, edc joins the login with an `Accepted` entry of the same user and host within 2 seconds, and a warning tells you the number of these logins. If two entries match, edc does not take a session end from the journal. If no login matches, edc does not join the two sources. If the journal has no `Accepted` entry, edc compares the logins after the first journal entry.
+
+`history.tampered` checks the accounts with UID 0 or UID 1000 and above that use bash or zsh. It compares the history file with the `pts/*` sessions in `wtmp`. A shell writes the history when it exits, so the file must change after the session starts. Some systems do not write a logout record to `wtmp`. On these systems, edc takes the session end from the `systemd-logind` journal. If neither source has the end, edc checks only the link to `/dev/null`, and a warning tells you the number of accounts that it did not compare. edc does not check an account if a start file sets `HISTFILE` to another path, or if zsh has no `HISTFILE`. edc also does not check an account if its start files set `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, or `set +o history`, because then an empty history is normal. A symlink to a missing file and a directory count as a missing history file. A warning names each of these accounts. The check reads the history settings in the start files, but it does not run the shell. If a later start file changes a setting again, edc uses the later value. The evidence of `history.disabled` shows the file, the line, and the setting, but not the full line.
+
+The SSH key checks read the files of `AuthorizedKeysFile`. The default is `.ssh/authorized_keys .ssh/authorized_keys2`. A warning tells you if `AuthorizedKeysCommand` supplies keys, because edc cannot check them. `ssh.key_changed` uses the later of the mtime and the ctime of each file. `touch` can set the mtime back, but not the ctime. Administrators add keys after a login too, so the check gives a warning only. The evidence shows the last `wtmp` login before the change.
+
+`proc.unusual_exe` reads `/proc/<pid>/exe`. It ignores a deleted binary under `/usr`, `/bin`, `/sbin`, `/lib`, or `/lib64`. After a package upgrade, daemons continue to run from deleted binaries. It also ignores the memory copy that `runc` makes of itself. The check reads `/proc/<pid>/maps` for deleted shared libraries with the same rule. `proc.preload` reads `/etc/ld.so.preload` and the `LD_PRELOAD` value in `/proc/<pid>/environ`. Only root can read the environment of other users.
+
+The account checks read `/etc/passwd`. If `nsswitch.conf` takes accounts from `sss`, `ldap`, `winbind`, `nis`, `nisplus`, or `hesiod`, a warning tells you that edc did not check those accounts.
 
 Run it as root. Without root, edc cannot read the firewall, `/etc/shadow`, `/etc/sudoers`, or the homes of other users. These checks show `skip`, not `pass`.
 

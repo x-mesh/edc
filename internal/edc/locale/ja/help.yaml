@@ -89,11 +89,12 @@ command:
   audit:
     summary: "ホストの公開状態と設定を点検、読み取り専用 (Linux)"
     notes:
-      - "ファイル、sysctl の値、listen ソケットだけを読みます。"
+      - "ファイル、sysctl の値、listen ソケット、ログイン記録、/proc だけを読みます。"
       - "何も変更せず、外部へ送信しません。"
       - "root で実行してください。root でなければ一部が skip です。"
       - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
       - "パッケージのバージョンを CVE と照合しません。"
+      - "ログインと history の fail は二つの記録の食い違いで、侵入の証拠ではありません。"
   changes:
     summary: "最近のパッケージ、/etc、service の変更 (Linux)"
     notes:

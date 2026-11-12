@@ -25,6 +25,7 @@ find:
     limited: "edc stopped at %d entries"
     query_cut: "edc uses only the first %d bytes of the query"
     long_line: "a line is longer than %d bytes, edc uses only its start"
+    stdin_error: "reading stdin failed, so the candidates stop there: %s"
     mount_error: "cannot read the mount table (%s), so edc skips only /proc, /sys, /dev, and /run"
     skipped_short: "skipped %s"
   picker:

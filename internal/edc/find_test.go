@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -200,6 +202,32 @@ func TestRunFindWritesJSON(t *testing.T) {
 	report = findJSONReport{}
 	if err := json.Unmarshal(data, &report); err != nil || len(report.Matches) != 1 || report.Matches[0].Size == nil || *report.Matches[0].Size != 20 || report.Matches[0].MTime == nil {
 		t.Errorf("stat fields: %s", data)
+	}
+}
+
+// stdin을 읽다 EOF가 아닌 오류가 나면 후보가 거기서 끊긴 것이다. 찾은 것은 쓰되 오류를 알리고 2로 끝난다.
+func TestRunFindReportsAStdinReadError(t *testing.T) {
+	var got []string
+	report := findReadStdin(io.MultiReader(strings.NewReader("a.txt\nb.txt\n"), iotest.ErrReader(errors.New("input/output error"))), func(batch []findEntry) bool {
+		for _, entry := range batch {
+			got = append(got, entry.path)
+		}
+		return true
+	})
+	if report.ReadErr == nil || len(got) != 2 || !slices.ContainsFunc(report.Problems, func(problem string) bool { return strings.Contains(problem, "input/output error") }) {
+		t.Fatalf("lines %v, report %+v", got, report)
+	}
+	// 디렉터리를 연 파일은 읽을 때 EISDIR를 낸다.
+	stdin, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	var stderr bytes.Buffer
+	env := testFindEnv(io.Discard, &stderr)
+	env.stdin, env.stdinPipe = stdin, true
+	if code := runFindWith([]string{"txt"}, env); code != 2 || !strings.Contains(stderr.String(), "edc find: ") {
+		t.Errorf("code %d, stderr %q", code, stderr.String())
 	}
 }
 

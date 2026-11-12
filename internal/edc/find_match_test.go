@@ -87,6 +87,13 @@ func TestFindFuzzyComparesRunes(t *testing.T) {
 	if ranked := findRank(t, "한i", []string{"docs/한\u0130.txt"}); len(ranked) != 1 {
 		t.Errorf("dotted I = %v", ranked)
 	}
+	// ASCII 질의도 경로에 ASCII가 아닌 글자가 있으면 접기로 견준다. k는 Kelvin sign(U+212A)과, i는 İ와 같다.
+	if ranked := findRank(t, "k", []string{"docs/K.txt"}); len(ranked) != 1 {
+		t.Errorf("kelvin = %v", ranked)
+	}
+	if ranked := findRank(t, "i.txt", []string{"docs/İ.txt"}); len(ranked) != 1 {
+		t.Errorf("ascii query, dotted I = %v", ranked)
+	}
 	// σ와 끝 시그마 ς는 소문자끼리지만 같은 대소문자 접기에 든다.
 	if ranked := findRank(t, "σ", []string{"docs/ς.txt", "docs/Σ.txt"}); len(ranked) != 2 {
 		t.Errorf("sigma = %v", ranked)

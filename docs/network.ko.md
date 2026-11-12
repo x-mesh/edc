@@ -229,7 +229,7 @@ sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] 
 - `NO_SOCKET`이고 listener가 `127.0.0.1` 같은 다른 주소에만 묶여 있으면: 요약에 listener의 주소가 나옵니다. listener가 `docker-proxy`이면 다음 단계에 SYN이 온 주소를 넣은 `-p` 값이 나옵니다.
 - 그 밖의 `NO_SOCKET`: kernel이 그 주소와 port를 받을 socket을 찾지 못했습니다.
 
-drop 이유가 없으면 요약은 listener가 없는 경우와 host firewall이 거부하는 경우를 함께 말합니다. port에 listener가 있으면 다음 단계에 `--listen`을 넣지 않습니다. 이미 쓰는 port에서는 `--listen`이 exit code `2`로 멈추기 때문입니다.
+drop 이유가 없으면 요약은 listener가 없는 경우와 host firewall이 거부하는 경우를 함께 말합니다. 출발지에 `NETFILTER_DROP`과 `NO_SOCKET`이 함께 있어도 두 경우를 함께 말합니다. 출발지의 drop 이유는 모든 시도를 합친 것이라 이 RST가 어느 쪽인지 알 수 없기 때문입니다. port에 listener가 있으면 다음 단계에 `--listen`을 넣지 않습니다. 이미 쓰는 port에서는 `--listen`이 exit code `2`로 멈추기 때문입니다.
 metrics의 `rst_cause`는 `firewall`, `no_listener`, `loopback_only`, `other_address`, `no_socket` 중 하나입니다. 이유를 좁히지 못하면 `rst_cause`가 없습니다.
 
 출발지가 여럿이면 모든 출발지가 한 번 이상 연결되어야 exit code가 `0`입니다.

@@ -200,6 +200,12 @@ func TestRunTCPWaitCommand(t *testing.T) {
 	if code, metrics, elapsed := run("--wait=false", closed); code != 1 || elapsed > 900*time.Millisecond || metrics["attempts"] != nil {
 		t.Fatalf("--wait=false: code %d elapsed %v metrics %v", code, elapsed, metrics)
 	}
+	// 연결할 수 없는 port는 기다려도 연결되지 않는다. 재시도하지 않고 입력 오류로 바로 끝난다.
+	for _, target := range []string{"127.0.0.1:", "127.0.0.1:0", "127.0.0.1:99999", "127.0.0.1:no-such-service"} {
+		if code, metrics, elapsed := run("-w=5s", target); code == 0 || elapsed > 900*time.Millisecond || metrics["attempts"] != nil {
+			t.Fatalf("%s: code %d elapsed %v metrics %v", target, code, elapsed, metrics)
+		}
+	}
 	late := tcpWaitFreeAddress(t)
 	listening := make(chan net.Listener, 1)
 	go func() {

@@ -698,7 +698,10 @@ func TestExplainExpectRST(t *testing.T) {
 		{"ipv6 any takes ipv4", "10.0.0.5", noSocket, any6, expectRSTNoSocket},
 		{"unknown listener", "10.0.0.5", noSocket, unknown, expectRSTNoSocket},
 		{"nil listener", "10.0.0.5", noSocket, nil, expectRSTNoSocket},
-		{"firewall wins", "10.0.0.5", map[string]int{"NETFILTER_DROP": 1, "NO_SOCKET": 1}, loopback, expectRSTFirewall},
+		{"firewall", "10.0.0.5", map[string]int{"NETFILTER_DROP": 1}, loopback, expectRSTFirewall},
+		// 요약의 drop 이유는 출발지의 모든 시도를 합친 것이다. 한 시도는 방화벽에, 다른 시도는 닫힌 port에 막혔을 수 있어
+		// 어느 한쪽으로 정하지 않는다.
+		{"firewall and no socket", "10.0.0.5", map[string]int{"NETFILTER_DROP": 1, "NO_SOCKET": 1}, loopback, ""},
 		// drop 이유가 없으면 방화벽을 뺄 근거가 없다. listener가 없다는 것만으로 이유를 정하지 않는다.
 		{"no drop reasons", "10.0.0.5", nil, none, ""},
 		{"no drop reasons with a loopback listener", "10.0.0.5", nil, loopback, ""},

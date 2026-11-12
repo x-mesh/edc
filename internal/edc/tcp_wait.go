@@ -135,7 +135,9 @@ func runTCPWait(args []string, version string) int {
 	}
 	started := time.Now()
 	targetInfo := map[string]interface{}{"input": input}
-	if _, _, err := net.SplitHostPort(input); err != nil {
+	// SplitHostPort는 "host:"처럼 빈 port도 받는다. 그런 port에는 몇 번을 시도해도 연결되지 않아, -w가 끝없이 기다리지
+	// 않게 시작하기 전에 거른다. port 0과 범위 밖의 수, 모르는 서비스 이름도 같다.
+	if _, port, err := net.SplitHostPort(input); err != nil || !tcpWaitPortValid(port) {
 		failed := resultFromError("tcp.check", started, "input", errors.New(T("cli.error.host_port_required", input)))
 		return emit(options, buildReport(version, started, targetInfo, []Result{failed}, options.redact))
 	}
@@ -156,6 +158,11 @@ func runTCPWait(args []string, version string) int {
 		return 4
 	}
 	return code
+}
+
+func tcpWaitPortValid(port string) bool {
+	number, err := net.LookupPort("tcp", port)
+	return err == nil && number > 0
 }
 
 // waitTCP는 address에 연결될 때까지 시도한다. 시도는 interval마다 시작하고, 한 번은 attemptTimeout까지 기다린다. ctx가

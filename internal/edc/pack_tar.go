@@ -43,12 +43,11 @@ func packDirectory(ctx context.Context, dir string, options packOptions) (string
 			target = filepath.Join(filepath.Dir(absolute), base+suffix)
 		}
 	}
-	absoluteTarget, err := filepath.Abs(target)
-	if err != nil {
+	// 출력이 묶는 디렉터리 안이면 쓰는 중인 자기 임시 파일까지 묶는다. -o의 부모가 symlink로 그 디렉터리를 가리킬 수 있어
+	// 양쪽 모두 링크를 푼 실제 경로로 비교한다.
+	if inside, err := packInside(absolute, target); err != nil {
 		return "", err
-	}
-	// 출력이 묶는 디렉터리 안이면 쓰는 중인 자기 임시 파일까지 묶는다.
-	if inside, err := filepath.Rel(absolute, absoluteTarget); err == nil && inside != ".." && !strings.HasPrefix(inside, "../") {
+	} else if inside {
 		return "", errPackInside
 	}
 	if _, err := os.Lstat(target); err == nil {
@@ -280,11 +279,6 @@ type packUntarCounts struct {
 	crossTop bool
 }
 
-type packDirectoryMeta struct {
-	name   string
-	header *tar.Header
-}
-
 // packUntar는 stream의 tar 항목을 root 안에 쓴다. 항목 이름은 root 기준 상대 경로여야 한다. os.Root가 쓰기마다 경로를
 // root 안으로 묶지만, 밖을 가리키는 링크를 남기면 나중에 그 디렉터리를 쓰는 사람이 따라간다. 그래서 symlink는 맨 마지막에
 // 만들고, 대상이 root 안이며 다른 symlink를 거쳐 가지 않을 때만 만든다. "d/a -> .."와 "b -> d/a/.."처럼 글자로는 안쪽이지만
@@ -292,7 +286,9 @@ type packDirectoryMeta struct {
 // 디렉터리의 권한과 시각은 안의 항목을 다 쓴 뒤 깊은 것부터 정한다. 0555 디렉터리를 먼저 만들면 그 안에 쓸 수 없다.
 func packUntar(ctx context.Context, root *os.Root, stream io.Reader, durable bool, report *packReporter) (packUntarCounts, error) {
 	var counts packUntarCounts
-	var dirs []packDirectoryMeta
+	// dirs는 디렉터리 항목의 헤더다. 같은 이름이 다시 나오면 뒤의 헤더가 이기고, 디렉터리가 아닌 항목이 그 이름을 대체하면
+	// 지운다. 남겨 두면 마지막에 새 파일이나 symlink(가 가리키는 항목)에 옛 디렉터리의 권한과 시각을 덮어쓴다.
+	dirs := map[string]*tar.Header{}
 	var links []*tar.Header
 	symlinks := map[string]bool{}
 	owner := os.Geteuid() == 0
@@ -324,6 +320,9 @@ func packUntar(ctx context.Context, root *os.Root, stream io.Reader, durable boo
 			delete(symlinks, name)
 			links = packDropLink(links, name)
 		}
+		if header.Typeflag != tar.TypeDir {
+			delete(dirs, name)
+		}
 		// tar에 따로 적히지 않은 부모는 시스템 tar처럼 보통 권한(umask를 거친 0755)으로 만든다.
 		if parent := path.Dir(name); parent != "." {
 			if err := root.MkdirAll(parent, 0o755); err != nil {
@@ -335,7 +334,7 @@ func packUntar(ctx context.Context, root *os.Root, stream io.Reader, durable boo
 			if err := root.MkdirAll(name, 0o700); err != nil {
 				return counts, err
 			}
-			dirs = append(dirs, packDirectoryMeta{name: name, header: header})
+			dirs[name] = header
 			counts.dirs++
 			report.line("x " + viewSanitize(name) + "/")
 		// archive/tar는 GNU sparse 항목의 빈 구간을 0으로 채워 읽어 준다. 내용은 일반 파일과 같다.
@@ -403,11 +402,18 @@ func packUntar(ctx context.Context, root *os.Root, stream io.Reader, durable boo
 			}
 		}
 	}
-	sort.Slice(dirs, func(left, right int) bool {
-		return strings.Count(dirs[left].name, "/") > strings.Count(dirs[right].name, "/")
+	names := make([]string, 0, len(dirs))
+	for name := range dirs {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(left, right int) bool {
+		if depth := strings.Count(names[left], "/") - strings.Count(names[right], "/"); depth != 0 {
+			return depth > 0
+		}
+		return names[left] < names[right]
 	})
-	for _, dir := range dirs {
-		if err := packKeepHeader(root, dir.name, dir.header, owner); err != nil {
+	for _, name := range names {
+		if err := packKeepHeader(root, name, dirs[name], owner); err != nil {
 			return counts, err
 		}
 	}
@@ -690,4 +696,26 @@ func packTypeText(flag byte) string {
 		return "FIFO"
 	}
 	return fmt.Sprintf("tar type %q", flag)
+}
+
+// packInside는 target이 dir 안(dir 자체 포함)에 놓이는지 본다. target은 아직 없으므로 부모 디렉터리의 링크를 푼다. 부모가 없으면
+// 출력을 만들 때 실패하므로 글자 그대로 비교한다.
+func packInside(dir, target string) (bool, error) {
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false, err
+	}
+	absoluteTarget, err := filepath.Abs(target)
+	if err != nil {
+		return false, err
+	}
+	parent, base := filepath.Split(absoluteTarget)
+	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+		absoluteTarget = filepath.Join(realParent, base)
+	}
+	inside, err := filepath.Rel(realDir, absoluteTarget)
+	if err != nil {
+		return false, nil
+	}
+	return inside != ".." && !strings.HasPrefix(inside, "../"), nil
 }

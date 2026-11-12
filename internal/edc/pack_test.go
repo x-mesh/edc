@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -564,5 +565,108 @@ func TestPackReporterProgressLine(t *testing.T) {
 	quiet.track("big.log", 2048, &read, nil)()
 	if out.Len() != 0 {
 		t.Fatalf("no progress line outside a terminal: %q", out.String())
+	}
+}
+
+// -o의 부모가 symlink로 묶는 디렉터리를 가리켜도 안쪽 출력으로 본다.
+func TestPackRejectsAnOutputThroughALinkIntoTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "logs", "a.log"), "a")
+	if err := os.Symlink("logs", filepath.Join(dir, "backup-link")); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := packTest(t, dir, "-o", "backup-link/snapshot.tar.gz", "logs"); code != 1 || !strings.Contains(stderr, "inside the directory") {
+		t.Fatalf("%d %s", code, stderr)
+	}
+	if packExists(filepath.Join(dir, "logs", "snapshot.tar.gz")) || len(packLeftovers(t, filepath.Join(dir, "logs"))) != 0 {
+		t.Fatal("nothing is written inside the input")
+	}
+}
+
+// 같은 이름의 디렉터리 항목을 뒤의 파일이나 symlink가 대체하면 옛 디렉터리의 권한과 시각을 적용하지 않는다. 같은 디렉터리가
+// 두 번 나오면 뒤의 헤더가 이긴다.
+func TestPackLaterEntriesWinOverDirectoryHeaders(t *testing.T) {
+	dir := t.TempDir()
+	packTarGz(t, filepath.Join(dir, "dup.tgz"),
+		packEntry{name: "t/", kind: tar.TypeDir, mode: 0o755},
+		packEntry{name: "t/d/", kind: tar.TypeDir, mode: 0o700},
+		packEntry{name: "t/d", kind: tar.TypeReg, body: "file", mode: 0o644},
+		packEntry{name: "t/run", kind: tar.TypeReg, body: "#!", mode: 0o644},
+		packEntry{name: "t/s/", kind: tar.TypeDir, mode: 0o700},
+		packEntry{name: "t/s", kind: tar.TypeSymlink, link: "run"},
+		packEntry{name: "t/twice/", kind: tar.TypeDir, mode: 0o700},
+		packEntry{name: "t/twice/", kind: tar.TypeDir, mode: 0o750},
+	)
+	if code, _, stderr := packTest(t, dir, "dup.tgz"); code != 0 {
+		t.Fatalf("%d %s", code, stderr)
+	}
+	for name, want := range map[string]fs.FileMode{"t/d": 0o644, "t/run": 0o644, "t/twice": 0o750} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil || info.Mode().Perm() != want {
+			t.Errorf("%s mode %v, want %v (%v)", name, info.Mode().Perm(), want, err)
+		}
+	}
+	if link, err := os.Readlink(filepath.Join(dir, "t", "s")); err != nil || link != "run" {
+		t.Fatalf("symlink %q %v", link, err)
+	}
+}
+
+// ustar 표시가 없는 v7 tar와 끝 표시만 있는 빈 tar도 tar다. 0으로만 찬 큰 파일은 tar가 아니다.
+func TestPackDetectsV7AndEmptyTar(t *testing.T) {
+	dir := t.TempDir()
+	header := make([]byte, 512)
+	copy(header, "v7/a.txt")
+	copy(header[100:], "0000644\x00")
+	copy(header[108:], "0000000\x00")
+	copy(header[116:], "0000000\x00")
+	copy(header[124:], "00000000003\x00")
+	copy(header[136:], "14760000000\x00")
+	header[156] = '0'
+	copy(header[148:], "        ")
+	sum := 0
+	for _, value := range header {
+		sum += int(value)
+	}
+	copy(header[148:], fmt.Sprintf("%06o\x00 ", sum))
+	data := append(header, append([]byte("abc"), make([]byte, 509+1024)...)...)
+	packWrite(t, filepath.Join(dir, "old.tar"), string(data))
+	if kind, err := packDetect(filepath.Join(dir, "old.tar")); err != nil || !kind.tar {
+		t.Fatalf("v7 kind %+v %v", kind, err)
+	}
+	if code, _, stderr := packTest(t, dir, "-o", "old", "old.tar"); code != 0 || packRead(t, filepath.Join(dir, "old", "v7", "a.txt")) != "abc" {
+		t.Fatalf("v7 extract: %d %s", code, stderr)
+	}
+	packWrite(t, filepath.Join(dir, "empty.tar"), string(make([]byte, 10240)))
+	if code, _, stderr := packTest(t, dir, "empty.tar"); code != 0 || !strings.Contains(stderr, "empty.tar → empty/") {
+		t.Fatalf("empty tar: %d %s", code, stderr)
+	}
+	packWrite(t, filepath.Join(dir, "zeros.img"), string(make([]byte, 20480)))
+	if kind, err := packDetect(filepath.Join(dir, "zeros.img")); err != nil || kind.tar {
+		t.Fatalf("a large zero file is not a tar: %+v %v", kind, err)
+	}
+}
+
+// 임시 출력을 만든 뒤에 취소해도 4로 끝나고 그 출력을 지운다.
+func TestPackCancelAfterTheOutputStarted(t *testing.T) {
+	defer func() { packReadHook = nil }()
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "big", "a"), strings.Repeat("x", 4<<20))
+	packWrite(t, filepath.Join(dir, "single.log"), strings.Repeat("y", 4<<20))
+	packTarGz(t, filepath.Join(dir, "a.tar.gz"), packEntry{name: "a/b", kind: tar.TypeReg, body: strings.Repeat("b", 1<<20)}, packEntry{name: "a/c", kind: tar.TypeReg, body: "c"})
+	for _, name := range []string{"big", "single.log", "a.tar.gz"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		reads := 0
+		packReadHook = func() {
+			if reads++; reads == 2 {
+				cancel()
+			}
+		}
+		if code, _, stderr := packTestContext(t, ctx, dir, name); code != 4 || reads < 2 {
+			t.Fatalf("%s: %d reads %d %s", name, code, reads, stderr)
+		}
+		cancel()
+	}
+	if left := packLeftovers(t, dir); len(left) != 0 || packExists(filepath.Join(dir, "big.tar.gz")) || packExists(filepath.Join(dir, "single.log.gz")) || packExists(filepath.Join(dir, "a")) {
+		t.Fatalf("left %v", left)
 	}
 }

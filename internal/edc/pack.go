@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -264,13 +265,55 @@ func packDetect(path string) (packKind, error) {
 	head := make([]byte, 512)
 	// 512바이트보다 짧게 풀리면 tar가 아니라 파일 하나다. 푸는 오류는 실제로 풀 때 다시 나므로 여기서는 묻지 않는다.
 	if n, _ := io.ReadFull(block, head); n == 512 {
-		kind.tar = packTarBlock(head)
+		kind.tar = packTarBlock(head) || packEmptyTar(head, block)
 	}
 	return kind, nil
 }
 
+// packTarBlock은 tar의 첫 헤더인지 본다. ustar 표시가 있거나, 표시가 없는 v7 tar면 헤더 체크섬이 맞아야 한다. 체크섬은
+// 체크섬 칸(148~155)을 공백으로 보고 512바이트를 더한 값이고 8진수로 적힌다.
 func packTarBlock(block []byte) bool {
-	return len(block) >= 263 && bytes.HasPrefix(block[257:], []byte("ustar"))
+	if len(block) < 512 {
+		return false
+	}
+	if bytes.HasPrefix(block[257:], []byte("ustar")) {
+		return true
+	}
+	if block[0] == 0 {
+		return false
+	}
+	field := strings.TrimRight(strings.TrimSpace(string(bytes.TrimRight(block[148:156], "\x00 "))), "\x00")
+	stored, err := strconv.ParseInt(field, 8, 64)
+	if err != nil {
+		return false
+	}
+	var sum int64
+	for index, value := range block[:512] {
+		if index >= 148 && index < 156 {
+			value = ' '
+		}
+		sum += int64(value)
+	}
+	return sum == stored
+}
+
+// packEmptyTarLimit는 빈 tar로 볼 수 있는 가장 긴 길이다. tar는 끝에 0 블록 두 개를 쓰고 10240바이트 단위로 채운다.
+const packEmptyTarLimit = 10240
+
+// packEmptyTar는 항목 없이 끝 표시만 있는 tar인지 본다. 앞 블록이 0이면 나머지도 짧은 0으로 끝나야 빈 tar다. 0으로만 찬 큰
+// 파일(지운 디스크 이미지 등)을 빈 tar로 보고 풀지 않도록 길이를 묶는다.
+func packEmptyTar(head []byte, rest io.Reader) bool {
+	if !bytes.Equal(head, make([]byte, len(head))) {
+		return false
+	}
+	tail, err := io.ReadAll(io.LimitReader(rest, packEmptyTarLimit))
+	if err != nil || len(head)+len(tail) < 1024 || len(head)+len(tail) > packEmptyTarLimit {
+		return false
+	}
+	if extra, _ := rest.Read(make([]byte, 1)); extra > 0 {
+		return false
+	}
+	return bytes.Equal(tail, make([]byte, len(tail)))
 }
 
 // packCompressFile은 파일 하나를 .gz나 .zst로 압축한다. edc compress와 같은 경로로 쓰므로 임시 파일, fsync, 덮어쓰지 않기,
@@ -350,7 +393,13 @@ type packContextReader struct {
 	reader io.Reader
 }
 
+// packReadHook은 시험만 쓴다. 읽을 때마다 불려, 임시 출력을 만든 뒤에 취소되는 경우를 만든다.
+var packReadHook func()
+
 func (reader packContextReader) Read(p []byte) (int, error) {
+	if packReadHook != nil {
+		packReadHook()
+	}
 	if err := reader.ctx.Err(); err != nil {
 		return 0, err
 	}

@@ -30,6 +30,10 @@ tunnel:
     remote_port_taken: "remote port %d on %s is already used by the running tunnel %s"
     all_with_names: "--all cannot be used with tunnel names"
     save_after_start: "%s is running, but edc could not save its definition: %s"
+    extend_failed: "edc could not start the timer of %s, so its stop time did not change: %s"
+    shorten_untimed: "%s has no time limit to shorten. Press enter to stop it"
+    shorten_too_short: "%s has %s left, which is not more than %s, so the stop time did not change. Press enter to stop it"
+    edit_restart: "the definition of %s was changed, but the tunnel did not start again: %s"
     save_needs_adhoc: "--save needs -L, -R, or -D"
     state_save_unstopped: "tunnel %s runs, but edc could not save its state (%s) and could not stop it (%s). Stop it with: ssh -S %s -O exit %s"
     save_up_only: "--save works only with edc tunnel up"
@@ -69,10 +73,15 @@ tunnel:
   notice:
     not_defined: "%s has no definition in tunnels.yaml, so edc cannot start it again"
     removed: "removed the definition of %s"
+    extended: "%s stops in %s, at %s"
+    copied: "copied %s to the clipboard"
+    copied_terminal: "sent %s to the terminal clipboard (OSC 52). Some terminals ignore it"
+    edited: "changed the definition of %s"
 
   screen:
     name: "edc tunnel"
     form_title: "new tunnel   tab next field   ←/→ choose   ctrl+t test connection   enter start   esc cancel"
+    edit_title: "edit %s   tab next field   ←/→ choose   ctrl+t test connection   enter apply   esc cancel"
     confirm_remove: "remove the definition of %s?   y yes   n no"
 
   form:
@@ -138,9 +147,12 @@ tunnel:
   hint:
     toggle: "enter start/stop"
     new: "n new"
+    edit: "e edit"
     restart: "r restart"
     remove: "x remove definition"
     save: "s save"
+    extend: "+/- 30 min"
+    copy: "c copy address"
     quit: "q quit"
     remote_port: "the port %d may already be in use on the host. Choose another port"
 

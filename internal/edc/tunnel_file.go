@@ -96,6 +96,28 @@ func saveTunnelDefinition(path, name string, spec tunnelSpec) error {
 	})
 }
 
+// replaceTunnelDefinition은 정의를 제자리에서 바꾼다. 지우고 다시 넣으면 순서와 사용자가 적은 주석이 사라진다.
+func replaceTunnelDefinition(path, name, renamed string, spec tunnelSpec) error {
+	return editTunnelFile(path, func(tunnels *yaml.Node) error {
+		index := findTunnelEntry(tunnels, name)
+		if index < 0 {
+			return tunnelError("tunnel.error.unknown", name)
+		}
+		if renamed != name && findTunnelEntry(tunnels, renamed) >= 0 {
+			return tunnelError("tunnel.error.duplicate", renamed, path)
+		}
+		var value yaml.Node
+		if err := value.Encode(spec); err != nil {
+			return err
+		}
+		previous := tunnels.Content[index+1]
+		value.HeadComment, value.LineComment, value.FootComment = previous.HeadComment, previous.LineComment, previous.FootComment
+		tunnels.Content[index].Value = renamed
+		tunnels.Content[index+1] = &value
+		return nil
+	})
+}
+
 func removeTunnelDefinition(path, name string) error {
 	return editTunnelFile(path, func(tunnels *yaml.Node) error {
 		index := findTunnelEntry(tunnels, name)

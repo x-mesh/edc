@@ -61,12 +61,13 @@ func TestParseFindSize(t *testing.T) {
 		min, max int64
 		ok       bool
 	}{
-		{"+100M", 100 << 20, 0, true},
-		{"100m", 100 << 20, 0, true},
+		{"+100M", 100 << 20, findNoMaxSize, true},
+		{"100m", 100 << 20, findNoMaxSize, true},
 		{"-1K", 0, 1 << 10, true},
-		{"1.5G", 3 << 29, 0, true},
-		{"2TB", 2 << 40, 0, true},
-		{"512", 512, 0, true},
+		{"-0", 0, 0, true},
+		{"1.5G", 3 << 29, findNoMaxSize, true},
+		{"2TB", 2 << 40, findNoMaxSize, true},
+		{"512", 512, findNoMaxSize, true},
 		{"", 0, 0, false},
 		{"+", 0, 0, false},
 		{"10X", 0, 0, false},
@@ -140,6 +141,9 @@ func TestRunFindFilters(t *testing.T) {
 		// --size는 일반 파일에만 적용한다.
 		{[]string{"--size", "+2K", "-E", "."}, "logs/big.bin\n"},
 		{[]string{"--size", "-1K", "-E", "\\.log$"}, "logs/new.log\nlogs/old.log\n"},
+		// 0보다 작은 파일은 없다. 0으로 잘리는 상한도 상한이다.
+		{[]string{"--size", "-0", "-E", "."}, ""},
+		{[]string{"--size", "-0.5", "-E", "."}, ""},
 	} {
 		var stdout bytes.Buffer
 		runFindWith(tc.args, testFindEnv(&stdout, io.Discard))
@@ -305,6 +309,30 @@ func TestRunFindHonorsTheTimeoutOption(t *testing.T) {
 type findFailingWriter struct{}
 
 func (findFailingWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// 선택기가 고른 경로를 쓰지 못하면 실패로 끝난다. 터미널에는 제어 문자를 정리해 쓰고, 파이프와 -0에는 그대로 쓴다.
+func TestFindWriteChoice(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := writeFindChoice(testFindEnv(findFailingWriter{}, &stderr), false, "a.txt"); code != 2 || !strings.Contains(stderr.String(), "edc find: no space left on device") {
+		t.Errorf("write error: code %d, stderr %q", code, stderr.String())
+	}
+	path := "a\x1b]0;owned\x07.txt"
+	for _, tc := range []struct {
+		terminal, null bool
+		want           string
+	}{
+		{true, false, viewSanitize(path) + "\n"},
+		{false, false, path + "\n"},
+		{true, true, path + "\x00"},
+	} {
+		var stdout bytes.Buffer
+		env := testFindEnv(&stdout, io.Discard)
+		env.stdoutTerminal = tc.terminal
+		if code := writeFindChoice(env, tc.null, path); code != 0 || stdout.String() != tc.want {
+			t.Errorf("terminal %v, null %v: code %d, %q", tc.terminal, tc.null, code, stdout.String())
+		}
+	}
+}
 
 func TestRunFindReportsAWriteError(t *testing.T) {
 	root := t.TempDir()

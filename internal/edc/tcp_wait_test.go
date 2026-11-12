@@ -159,7 +159,7 @@ func TestTCPWaitRequested(t *testing.T) {
 // runTCP부터 실제 명령 경로로 실행한다. -w=2500ms는 닫힌 포트에 1초마다 시도하다 2.5초 뒤 실패하고, -w는 늦게 뜬 서버에 연결하며,
 // --wait=false는 기다리지 않고 한 번만 시도한다.
 func TestRunTCPWaitCommand(t *testing.T) {
-	run := func(args ...string) (int, map[string]interface{}, time.Duration) {
+	run := func(args ...string) (int, map[string]interface{}, time.Duration, string) {
 		t.Helper()
 		previousOut, previousErr := os.Stdout, os.Stderr
 		read, write, err := os.Pipe()
@@ -186,19 +186,28 @@ func TestRunTCPWaitCommand(t *testing.T) {
 		var report struct {
 			Results []struct {
 				Metrics map[string]interface{} `json:"metrics"`
+				Error   struct {
+					Kind string `json:"kind"`
+				} `json:"error"`
 			} `json:"results"`
 		}
 		if err := json.Unmarshal(data, &report); err != nil || len(report.Results) != 1 {
 			t.Fatalf("%v: %v %s", args, err, data)
 		}
-		return code, report.Results[0].Metrics, elapsed
+		return code, report.Results[0].Metrics, elapsed, report.Results[0].Error.Kind
 	}
 	closed := tcpWaitFreeAddress(t)
-	if code, metrics, elapsed := run("-w=2500ms", closed); code != 1 || elapsed < 2500*time.Millisecond || metrics["attempts"].(float64) < 3 {
+	if code, metrics, elapsed, _ := run("-w=2500ms", closed); code != 1 || elapsed < 2500*time.Millisecond || metrics["attempts"].(float64) < 3 {
 		t.Fatalf("-w=2500ms: code %d elapsed %v metrics %v", code, elapsed, metrics)
 	}
-	if code, metrics, elapsed := run("--wait=false", closed); code != 1 || elapsed > 900*time.Millisecond || metrics["attempts"] != nil {
+	if code, metrics, elapsed, _ := run("--wait=false", closed); code != 1 || elapsed > 900*time.Millisecond || metrics["attempts"] != nil {
 		t.Fatalf("--wait=false: code %d elapsed %v metrics %v", code, elapsed, metrics)
+	}
+	// 연결할 수 없는 port는 기다려도 연결되지 않는다. 재시도하지 않고 입력 오류로 바로 끝난다.
+	for _, target := range []string{"127.0.0.1:", "127.0.0.1:0", "127.0.0.1:99999", "127.0.0.1:no-such-service"} {
+		if code, metrics, elapsed, kind := run("-w=5s", target); code != 1 || kind != "input" || elapsed > 900*time.Millisecond || metrics["attempts"] != nil {
+			t.Fatalf("%s: code %d kind %q elapsed %v metrics %v", target, code, kind, elapsed, metrics)
+		}
 	}
 	late := tcpWaitFreeAddress(t)
 	listening := make(chan net.Listener, 1)
@@ -212,7 +221,7 @@ func TestRunTCPWaitCommand(t *testing.T) {
 			listener.Close()
 		}
 	}()
-	if code, metrics, _ := run("-w=10s", late); code != 0 || metrics["attempts"].(float64) < 2 {
+	if code, metrics, _, _ := run("-w=10s", late); code != 0 || metrics["attempts"].(float64) < 2 {
 		t.Fatalf("-w: code %d metrics %v", code, metrics)
 	}
 }

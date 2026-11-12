@@ -249,7 +249,7 @@ For the `rst` verdict, edc finds the cause from the kernel drop reason of the so
 - `NO_SOCKET` and a listener that takes a different address, for example `127.0.0.1`: the summary shows the address of the listener. If the listener is `docker-proxy`, the next step shows a `-p` value with the address that the SYN came to.
 - `NO_SOCKET` in other cases: the kernel found no socket for the address and port.
 
-If there is no drop reason, the summary gives two causes: no listener, or a host firewall. If a listener is on the port, the next step does not show `--listen`, because `--listen` stops with exit code `2` on a used port.
+If there is no drop reason, the summary gives two causes: no listener, or a host firewall. The summary also gives the two causes if the source has both `NETFILTER_DROP` and `NO_SOCKET`, because the drop reasons of all its attempts are added together. If a listener is on the port, the next step does not show `--listen`, because `--listen` stops with exit code `2` on a used port.
 `rst_cause` in the metrics is `firewall`, `no_listener`, `loopback_only`, `other_address`, or `no_socket`. If edc cannot find the cause, the metrics do not have `rst_cause`.
 
 If a source has one or more completed handshakes, its verdict is `completed`.

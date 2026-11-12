@@ -1303,6 +1303,8 @@ func explainExpectRST(port uint16, local string, drops map[string]int, listener 
 		cause.docker = listener.Process == "docker-proxy"
 	}
 	switch {
+	// 요약의 drops는 출발지의 모든 시도를 합친 것이다. 둘이 함께 있으면 이 RST가 어느 쪽인지 알 수 없어 두 가능성을 함께 말한다.
+	case drops["NETFILTER_DROP"] > 0 && drops["NO_SOCKET"] > 0:
 	// REJECT 규칙은 SYN을 NETFILTER_DROP으로 버리고 RST를 대신 보낸다. listener가 있어도 socket까지 가지 않는다.
 	case drops["NETFILTER_DROP"] > 0:
 		cause.kind = expectRSTFirewall

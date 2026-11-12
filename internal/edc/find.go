@@ -73,7 +73,10 @@ func (value *findTypeValue) Set(text string) error {
 	return nil
 }
 
-// parseFindSize는 --size다. +N이나 N은 N 이상, -N은 N 미만이다. 단위는 1024배다.
+// findNoMaxSize는 크기 상한이 없다는 뜻이다. 상한 0은 -0이나 -0.5에서 나오는 진짜 상한이라 "없음"으로 쓸 수 없다.
+const findNoMaxSize = -1
+
+// parseFindSize는 --size다. +N이나 N은 N 이상, -N은 N 미만이다. 단위는 1024배다. 상한이 없으면 maximum은 findNoMaxSize다.
 func parseFindSize(text string) (minimum, maximum int64, err error) {
 	invalid := errors.New(T("find.error.size", text))
 	body := text
@@ -100,7 +103,7 @@ func parseFindSize(text string) (minimum, maximum int64, err error) {
 	if less {
 		return 0, limit, nil
 	}
-	return limit, 0, nil
+	return limit, findNoMaxSize, nil
 }
 
 func parseFindOptions(args []string, stderr io.Writer, stdinPipe bool) (findOptions, error) {
@@ -287,7 +290,7 @@ func (filter findFilter) keep(entry findEntry) bool {
 		return false
 	}
 	if filter.sizeSet {
-		if entry.kind != findKindFile || entry.size < filter.minSize || filter.maxSize > 0 && entry.size >= filter.maxSize {
+		if entry.kind != findKindFile || entry.size < filter.minSize || filter.maxSize != findNoMaxSize && entry.size >= filter.maxSize {
 			return false
 		}
 	}

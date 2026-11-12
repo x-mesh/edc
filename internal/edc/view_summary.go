@@ -14,11 +14,18 @@ import (
 // viewSummaryTopRows는 --stats가 보이는 상위 목록의 길이다. 화면 패널보다 자리가 넉넉하다.
 const viewSummaryTopRows = 10
 
-// viewSummary는 입력 전체를 한 번 읽으며 센 통계다. 줄은 보관하지 않으므로 파일 크기와 관계없이 메모리가 일정하다.
+// viewSummaryKeyLimit는 --stats가 필드마다 세는 서로 다른 값의 상한이다. 요청 ID가 든 path처럼 값이 줄마다 다르면 map이
+// 입력만큼 커지므로, 넘으면 많이 나온 절반만 남긴다.
+const viewSummaryKeyLimit = 1 << 16
+
+// viewSummary는 입력 전체를 한 번 읽으며 센 통계다. 줄은 보관하지 않고 필드마다 값의 수에 상한이 있어서, 파일 크기와
+// 관계없이 메모리에 상한이 있다.
 type viewSummary struct {
 	format viewFormat
 	lines  int
 	stats  viewStats
+	// trimmed는 값을 버린 적이 있는 필드다. 버린 값이 다시 나오면 0부터 다시 세므로 그 목록의 수는 실제보다 적을 수 있다.
+	trimmed map[string]bool
 	// firstTime과 lastTime은 시각이 있는 처음과 마지막 event의 시각이다. 형식마다 시각을 적는 방식이 달라 원문 그대로 둔다.
 	firstTime string
 	lastTime  string
@@ -29,7 +36,29 @@ type viewSummary struct {
 }
 
 func newViewSummary(format viewFormat) *viewSummary {
-	return &viewSummary{format: format, stats: newViewStats()}
+	return &viewSummary{format: format, stats: newViewStats(), trimmed: map[string]bool{}}
+}
+
+// bound는 서로 다른 값이 viewSummaryKeyLimit를 넘은 필드에서 많이 나온 절반만 남긴다. 절반을 남기므로 다음 정리까지
+// 새 값이 그만큼 쌓여야 해서, 줄마다 정렬하지 않는다.
+func (summary *viewSummary) bound() {
+	for _, field := range []struct {
+		name   string
+		counts *map[string]int
+	}{
+		{"exception", &summary.stats.exceptions}, {"path", &summary.stats.paths},
+		{"client", &summary.stats.clients}, {"program", &summary.stats.programs},
+	} {
+		if len(*field.counts) <= viewSummaryKeyLimit {
+			continue
+		}
+		kept := make(map[string]int, viewSummaryKeyLimit)
+		for _, row := range viewTopN(*field.counts, viewSummaryKeyLimit/2) {
+			kept[row.label] = row.count
+		}
+		*field.counts = kept
+		summary.trimmed[field.name] = true
+	}
 }
 
 // add는 한 줄을 센다. 예외 줄은 event보다 뒤에 오므로, event를 셀 때가 아니라 예외 줄을 읽을 때 그 event의 예외를 센다.
@@ -55,6 +84,7 @@ func (summary *viewSummary) add(text string) {
 		}
 	}
 	summary.stats.add(line)
+	summary.bound()
 	summary.previous, summary.read = line, true
 }
 
@@ -203,7 +233,11 @@ func (summary *viewSummary) write(out io.Writer, title string, color bool) error
 		for _, entry := range entries {
 			fmt.Fprintf(&builder, "%*s  %s\n", width, groupThousands(int64(entry.count)), viewSanitize(entry.label))
 		}
-		if rest := len(top.counts) - len(entries); rest > 0 {
+		rest := len(top.counts) - len(entries)
+		switch {
+		case summary.trimmed[top.field]:
+			builder.WriteString(paint(fmt.Sprintf("%*s  (more than %s more, approximate counts)", width, "", groupThousands(int64(rest))), richGray, false) + "\n")
+		case rest > 0:
 			builder.WriteString(paint(fmt.Sprintf("%*s  (%s more)", width, "", groupThousands(int64(rest))), richGray, false) + "\n")
 		}
 	}

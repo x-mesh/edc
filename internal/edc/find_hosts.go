@@ -138,7 +138,7 @@ func runFindGroup(options findOptions, env findEnv, run cleanRemoteRunner) int {
 		}
 		return findGroupCode(rows)
 	}
-	if err := writeFindGroup(env.stdout, env.stderr, rows, options.common.verbose); err != nil {
+	if err := writeFindGroup(env.stdout, env.stderr, rows, options.common.verbose, env.stdoutTerminal); err != nil {
 		fmt.Fprintln(env.stderr, "edc find: "+err.Error())
 		return 2
 	}
@@ -239,13 +239,18 @@ func findHostFromCapture(capture remoteCapture) findHostRow {
 }
 
 // writeFindGroup은 일치를 host:path로 stdout에 쓰고, 찾지 못한 호스트의 이유를 stderr에 쓴다. stdout만 파이프로 넘길 수 있다.
-// stdout에 쓰지 못하면 오류를 돌려준다. 일부만 쓴 목록을 성공으로 끝내지 않는다.
-func writeFindGroup(stdout, stderr io.Writer, rows []findHostRow, verbose bool) error {
+// stdout에 쓰지 못하면 오류를 돌려준다. 일부만 쓴 목록을 성공으로 끝내지 않는다. 경로는 원격 호스트가 돌려준 값이라,
+// 터미널에는 제어 문자를 정리해 쓴다.
+func writeFindGroup(stdout, stderr io.Writer, rows []findHostRow, verbose, terminal bool) error {
 	found := 0
 	writer := bufio.NewWriter(stdout)
 	for _, row := range rows {
 		for _, match := range row.Matches {
-			fmt.Fprintf(writer, "%s:%s\n", row.Host, match.Path)
+			host, path := row.Host, match.Path
+			if terminal {
+				host, path = viewSanitize(host), viewSanitize(path)
+			}
+			fmt.Fprintf(writer, "%s:%s\n", host, path)
 		}
 		if row.Status == findHostFound {
 			found++

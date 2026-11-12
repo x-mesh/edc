@@ -87,6 +87,10 @@ func TestFindFuzzyComparesRunes(t *testing.T) {
 	if ranked := findRank(t, "한i", []string{"docs/한\u0130.txt"}); len(ranked) != 1 {
 		t.Errorf("dotted I = %v", ranked)
 	}
+	// σ와 끝 시그마 ς는 소문자끼리지만 같은 대소문자 접기에 든다.
+	if ranked := findRank(t, "σ", []string{"docs/ς.txt", "docs/Σ.txt"}); len(ranked) != 2 {
+		t.Errorf("sigma = %v", ranked)
+	}
 	matcher, _, _ := newFindMatcher("글", false)
 	path := "docs/한글.md"
 	if spans := matcher.spans(path, findBase(path)); !reflect.DeepEqual(spans, [][2]int{{8, 11}}) {

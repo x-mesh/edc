@@ -406,6 +406,24 @@ var commandDocs = []commandDoc{
 		examples: []string{"edc grep -f auth", "edc grep ValidateToken", "edc grep timeout /var/log/app/", "edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
 	},
 	{
+		name: "find", group: "observe",
+		usage: []string{"edc find [options] [pattern] [path...]", "edc find [options] <dir/>", "<command> | edc find [options] [pattern]"},
+		options: []optionDoc{
+			{"-t, --type f|d|l", "command.find.option.type"},
+			{"--size [+|-]N[K|M|G]", "command.find.option.size"},
+			{"--changed <time>", "command.find.option.changed"},
+			{"-E, --regex", "command.find.option.regex"},
+			{"--no-ignore", "command.find.option.no_ignore"},
+			{"--cross-mounts", "command.find.option.cross_mounts"},
+			{"--layers", "command.find.option.layers"},
+			{"-0", "command.find.option.nul"},
+			{"--workers N", "command.find.option.workers"},
+			{"--group <group>", "command.find.option.group"},
+			{"--inventory <file>", "command.find.option.inventory"},
+		},
+		examples: []string{"edc find", "vim \"$(edc find)\"", "edc find nginxconf /etc", "edc find --changed 10m --size +100M /var", "edc find -t d src/", "git ls-files | edc find", "edc find --group web nginx.conf /etc"},
+	},
+	{
 		name: "search", group: "observe",
 		usage: []string{"edc search [-m N|--limit N] [--json] [--yes] <query> [path...]", "edc search index init [--yes] [directory]", "edc search index status [directory]", "edc search index files [directory]", "edc search index clear [directory]", "edc search model clear"},
 		options: []optionDoc{

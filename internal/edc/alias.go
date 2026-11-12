@@ -44,6 +44,7 @@ var aliasGroups = []aliasGroup{
 		{"esvc", "edc svc", "esvc nginx"},
 		{"ectr", "edc ctr", "ectr"},
 		{"edu", "edc du", "edu /var/log"},
+		{"ef", "edc find", "ef nginxconf /etc, vim \"$(ef)\""},
 		{"elsn", "edc listen", "elsn"},
 		{"echg", "edc changes", "echg --since 24h"},
 		{"ewf", "edc watch fs -r", "ewf /etc"},

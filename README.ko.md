@@ -14,6 +14,7 @@
 | --- | --- | --- |
 | 호스트 상태와 자원 사용 확인 | `edc info`, `edc top` | [호스트 정보](docs/host.ko.md#호스트-정보), [대시보드](docs/monitoring.ko.md#top-대시보드) |
 | 지금 고장 난 곳 찾기 | `edc check`, `edc check --group <group>` | [상태 점검](docs/host.ko.md#상태-점검-linux와-macos), [점검 루틴](docs/host.ko.md#점검-루틴) |
+| 이름으로 파일 찾기 | `edc find`, `edc find nginxconf /etc` | [파일 찾기](docs/monitoring.ko.md#파일-찾기) |
 | 디스크를 차지하는 항목 찾기 | `edc du /var`, `edc clean` | [디렉터리 사용량](docs/disk-usage.ko.md#디렉터리-디스크-사용량-linux와-macos), [알려진 캐시](docs/disk-usage.ko.md#알려진-개발-캐시-사용량-linux와-macos) |
 | 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux와-macos) |
 | process 하나 들여다보기 | `edc proc <pid\|이름>` | [Process 보기](docs/host.ko.md#process-보기-linux와-macos) |

@@ -14,6 +14,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | --- | --- | --- |
 | Inspect a host and its resource use | `edc info`, `edc top` | [Host information](docs/host.md#host-information), [dashboard](docs/monitoring.md#top-dashboard) |
 | Find what is broken now | `edc check`, `edc check --group <group>` | [Health check](docs/host.md#health-check-linux-and-macos), [check routines](docs/host.md#check-routines) |
+| Find a file by name | `edc find`, `edc find nginxconf /etc` | [Find files](docs/monitoring.md#find-files) |
 | Find where disk space goes | `edc du /var`, `edc clean` | [Directory usage](docs/disk-usage.md#disk-usage-of-a-directory-linux-and-macos), [known caches](docs/disk-usage.md#known-cache-sizes-linux-and-macos) |
 | Investigate a service or container | `edc svc`, `edc ctr` | [Services](docs/host.md#service-view-linux), [containers](docs/host.md#container-view-linux-and-macos) |
 | Look into one process | `edc proc <pid\|name>` | [Process view](docs/host.md#process-view-linux-and-macos) |

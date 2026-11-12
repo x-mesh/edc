@@ -276,6 +276,30 @@ command:
       - "stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다."
       - "pipe나 NO_COLOR에서는 줄의 바이트를 그대로 냅니다. 종료 코드는 찾으면 0, 없으면 1, 오류면 2입니다."
       - "edc alias는 eg, egs, ege 같은 짧은 alias를 출력합니다."
+  find:
+    summary: "이름으로 파일과 디렉터리 찾기, 선택 화면 포함"
+    option:
+      type: "이 종류만: f 파일, d 디렉터리, l symlink. 여러 번 주거나 쉼표로 연결"
+      size: "N 이상(+N, N) 또는 N 미만(-N)인 파일. K, M, G, T는 1024의 거듭제곱"
+      changed: "이 시간 안에 바뀐 것: 10m, 2h, 1d"
+      regex: "패턴을 경로에 대한 정규식으로 해석"
+      no_ignore: "git 작업 트리 안에서도 .gitignore 규칙을 적용하지 않음"
+      cross_mounts: "경로 아래의 다른 파일 시스템도 검색"
+      layers: "컨테이너 이미지 층도 검색"
+      nul: "경로를 줄바꿈 대신 NUL로 구분, xargs -0용"
+      workers: "동시에 읽는 디렉터리 수(기본 4)"
+      group: "edc remote 그룹의 호스트에서 검색. 패턴과 경로가 필요"
+      inventory: "--group에 쓸 인벤토리 파일"
+    notes:
+      - "터미널에서 패턴 없이 실행하면 선택 화면을 엽니다. 글자를 치면 좁혀지고, Enter는 경로를 출력하며, Esc는 취소합니다."
+      - "선택 화면은 stdout이 아니라 터미널에 그리므로 vim \"$(edc find)\"와 cd \"$(edc find -t d)\"가 동작합니다."
+      - "선택 화면에서 Tab은 미리보기를 보이고, ctrl+o는 $EDITOR, ctrl+v는 edc view로 열며, ctrl+g는 고른 경로를 edc grep으로 검색합니다."
+      - "패턴을 주면 일치하는 것을 좋은 순서대로 출력합니다. 글자가 순서대로만 있으면 되므로 adjrn으로 audit_journal.go를 찾습니다. 공백으로 나눈 단어는 모두 맞아야 합니다."
+      - "숨김 파일을 포함하고 .git은 건너뜁니다. .gitignore는 git 작업 트리 안에서 시작할 때만 적용합니다."
+      - "한 파일 시스템에 머물고 커널 파일 시스템과 컨테이너 이미지 층은 건너뜁니다. 건너뛴 것은 stderr에 알립니다."
+      - "5초 동안 응답하지 않는 디렉터리는 stderr에 이름을 알리고 읽지 않습니다."
+      - "stdin이 파이프이고 경로를 주지 않으면 stdin의 줄을 후보로 씁니다."
+      - "파일 내용은 edc grep으로 찾습니다. 종료 코드: 0 찾음 또는 고름, 1 없음, 2 오류, 130 취소."
   search:
     summary: "로컬 semantic 엔진으로 코드 의미 검색"
     option:

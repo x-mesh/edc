@@ -52,6 +52,7 @@ command:
       count: "시도 횟수 (기본 5), 주면 --diagnose로 실행"
       interval: "시도 간격 (기본 1s), 주면 --diagnose로 실행"
       peer: "이 host에서 ssh로 tcp expect를 함께 실행하고 두 결과를 합칩니다. 주면 --diagnose로 실행"
+      wait: "연결될 때까지 1초마다 다시 시도 (시도 한 번은 --timeout, 기본 3s), -w=5m이면 5분 뒤 멈춤"
       from: "expect: 이 주소나 대역에서 온 packet만 셉니다"
       duration: "expect: 기다릴 시간, 생략하면 Ctrl-C까지"
       until: "expect: 첫 SYN(syn)을 본 1초 뒤(답까지 남기려고)나 첫 handshake 완료(handshake)에서 멈춥니다"
@@ -68,6 +69,7 @@ command:
       - "scan은 --timeout을 scan 전체의 예산으로 씁니다 (기본 60s). 확인하지 못한 port는 not scanned로 남깁니다."
       - "--diagnose는 추적하는 동안 시도마다 300ms를 기다리므로 시도 간격이 그보다 짧아지지 않습니다."
       - "IPsec transport mode에서는 expect가 복호화한 SYN을 보지 못하고 kernel drop 이유로 판정합니다."
+      - "-w는 포트가 연결을 받을 때까지 기다린 뒤 check 결과를 출력합니다. 시간 제한은 -w=5m처럼 =로 붙여 씁니다. Ctrl-C로 멈추면 종료 코드 4입니다."
   tls:
     summary: "인증서와 handshake 확인"
     option:
@@ -226,18 +228,20 @@ command:
     option:
       lines: "마지막 N줄, 화면은 N줄을 보관 (기본 10,000)"
       follow: "pipe에서 tail -F처럼 따라감, 화면은 항상 따라감"
+      stats: "화면 없이 입력 전체의 통계를 출력하고 끝냄"
     notes:
       - "터미널에서는 파일 끝에서 화면을 열고 새 줄을 따라갑니다."
       - "↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 새 줄 수를 셉니다. End, l, Esc를 누르면 다시 따라갑니다."
       - "access log는 목록에 시각, status, method, bytes, path를 보입니다. 보관한 줄에서 모두 같은 host, client, 날짜는 숨기고 머리 줄에 그 값을 적습니다. c는 원문 줄을 보이고, ← →는 목록을 가로로 밉니다."
       - "nginx와 Apache access log, JSON lines, ERROR나 WARN 같은 level이 있는 줄을 읽습니다."
-      - "통계 패널은 status 범주나 level별 수, 상위 path와 client, 마지막 오류를 보여 줍니다."
+      - "통계 패널은 status 범주나 level별 수, 상위 예외·path·client·프로그램, 마지막 오류를 보여 줍니다."
       - "통계는 화면이 보관한 줄만 셉니다. i로 패널을 숨깁니다."
       - "화면이 120열 이상이면 패널을 오른쪽에, 그보다 좁으면 목록 아래에 둡니다."
       - "Enter는 필드와 줄 전체, 그 아래로 이어지는 stack trace 줄을 보여 줍니다."
       - "파일이 회전되거나 잘리면 그 자리를 표시하고 새 파일을 처음부터 읽습니다."
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
       - "edc alias는 ev, evn, evf 같은 짧은 alias를 출력합니다."
+      - "--stats는 입력 전체를 한 번 읽어 level이나 status별 수, 상위 예외·path·client·프로그램, 시간 범위를 출력합니다."
   grep:
     summary: "로그, 코드와 파일 경로 검색"
     option:
@@ -276,6 +280,30 @@ command:
       - "stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다."
       - "pipe나 NO_COLOR에서는 줄의 바이트를 그대로 냅니다. 종료 코드는 찾으면 0, 없으면 1, 오류면 2입니다."
       - "edc alias는 eg, egs, ege 같은 짧은 alias를 출력합니다."
+  find:
+    summary: "이름으로 파일과 디렉터리 찾기, 선택 화면 포함"
+    option:
+      type: "이 종류만: f 파일, d 디렉터리, l symlink. 여러 번 주거나 쉼표로 연결"
+      size: "N 이상(+N, N) 또는 N 미만(-N)인 파일. K, M, G, T는 1024의 거듭제곱"
+      changed: "이 시간 안에 바뀐 것: 10m, 2h, 1d"
+      regex: "패턴을 경로에 대한 정규식으로 해석"
+      no_ignore: "git 작업 트리 안에서도 .gitignore 규칙을 적용하지 않음"
+      cross_mounts: "경로 아래의 다른 파일 시스템도 검색"
+      layers: "컨테이너 이미지 층도 검색"
+      nul: "경로를 줄바꿈 대신 NUL로 구분, xargs -0용"
+      workers: "동시에 읽는 디렉터리 수(기본 4)"
+      group: "edc remote 그룹의 호스트에서 검색. 패턴과 경로가 필요"
+      inventory: "--group에 쓸 인벤토리 파일"
+    notes:
+      - "터미널에서 패턴 없이 실행하면 선택 화면을 엽니다. 글자를 치면 좁혀지고, Enter는 경로를 출력하며, Esc는 취소합니다."
+      - "선택 화면은 stdout이 아니라 터미널에 그리므로 vim \"$(edc find)\"와 cd \"$(edc find -t d)\"가 동작합니다."
+      - "선택 화면에서 Tab은 미리보기를 보이고, ctrl+o는 $EDITOR, ctrl+v는 edc view로 열며, ctrl+g는 고른 경로를 edc grep으로 검색합니다."
+      - "패턴을 주면 일치하는 것을 좋은 순서대로 출력합니다. 글자가 순서대로만 있으면 되므로 adjrn으로 audit_journal.go를 찾습니다. 공백으로 나눈 단어는 모두 맞아야 합니다."
+      - "숨김 파일을 포함하고 .git은 건너뜁니다. .gitignore는 git 작업 트리 안에서 시작할 때만 적용합니다."
+      - "한 파일 시스템에 머물고 커널 파일 시스템과 컨테이너 이미지 층은 건너뜁니다. 건너뛴 것은 stderr에 알립니다."
+      - "5초 동안 응답하지 않는 디렉터리는 stderr에 이름을 알리고 읽지 않습니다."
+      - "stdin이 파이프이고 경로를 주지 않으면 stdin의 줄을 후보로 씁니다."
+      - "파일 내용은 edc grep으로 찾습니다. 종료 코드: 0 찾음 또는 고름, 1 없음, 2 오류, 130 취소."
   search:
     summary: "로컬 semantic 엔진으로 코드 의미 검색"
     option:
@@ -796,9 +824,28 @@ command:
       - "쓰는 중에 실패하면 만들던 출력을 지우고 입력은 남깁니다."
       - "zstd는 수준 3보다 높여도 더 작아지지 않습니다. -j는 gzip에만 적용됩니다."
       - "파일을 주지 않으면 stdin을 읽어 stdout으로 씁니다. 압축한 바이트는 터미널에 쓰지 않습니다."
-      - "파일을 하나씩 압축합니다. 디렉터리는 tar로 묶습니다."
+      - "파일을 하나씩 압축합니다. 디렉터리는 edc pack이나 tar로 묶습니다."
       - "Linux에서는 다른 프로세스가 입력을 쓰기 모드로 열어 두었으면 --rm을 줘도 지우지 않습니다."
       - "아직 기록 중인 로그에는 --rm을 쓰지 마세요. macOS나 다른 호스트가 NFS로 쓰는 파일에서는 쓰는 프로세스를 볼 수 없고, 마지막 확인 뒤에 쓴 데이터는 사라집니다."
+  pack:
+    summary: "파일이나 디렉터리를 내용을 보고 압축하거나 풂"
+    option:
+      compress: "이미 압축한 파일이어도 압축"
+      extract: "이름과 관계없이 풂, gzip·zstd·tar가 아니면 실패"
+      list: "압축 파일 안의 목록만 보이고 아무것도 쓰지 않음"
+      zstd: ".gz나 .tar.gz 대신 .zst나 .tar.zst로 씀"
+      output: "입력이 하나일 때의 출력 경로: 쓸 파일, 또는 풀어 넣을 디렉터리"
+      remove: "출력을 쓰고 디스크에 동기화한 뒤 입력 파일을 지움"
+      verbose: "판단 결과와 항목마다 한 줄, 터미널이면 진행 상황을 보임"
+    notes:
+      - "이름이 아니라 앞부분 바이트를 봅니다. gzip, zstd, tar는 풀고, 다른 파일은 압축하고, 디렉터리는 .tar.gz로 묶습니다."
+      - "-z와 -x로 방향을 정합니다. gzip 데이터가 든 backup.bin에 -x를 쓰면 backup.bin.out을 씁니다."
+      - "최상위가 디렉터리 하나인 tar는 그 디렉터리로 풉니다. 항목이 여럿인 tar는 압축 파일 이름의 디렉터리에 풉니다."
+      - "출력 옆의 임시 디렉터리에 푼 뒤 마지막에 제자리로 옮깁니다. 실패하거나 Ctrl-C를 누르면 반쯤 쓴 출력을 지웁니다."
+      - "출력 디렉터리 밖을 가리키는 항목이나 링크는 거부합니다. setuid와 setgid는 남기지 않고, root면 소유자를 유지합니다."
+      - "디렉터리를 묶을 때 symlink는 링크로 담습니다. 소켓, 장치, FIFO는 건너뛰고 개수를 알립니다."
+      - "이미 있는 파일이나 디렉터리는 덮어쓰지 않습니다. --rm은 디렉터리를 지우지 않고, 항목을 건너뛴 압축 파일은 남깁니다."
+      - "stdin, stdout, -l N, -j N이 필요하면 edc compress와 edc decompress를 씁니다."
   decompress:
     summary: ".gz와 .zst 파일의 압축 해제"
     option:

@@ -167,3 +167,24 @@ func TestProbeObserverFromEmptyContext(t *testing.T) {
 		t.Fatal("an empty context must carry no observer")
 	}
 }
+
+// --timeout 기한이 지난 것은 취소가 아니다. Ctrl-C로 cancel을 부른 것만 취소이고, 기한이 먼저 지났으면 그 뒤에 cancel이 불려도
+// 시간 초과다.
+func TestProbeCancelledByUserIgnoresTheDeadline(t *testing.T) {
+	ctx, cancel, deadline := probeContext(time.Millisecond)
+	defer deadline()
+	<-ctx.Done()
+	if probeCancelledByUser(ctx) {
+		t.Fatal("a passed --timeout is not a cancel")
+	}
+	cancel()
+	if probeCancelledByUser(ctx) {
+		t.Fatal("cancel after the deadline keeps the timeout")
+	}
+	ctx, cancel, deadline = probeContext(time.Minute)
+	defer deadline()
+	cancel()
+	if !probeCancelledByUser(ctx) {
+		t.Fatal("Ctrl-C cancels the probe")
+	}
+}

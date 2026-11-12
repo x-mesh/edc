@@ -2,7 +2,7 @@
 
 # Live resource monitoring
 
-[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs)
+[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs) · [Find files](#find-files)
 
 ![Live resource dashboard](media/top.png)
 
@@ -504,17 +504,41 @@ edc view -f app.log | grep timeout
 
 An nginx in front of a JSON-RPC node often writes the request without quotes and adds the request body and the request time: `127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005`. `edc view` reads this as the access format. The `method` of a JSON body is cyan and joins the path in the top paths, for example `/api/v3 icx_sendTransaction`, because the path alone does not say what the request did. The detail shows `body`, `rpc method`, and `request time`.
 
-The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error.
+The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error. A Spring Boot line such as `2026-11-12 13:51:11.258 ERROR --- [main] c.e.Job : failed` is a level line, and the logger fills the top programs.
 
 The syslog format reads `auth.log`, `syslog`, and the output of `journalctl`. The line has no level, so `edc` reads the level from a word of the message. `error`, `fail`, `failed`, `failure`, `invalid`, `refused`, `denied`, `fatal`, `panic`, and `segfault` make an error. `warning`, `warn`, `timeout`, `timed out`, and `deprecated` make a warning. `accepted` and `success` turn green and set no level. An uppercase level word in the message wins. This is the one format where a lowercase word sets the level. The address after `from`, as sshd writes it, fills the top clients, and the panel lists the top programs.
 
 The goloop format is the log of an ICON goloop node: the level letter (`P`, `F`, `E`, `W`, `I`, `D`, or `T`), the time, the wallet, the chain id, and the module, with `|` between them, then the source location and the message. The module fills the top programs. A line that does not start with a level letter, such as a stack trace after a panic, belongs to the line above it.
 
-Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. In an access log, the list shows the time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden, and the header names it, for example `hidden: host int.example.com · client 203.0.113.9`. Press `c` to show the raw lines. Press Left or Right to scroll the list sideways.
+Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `n` to go to the next error line and `N` to go to the previous one. An error line has the level `error` or `fatal`, or a 5xx status. If the list follows the new lines, both keys go to the newest error. With a filter, they look only at the lines that the filter keeps. In an access log, the list shows the time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden, and the header names it, for example `hidden: host int.example.com · client 203.0.113.9`. Press `c` to show the raw lines. Press Left or Right to scroll the list sideways.
 
-Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
+Press `/` to type a filter. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
 
-The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
+The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top exceptions, paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. To count a whole file, use `--stats`, or keep more lines, for example `edc view -n 500000 boot.log`.
+
+`edc view --stats boot.log` prints the stats of the whole input without the screen. It reads the input once and does not keep the lines, so a large file also works. It prints the lines, the events, the time of the first and the last event, the errors, the status classes or the levels, the last error, and the top 10 exceptions, paths, clients, and programs. It decompresses a `.gz` or `.zst` file. Each top list keeps at most 65,536 different values. If a field has more, for example paths with a request ID, edc keeps the more frequent half and marks the list `approximate counts`. In that list, a count can be lower than the real count. `--stats` counts the whole input, so you cannot use it with `-n` or `-f`.
+
+In a stack trace, the first line that names an exception gives the exception of its event, for example `java.lang.IllegalArgumentException: Invalid URI path`. The top exceptions count events by the class name without the package and the message. A word with a digit in the message becomes `N`, so `block 14124 not found` and `block 14125 not found` are one entry. A `Caused by:` line after the first exception is not counted again. `Exception in thread "main" ...` and Python and JavaScript exception lines also count. The detail of the event shows its `exception`. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
+
+When a filter is on, the panel counts only the lines that match it. The panel title shows `filtered`, and the `filter` row under it shows the whole filter. The header also shows the filter after the status. The `events` row shows the matched lines and all kept lines, for example `3 / 6`. Each status class or level shows its percent of the counted lines.
+
+Press Tab to select a row in the panel. Use Up and Down to move. Press Enter to add the row to the filter, for example `path:/api/users` or `status:5xx`. If the filter has a term for the same field, the new term replaces it. You stay in the panel, so you can select a client next. Press Backspace to go back to the filter before the last change, as Esc does in the list. Press Esc or Tab to go back to the list.
+
+In the list, Esc goes back one step. If a line is selected, Esc follows the new lines again. Then each Esc changes the filter back to the filter before it. For example, `score status:2xx` goes back to `score`, and then to all lines. Press `x` to clear the whole filter. The header shows `x clear` while a filter is on. Esc brings the cleared filter back.
+
+A filter is a list of terms with spaces between them. A line must match all terms.
+
+| Term | Lines that it selects |
+| --- | --- |
+| `timeout` | lines that contain the text, in uppercase or lowercase |
+| `path:/api/users` | lines with this path. The value must match all of the field. |
+| `path:/api/*` | lines with a path that starts with `/api/`. `*` matches any text. |
+| `status:5xx`, `status:404` | lines with a status class or a status code |
+| `client:`, `method:`, `rpc:`, `level:`, `program:` | lines with this client address, HTTP method, JSON-RPC method, level, or program |
+| `exception:IllegalArgument*` | events with this exception, as the top exceptions show it, and their stack trace lines |
+| `-path:/health`, `-healthz` | lines that do not match the term after `-` |
+
+Put quotes around text with a space to find it as one phrase, for example `"connection refused"`. Without quotes, each word is a term. Put quotes around a field value with a space too, for example `path:"/api/v3 icx_sendTransaction"`. Put `\` before `*`, `"`, `\`, or a space to use it as a letter, for example `path:/api/a\*b`. A filter that the panel adds uses these escapes, so it selects only the value in the panel. An unknown field name is text, so `10:00:01` finds a time. If `edc` cannot read the filter, the input stays open and shows the problem.
 
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 
@@ -554,3 +578,92 @@ The index assumes a log that only grows. A file edited in place keeps its index 
 `--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.
 
 Exit codes: 0 when a line matched, 1 when no line matched, 2 on an error.
+
+## Find files
+
+`edc find [pattern] [path...]` finds files and directories by name. To search the contents of files, use `edc grep`.
+
+```bash
+# open a picker in the current directory
+edc find
+# open the file that you pick
+vim "$(edc find)"
+# go to the directory that you pick
+cd "$(edc find -t d)"
+# write the best matches for a pattern
+edc find nginxconf /etc
+# files of 100 MB or more that changed in the last 10 minutes
+edc find --changed 10m --size +100M /var
+# pick from the lines of another command
+git ls-files | edc find
+```
+
+| Command | Result |
+| --- | --- |
+| `edc find` in a terminal | A picker opens. Enter writes the path to stdout. |
+| `vim "$(edc find)"` | The picker uses the terminal, and stdout gets only the path. |
+| `edc find <pattern> [path...]` | The matches go to stdout, best first. |
+| `edc find .`, `edc find /etc`, `edc find src/` | One argument that is `.` or `..`, or that contains `/` and names a directory, is the path, not the pattern. |
+| `<command> \| edc find` | If you give no path, the lines of stdin are the candidates. `--type`, `--size`, and `--changed` need paths on disk, so they cause an error here. |
+| No terminal and no pattern | All candidates go to stdout in path order. |
+
+### Picker
+
+Type to filter the list. The top line shows the number of matches and candidates. While `edc find` reads directories, the list grows. With an empty query, the files that changed last come first. Each row shows the path, the size of a file, and the time since the last change. A directory ends with `/`, and a symlink ends with `@`.
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Write the selected path to stdout and exit. |
+| `Esc`, `ctrl+c` | Exit without output, with exit code 130. |
+| `↑` `↓`, `ctrl+p` `ctrl+n`, `PgUp` `PgDn`, `Home` `End` | Move the selection. |
+| `Backspace`, `ctrl+w`, `ctrl+u` | Delete a letter, a word, or the query. |
+| `ctrl+o` | Open the selection in `$VISUAL` or `$EDITOR`. If both are empty, `vi` opens it. |
+| `ctrl+v` | Open the selected file in `edc view`. |
+| `ctrl+g` | Type a pattern, and read the `edc grep` result for the selection in `edc view`. |
+| `Tab` | Show or hide the preview of the selection. |
+
+The preview shows the mode, the size, and the age of the selection. For a regular file, it shows the lines in the first 64 KiB. A file with a NUL byte shows as binary. For a directory, it shows the first 200 names, and for a symlink, its target. The preview does not open a FIFO, a socket, or a device file, because a read can block or change the device. If the terminal is 120 columns or wider, the preview is on the right. Otherwise it is below the list.
+
+When the editor or `edc view` exits, the picker comes back. If stdout is not a terminal, `ctrl+o`, `ctrl+v`, and `ctrl+g` do nothing, because the output goes to the command that called `edc find`.
+
+### Matches
+
+The letters of the pattern must appear in the path in the same order, so `adjrn` finds `audit_journal.go`. If you separate words with spaces, all words must match. A match in the file name, at the start of a word, or in consecutive letters gets a higher score. A skipped `_`, `-`, `.`, or `/` does not break consecutive letters, so `sshdconfig` finds `sshd_config` first. If two scores are equal, the shorter path comes first. If the pattern has no capital letter, case does not matter.
+
+`-E` makes the pattern a regular expression over the path. Then the matches go out in path order.
+
+### What edc find reads
+
+- Hidden files are included. `.git` is skipped.
+- `.gitignore` applies only if the search starts inside a git work tree. If the search starts in `/srv`, the `.gitignore` of a deployed checkout does not apply, so ignored logs stay in the result. `--no-ignore` turns off the rules.
+- The search stays on the file system of the path and does not go into other mounts. `--cross-mounts` goes into them. Kernel file systems such as `/proc`, `/sys`, and `/dev` are always skipped.
+- Container image layers under `/var/lib/docker/overlay2`, `/var/lib/docker/image`, `/var/lib/containerd/io.containerd.snapshotter.v1.*`, and `/var/lib/containers/storage/overlay*` are skipped, because each image holds a copy of `/etc` and `/usr`. `--layers` includes them. Container logs under `/var/lib/docker/containers` stay in the result.
+- Symlinks are not followed.
+- If a directory does not answer for 5 seconds and no other work is left, `edc find` names the directory on stderr and stops with the result that it has. `--timeout` (default 60s) limits the whole search.
+- When stderr is a terminal, a summary line names the skipped mounts, kernel file systems, and layers. `-v` lists each path.
+
+`--type` takes `f`, `d`, or `l`. `--size +100M` keeps regular files of 100 MiB or more, and `--size -1K` keeps files under 1 KiB. `--changed 10m` keeps the entries that changed in the last 10 minutes. `edc find` reads the size and the time of each entry only for `--size`, `--changed`, and the picker. `-0` ends each path with NUL for `xargs -0`. `--json <path>` writes the matches, the skipped directories, and the unread directories.
+
+### Find on more hosts
+
+`edc find --group <group> <pattern> <path...>` runs `edc find` on each host of an `edc remote` group. It uses the same inventory and OpenSSH settings as `edc remote`. You must give a path, because `.` on a remote host is the home directory of the SSH user.
+
+```bash
+edc find --group web nginx.conf /etc
+```
+
+stdout gets one `host:path` line for each match, so you can pipe it. stderr names each host that `edc find` could not search, and the reason. If the remote `edc` is older than `edc find`, the host shows `edc is too old`. Then run `edc update` on that host. `edc find` does not use `find(1)` on a host without `edc`, because its matches and defaults are different. `--json <path>` writes the result of each host.
+
+### Speed
+
+These values come from Ubuntu 25.10 with 12 CPUs and a warm cache (2026-11-12).
+
+| Search | `edc find` | `find` |
+| --- | --- | --- |
+| `/usr`, 254,334 entries | 0.21–0.24 s with 4 workers, 0.12 s with 12 workers | 0.47–0.50 s (`-name`) |
+| `/`, one file system, with `--layers` | 1.26–1.31 s, 807,298 entries | 1.76–2.0 s (`-xdev`), 807,834 entries |
+| `/`, one file system, default | 0.60–0.62 s, 387,419 entries | — |
+
+With `--layers`, `find` lists 536 entries more: the 535 entries under `.git`, which `edc find` skips, and the start path `/`. With the default, the list was equal to the list of `find / -xdev` without the image layers and `.git`. A query over 800,000 paths takes 11–16 ms. `edc find` uses 4 workers by default to keep the CPU load low on a production host. `--workers` changes the number.
+
+Exit codes: 0 when a path matched or you picked one, 1 when no path matched, 2 on an error, 130 when you cancelled the picker.

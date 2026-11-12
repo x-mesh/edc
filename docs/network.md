@@ -43,6 +43,15 @@ Terminal and JSON output show actual IP addresses by default. Add `--redact` to 
 
 A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
 
+Use `-w` to wait until a port accepts a connection, for example while a server starts:
+
+```bash
+edc tcp check -w 10.0.0.9:5432      # wait until it connects, Ctrl-C to stop
+edc tcp check -w=5m 10.0.0.9:5432   # stop after 5 minutes
+```
+
+`-w` tries again every second, and each attempt waits at most `--timeout`, 3s by default. A target that drops SYNs is then tried again every 3s, not once in 15s. In a terminal, one line shows the time, the attempt number, and the last cause. In a pipe or with `--json`, stderr gets a line only when the cause changes. When it ends, it prints the last attempt like a normal check, with the time it waited and the attempt number. The exit code is `0` when it connects, `1` when the time runs out, and `4` after Ctrl-C. Write the time limit with `=`: `-w 5m` reads `5m` as a second target, and edc tells you to write `-w=5m`. `edc alias` adds `etw` for `edc tcp check -w`.
+
 `edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.
@@ -218,18 +227,30 @@ sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] 
 - `--from` counts only packets from one address or from one CIDR range.
 
 Each event shows on one line: `SYN in`, `SYN-ACK out`, `RST out`, `ESTABLISHED`, `DROP`, and `ROUTE`.
+The time on a packet line is the time when the kernel received or sent the packet. edc holds the lines for 100 ms and shows them in time order, so `RST out` comes before the `DROP` line of the same SYN.
 A second SYN-ACK for the same attempt shows as a retransmit. This is a sign of a broken return path.
+If this host refuses an attempt, a `HINT` line follows the `ROUTE` line. It gives the cause, the drop reason, and the error that the client sees. edc shows it one time for each source. edc uses the same rules as the `rst` cause below, so there is no `HINT` line without a drop reason.
 At the end, the command shows a table for each source and arrival interface, the route back, and a verdict.
 
 | Verdict | Meaning | Status | Exit code |
 |---|---|---|---|
 | `completed` | The client sent the last ACK. The path works. | pass | `0` |
-| `rst` | This host sent RST. No process listens on the port, or a host firewall rejects the SYN. | fail | `1` |
+| `rst` | This host sent RST. The summary names the cause. Refer to the list after this table. | fail | `1` |
 | `synack_no_ack` | This host sent SYN-ACK, but no ACK came back. Examine the reverse route and the reverse IPsec selector. | fail | `1` |
 | `syn_no_reply` | The SYN arrived, but this host sent no reply. A firewall, rp_filter, or a full listen queue drops it. | fail | `1` |
 | `dropped_unseen` | The packet socket saw no SYN, but the kernel dropped packets for the port. | fail | `1` |
 | `reply_hidden_ipsec` | The reply goes out through an IPsec policy as ESP. edc cannot see it. | warn | `1` |
 | `no_syn` | No SYN arrived. | fail | `2` after `--duration`, `4` after Ctrl-C |
+
+For the `rst` verdict, edc finds the cause from the kernel drop reason of the source that it shows first:
+
+- `NETFILTER_DROP`: a host firewall rule rejects the SYN. The next step shows the commands that list the rules.
+- `NO_SOCKET` and no listener on the port: no process listens on the port.
+- `NO_SOCKET` and a listener that takes a different address, for example `127.0.0.1`: the summary shows the address of the listener. If the listener is `docker-proxy`, the next step shows a `-p` value with the address that the SYN came to.
+- `NO_SOCKET` in other cases: the kernel found no socket for the address and port.
+
+If there is no drop reason, the summary gives two causes: no listener, or a host firewall. The summary also gives the two causes if the source has both `NETFILTER_DROP` and `NO_SOCKET`, because the drop reasons of all its attempts are added together. If a listener is on the port, the next step does not show `--listen`, because `--listen` stops with exit code `2` on a used port.
+`rst_cause` in the metrics is `firewall`, `no_listener`, `loopback_only`, `other_address`, or `no_socket`. If edc cannot find the cause, the metrics do not have `rst_cause`.
 
 If a source has one or more completed handshakes, its verdict is `completed`.
 The exit code is `0` only if each source has a completed handshake.

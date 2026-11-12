@@ -91,12 +91,16 @@ func Run(args []string, version string) int {
 		return runView(args[1:])
 	case "grep":
 		return runGrep(args[1:])
+	case "find":
+		return runFind(args[1:], version)
 	case "search":
 		return runSearch(args[1:])
 	case "compress":
 		return runCompress(args[1:])
 	case "decompress":
 		return runDecompress(args[1:])
+	case "pack":
+		return runPack(args[1:])
 	case "du":
 		return runDu(args[1:], version)
 	case "clean":
@@ -284,6 +288,10 @@ func runTCP(args []string, version string) int {
 		}
 		args = []string{choice}
 	}
+	// --wait=false는 기다리지 않는 보통 check다. 그 flag를 빼야 보통 check와 diagnose의 parse가 받는다.
+	if args[0] == "check" && !tcpWaitRequested(args[1:]) {
+		args = append([]string{"check"}, tcpWithoutWait(args[1:])...)
+	}
 	switch {
 	case args[0] == "expect":
 		return runTCPExpect(args[1:], version)
@@ -292,6 +300,9 @@ func runTCP(args []string, version string) int {
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
+	// -w는 연결될 때까지 기다린다. --count, --interval과 함께 쓰면 그 flag를 모르는 wait 쪽 parse가 오류를 낸다.
+	case tcpWaitRequested(args[1:]):
+		return runTCPWait(args[1:], version)
 	// --count, --interval, --peer는 diagnose에만 있는 값이다. 주면 반복하거나 양쪽을 함께 보라는 뜻이므로 diagnose로 실행한다.
 	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer"):
 		return runTCPDiagnose(args[1:], version)

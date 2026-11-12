@@ -52,6 +52,7 @@ command:
       count: "number of attempts (default 5); implies --diagnose"
       interval: "time between attempts (default 1s); implies --diagnose"
       peer: "run tcp expect on this host over ssh at the same time and join both results; implies --diagnose"
+      wait: "try again every second until it connects (attempt timeout --timeout, default 3s); -w=5m stops after 5 minutes"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
       until: "expect: stop 1s after the first SYN (syn), so the reply is recorded, or at the first completed handshake (handshake)"
@@ -68,6 +69,7 @@ command:
       - "scan uses --timeout as the budget of the whole scan (default 60s). A port that it did not reach shows as not scanned."
       - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
       - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
+      - "-w waits until the port accepts a connection, then prints the check. Write a time limit with =, for example -w=5m. Ctrl-C stops it with exit code 4."
   tls:
     summary: "Certificate and handshake check"
     option:
@@ -226,18 +228,20 @@ command:
     option:
       lines: "last N lines; the screen keeps N lines (default 10,000)"
       follow: "in a pipe, follow the file like tail -F; the screen always follows"
+      stats: "print the stats of the whole input and exit, without the screen"
     notes:
       - "In a terminal, it opens a screen at the end of the file and follows new lines."
       - "Up or PgUp stops the list, and the header counts the new lines. End, l, or Esc follows again."
       - "In an access log, the list shows time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden and named in the header. c shows the raw lines, and ← → scroll the list sideways."
       - "It reads nginx and Apache access logs, JSON lines, and lines with a level such as ERROR or WARN."
-      - "The stats panel counts status classes or levels, top paths and clients, and the last error."
+      - "The stats panel counts status classes or levels, the top exceptions, paths, clients, and programs, and the last error."
       - "The stats count only the lines that the screen keeps. i hides the panel."
       - "The panel sits on the right in 120 columns or more, and below the list otherwise."
       - "Enter shows the fields and the whole line, with the stack trace lines below it."
       - "When the file is rotated or truncated, it marks the place and reads the new file from the start."
       - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
       - "edc alias prints short aliases such as ev, evn, and evf."
+      - "--stats reads the whole input once and prints the level or status counts, the top exceptions, paths, clients, and programs, and the time range."
   grep:
     summary: "Search logs, code, and file paths"
     option:
@@ -276,6 +280,30 @@ command:
       - "Files of 64 MB or more get an index in the cache directory on the second search within 24h. It records which 1 MB blocks hold which letters, times, levels, and statuses, so later searches read only the blocks that can match. The index assumes a log that only grows: a file edited in place keeps its index until it shrinks or its first or last indexed block changes, so use --no-index or --verify-index for such a file."
       - "Every search tells on stderr whether it used, built, or skipped the index, when stderr is a terminal."
       - "In a pipe or with NO_COLOR, the bytes of a line stay unchanged. Exit codes: 0 found, 1 none, 2 error."
+  find:
+    summary: "Find files and directories by name, with a picker"
+    option:
+      type: "only this type: f file, d directory, l symlink; repeat or join with commas"
+      size: "files of N or more (+N or N) or less than N (-N); K, M, G, T are powers of 1024"
+      changed: "changed within this time: 10m, 2h, 1d"
+      regex: "the pattern is a regular expression over the path"
+      no_ignore: "do not apply .gitignore rules inside a git work tree"
+      cross_mounts: "also search other file systems below the path"
+      layers: "also search container image layers"
+      nul: "end each path with NUL instead of a newline, for xargs -0"
+      workers: "directories to read at the same time (default 4)"
+      group: "search the hosts of an edc remote group; needs a pattern and a path"
+      inventory: "inventory file for --group"
+    notes:
+      - "Without a pattern in a terminal, edc find opens a picker. Type to filter, Enter prints the path, Esc cancels."
+      - "The picker draws on the terminal, not on stdout, so vim \"$(edc find)\" and cd \"$(edc find -t d)\" work."
+      - "In the picker, Tab shows a preview, ctrl+o opens $EDITOR, ctrl+v opens edc view, and ctrl+g searches the selection with edc grep."
+      - "With a pattern, it prints the matches, best first. The letters must appear in order, so adjrn finds audit_journal.go. Words separated by spaces must all match."
+      - "It includes hidden files and skips .git. It applies .gitignore only when the search starts inside a git work tree."
+      - "It stays on one file system and skips kernel file systems and container image layers. stderr names what it skipped."
+      - "A directory that does not answer for 5 seconds is named on stderr and not read."
+      - "If stdin is a pipe and you give no path, its lines are the candidates."
+      - "edc grep searches file contents. Exit codes: 0 found or picked, 1 none, 2 error, 130 cancelled."
   search:
     summary: "Search code by meaning with the local semantic engine"
     option:
@@ -796,9 +824,28 @@ command:
       - "If it fails while it writes, it deletes the partial output and keeps the input."
       - "zstd output does not get smaller above level 3. -j applies to gzip only."
       - "Without a file, it reads stdin and writes stdout. It does not write compressed data to a terminal."
-      - "It compresses one file at a time. Use tar to pack a directory."
+      - "It compresses one file at a time. Use edc pack or tar to pack a directory."
       - "On Linux, --rm keeps an input that another process has open for writing."
       - "Do not use --rm on a log that a program still writes. On macOS, or for a file that another host writes over NFS, edc cannot see the writer, and data written after the last check is lost."
+  pack:
+    summary: "Compress or extract a file or directory, chosen by its content"
+    option:
+      compress: "compress, even a file that is already compressed"
+      extract: "extract, whatever the name is; fail if the data is not gzip, zstd, or tar"
+      list: "list the files in an archive and do not write anything"
+      zstd: "write .zst or .tar.zst instead of .gz or .tar.gz"
+      output: "output path, for one input: the file to write, or the directory to extract into"
+      remove: "delete the input file after the output is written and synced"
+      verbose: "show what edc decided, each entry, and in a terminal the progress"
+    notes:
+      - "It reads the first bytes, not the name. gzip, zstd, and tar data are extracted; other files are compressed; a directory becomes a .tar.gz."
+      - "-z and -x choose the direction. -x on backup.bin that holds gzip data writes backup.bin.out."
+      - "A tar with one top-level directory extracts to that directory. A tar with several entries extracts to a directory named after the archive."
+      - "It extracts into a temporary directory beside the output and moves it into place at the end. If it fails or you press Ctrl-C, it deletes the partial output."
+      - "It refuses an entry or a link that points outside the output directory. It drops setuid and setgid. As root, it keeps the owner."
+      - "A directory keeps symlinks as links. Sockets, devices, and FIFOs are skipped and counted."
+      - "It does not overwrite a file or a directory that exists. --rm does not delete a directory, and it keeps an archive whose entries were skipped."
+      - "Use edc compress and edc decompress for stdin, stdout, -l N, and -j N."
   decompress:
     summary: "Decompress .gz and .zst files"
     option:

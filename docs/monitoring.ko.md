@@ -2,7 +2,7 @@
 
 # 실시간 자원 관측
 
-[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량) · [로그 읽기](#로그-읽기) · [로그 검색](#로그-검색)
+[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량) · [로그 읽기](#로그-읽기) · [로그 검색](#로그-검색) · [파일 찾기](#파일-찾기)
 
 ![Live resource dashboard](media/top.png)
 
@@ -438,17 +438,41 @@ edc view -f app.log | grep timeout
 
 JSON-RPC 노드 앞의 nginx는 요청을 따옴표 없이 적고 요청 본문과 처리 시간을 붙이는 일이 많습니다: `127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005`. `edc view`는 이 줄을 access 형식으로 읽습니다. JSON 본문의 `method`는 청록으로 칠하고, path만으로는 무엇을 요청했는지 알 수 없으므로 상위 path에서는 `/api/v3 icx_sendTransaction`처럼 path 뒤에 붙입니다. 상세 화면에는 `body`, `rpc method`, `request time`이 나옵니다.
 
-level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다.
+level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다. `2026-11-12 13:51:11.258 ERROR --- [main] c.e.Job : failed` 같은 Spring Boot 줄도 level 형식으로 읽고, logger가 상위 프로그램이 됩니다.
 
 syslog 형식은 `auth.log`, `syslog`, `journalctl` 출력을 읽습니다. 이 줄에는 level이 없으므로 메시지의 낱말로 level을 정합니다. `error`, `fail`, `failed`, `failure`, `invalid`, `refused`, `denied`, `fatal`, `panic`, `segfault`는 오류이고, `warning`, `warn`, `timeout`, `timed out`, `deprecated`는 경고입니다. `accepted`와 `success`는 초록으로 칠하고 level은 두지 않습니다. 메시지에 대문자 level 낱말이 있으면 그것을 씁니다. 소문자 낱말이 level을 정하는 형식은 이것뿐입니다. sshd가 적는 `from` 뒤의 주소는 상위 client가 되고, 패널은 상위 프로그램도 보입니다.
 
 goloop 형식은 ICON goloop 노드의 로그입니다. level 글자(`P`, `F`, `E`, `W`, `I`, `D`, `T`), 시각, wallet, chain id, module을 `|`로 잇고, 그 뒤에 소스 위치와 메시지가 옵니다. module은 상위 프로그램이 됩니다. panic 뒤의 stack trace처럼 level 글자로 시작하지 않는 줄은 바로 위 줄에 속합니다.
 
-↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 글자 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
+↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `n`은 다음 오류 줄로, `N`은 이전 오류 줄로 갑니다. 오류 줄은 level이 `error`나 `fatal`이거나 status가 5xx인 줄입니다. 새 줄을 따라가는 중이면 두 키 모두 가장 최근 오류로 갑니다. filter가 있으면 filter에 맞는 줄에서만 찾습니다. `/`로 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
 
 access log는 목록에 시각, status, method, bytes, path를 보입니다. 보관한 줄에서 모두 같은 host, client, 날짜는 숨기고 머리 줄에 `hidden: host int.example.com · client 203.0.113.9`처럼 적습니다. `c`는 원문 줄을 보이고, ←/→는 목록을 가로로 밉니다.
 
-통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 path·client·프로그램을 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 터미널이 120열 이상이면 패널을 오른쪽에 둡니다. 패널 폭은 가장 긴 줄에 맞추고 38열을 넘지 않으므로, 통계가 적은 로그에서는 줄을 보일 자리가 넓어집니다. 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
+통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 예외·path·client·프로그램을 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 파일 전체를 세려면 `--stats`를 쓰거나, `edc view -n 500000 boot.log`처럼 보관할 줄을 늘립니다.
+
+`edc view --stats boot.log`는 화면 없이 입력 전체의 통계를 출력합니다. 입력을 한 번 읽고 줄을 보관하지 않으므로 큰 파일도 셉니다. 줄 수, event 수, 처음과 마지막 event의 시각, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 10개 예외·path·client·프로그램을 출력합니다. `.gz`와 `.zst`는 풀어서 읽습니다. 상위 목록마다 서로 다른 값은 65,536개까지만 셉니다. 요청 ID가 든 path처럼 값이 그보다 많으면 많이 나온 절반만 남기고 목록에 `approximate counts`라고 적습니다. 이 목록의 수는 실제보다 적을 수 있습니다. `--stats`는 입력 전체를 세므로 `-n`이나 `-f`와 함께 쓸 수 없습니다.
+
+stack trace에서 예외를 적은 첫 줄이 그 event의 예외가 됩니다(예: `java.lang.IllegalArgumentException: Invalid URI path`). 상위 예외는 패키지를 뺀 클래스 이름과 메시지로 event를 셉니다. 메시지에서 숫자가 든 낱말은 `N`으로 바꾸므로 `block 14124 not found`와 `block 14125 not found`는 한 항목입니다. 첫 예외 뒤의 `Caused by:` 줄은 따로 세지 않습니다. `Exception in thread "main" ...`과 Python, JavaScript의 예외 줄도 셉니다. event의 상세 화면에도 `exception`이 보입니다. 터미널이 120열 이상이면 패널을 오른쪽에 둡니다. 패널 폭은 가장 긴 줄에 맞추고 38열을 넘지 않으므로, 통계가 적은 로그에서는 줄을 보일 자리가 넓어집니다. 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
+
+filter를 걸면 패널은 filter에 맞는 줄만 셉니다. 패널 제목에 `filtered`가 붙고 그 아래 `filter` 행에 filter 전체가 보입니다. 머리 줄에도 상태 바로 뒤에 filter가 보입니다. `events` 행은 `3 / 6`처럼 맞는 줄 수와 보관한 전체 줄 수를 함께 보입니다. status 범주와 level 행에는 패널이 센 줄에서 차지하는 비율이 붙습니다.
+
+Tab을 누르면 패널의 행을 고릅니다. ↑/↓로 옮기고 Enter를 누르면 `path:/api/users`나 `status:5xx`처럼 그 행이 filter에 더해집니다. filter에 같은 필드의 조건이 이미 있으면 새 조건으로 바꿉니다. 패널에 머무르므로 이어서 client를 고를 수 있습니다. Backspace는 목록의 Esc처럼 filter를 마지막으로 바꾸기 전으로 되돌립니다. Esc나 Tab을 누르면 목록으로 돌아갑니다.
+
+목록에서 Esc는 한 단계씩 뒤로 갑니다. 고른 줄이 있으면 먼저 새 줄을 다시 따라가고, 그다음부터는 누를 때마다 filter를 바로 전 filter로 되돌립니다. 예를 들어 `score status:2xx`는 `score`로, 그다음은 모든 줄로 돌아갑니다. `x`는 filter를 한 번에 모두 지웁니다. filter가 걸려 있는 동안 머리 줄에 `x clear`가 보이고, 지운 filter는 Esc로 되돌릴 수 있습니다.
+
+filter는 공백으로 나눈 조건이고, 줄은 모든 조건에 맞아야 합니다.
+
+| 조건 | 고르는 줄 |
+| --- | --- |
+| `timeout` | 그 글자가 든 줄. 대소문자를 가리지 않습니다. |
+| `path:/api/users` | path가 이 값인 줄. 값은 필드 전체와 같아야 합니다. |
+| `path:/api/*` | path가 `/api/`로 시작하는 줄. `*`는 아무 글자나 대신합니다. |
+| `status:5xx`, `status:404` | status 범주나 status 코드가 맞는 줄 |
+| `client:`, `method:`, `rpc:`, `level:`, `program:` | client 주소, HTTP method, JSON-RPC method, level, 프로그램이 맞는 줄 |
+| `exception:IllegalArgument*` | 상위 예외에 보이는 이름으로 그 예외가 난 event와 그 stack trace 줄 |
+| `-path:/health`, `-healthz` | `-` 뒤의 조건에 맞지 않는 줄 |
+
+공백이 든 구절을 한 덩어리로 찾으려면 `"connection refused"`처럼 따옴표로 감쌉니다. 따옴표가 없으면 단어마다 따로 조건이 됩니다. 필드 값에 공백이 있을 때도 `path:"/api/v3 icx_sendTransaction"`처럼 감쌉니다. `*`, `"`, `\`, 공백을 글자로 쓰려면 `path:/api/a\*b`처럼 앞에 `\`를 붙입니다. 패널에서 더한 조건도 이 escape를 쓰므로 패널에 보인 값만 고릅니다. 모르는 필드 이름은 글자로 찾으므로 `10:00:01`은 시각을 찾습니다. filter를 읽지 못하면 입력 칸이 열린 채로 문제를 보여 줍니다.
 
 logrotate가 파일을 옮기면 옛 파일의 나머지를 읽은 뒤, 그 자리를 표시하고 새 파일을 처음부터 읽습니다. 파일이 작아지거나, 제자리에서 다시 쓰여 마지막으로 읽은 바이트가 그 자리에 없으면 처음부터 다시 읽습니다.
 
@@ -488,3 +512,92 @@ index는 로그가 뒤에만 쌓인다고 가정합니다. 제자리에서 고�
 `--level warn`은 warn 이상인 줄입니다. stack trace 줄은 그 `ERROR` 줄의 level과 시각을 물려받습니다. `--status`는 `5xx`, `404`, `500-503`을 쉼표로 이어 받습니다. `--since`와 `--until`은 `10m`, `2h`, `1d`, `2026-10-27 09:00`, `09:00`을 받습니다.
 
 종료 코드는 맞는 줄이 있으면 0, 없으면 1, 오류가 나면 2입니다.
+
+## 파일 찾기
+
+`edc find [pattern] [path...]`는 이름으로 파일과 디렉터리를 찾습니다. 파일 내용은 `edc grep`으로 찾습니다.
+
+```bash
+# 현재 디렉터리에서 선택 화면 열기
+edc find
+# 고른 파일을 편집기로 열기
+vim "$(edc find)"
+# 고른 디렉터리로 이동
+cd "$(edc find -t d)"
+# 패턴에 맞는 것을 좋은 순서대로 출력
+edc find nginxconf /etc
+# 최근 10분 안에 바뀐 100 MB 이상인 파일
+edc find --changed 10m --size +100M /var
+# 다른 명령의 출력 줄에서 고르기
+git ls-files | edc find
+```
+
+| 실행 | 결과 |
+| --- | --- |
+| 터미널에서 `edc find` | 선택 화면이 열리고, Enter를 누르면 경로를 stdout에 씁니다. |
+| `vim "$(edc find)"` | 선택 화면은 터미널에 그리고, stdout에는 고른 경로만 씁니다. |
+| `edc find <pattern> [path...]` | 일치하는 것을 좋은 순서대로 stdout에 씁니다. |
+| `edc find .`, `edc find /etc`, `edc find src/` | `.`이나 `..`, 또는 `/`가 들어 있고 디렉터리를 가리키는 인자 하나는 패턴이 아니라 찾을 곳입니다. |
+| `<command> \| edc find` | 경로를 주지 않으면 stdin의 줄을 후보로 씁니다. 이때 `--type`, `--size`, `--changed`는 디스크의 경로가 필요하므로 오류가 납니다. |
+| 터미널도 패턴도 없음 | 모든 후보를 경로순으로 씁니다. |
+
+### 선택 화면
+
+글자를 치면 목록이 좁혀집니다. 맨 위 줄에는 일치 수와 후보 수가 보입니다. 디렉터리를 읽는 동안 목록이 계속 늘어납니다. 질의가 비어 있으면 최근에 바뀐 파일이 먼저 나옵니다. 줄마다 경로, 파일 크기, 마지막으로 바뀐 뒤 지난 시간을 보입니다. 디렉터리는 `/`, symlink는 `@`로 끝납니다.
+
+| 키 | 동작 |
+| --- | --- |
+| `Enter` | 고른 경로를 stdout에 쓰고 끝냅니다. |
+| `Esc`, `ctrl+c` | 아무것도 쓰지 않고 종료 코드 130으로 끝냅니다. |
+| `↑` `↓`, `ctrl+p` `ctrl+n`, `PgUp` `PgDn`, `Home` `End` | 선택을 옮깁니다. |
+| `Backspace`, `ctrl+w`, `ctrl+u` | 글자, 단어, 질의 전체를 지웁니다. |
+| `ctrl+o` | 고른 것을 `$VISUAL`이나 `$EDITOR`로 엽니다. 둘 다 없으면 `vi`로 엽니다. |
+| `ctrl+v` | 고른 파일을 `edc view`로 엽니다. |
+| `ctrl+g` | 패턴을 입력받아, 고른 경로의 `edc grep` 결과를 `edc view`로 보여 줍니다. |
+| `Tab` | 고른 것의 미리보기를 켜고 끕니다. |
+
+미리보기는 고른 것의 권한, 크기, 바뀐 뒤 지난 시간을 보입니다. 일반 파일은 앞 64 KiB 안의 줄을 보이고, NUL 바이트가 있으면 binary로 표시합니다. 디렉터리는 이름 200개까지, symlink는 대상을 보입니다. FIFO, socket, 장치 파일은 열지 않습니다. 읽기가 막히거나 장치 상태가 바뀔 수 있기 때문입니다. 터미널이 120칸 이상이면 오른쪽, 그보다 좁으면 목록 아래에 둡니다.
+
+편집기나 `edc view`를 끝내면 선택 화면으로 돌아옵니다. stdout이 터미널이 아니면 `ctrl+o`, `ctrl+v`, `ctrl+g`는 동작하지 않습니다. 출력이 `edc find`를 부른 명령으로 가기 때문입니다.
+
+### 일치와 순서
+
+패턴의 글자가 경로에 같은 순서로 있으면 일치합니다. 그래서 `adjrn`으로 `audit_journal.go`를 찾습니다. 공백으로 나눈 단어는 모두 맞아야 합니다. 파일 이름 안, 단어의 시작, 이어진 글자에서 맞으면 점수가 높습니다. `_`, `-`, `.`, `/`를 건너뛴 것은 이어진 것으로 보므로 `sshdconfig`로 찾으면 `sshd_config`가 먼저 나옵니다. 점수가 같으면 짧은 경로가 먼저입니다. 패턴에 대문자가 없으면 대소문자를 가리지 않습니다.
+
+`-E`를 주면 패턴을 경로에 대한 정규식으로 보고, 결과는 경로순으로 씁니다.
+
+### 읽는 범위
+
+- 숨김 파일을 포함하고 `.git`은 건너뜁니다.
+- `.gitignore`는 git 작업 트리 안에서 시작할 때만 적용합니다. `/srv`에서 시작하면 배포한 checkout의 `.gitignore`를 적용하지 않으므로 무시 대상인 로그도 결과에 남습니다. `--no-ignore`로 규칙을 끕니다.
+- 시작 경로의 파일 시스템에 머물고 다른 마운트에는 들어가지 않습니다. `--cross-mounts`를 주면 들어갑니다. `/proc`, `/sys`, `/dev` 같은 커널 파일 시스템은 항상 건너뜁니다.
+- `/var/lib/docker/overlay2`, `/var/lib/docker/image`, `/var/lib/containerd/io.containerd.snapshotter.v1.*`, `/var/lib/containers/storage/overlay*` 아래의 컨테이너 이미지 층은 건너뜁니다. 이미지마다 `/etc`와 `/usr`의 사본이 있기 때문입니다. `--layers`를 주면 포함합니다. `/var/lib/docker/containers` 아래의 컨테이너 로그는 결과에 남습니다.
+- symlink는 따라가지 않습니다.
+- 다른 일이 남지 않았는데 5초 동안 응답하지 않는 디렉터리가 있으면, 그 디렉터리를 stderr에 알리고 찾은 결과로 끝냅니다. `--timeout`(기본 60초)은 검색 전체의 시간 제한입니다.
+- stderr가 터미널이면 건너뛴 마운트, 커널 파일 시스템, 이미지 층을 요약 줄로 알립니다. `-v`는 경로를 하나씩 보입니다.
+
+`--type`은 `f`, `d`, `l`을 받습니다. `--size +100M`은 100 MiB 이상인 일반 파일, `--size -1K`는 1 KiB 미만인 파일만 남깁니다. `--changed 10m`은 최근 10분 안에 바뀐 것만 남깁니다. 크기와 시각은 `--size`, `--changed`, 선택 화면에서만 읽습니다. `-0`은 경로를 NUL로 끝내므로 `xargs -0`과 함께 씁니다. `--json <path>`는 일치한 경로, 건너뛴 디렉터리, 읽지 못한 디렉터리를 씁니다.
+
+### 여러 호스트에서 찾기
+
+`edc find --group <group> <pattern> <path...>`는 `edc remote` 그룹의 호스트마다 `edc find`를 실행합니다. 인벤토리와 OpenSSH 설정은 `edc remote`와 같습니다. 원격 호스트의 `.`은 SSH 사용자의 홈이므로 찾을 경로를 반드시 줘야 합니다.
+
+```bash
+edc find --group web nginx.conf /etc
+```
+
+stdout에는 일치마다 `host:path` 한 줄을 쓰므로 파이프로 넘길 수 있습니다. 찾지 못한 호스트와 그 이유는 stderr에 씁니다. 원격 `edc`가 `edc find`보다 오래되었으면 `오래된 edc`로 표시하므로, 그 호스트에서 `edc update`를 실행하세요. `edc`가 없는 호스트에서 `find(1)`로 대신하지 않습니다. 일치 방식과 기본값이 다르기 때문입니다. `--json <path>`는 호스트별 결과를 씁니다.
+
+### 속도
+
+Ubuntu 25.10, CPU 12개, 캐시가 채워진 상태에서 잰 값입니다(2026-11-12).
+
+| 검색 | `edc find` | `find` |
+| --- | --- | --- |
+| `/usr`, 항목 254,334개 | worker 4개 0.21–0.24초, 12개 0.12초 | 0.47–0.50초(`-name`) |
+| `/`, 한 파일 시스템, `--layers` | 1.26–1.31초, 항목 807,298개 | 1.76–2.0초(`-xdev`), 807,834개 |
+| `/`, 한 파일 시스템, 기본값 | 0.60–0.62초, 항목 387,419개 | — |
+
+`--layers`를 줘도 `find`가 536개 더 많습니다. `edc find`가 건너뛰는 `.git` 아래 항목 535개와, `find`가 출력하는 시작 경로 `/`입니다. 기본값의 목록은 `find / -xdev`에서 이미지 층과 `.git`을 뺀 목록과 같았습니다. 경로 80만 개에 질의 하나를 계산하는 데 11–16ms가 걸립니다. 운영 호스트에서 CPU를 덜 쓰도록 worker는 기본 4개이고, `--workers`로 바꿉니다.
+
+종료 코드는 일치하거나 고르면 0, 일치하는 것이 없으면 1, 오류가 나면 2, 선택 화면을 취소하면 130입니다.

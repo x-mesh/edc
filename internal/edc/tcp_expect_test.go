@@ -656,6 +656,10 @@ func TestExpectListenerState(t *testing.T) {
 	if v6.Address != "[::]:8000" || !strings.Contains(describeExpectListener(v6), "unknown process on [::]:8000") {
 		t.Errorf("v6 = %+v, %q", v6, describeExpectListener(v6))
 	}
+	// 머리말에는 하나만 보이지만, SYN이 향한 주소를 받는지는 그 port의 listener 모두로 판단한다.
+	if strings.Join(listener.bound, ",") != "127.0.0.1,0.0.0.0" || !loopback.accepts("127.0.0.1") || loopback.accepts("10.0.0.5") {
+		t.Errorf("bound = %q, loopback bound = %q", listener.bound, loopback.bound)
+	}
 	if none := expectListenerState(sockets, nil, 9000); none.State != expectListenerNone {
 		t.Errorf("none = %+v", none)
 	}
@@ -663,6 +667,227 @@ func TestExpectListenerState(t *testing.T) {
 	unknown := expectListenerState(nil, errors.New("sock_diag tcp: permission denied\nmore"), 8000)
 	if unknown.State != expectListenerUnknown || unknown.Error != "sock_diag tcp: permission denied" {
 		t.Errorf("unknown = %+v", unknown)
+	}
+}
+
+// RST의 이유는 kernel drop 이유가 있을 때만 정한다. listener는 그 이유를 고칠 곳으로 바꾸는 데만 쓴다.
+func TestExplainExpectRST(t *testing.T) {
+	none := &expectListener{State: expectListenerNone}
+	loopback := &expectListener{State: expectListenerPresent, Process: "docker-proxy", PID: 7, Address: "127.0.0.1:5432", Scope: "loopback", bound: []string{"127.0.0.1", "::1"}}
+	other := &expectListener{State: expectListenerPresent, Process: "postgres", PID: 9, Address: "10.0.3.2:5432", Scope: "specific", bound: []string{"10.0.3.2"}}
+	any4 := &expectListener{State: expectListenerPresent, Process: "nginx", Address: "0.0.0.0:5432", Scope: "all", bound: []string{"0.0.0.0"}}
+	any6 := &expectListener{State: expectListenerPresent, Process: "nginx", Address: "[::]:5432", Scope: "all", bound: []string{"::"}}
+	unknown := &expectListener{State: expectListenerUnknown, Error: "permission denied"}
+	noSocket := map[string]int{"NO_SOCKET": 2}
+	for _, tc := range []struct {
+		name     string
+		local    string
+		drops    map[string]int
+		listener *expectListener
+		kind     string
+	}{
+		{"no listener", "10.0.0.5", noSocket, none, expectRSTNoListener},
+		{"loopback only", "10.0.0.5", noSocket, loopback, expectRSTLoopbackOnly},
+		{"other address", "10.0.0.5", noSocket, other, expectRSTOtherAddress},
+		// 머리말에 loopback listener가 보여도 다른 주소에 묶인 listener가 있으면 loopback만의 문제가 아니다.
+		{"loopback and another address", "10.0.0.5", noSocket, &expectListener{State: expectListenerPresent, Address: "127.0.0.1:5432", Scope: "loopback", bound: []string{"127.0.0.1", "10.0.3.2"}}, expectRSTOtherAddress},
+		{"ipv4 any does not take ipv6", "2001:db8::5", noSocket, any4, expectRSTOtherAddress},
+		// 받는 주소의 listener가 있었는데 socket이 없었다. 시작한 뒤에 바뀐 것일 수 있으므로 kernel이 본 것만 말한다.
+		{"loopback to loopback", "127.0.0.1", noSocket, loopback, expectRSTNoSocket},
+		{"ipv4 any takes ipv4", "10.0.0.5", noSocket, any4, expectRSTNoSocket},
+		{"ipv6 any takes ipv4", "10.0.0.5", noSocket, any6, expectRSTNoSocket},
+		{"unknown listener", "10.0.0.5", noSocket, unknown, expectRSTNoSocket},
+		{"nil listener", "10.0.0.5", noSocket, nil, expectRSTNoSocket},
+		{"firewall", "10.0.0.5", map[string]int{"NETFILTER_DROP": 1}, loopback, expectRSTFirewall},
+		// 요약의 drop 이유는 출발지의 모든 시도를 합친 것이다. 한 시도는 방화벽에, 다른 시도는 닫힌 port에 막혔을 수 있어
+		// 어느 한쪽으로 정하지 않는다.
+		{"firewall and no socket", "10.0.0.5", map[string]int{"NETFILTER_DROP": 1, "NO_SOCKET": 1}, loopback, ""},
+		// drop 이유가 없으면 방화벽을 뺄 근거가 없다. listener가 없다는 것만으로 이유를 정하지 않는다.
+		{"no drop reasons", "10.0.0.5", nil, none, ""},
+		{"no drop reasons with a loopback listener", "10.0.0.5", nil, loopback, ""},
+	} {
+		if cause := explainExpectRST(5432, tc.local, tc.drops, tc.listener); cause.kind != tc.kind {
+			t.Errorf("%s: kind %q, want %q", tc.name, cause.kind, tc.kind)
+		}
+	}
+}
+
+// 판정은 그대로 rst이고, 요약과 다음 할 일이 이유를 말한다. listener가 이미 있으면 --listen을 권하지 않는다. 그때 --listen은
+// exit 2로 멈춘다.
+func TestExpectRSTSummaryNamesTheCause(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	refused := func(listener *expectListener, reason string) (Result, []string) {
+		scenario := newExpectScenario("")
+		scenario.session.listener = listener
+		scenario.in("eth0", "10.85.1.2", tcpFlagSYN, 7, 0)
+		if reason != "" {
+			scenario.session.drop(scenario.now, "10.85.1.2:53122", "100.83.200.248:2142", reason, "tcp_v4_rcv")
+		}
+		scenario.out("eth0", "10.85.1.2", tcpFlagRST|tcpFlagACK, 0, time.Millisecond)
+		result, sources, _ := scenario.finish("duration")
+		if len(sources) != 1 || sources[0].Verdict != expectVerdictRST {
+			t.Fatalf("sources = %+v", sources)
+		}
+		return result, expectNextSteps(expectVerdictRST, scenario.session.rstCause, false, false, "")
+	}
+	type want struct {
+		cause, next string
+		summary     []string
+		step        []string
+		noStep      string
+	}
+	docker := &expectListener{State: expectListenerPresent, Process: "docker-proxy", PID: 7, Address: "127.0.0.1:2142", Scope: "loopback", bound: []string{"127.0.0.1"}}
+	nginx := &expectListener{State: expectListenerPresent, Process: "nginx", PID: 8, Address: "10.0.3.2:2142", Scope: "specific", bound: []string{"10.0.3.2"}}
+	for name, tc := range map[string]struct {
+		listener *expectListener
+		reason   string
+		want     want
+	}{
+		"no listener": {&expectListener{State: expectListenerNone}, "NO_SOCKET", want{expectRSTNoListener, "edc listen",
+			[]string{"RST 1 sent. No process listens on port 2142"}, []string{"start the service on port 2142", "--listen"}, ""}},
+		"docker on loopback": {docker, "NO_SOCKET", want{expectRSTLoopbackOnly, "edc listen",
+			[]string{"The listener takes 127.0.0.1:2142 only"}, []string{"-p 100.83.200.248:2142:…", "-p 2142:…"}, "--listen"}},
+		"other address": {nginx, "NO_SOCKET", want{expectRSTOtherAddress, "edc listen",
+			[]string{"The listener takes 10.0.3.2:2142 only"}, []string{"0.0.0.0 or 100.83.200.248", "connect the client to 10.0.3.2"}, "--listen"}},
+		"firewall": {docker, "NETFILTER_DROP", want{expectRSTFirewall, "sudo nft list ruleset",
+			[]string{"A host firewall rule rejects the SYNs"}, []string{"rejects port 2142", "nft list ruleset"}, "--listen"}},
+		"listener without drop reasons": {docker, "", want{"", "edc listen",
+			[]string{"A host firewall rejects the SYNs, or the listener on 127.0.0.1:2142 does not take this address"}, []string{"edc listen --tcp"}, "--listen"}},
+	} {
+		result, steps := refused(tc.listener, tc.reason)
+		if cause, _ := result.Metrics["rst_cause"].(string); cause != tc.want.cause || result.Next != tc.want.next {
+			t.Errorf("%s: rst_cause %q, next %q", name, cause, result.Next)
+		}
+		for _, text := range tc.want.summary {
+			if !strings.Contains(result.Summary, text) {
+				t.Errorf("%s: summary %q lacks %q", name, result.Summary, text)
+			}
+		}
+		// 결과 줄은 요약을 160 byte에서 자른다. 이유가 잘리면 안 된다.
+		if firstLine(result.Summary) != result.Summary {
+			t.Errorf("%s: summary is cut on the result line: %q", name, result.Summary)
+		}
+		if tc.want.cause != "" && tc.want.cause != expectRSTFirewall && strings.Contains(result.Summary, "firewall") {
+			t.Errorf("%s: NO_SOCKET rules out the firewall: %q", name, result.Summary)
+		}
+		for _, text := range tc.want.step {
+			if !strings.Contains(steps[0], text) {
+				t.Errorf("%s: step %q lacks %q", name, steps[0], text)
+			}
+		}
+		if tc.want.noStep != "" && strings.Contains(steps[0], tc.want.noStep) {
+			t.Errorf("%s: step %q must not offer %q", name, steps[0], tc.want.noStep)
+		}
+	}
+}
+
+// 실행 중 hint는 RST와 drop 이유가 모인 ROUTE 줄 뒤에 출발지마다 한 번 보인다. 요약과 같은 근거를 쓰므로 drop 이유가 없으면
+// 보이지 않는다.
+func TestExpectHintNamesTheRefusalOnce(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	attempt := func(scenario *expectScenario, seq uint32, reason string) {
+		scenario.in("eth0", "10.85.1.2", tcpFlagSYN, seq, time.Second)
+		if reason != "" {
+			scenario.session.drop(scenario.now, "10.85.1.2:53122", "100.83.200.248:2142", reason, "tcp_v4_rcv")
+		}
+		scenario.out("eth0", "10.85.1.2", tcpFlagRST|tcpFlagACK, 0, time.Millisecond)
+		scenario.session.tick(scenario.now.Add(time.Second))
+	}
+	scenario := newExpectScenario("")
+	scenario.session.listener = &expectListener{State: expectListenerNone}
+	attempt(scenario, 7, "NO_SOCKET")
+	attempt(scenario, 8, "NO_SOCKET")
+	if got := scenario.kinds(); got != "syn,drop,rst_out,route,hint,syn,drop,rst_out" {
+		t.Fatalf("events = %s", got)
+	}
+	hint := scenario.events[4]
+	line := formatExpectEvent(hint, textStyle{})
+	for _, want := range []string{"HINT", "10.85.1.2 → 100.83.200.248:2142", "no process listens on port 2142", "(NO_SOCKET)", "connection refused"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("hint %q lacks %q", line, want)
+		}
+	}
+	loopback := newExpectScenario("")
+	loopback.session.listener = &expectListener{State: expectListenerPresent, Process: "docker-proxy", Address: "127.0.0.1:2142", Scope: "loopback", bound: []string{"127.0.0.1"}}
+	attempt(loopback, 7, "NO_SOCKET")
+	if last := loopback.events[len(loopback.events)-1]; last.kind != expectEventHint || !strings.Contains(last.detail, "takes 127.0.0.1:2142 only") || !strings.Contains(last.detail, "SYN to 100.83.200.248") {
+		t.Errorf("loopback hint = %+v", last)
+	}
+	// drop 추적이 꺼졌으면 RST를 누가 보냈는지 근거가 없다.
+	silent := newExpectScenario("")
+	silent.session.listener = &expectListener{State: expectListenerNone}
+	attempt(silent, 7, "")
+	if got := silent.kinds(); got != "syn,rst_out,route" {
+		t.Errorf("events without a drop reason = %s", got)
+	}
+}
+
+// packet과 kernel drop은 서로 다른 goroutine에서 순서 없이 온다. 실행 중 줄은 시각순으로 내보내야 SYN, RST, DROP 순서가
+// 시도마다 같다.
+func TestExpectEventOrderPrintsByTime(t *testing.T) {
+	base := time.Date(2026, 11, 12, 17, 18, 42, 0, time.UTC)
+	var printed []string
+	order := &expectEventOrder{print: func(event expectEvent) { printed = append(printed, event.kind) }}
+	order.add(expectEvent{at: base, kind: expectEventSYN})
+	order.add(expectEvent{at: base.Add(6 * time.Microsecond), kind: expectEventDrop})
+	order.add(expectEvent{at: base.Add(2 * time.Microsecond), kind: expectEventRSTOut})
+	order.add(expectEvent{at: base.Add(time.Second), kind: expectEventRoute})
+	order.add(expectEvent{at: base.Add(time.Second), kind: expectEventHint})
+	order.flush(base.Add(time.Millisecond))
+	if got := strings.Join(printed, ","); got != "syn,rst_out,drop" {
+		t.Fatalf("first flush = %s", got)
+	}
+	// 이미 찍은 줄보다 이른 줄이 늦게 오면 버리지 않고 다음에 찍는다.
+	order.add(expectEvent{at: base.Add(time.Microsecond), kind: expectEventDuplicate})
+	order.flushAll()
+	if got := strings.Join(printed, ","); got != "syn,rst_out,drop,duplicate,route,hint" {
+		t.Fatalf("all = %s", got)
+	}
+}
+
+// 모든 언어와 이유에서 문구의 인자가 맞아야 하고, 결과 줄이 요약을 160 byte에서 잘라도 이유 문장은 남아야 한다.
+func TestExpectRSTCauseTextInEveryLanguage(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	docker := &expectListener{State: expectListenerPresent, Process: "docker-proxy", PID: 3577529, Address: "127.0.0.1:5432", Scope: "loopback", bound: []string{"127.0.0.1"}}
+	nginx := &expectListener{State: expectListenerPresent, Process: "nginx", PID: 812, Address: "20.20.3.222:5432", Scope: "specific", bound: []string{"20.20.3.222"}}
+	causes := []expectRSTCause{
+		explainExpectRST(5432, "20.20.0.50", map[string]int{"NETFILTER_DROP": 5}, docker),
+		explainExpectRST(8000, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, &expectListener{State: expectListenerNone}),
+		explainExpectRST(5432, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, docker),
+		explainExpectRST(5432, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, nginx),
+		explainExpectRST(8000, "20.20.0.50", map[string]int{"NO_SOCKET": 5}, nil),
+		explainExpectRST(5432, "20.20.0.50", nil, docker),
+		explainExpectRST(8000, "20.20.0.50", nil, nil),
+	}
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		for _, cause := range causes {
+			lead := &expectSource{Address: "20.20.0.69", Local: "20.20.0.50", Interface: "eno1", expectCounts: expectCounts{Attempts: 5, SYNIn: 5, RSTOut: 5}, DropReasons: map[string]int{"NO_SOCKET": 5}}
+			texts := map[string]string{"next": cause.nextStep(), "summary": expectSummary(expectVerdictRST, lead, cause, 1, cause.port, time.Second)}
+			if cause.kind != "" {
+				texts["hint"] = cause.hint()
+			}
+			if cause.kind != "" && cause.kind != expectRSTFirewall {
+				lead.RSTOut = 0
+				texts["hidden"] = expectSummary(expectVerdictRST, lead, cause, 1, cause.port, time.Second)
+			}
+			for name, text := range texts {
+				if text == "" || strings.Contains(text, "%!") {
+					t.Errorf("%s %q %s: %q", language, cause.kind, name, text)
+				}
+			}
+			sentence := cause.sentence()
+			for _, name := range []string{"summary", "hidden"} {
+				if summary, ok := texts[name]; ok && sentence != "" && !strings.Contains(firstLine(summary), sentence) {
+					t.Errorf("%s %q %s: the result line cuts the cause: %q", language, cause.kind, name, firstLine(summary))
+				}
+			}
+		}
 	}
 }
 
@@ -828,21 +1053,21 @@ func TestExpectNextSteps(t *testing.T) {
 	for _, language := range []string{"en", "ko", "ja"} {
 		setLanguage(language)
 		for _, verdict := range append([]string{expectVerdictNoSYN}, expectVerdictOrder...) {
-			steps := expectNextSteps(verdict, false, false, "")
+			steps := expectNextSteps(verdict, expectRSTCause{}, false, false, "")
 			if len(steps) != 2 || strings.Contains(steps[0], "expect.next") || strings.Contains(steps[1], "expect.next") {
 				t.Errorf("%s %s: %q", language, verdict, steps)
 			}
 		}
 	}
 	setLanguage("en")
-	if steps := expectNextSteps(expectVerdictNoSYN, false, false, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
+	if steps := expectNextSteps(expectVerdictNoSYN, expectRSTCause{}, false, false, "/tmp/target.json"); !strings.Contains(steps[0], "tunnel selector") || !strings.HasSuffix(steps[1], "edc report join <client.json> /tmp/target.json") {
 		t.Errorf("file = %q", steps)
 	}
-	if steps := expectNextSteps(expectVerdictRST, false, false, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
+	if steps := expectNextSteps(expectVerdictRST, expectRSTCause{}, false, false, "my target.json"); !strings.Contains(steps[0], "--listen") || !strings.HasSuffix(steps[1], "edc report join <client.json> 'my target.json'") {
 		t.Errorf("quoted file = %q", steps)
 	}
 	for _, jsonPath := range []string{"", "-"} {
-		if steps := expectNextSteps(expectVerdictCompleted, false, false, jsonPath); !strings.Contains(steps[1], "--json target.json") {
+		if steps := expectNextSteps(expectVerdictCompleted, expectRSTCause{}, false, false, jsonPath); !strings.Contains(steps[1], "--json target.json") {
 			t.Errorf("%q: %q", jsonPath, steps)
 		}
 	}
@@ -891,14 +1116,14 @@ func TestExpectNextStepWithTemporaryListener(t *testing.T) {
 	restore := currentLanguage()
 	defer setLanguage(restore)
 	setLanguage("en")
-	if steps := expectNextSteps(expectVerdictCompleted, true, false, ""); !strings.Contains(steps[0], "service itself was not tested") {
+	if steps := expectNextSteps(expectVerdictCompleted, expectRSTCause{}, true, false, ""); !strings.Contains(steps[0], "service itself was not tested") {
 		t.Errorf("steps = %q", steps)
 	}
-	if steps := expectNextSteps(expectVerdictRST, true, false, ""); strings.Contains(steps[0], "not tested") {
+	if steps := expectNextSteps(expectVerdictRST, expectRSTCause{}, true, false, ""); strings.Contains(steps[0], "not tested") {
 		t.Errorf("rst steps = %q", steps)
 	}
 	// IPsec transport mode가 SYN을 가릴 수 있으면 다음 단계도 오지 않았다고 단정하지 않는다.
-	if steps := expectNextSteps(expectVerdictNoSYN, false, true, ""); !strings.Contains(steps[0], "ip -s xfrm state") || strings.Contains(steps[0], "does not reach") {
+	if steps := expectNextSteps(expectVerdictNoSYN, expectRSTCause{}, false, true, ""); !strings.Contains(steps[0], "ip -s xfrm state") || strings.Contains(steps[0], "does not reach") {
 		t.Errorf("ipsec steps = %q", steps)
 	}
 }

@@ -1,6 +1,7 @@
 # English messages for the view command.
 view:
   failed: "edc view: %v"
+  stats_conflict: "edc view: --stats counts the whole input; do not use it with -n or -f"
   truncated_lines: "edc view: %d lines were longer than %s; only their first part was kept"
   reset:
     replaced: "edc view: %s was replaced; following the new file"

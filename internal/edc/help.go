@@ -117,11 +117,13 @@ var commandDocs = []commandDoc{
 		name: "tcp", group: "diagnose",
 		usage: []string{
 			"edc tcp check [options] <host:port>",
+			"edc tcp check -w[=5m] [options] <host:port>",
 			"edc tcp check --diagnose [--count N] [--interval 1s] [--peer <ssh-host>] [options] <host:port>",
 			"edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] [--stop-after N] [--listen] [options] <port>",
 			"edc tcp scan [--ports 22,80,443,8000-8100] [--parallel 32] [options] <host>",
 		},
 		options: []optionDoc{
+			{"-w, --wait[=5m]", "command.tcp.option.wait"},
 			{"--diagnose", "command.tcp.option.diagnose"},
 			{"--count N", "command.tcp.option.count"},
 			{"--interval 1s", "command.tcp.option.interval"},
@@ -373,12 +375,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "view", group: "observe",
-		usage: []string{"edc view [-n N] [-f] [file]", "<command> | edc view"},
+		usage: []string{"edc view [-n N] [-f] [file]", "edc view --stats [file]", "<command> | edc view"},
 		options: []optionDoc{
 			{"-n N", "command.view.option.lines"},
 			{"-f, -F", "command.view.option.follow"},
+			{"--stats", "command.view.option.stats"},
 		},
-		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
+		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "edc view --stats boot.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
 	},
 	{
 		name: "grep", group: "observe",
@@ -404,6 +407,24 @@ var commandDocs = []commandDoc{
 			{"--last N", "command.grep.option.last"},
 		},
 		examples: []string{"edc grep -f auth", "edc grep ValidateToken", "edc grep timeout /var/log/app/", "edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
+	},
+	{
+		name: "find", group: "observe",
+		usage: []string{"edc find [options] [pattern] [path...]", "edc find [options] <dir/>", "<command> | edc find [options] [pattern]"},
+		options: []optionDoc{
+			{"-t, --type f|d|l", "command.find.option.type"},
+			{"--size [+|-]N[K|M|G]", "command.find.option.size"},
+			{"--changed <time>", "command.find.option.changed"},
+			{"-E, --regex", "command.find.option.regex"},
+			{"--no-ignore", "command.find.option.no_ignore"},
+			{"--cross-mounts", "command.find.option.cross_mounts"},
+			{"--layers", "command.find.option.layers"},
+			{"-0", "command.find.option.nul"},
+			{"--workers N", "command.find.option.workers"},
+			{"--group <group>", "command.find.option.group"},
+			{"--inventory <file>", "command.find.option.inventory"},
+		},
+		examples: []string{"edc find", "vim \"$(edc find)\"", "edc find nginxconf /etc", "edc find --changed 10m --size +100M /var", "edc find -t d src/", "git ls-files | edc find", "edc find --group web nginx.conf /etc"},
 	},
 	{
 		name: "search", group: "observe",
@@ -717,6 +738,20 @@ var commandDocs = []commandDoc{
 			{"--rm", "command.decompress.option.remove"},
 		},
 		examples: []string{"edc decompress app.log.1.zst", "edc decompress -c app.log.2.gz | less", "edc decompress -o dump.sql backup.zst"},
+	},
+	{
+		name: "pack", group: "tool",
+		usage: []string{"edc pack [-z | -x] [--zstd] [-o path] [--rm] [-v] <path...>", "edc pack -l <archive>"},
+		options: []optionDoc{
+			{"-z", "command.pack.option.compress"},
+			{"-x", "command.pack.option.extract"},
+			{"-l", "command.pack.option.list"},
+			{"--zstd", "command.pack.option.zstd"},
+			{"-o path", "command.pack.option.output"},
+			{"--rm", "command.pack.option.remove"},
+			{"-v", "command.pack.option.verbose"},
+		},
+		examples: []string{"edc pack app.log", "edc pack app.log.gz", "edc pack logs/", "edc pack logs.tar.gz", "edc pack -x backup.bin", "edc pack -l logs.tar.gz", "edc pack -v logs/"},
 	},
 	{
 		name: "shell", group: "tool",

@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -176,6 +177,12 @@ func (progress *probeProgress) snapshot() string {
 }
 
 // runProbeLive는 probe 하나를 한 줄로 보여 준다. probeLiveDelay 안에 끝나면 화면 없이 결과만 출력한다.
+// probeCancelledByUser는 사용자가 Ctrl-C로 probe를 멈췄는지다. ctx에는 --timeout 기한도 걸려 있어 기한이 지나도 ctx.Err()가
+// 채워지는데, 그때의 판정은 취소가 아니라 probe의 결과(시간 초과 실패)다.
+func probeCancelledByUser(ctx context.Context) bool {
+	return errors.Is(ctx.Err(), context.Canceled)
+}
+
 func runProbeLive(ctx context.Context, cancel context.CancelFunc, probeID, target string, options commonOptions, version string, started time.Time, targetInfo map[string]interface{}, probe func(context.Context) Result) int {
 	progress := &probeProgress{}
 	finished := make(chan Result, 1)
@@ -196,7 +203,7 @@ func runProbeLive(ctx context.Context, cancel context.CancelFunc, probeID, targe
 	}
 	result := <-finished
 	// finish가 Run을 끝내면 onExit이 cancel을 부르므로, 사용자 취소 여부는 그 전에 읽는다.
-	cancelled := ctx.Err() != nil
+	cancelled := probeCancelledByUser(ctx)
 	if _, err := live.finish(probeResultMsg{result: result}); err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
 	}

@@ -127,6 +127,14 @@ observe:
     summary: "resolver %d개 비교, 일치=%t"
     details: "resolver별 응답"
 
+  tcp_wait:
+    value_separate: "edc tcp check: 기다릴 시간은 -w=%s처럼 =로 붙여 씁니다"
+    value_invalid: "-w는 값 없이 쓰거나 -w=5m처럼 시간을 붙여 씁니다: %s"
+    connected: "%s 기다림, %d번째 시도"
+    not_connected: "연결 안 됨 · %s 기다림, %d번째 시도"
+    waiting: "%s 기다리는 중 · %s · %d번째 시도 · %s"
+    waiting_line: "edc tcp check: %s %d번째 시도: %s"
+
   probe:
     cancelled: "probe를 취소했습니다"
     tcp_connected: "%s 연결 성공 (%s)"

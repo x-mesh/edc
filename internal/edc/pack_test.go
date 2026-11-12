@@ -670,3 +670,29 @@ func TestPackCancelAfterTheOutputStarted(t *testing.T) {
 		t.Fatalf("left %v", left)
 	}
 }
+
+// 부호 있는 체크섬으로 적은 v7 tar도 tar다. 이름에 0x80 이상의 바이트가 있으면 두 합이 달라진다.
+func TestPackDetectsASignedChecksum(t *testing.T) {
+	header := make([]byte, 512)
+	copy(header, "caf\xe9/a.txt")
+	copy(header[100:], "0000644\x00")
+	copy(header[124:], "00000000003\x00")
+	header[156] = '0'
+	copy(header[148:], "        ")
+	var unsigned, signed int
+	for _, value := range header {
+		unsigned += int(value)
+		signed += int(int8(value))
+	}
+	if unsigned == signed {
+		t.Fatal("the name must make the sums differ")
+	}
+	copy(header[148:], fmt.Sprintf("%06o\x00 ", signed))
+	if !packTarBlock(header) {
+		t.Fatal("a signed checksum is a tar header")
+	}
+	copy(header[148:], fmt.Sprintf("%06o\x00 ", signed+1))
+	if packTarBlock(header) {
+		t.Fatal("a wrong checksum is not")
+	}
+}

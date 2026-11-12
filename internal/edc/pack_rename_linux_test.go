@@ -23,6 +23,16 @@ func TestPackRenameClaimedKeepsWhatAnotherProcessMade(t *testing.T) {
 				}
 				return nil
 			}},
+		// 다른 프로세스가 만든 빈 디렉터리도 덮지 않는다. 옮기기 직전에 차지한 디렉터리가 그대로인지 본다.
+		{"empty directory", func(target string) error {
+			return os.Mkdir(target, 0o755)
+		}, func(target string) error {
+			entries, err := os.ReadDir(target)
+			if err != nil || len(entries) != 0 {
+				return errors.New("their empty directory was replaced")
+			}
+			return nil
+		}},
 		{"full directory", func(target string) error {
 			if err := os.Mkdir(target, 0o755); err != nil {
 				return err

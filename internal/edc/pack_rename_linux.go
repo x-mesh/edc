@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -33,8 +34,18 @@ func packRenameClaimed(source, target string) error {
 	if err := packClaim(target); err != nil {
 		return err
 	}
+	claimed, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
 	if packRenameHook != nil {
 		packRenameHook()
+	}
+	// 옮기기 직전에 그 이름이 아직 edc가 만든 디렉터리인지 본다. 다른 프로세스가 지우고 새로 만든 빈 디렉터리를 덮지 않는다.
+	// 지운 디렉터리의 inode 번호는 곧 다시 쓰일 수 있어 ctime까지 같아야 같은 디렉터리로 본다. 이 확인과 rename 사이의 틈은
+	// RENAME_NOREPLACE 없이는 없앨 수 없다.
+	if now, err := os.Lstat(target); err != nil || !packSameDirectory(claimed, now) {
+		return fmt.Errorf("%s: %w", target, errCodecExists)
 	}
 	// os.Rename은 대상이 이미 있는 디렉터리면 시스템 호출 전에 EEXIST를 돌려주므로, 차지한 빈 디렉터리 위로 옮기려면
 	// rename(2)를 바로 부른다.
@@ -46,4 +57,10 @@ func packRenameClaimed(source, target string) error {
 		return &os.LinkError{Op: "rename", Old: source, New: target, Err: err}
 	}
 	return nil
+}
+
+func packSameDirectory(left, right os.FileInfo) bool {
+	leftStat, leftOK := left.Sys().(*syscall.Stat_t)
+	rightStat, rightOK := right.Sys().(*syscall.Stat_t)
+	return os.SameFile(left, right) && leftOK && rightOK && leftStat.Ctim == rightStat.Ctim
 }

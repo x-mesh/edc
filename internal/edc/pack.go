@@ -287,14 +287,16 @@ func packTarBlock(block []byte) bool {
 	if err != nil {
 		return false
 	}
-	var sum int64
+	// 옛 tar 가운데는 바이트를 부호 있는 수로 더한 것이 있다. archive/tar도 두 합을 모두 받으므로 여기서도 둘 다 받는다.
+	var unsigned, signed int64
 	for index, value := range block[:512] {
 		if index >= 148 && index < 156 {
 			value = ' '
 		}
-		sum += int64(value)
+		unsigned += int64(value)
+		signed += int64(int8(value))
 	}
-	return sum == stored
+	return stored == unsigned || stored == signed
 }
 
 // packEmptyTarLimit는 빈 tar로 볼 수 있는 가장 긴 길이다. tar는 끝에 0 블록 두 개를 쓰고 10240바이트 단위로 채운다.

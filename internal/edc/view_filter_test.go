@@ -130,7 +130,9 @@ func TestViewFilterWithReplacesTheSameField(t *testing.T) {
 		{"score path:/api/users -path:/health", "path", "/api/orders", "score -path:/health path:/api/orders"},
 		{`path:"/a b" status:5xx`, "client", "192.0.2.1", `path:"/a b" status:5xx client:192.0.2.1`},
 		{"", "path", "/api/v3 icx_sendTransaction", `path:"/api/v3 icx_sendTransaction"`},
-		{"", "path", `/q?x="1"`, "path:/q?x=*1*"},
+		{"", "path", `/q?x="1"`, `path:/q?x=\"1\"`},
+		{"", "path", `/api/a*b`, `path:/api/a\*b`},
+		{"", "path", `C:\a b`, `path:"C:\\a b"`},
 	} {
 		got := viewFilterWith(test.filter, test.field, test.value)
 		if got != test.want {
@@ -230,5 +232,57 @@ func TestViewFilterQuotedPhrase(t *testing.T) {
 		if filter.matches(line) != test.line || filter.matches(other) != test.other {
 			t.Errorf("%q: %v %v", test.filter, filter.matches(line), filter.matches(other))
 		}
+	}
+}
+
+// 패널 값에 *, ", \, 공백이 있어도 그 값으로 만든 filter는 그 값만 고른다.
+func TestViewFilterFromAPanelValueSelectsOnlyThatValue(t *testing.T) {
+	for _, test := range []struct{ value, other string }{
+		{"/api/a*b", "/api/axb"},
+		{"/api/a*", "/api/abc"},
+		{`/q?x="1"`, "/q?x=x1x"},
+		{`/q?x=\"1\"`, `/q?x="1"`},
+		{`C:\temp\*`, `C:\temp\x`},
+		{"/api/v3 icx_sendTransaction", "/api/v3 icx_call"},
+		{`/a \"b c\"`, `/a "b c"`},
+	} {
+		filter, err := parseViewFilter(viewFilterWith("", "path", test.value))
+		if err != nil {
+			t.Fatalf("%q: %v", test.value, err)
+		}
+		if !filter.matches(viewLine{path: test.value}) || filter.matches(viewLine{path: test.other}) {
+			t.Errorf("%q: matches itself %v, matches %q %v", test.value, filter.matches(viewLine{path: test.value}), test.other, filter.matches(viewLine{path: test.other}))
+		}
+	}
+}
+
+func TestViewFilterEscapes(t *testing.T) {
+	for _, test := range []struct {
+		filter string
+		path   string
+		want   bool
+	}{
+		{`path:/a\*b`, "/a*b", true},
+		{`path:/a\*b`, "/axb", false},
+		{`path:/a*b`, "/axb", true},
+		{`path:/a\ b`, "/a b", true},
+		{`path:C:\temp`, `C:\temp`, true},
+		{`path:C:\\temp`, `C:\temp`, true},
+	} {
+		filter, err := parseViewFilter(test.filter)
+		if err != nil {
+			t.Fatalf("%q: %v", test.filter, err)
+		}
+		if got := filter.matches(viewLine{path: test.path}); got != test.want {
+			t.Errorf("%q on %q = %v, want %v", test.filter, test.path, got, test.want)
+		}
+	}
+	// 글자 조건의 *는 와일드카드가 아니라 글자다.
+	filter, _ := parseViewFilter("a*b")
+	if filter.matches(viewLine{text: "axb"}) || !filter.matches(viewLine{text: "a*b"}) {
+		t.Fatal("a text term keeps * as a letter")
+	}
+	if filter, _ := parseViewFilter(`\"quoted\"`); !filter.matches(viewLine{text: `say "quoted" here`}) {
+		t.Fatal(`\" is a quote letter`)
 	}
 }

@@ -533,7 +533,7 @@ A filter is a list of terms with spaces between them. A line must match all term
 | `client:`, `method:`, `rpc:`, `level:`, `program:` | lines with this client address, HTTP method, JSON-RPC method, level, or program |
 | `-path:/health`, `-healthz` | lines that do not match the term after `-` |
 
-Put quotes around text with a space to find it as one phrase, for example `"connection refused"`. Without quotes, each word is a term. Put quotes around a field value with a space too, for example `path:"/api/v3 icx_sendTransaction"`. An unknown field name is text, so `10:00:01` finds a time. If `edc` cannot read the filter, the input stays open and shows the problem.
+Put quotes around text with a space to find it as one phrase, for example `"connection refused"`. Without quotes, each word is a term. Put quotes around a field value with a space too, for example `path:"/api/v3 icx_sendTransaction"`. Put `\` before `*`, `"`, `\`, or a space to use it as a letter, for example `path:/api/a\*b`. A filter that the panel adds uses these escapes, so it selects only the value in the panel. An unknown field name is text, so `10:00:01` finds a time. If `edc` cannot read the filter, the input stays open and shows the problem.
 
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 

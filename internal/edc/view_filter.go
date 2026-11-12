@@ -11,13 +11,14 @@ type viewFilter struct {
 	terms []viewFilterTerm
 }
 
-// viewFilterTerm은 조건 하나다. field가 비어 있으면 줄 전체에서 value를 찾는다. field가 있으면 그 필드의 값이 value와
-// 같아야 하고, value의 *는 아무 글자나 대신한다. TOP 목록의 항목으로 건 filter가 패널에 보인 수와 같은 줄을 고르도록,
-// 필드는 부분 일치가 아니라 전체 일치로 비교한다.
+// viewFilterTerm은 조건 하나다. field가 비어 있으면 줄 전체에서 value를 찾는다. field가 있으면 그 필드의 값이 pattern과
+// 같아야 하고, pattern의 조각 사이(입력의 *)에는 아무 글자나 올 수 있다. TOP 목록의 항목으로 건 filter가 패널에 보인 수와
+// 같은 줄을 고르도록, 필드는 부분 일치가 아니라 전체 일치로 비교한다.
 type viewFilterTerm struct {
-	field  string
-	value  string
-	negate bool
+	field   string
+	value   string
+	pattern []string
+	negate  bool
 	// class는 status:5xx의 5다. status는 status:404의 404다.
 	class  int
 	status int
@@ -42,7 +43,8 @@ func parseViewFilter(text string) (viewFilter, error) {
 }
 
 // viewFilterToken은 따옴표를 벗긴 조건이다. quotedAt은 따옴표로 감싼 부분이 시작한 자리다. 따옴표 안의 -와 :는 글자다.
-// raw는 입력한 그대로의 조건이라, 조건을 바꿔 filter를 다시 쓸 때 쓴다.
+// raw는 입력한 그대로의 조건이라, 조건을 바꿔 filter를 다시 쓸 때 쓴다. text에는 \ escape가 그대로 남는다. *가 글자인지
+// 와일드카드인지는 조건을 읽을 때 가린다.
 type viewFilterToken struct {
 	text     string
 	quotedAt int
@@ -52,7 +54,7 @@ type viewFilterToken struct {
 func viewFilterTokens(text string) ([]viewFilterToken, error) {
 	var tokens []viewFilterToken
 	var current strings.Builder
-	quotedAt, quoted, started, start := -1, false, false, 0
+	quotedAt, quoted, started, start, escaped := -1, false, false, 0, false
 	flush := func(end int) {
 		if started {
 			tokens = append(tokens, viewFilterToken{current.String(), quotedAt, text[start:end]})
@@ -65,6 +67,12 @@ func viewFilterTokens(text string) ([]viewFilterToken, error) {
 			start = at
 		}
 		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			current.WriteRune(r)
+			started, escaped = true, true
 		case r == '"':
 			if !quoted && quotedAt < 0 {
 				quotedAt = current.Len()
@@ -103,18 +111,45 @@ func parseViewFilterTerm(token viewFilterToken) (viewFilterTerm, error) {
 			}
 		}
 		if term.field != "" {
-			term.value = strings.ToLower(text[colon+1:])
-			if term.value == "" {
+			raw := strings.ToLower(text[colon+1:])
+			if raw == "" {
 				return viewFilterTerm{}, fmt.Errorf("%s: needs a value", field)
 			}
+			term.pattern = viewFilterPattern(raw)
+			term.value = strings.Join(term.pattern, "*")
 			if field == "status" {
 				return parseViewFilterStatus(term)
 			}
 			return term, nil
 		}
 	}
-	term.value = strings.ToLower(text)
+	// 글자 조건에는 와일드카드가 없으므로 *는 글자다.
+	term.value = strings.Join(viewFilterPattern(strings.ToLower(text)), "*")
 	return term, nil
+}
+
+// viewFilterEscapable은 \ 뒤에서 글자 그대로 읽는 글자다. 그 밖의 \는 백슬래시 자체라, C:\temp 같은 값은 escape 없이 쓴다.
+const viewFilterEscapable = "*\"\\ \t"
+
+// viewFilterPattern은 escape를 풀면서 값을 와일드카드 *로 나눈 조각이다. \*는 나누지 않고 글자 *로 둔다.
+func viewFilterPattern(raw string) []string {
+	var parts []string
+	var current strings.Builder
+	runes := []rune(raw)
+	for index := 0; index < len(runes); index++ {
+		r := runes[index]
+		switch {
+		case r == '\\' && index+1 < len(runes) && strings.ContainsRune(viewFilterEscapable, runes[index+1]):
+			index++
+			current.WriteRune(runes[index])
+		case r == '*':
+			parts = append(parts, current.String())
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	return append(parts, current.String())
 }
 
 func parseViewFilterStatus(term viewFilterTerm) (viewFilterTerm, error) {
@@ -146,7 +181,7 @@ func (filter viewFilter) matches(line viewLine) bool {
 		case "status":
 			found = line.status != 0 && (term.class == min(line.status/100, 5) || term.status == line.status)
 		default:
-			found = viewFilterWildcard(term.value, strings.ToLower(viewFilterFieldValue(line, term.field)))
+			found = viewFilterWildcard(term.pattern, strings.ToLower(viewFilterFieldValue(line, term.field)))
 		}
 		if found == term.negate {
 			return false
@@ -173,14 +208,13 @@ func viewFilterFieldValue(line viewLine, field string) string {
 	return ""
 }
 
-// viewFilterWildcard는 value 전체가 pattern과 같은지 본다. pattern의 *는 빈 글자를 포함해 아무 글자나 대신한다.
-func viewFilterWildcard(pattern, value string) bool {
+// viewFilterWildcard는 value 전체가 parts를 차례로 이은 것과 같은지 본다. 조각 사이에는 빈 글자를 포함해 아무 글자나 온다.
+func viewFilterWildcard(parts []string, value string) bool {
 	if value == "" {
 		return false
 	}
-	parts := strings.Split(pattern, "*")
 	if len(parts) == 1 {
-		return pattern == value
+		return parts[0] == value
 	}
 	if !strings.HasPrefix(value, parts[0]) {
 		return false
@@ -211,10 +245,9 @@ func viewFilterWith(filter, field, value string) string {
 	return strings.Join(append(kept, field+":"+viewFilterQuote(value)), " ")
 }
 
-// viewFilterQuote는 값을 filter에 쓸 수 있게 한다. 따옴표는 filter 안에서 글자로 쓸 수 없어서 *로 바꾼다. 그 자리에
-// 다른 글자가 든 값도 고르지만, 고른 값은 반드시 고른다.
+// viewFilterQuote는 값을 그 값만 고르는 filter 글자로 쓴다. \, *, "를 escape하고, 공백이 있으면 따옴표로 감싼다.
 func viewFilterQuote(value string) string {
-	value = strings.ReplaceAll(value, `"`, "*")
+	value = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `"`, `\"`).Replace(value)
 	if strings.ContainsAny(value, " \t") {
 		return `"` + value + `"`
 	}

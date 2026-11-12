@@ -738,6 +738,20 @@ var commandDocs = []commandDoc{
 		examples: []string{"edc decompress app.log.1.zst", "edc decompress -c app.log.2.gz | less", "edc decompress -o dump.sql backup.zst"},
 	},
 	{
+		name: "pack", group: "tool",
+		usage: []string{"edc pack [-z | -x] [--zstd] [-o path] [--rm] [-v] <path...>", "edc pack -l <archive>"},
+		options: []optionDoc{
+			{"-z", "command.pack.option.compress"},
+			{"-x", "command.pack.option.extract"},
+			{"-l", "command.pack.option.list"},
+			{"--zstd", "command.pack.option.zstd"},
+			{"-o path", "command.pack.option.output"},
+			{"--rm", "command.pack.option.remove"},
+			{"-v", "command.pack.option.verbose"},
+		},
+		examples: []string{"edc pack app.log", "edc pack app.log.gz", "edc pack logs/", "edc pack logs.tar.gz", "edc pack -x backup.bin", "edc pack -l logs.tar.gz", "edc pack -v logs/"},
+	},
+	{
 		name: "shell", group: "tool",
 		usage:    []string{"edc shell [zsh|bash] [--no-alias]"},
 		options:  []optionDoc{{"--no-alias", "command.shell.option.no_alias"}},

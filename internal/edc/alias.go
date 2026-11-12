@@ -29,6 +29,7 @@ var aliasGroups = []aliasGroup{
 		{"ev", "edc view", "ev /var/log/nginx/access.log"},
 		{"evn", "edc view -n 50000", "evn app.log  (keep more lines on the screen and in the stats)"},
 		{"evf", "edc view -f", "evf app.log | grep timeout  (in a pipe, follow like tail -F)"},
+		{"ep", "edc pack", "ep app.log, ep logs.tar.gz  (compress or extract, decided from the content)"},
 	}},
 	{"diagnose", []aliasDoc{
 		{"edoc", "edc doctor", "edoc example.com"},

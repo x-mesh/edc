@@ -99,6 +99,8 @@ func Run(args []string, version string) int {
 		return runCompress(args[1:])
 	case "decompress":
 		return runDecompress(args[1:])
+	case "pack":
+		return runPack(args[1:])
 	case "du":
 		return runDu(args[1:], version)
 	case "clean":

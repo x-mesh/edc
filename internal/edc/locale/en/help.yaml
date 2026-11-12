@@ -822,9 +822,28 @@ command:
       - "If it fails while it writes, it deletes the partial output and keeps the input."
       - "zstd output does not get smaller above level 3. -j applies to gzip only."
       - "Without a file, it reads stdin and writes stdout. It does not write compressed data to a terminal."
-      - "It compresses one file at a time. Use tar to pack a directory."
+      - "It compresses one file at a time. Use edc pack or tar to pack a directory."
       - "On Linux, --rm keeps an input that another process has open for writing."
       - "Do not use --rm on a log that a program still writes. On macOS, or for a file that another host writes over NFS, edc cannot see the writer, and data written after the last check is lost."
+  pack:
+    summary: "Compress or extract a file or directory, chosen by its content"
+    option:
+      compress: "compress, even a file that is already compressed"
+      extract: "extract, whatever the name is; fail if the data is not gzip, zstd, or tar"
+      list: "list the files in an archive and do not write anything"
+      zstd: "write .zst or .tar.zst instead of .gz or .tar.gz"
+      output: "output path, for one input: the file to write, or the directory to extract into"
+      remove: "delete the input file after the output is written and synced"
+      verbose: "show what edc decided, each entry, and in a terminal the progress"
+    notes:
+      - "It reads the first bytes, not the name. gzip, zstd, and tar data are extracted; other files are compressed; a directory becomes a .tar.gz."
+      - "-z and -x choose the direction. -x on backup.bin that holds gzip data writes backup.bin.out."
+      - "A tar with one top-level directory extracts to that directory. A tar with several entries extracts to a directory named after the archive."
+      - "It extracts into a temporary directory beside the output and moves it into place at the end. If it fails or you press Ctrl-C, it deletes the partial output."
+      - "It refuses an entry or a link that points outside the output directory. It drops setuid and setgid. As root, it keeps the owner."
+      - "A directory keeps symlinks as links. Sockets, devices, and FIFOs are skipped and counted."
+      - "It does not overwrite a file or a directory that exists. --rm does not delete a directory, and it keeps an archive whose entries were skipped."
+      - "Use edc compress and edc decompress for stdin, stdout, -l N, and -j N."
   decompress:
     summary: "Decompress .gz and .zst files"
     option:

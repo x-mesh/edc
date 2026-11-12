@@ -55,6 +55,7 @@ expect:
     listener_address: "The listener takes %s only"
     no_socket: "The kernel found no socket for %s"
     listening: "A host firewall rejects the SYNs, or the listener on %s does not take this address"
+    unknown: "No process listens on the port, or a host firewall rejects it"
   warning:
     route_failed: "edc cannot look up the route back to %s: %s"
     rp_filter_strict: "rp_filter is strict (1) on %[1]s and the route back to %[2]s leaves through %[3]s. The kernel drops these SYNs"

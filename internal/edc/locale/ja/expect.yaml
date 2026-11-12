@@ -55,6 +55,7 @@ expect:
     listener_address: "listener は %s だけで待ち受けています"
     no_socket: "%s を受け付ける socket がありません"
     listening: "firewall が拒否したか、listener (%s) のアドレスが違います"
+    unknown: "port に listener がないか、host firewall が拒否しています"
   warning:
     route_failed: "%s への戻り経路を調べられませんでした: %s"
     rp_filter_strict: "%[1]s の rp_filter が strict (1) で、%[2]s への戻り経路は %[3]s から出ます。kernel はこの SYN を破棄します"

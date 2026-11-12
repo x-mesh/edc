@@ -25,6 +25,7 @@ find:
     limited: "항목 %d개에서 멈췄습니다"
     query_cut: "질의의 앞 %d바이트만 사용합니다"
     long_line: "%d바이트를 넘는 줄은 앞부분만 사용합니다"
+    stdin_error: "stdin을 읽지 못해 후보가 거기서 끊겼습니다: %s"
     mount_error: "마운트 표를 읽지 못해(%s) /proc, /sys, /dev, /run만 건너뜁니다"
     skipped_short: "건너뜀 %s"
   picker:

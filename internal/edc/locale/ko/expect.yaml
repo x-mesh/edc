@@ -55,6 +55,7 @@ expect:
     listener_address: "listener가 %s에서만 기다립니다"
     no_socket: "%s 주소를 받는 socket이 없습니다"
     listening: "firewall이 거부했거나 listener(%s)의 주소가 다릅니다"
+    unknown: "port에 listener가 없거나 host firewall이 거부합니다"
   warning:
     route_failed: "돌아가는 경로를 조회하지 못했습니다 (%s): %s"
     rp_filter_strict: "%[1]s의 rp_filter가 strict(1)이고, %[2]s 방향의 돌아가는 경로는 %[3]s 쪽으로 나갑니다. kernel이 이 SYN을 버립니다"

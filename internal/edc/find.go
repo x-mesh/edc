@@ -344,6 +344,8 @@ func runFindList(options findOptions, env findEnv) int {
 	}
 	code := 0
 	switch {
+	case report.ReadErr != nil:
+		code = 2
 	case len(report.Problems) == len(options.paths) && len(options.paths) > 0 && seen == 0:
 		code = 2
 	case len(matches) == 0:
@@ -444,6 +446,10 @@ func findReadStdin(stdin io.Reader, emit func([]findEntry) bool) findWalkReport 
 			}
 		}
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				report.ReadErr = err
+				report.Problems = append(report.Problems, T("find.note.stdin_error", err.Error()))
+			}
 			break
 		}
 	}

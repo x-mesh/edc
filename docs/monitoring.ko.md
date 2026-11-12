@@ -444,11 +444,30 @@ syslog 형식은 `auth.log`, `syslog`, `journalctl` 출력을 읽습니다. 이 
 
 goloop 형식은 ICON goloop 노드의 로그입니다. level 글자(`P`, `F`, `E`, `W`, `I`, `D`, `T`), 시각, wallet, chain id, module을 `|`로 잇고, 그 뒤에 소스 위치와 메시지가 옵니다. module은 상위 프로그램이 됩니다. panic 뒤의 stack trace처럼 level 글자로 시작하지 않는 줄은 바로 위 줄에 속합니다.
 
-↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 글자 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
+↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
 
 access log는 목록에 시각, status, method, bytes, path를 보입니다. 보관한 줄에서 모두 같은 host, client, 날짜는 숨기고 머리 줄에 `hidden: host int.example.com · client 203.0.113.9`처럼 적습니다. `c`는 원문 줄을 보이고, ←/→는 목록을 가로로 밉니다.
 
 통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 path·client·프로그램을 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 터미널이 120열 이상이면 패널을 오른쪽에 둡니다. 패널 폭은 가장 긴 줄에 맞추고 38열을 넘지 않으므로, 통계가 적은 로그에서는 줄을 보일 자리가 넓어집니다. 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
+
+filter를 걸면 패널은 filter에 맞는 줄만 셉니다. 패널 제목에 `filtered`가 붙고 그 아래 `filter` 행에 filter 전체가 보입니다. 머리 줄에도 상태 바로 뒤에 filter가 보입니다. `events` 행은 `3 / 6`처럼 맞는 줄 수와 보관한 전체 줄 수를 함께 보입니다. status 범주와 level 행에는 패널이 센 줄에서 차지하는 비율이 붙습니다.
+
+Tab을 누르면 패널의 행을 고릅니다. ↑/↓로 옮기고 Enter를 누르면 `path:/api/users`나 `status:5xx`처럼 그 행이 filter에 더해집니다. filter에 같은 필드의 조건이 이미 있으면 새 조건으로 바꿉니다. 패널에 머무르므로 이어서 client를 고를 수 있습니다. Backspace는 마지막에 더한 조건을 되돌립니다. Esc나 Tab을 누르면 목록으로 돌아갑니다.
+
+목록에서 Esc는 한 단계씩 뒤로 갑니다. 고른 줄이 있으면 먼저 새 줄을 다시 따라가고, 그다음부터는 누를 때마다 filter를 바로 전 filter로 되돌립니다. 예를 들어 `score status:2xx`는 `score`로, 그다음은 모든 줄로 돌아갑니다.
+
+filter는 공백으로 나눈 조건이고, 줄은 모든 조건에 맞아야 합니다.
+
+| 조건 | 고르는 줄 |
+| --- | --- |
+| `timeout` | 그 글자가 든 줄. 대소문자를 가리지 않습니다. |
+| `path:/api/users` | path가 이 값인 줄. 값은 필드 전체와 같아야 합니다. |
+| `path:/api/*` | path가 `/api/`로 시작하는 줄. `*`는 아무 글자나 대신합니다. |
+| `status:5xx`, `status:404` | status 범주나 status 코드가 맞는 줄 |
+| `client:`, `method:`, `rpc:`, `level:`, `program:` | client 주소, HTTP method, JSON-RPC method, level, 프로그램이 맞는 줄 |
+| `-path:/health`, `-healthz` | `-` 뒤의 조건에 맞지 않는 줄 |
+
+공백이 든 구절을 한 덩어리로 찾으려면 `"connection refused"`처럼 따옴표로 감쌉니다. 따옴표가 없으면 단어마다 따로 조건이 됩니다. 필드 값에 공백이 있을 때도 `path:"/api/v3 icx_sendTransaction"`처럼 감쌉니다. 모르는 필드 이름은 글자로 찾으므로 `10:00:01`은 시각을 찾습니다. filter를 읽지 못하면 입력 칸이 열린 채로 문제를 보여 줍니다.
 
 logrotate가 파일을 옮기면 옛 파일의 나머지를 읽은 뒤, 그 자리를 표시하고 새 파일을 처음부터 읽습니다. 파일이 작아지거나, 제자리에서 다시 쓰여 마지막으로 읽은 바이트가 그 자리에 없으면 처음부터 다시 읽습니다.
 

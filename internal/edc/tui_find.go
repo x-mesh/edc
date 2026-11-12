@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -169,12 +170,25 @@ func runFindPicker(options findOptions, env findEnv) (int, bool) {
 	if !ok || model.cancelled || model.chosen == "" {
 		return 130, true
 	}
-	end := "\n"
-	if options.null {
-		end = "\x00"
+	return writeFindChoice(env, options.null, model.chosen), true
+}
+
+// writeFindChoice는 선택기가 고른 경로를 stdout에 쓴다. 터미널에는 목록처럼 제어 문자를 정리해 쓴다. 파일 이름에 든
+// escape가 사용자의 터미널을 조작하지 못하게 하려는 것이고, $(edc find)와 -0은 원래 바이트를 받는다. 쓰지 못하면
+// 경로를 받지 못한 호출자가 성공으로 읽지 않게 2로 끝낸다.
+func writeFindChoice(env findEnv, null bool, chosen string) int {
+	text := chosen + "\n"
+	switch {
+	case null:
+		text = chosen + "\x00"
+	case env.stdoutTerminal:
+		text = viewSanitize(chosen) + "\n"
 	}
-	fmt.Fprint(env.stdout, model.chosen+end)
-	return 0, true
+	if _, err := io.WriteString(env.stdout, text); err != nil {
+		fmt.Fprintln(env.stderr, "edc find: "+err.Error())
+		return 2
+	}
+	return 0
 }
 
 // findFeedProgram은 순회 결과를 모아 findFeedInterval마다 한 번 화면으로 보낸다. feed가 닫히면 남은 것을 보내고 끝을 알린다.

@@ -112,7 +112,7 @@ func newFindFuzzy(query string) findFuzzy {
 				term.runes = []rune(word)
 				if !fuzzy.exact {
 					for position, r := range term.runes {
-						term.runes[position] = unicode.ToLower(r)
+						term.runes[position] = findCaseFold(r)
 					}
 				}
 				break
@@ -226,7 +226,18 @@ func (fuzzy findFuzzy) foldRune(r rune) rune {
 	if fuzzy.exact {
 		return r
 	}
-	return unicode.ToLower(r)
+	return findCaseFold(r)
+}
+
+// findCaseFold는 대소문자를 가리지 않을 때 견주는 글자다. 소문자로 바꾼 뒤 단순 대소문자 접기의 순환에서 가장 작은 글자를
+// 고른다. 소문자로만 바꾸면 σ와 끝 시그마 ς처럼 같은 접기에 드는 소문자끼리 다르고, 접기만 쓰면 İ가 i와 같아지지 않는다.
+func findCaseFold(r rune) rune {
+	r = unicode.ToLower(r)
+	least := r
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		least = min(least, next)
+	}
+	return least
 }
 
 func (fuzzy findFuzzy) runeWindow(path string, from int, query []rune) (int, int, bool) {

@@ -152,3 +152,21 @@ func TestRunFindGroupReportsAWriteError(t *testing.T) {
 		t.Errorf("code %d, stderr %q", code, stderr.String())
 	}
 }
+
+// 원격 호스트가 돌려준 경로와 인벤토리의 호스트 이름은 터미널에 정리해 쓴다. 파이프에는 그대로 쓴다.
+func TestWriteFindGroupEscapesOnATerminal(t *testing.T) {
+	rows := []findHostRow{{Host: "web\x1b1", Status: findHostFound, Matches: []findJSONMatch{{Path: "/srv/a\x1b]0;owned\x07"}}}}
+	var terminal, pipe bytes.Buffer
+	if err := writeFindGroup(&terminal, io.Discard, rows, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(terminal.String(), "\x1b\x07") || !strings.HasPrefix(terminal.String(), "web") {
+		t.Errorf("terminal: %q", terminal.String())
+	}
+	if err := writeFindGroup(&pipe, io.Discard, rows, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if pipe.String() != "web\x1b1:/srv/a\x1b]0;owned\x07\n" {
+		t.Errorf("pipe: %q", pipe.String())
+	}
+}

@@ -294,6 +294,9 @@ func runTCP(args []string, version string) int {
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
+	// -w는 연결될 때까지 기다린다. --count, --interval과 함께 쓰면 그 flag를 모르는 wait 쪽 parse가 오류를 낸다.
+	case hasValueFlag(args[1:], "w") || hasValueFlag(args[1:], "wait"):
+		return runTCPWait(args[1:], version)
 	// --count, --interval, --peer는 diagnose에만 있는 값이다. 주면 반복하거나 양쪽을 함께 보라는 뜻이므로 diagnose로 실행한다.
 	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer"):
 		return runTCPDiagnose(args[1:], version)

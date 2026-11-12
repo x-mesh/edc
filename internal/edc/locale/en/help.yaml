@@ -52,6 +52,7 @@ command:
       count: "number of attempts (default 5); implies --diagnose"
       interval: "time between attempts (default 1s); implies --diagnose"
       peer: "run tcp expect on this host over ssh at the same time and join both results; implies --diagnose"
+      wait: "try again every second until it connects (attempt timeout --timeout, default 3s); -w=5m stops after 5 minutes"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
       until: "expect: stop 1s after the first SYN (syn), so the reply is recorded, or at the first completed handshake (handshake)"
@@ -68,6 +69,7 @@ command:
       - "scan uses --timeout as the budget of the whole scan (default 60s). A port that it did not reach shows as not scanned."
       - "--diagnose waits 300ms after each attempt while it traces, so the attempts are at least that far apart."
       - "In IPsec transport mode, expect cannot see the decrypted SYN. It uses kernel drop reasons."
+      - "-w waits until the port accepts a connection, then prints the check. Write a time limit with =, for example -w=5m. Ctrl-C stops it with exit code 4."
   tls:
     summary: "Certificate and handshake check"
     option:

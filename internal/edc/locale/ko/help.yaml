@@ -52,6 +52,7 @@ command:
       count: "시도 횟수 (기본 5), 주면 --diagnose로 실행"
       interval: "시도 간격 (기본 1s), 주면 --diagnose로 실행"
       peer: "이 host에서 ssh로 tcp expect를 함께 실행하고 두 결과를 합칩니다. 주면 --diagnose로 실행"
+      wait: "연결될 때까지 1초마다 다시 시도 (시도 한 번은 --timeout, 기본 3s), -w=5m이면 5분 뒤 멈춤"
       from: "expect: 이 주소나 대역에서 온 packet만 셉니다"
       duration: "expect: 기다릴 시간, 생략하면 Ctrl-C까지"
       until: "expect: 첫 SYN(syn)을 본 1초 뒤(답까지 남기려고)나 첫 handshake 완료(handshake)에서 멈춥니다"
@@ -68,6 +69,7 @@ command:
       - "scan은 --timeout을 scan 전체의 예산으로 씁니다 (기본 60s). 확인하지 못한 port는 not scanned로 남깁니다."
       - "--diagnose는 추적하는 동안 시도마다 300ms를 기다리므로 시도 간격이 그보다 짧아지지 않습니다."
       - "IPsec transport mode에서는 expect가 복호화한 SYN을 보지 못하고 kernel drop 이유로 판정합니다."
+      - "-w는 포트가 연결을 받을 때까지 기다린 뒤 check 결과를 출력합니다. 시간 제한은 -w=5m처럼 =로 붙여 씁니다. Ctrl-C로 멈추면 종료 코드 4입니다."
   tls:
     summary: "인증서와 handshake 확인"
     option:

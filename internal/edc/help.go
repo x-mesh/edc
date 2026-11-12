@@ -117,11 +117,13 @@ var commandDocs = []commandDoc{
 		name: "tcp", group: "diagnose",
 		usage: []string{
 			"edc tcp check [options] <host:port>",
+			"edc tcp check -w[=5m] [options] <host:port>",
 			"edc tcp check --diagnose [--count N] [--interval 1s] [--peer <ssh-host>] [options] <host:port>",
 			"edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] [--stop-after N] [--listen] [options] <port>",
 			"edc tcp scan [--ports 22,80,443,8000-8100] [--parallel 32] [options] <host>",
 		},
 		options: []optionDoc{
+			{"-w, --wait[=5m]", "command.tcp.option.wait"},
 			{"--diagnose", "command.tcp.option.diagnose"},
 			{"--count N", "command.tcp.option.count"},
 			{"--interval 1s", "command.tcp.option.interval"},

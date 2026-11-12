@@ -43,6 +43,15 @@ Terminal and JSON output show actual IP addresses by default. Add `--redact` to 
 
 A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
 
+Use `-w` to wait until a port accepts a connection, for example while a server starts:
+
+```bash
+edc tcp check -w 10.0.0.9:5432      # wait until it connects, Ctrl-C to stop
+edc tcp check -w=5m 10.0.0.9:5432   # stop after 5 minutes
+```
+
+`-w` tries again every second, and each attempt waits at most `--timeout`, 3s by default. A target that drops SYNs is then tried again every 3s, not once in 15s. In a terminal, one line shows the time, the attempt number, and the last cause. In a pipe or with `--json`, stderr gets a line only when the cause changes. When it ends, it prints the last attempt like a normal check, with the time it waited and the attempt number. The exit code is `0` when it connects, `1` when the time runs out, and `4` after Ctrl-C. Write the time limit with `=`: `-w 5m` reads `5m` as a second target, and edc tells you to write `-w=5m`. `edc alias` adds `etw` for `edc tcp check -w`.
+
 `edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.

@@ -35,6 +35,7 @@ var aliasGroups = []aliasGroup{
 		{"echk", "edc check", "echk"},
 		{"edns", "edc dns", "edns lookup example.com"},
 		{"etls", "edc tls check", "etls example.com:443"},
+		{"etw", "edc tcp check -w", "etw 10.0.0.9:5432  (wait until the port accepts a connection)"},
 		{"ehttp", "edc http check", "ehttp https://example.com"},
 		{"eevt", "edc events", "eevt --since 1h"},
 	}},

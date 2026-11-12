@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -387,5 +388,685 @@ func TestTunnelHostChoicesReadSSHConfigAliases(t *testing.T) {
 	got := strings.Join(tunnelHostChoices(map[string]string{"jump1": "ops@10.0.0.5", "alpha": "a@h"}), ",")
 	if got != "alpha,jump1,bastion,db" {
 		t.Errorf("choices = %s", got)
+	}
+}
+
+func openTunnelForm(t *testing.T, hosts ...string) (tunnelScreen, *fakeTunnelRunner) {
+	t.Helper()
+	screen, runner := newTestTunnelScreen(t)
+	screen.mode = tunnelModeForm
+	screen.form = screen.newForm()
+	screen.form.hosts, screen.form.host = hosts, hosts[0]
+	return screen, runner
+}
+
+func TestTunnelFormStartsFromOneLineTypedInTheHostField(t *testing.T) {
+	screen, runner := openTunnelForm(t, "alpha", "jump1")
+	screen.form.save = false
+	model := typeTunnelText(screen, "jump1 6000:cache:6379")
+	view := ansi.Strip(model.View().Content)
+	for _, want := range []string{"jump1 6000:cache:6379", "ssh -N -L 127.0.0.1:6000:cache:6379 ops@10.0.0.5", "127.0.0.1:6000 ──ssh──▶ jump1 ──▶ cache:6379"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the form must show what the line means, misses %q:\n%s", want, view)
+		}
+	}
+	model, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	runTunnelCmd(t, model, command)
+	if len(runner.started) != 1 || runner.started[0].Host != "jump1" || runner.started[0].Port != 6000 || runner.started[0].Destination != "cache:6379" {
+		t.Fatalf("started = %+v", runner.started)
+	}
+}
+
+func TestTunnelFormTabMovesTheLineIntoTheFields(t *testing.T) {
+	screen, _ := openTunnelForm(t, "alpha")
+	model := typeTunnelText(screen, "ssh -R 8080:localhost:3000 jump1")
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyTab})
+	form := model.(tunnelScreen).form
+	if form.host != "jump1" || form.kind != tunnelReverse || form.port != "8080" || form.destination != "localhost:3000" || form.field != tunnelFieldKind {
+		t.Fatalf("form = %+v", form)
+	}
+}
+
+func TestTunnelFormTakesAPastedSSHCommand(t *testing.T) {
+	screen, runner := openTunnelForm(t, "alpha")
+	screen.form.save = false
+	var model tea.Model = screen
+	model, _ = model.Update(tea.PasteMsg{Content: "ssh -N -L 5432:db.internal:5432 jump1\n"})
+	if host := model.(tunnelScreen).form.host; host != "ssh -N -L 5432:db.internal:5432 jump1" {
+		t.Fatalf("a paste must replace the prefilled host and drop the line break: %q", host)
+	}
+	model, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	runTunnelCmd(t, model, command)
+	if len(runner.started) != 1 || runner.started[0].Port != 5432 || runner.started[0].Destination != "db.internal:5432" {
+		t.Fatalf("started = %+v", runner.started)
+	}
+}
+
+func TestTunnelFormKeepsALineItCannotCarry(t *testing.T) {
+	screen, runner := openTunnelForm(t, "alpha")
+	model := typeTunnelText(screen, "ssh -p 2222 -L 5432:db:5432 jump1")
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "-p") || !strings.Contains(view, "~/.ssh/config") {
+		t.Errorf("the form must say why before submit:\n%s", view)
+	}
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyTab}, {Code: tea.KeyEnter}, {Code: 't', Mod: tea.ModCtrl}} {
+		next, command := tunnelKey(model, key)
+		form := next.(tunnelScreen).form
+		if command != nil || form.field != tunnelFieldHost || form.problem == "" || form.host != "ssh -p 2222 -L 5432:db:5432 jump1" {
+			t.Fatalf("%s must stay on the line with a message: %+v", key.String(), form)
+		}
+	}
+	if len(runner.started) != 0 {
+		t.Fatal("nothing must start")
+	}
+}
+
+func TestTunnelFormFiltersHostsAsYouType(t *testing.T) {
+	hosts := []string{"alpha"}
+	for index := range 60 {
+		hosts = append(hosts, "web-"+string(rune('a'+index/26))+string(rune('a'+index%26)))
+	}
+	hosts = append(hosts, "db-prod", "db-stage")
+	screen, _ := openTunnelForm(t, hosts...)
+	if view := ansi.Strip(screen.View().Content); !strings.Contains(view, "[alpha]") || !strings.Contains(view, "+55") {
+		t.Errorf("the form must show the candidates and how many more there are:\n%s", view)
+	}
+	model := typeTunnelText(screen, "DB")
+	form := model.(tunnelScreen).form
+	if form.host != "DB" || strings.Join(form.hostMatches(), ",") != "db-prod,db-stage" {
+		t.Fatalf("typing must replace the prefilled host and filter every candidate: host %q, matches %v", form.host, form.hostMatches())
+	}
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "db-prod  db-stage") || strings.Contains(view, "web-") {
+		t.Errorf("only the matches must show:\n%s", view)
+	}
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyRight})
+	if host := model.(tunnelScreen).form.host; host != "db-prod" {
+		t.Fatalf("right must pick the first match: %q", host)
+	}
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyRight})
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyRight})
+	if host := model.(tunnelScreen).form.host; host != "db-prod" {
+		t.Fatalf("the choice must cycle inside the matches: %q", host)
+	}
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "[db-prod]  db-stage") {
+		t.Errorf("the picked match must be marked:\n%s", view)
+	}
+	model = typeTunnelText(model, " db.internal:5432")
+	if _, spec := model.(tunnelScreen).form.spec(); spec.Host != "db-prod" || spec.Remote != "db.internal:5432" {
+		t.Fatalf("a picked host must take the rest of the line: %+v", spec)
+	}
+}
+
+func TestTunnelFormLeftFromTypedTextPicksTheLastMatch(t *testing.T) {
+	screen, _ := openTunnelForm(t, "alpha", "db-prod", "db-stage")
+	model := typeTunnelText(screen, "db")
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyLeft})
+	if host := model.(tunnelScreen).form.host; host != "db-stage" {
+		t.Fatalf("host = %q", host)
+	}
+}
+
+func TestTunnelScreenSavesARunningOneTimeTunnelWithS(t *testing.T) {
+	screen, _ := newTestTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	screen = updated.(tunnelScreen)
+	if first := strings.SplitN(ansi.Strip(screen.View().Content), "\n", 2)[0]; !strings.Contains(first, "s save") {
+		t.Errorf("a one-time row must offer save: %q", first)
+	}
+	model, command := tunnelKey(screen, tea.KeyPressMsg{Code: 's', Text: "s"})
+	model = runTunnelCmd(t, model, command)
+	final := model.(tunnelScreen)
+	if final.failed || final.environment.specs["adhoc"] != (tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}) {
+		t.Fatalf("notice %q, specs %+v", final.notice, final.environment.specs)
+	}
+	data, err := os.ReadFile(final.environment.file)
+	if err != nil || !strings.Contains(string(data), "local: auto") {
+		t.Fatalf("file = %q, err %v", data, err)
+	}
+	if records := manager.store.load(); len(records) != 1 {
+		t.Fatalf("saving must not touch the running tunnel: %+v", records)
+	}
+	final.cursor = 1
+	if _, command := tunnelKey(final, tea.KeyPressMsg{Code: 's', Text: "s"}); command != nil {
+		t.Error("s on a saved row must do nothing")
+	}
+}
+
+func TestTunnelScreenReportsWhyAOneTimeTunnelWasNotSaved(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(t *testing.T, screen tunnelScreen)
+		want    string
+		keeps   bool
+	}{
+		{"the tunnel stopped before the save", func(t *testing.T, screen tunnelScreen) {
+			if _, err := screen.environment.manager.down(context.Background(), "adhoc"); err != nil {
+				t.Fatal(err)
+			}
+		}, T("tunnel.error.not_running", "adhoc"), false},
+		{"the definition file cannot be written", func(t *testing.T, screen tunnelScreen) {
+			if err := os.MkdirAll(screen.environment.file, 0o755); err != nil { // 파일 자리에 디렉터리를 두어 저장이 실패하게 한다
+				t.Fatal(err)
+			}
+		}, "tunnels.yaml", true},
+		{"the saved file cannot be read back", func(t *testing.T, screen tunnelScreen) {
+			broken := "tunnels:\n  broken:\n    host: jump1\n    local: not-a-port\n    remote: db:5432\n"
+			if err := os.WriteFile(screen.environment.file, []byte(broken), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "broken", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			screen, _ := newTestTunnelScreen(t)
+			manager := screen.environment.manager
+			if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+				t.Fatal(err)
+			}
+			updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+			screen = updated.(tunnelScreen)
+			model, command := tunnelKey(screen, tea.KeyPressMsg{Code: 's', Text: "s"})
+			test.prepare(t, screen)
+			final := runTunnelCmd(t, model, command).(tunnelScreen)
+			if !final.failed || final.busy || !strings.Contains(final.notice, test.want) {
+				t.Fatalf("failed %v, busy %v, notice %q, want %q", final.failed, final.busy, final.notice, test.want)
+			}
+			if _, saved := final.environment.specs["adhoc"]; saved {
+				t.Errorf("a failed save must not mark the tunnel as saved: %+v", final.environment.specs)
+			}
+			if records := manager.store.load(); test.keeps && len(records) != 1 {
+				t.Errorf("a failed save must leave the running tunnel: %+v", records)
+			}
+		})
+	}
+}
+
+func TestTunnelScreenSavesOnlyARunningUnsavedTunnelWithS(t *testing.T) {
+	screen, _ := newTestTunnelScreen(t)
+	for _, test := range []struct {
+		row  tunnelRow
+		want bool
+	}{
+		{tunnelRow{Name: "adhoc", State: tunnelStateUp}, true},
+		{tunnelRow{Name: "adhoc", State: tunnelStateStale}, true},
+		{tunnelRow{Name: "adhoc", State: tunnelStateDown}, false},
+		{tunnelRow{Name: "adhoc", State: tunnelStateUp, Defined: true}, false},
+	} {
+		screen.rows, screen.cursor = []tunnelRow{test.row}, 0
+		model, command := tunnelKey(screen, tea.KeyPressMsg{Code: 's', Text: "s"})
+		if (command != nil) != test.want || model.(tunnelScreen).busy != test.want {
+			t.Errorf("s on %+v: command %v, busy %v, want %v", test.row, command != nil, model.(tunnelScreen).busy, test.want)
+		}
+	}
+}
+
+// newEditTunnelScreen은 정의 파일에 db와 cache가 있는 목록 화면이다. 주석과 순서가 남는지 보려고 주석을 둔다.
+func newEditTunnelScreen(t *testing.T) (tunnelScreen, *fakeTunnelRunner) {
+	t.Helper()
+	screen, runner := newTestTunnelScreen(t)
+	text := "tunnels:\n  # 운영 DB\n  db:\n    host: jump1\n    local: \"5432\"\n    remote: db.internal:5432\n  cache:\n    host: jump1\n    local: auto\n    remote: cache:6379\n"
+	if err := os.WriteFile(screen.environment.file, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	specs, err := loadTunnelDefinitions(screen.environment.file, screen.environment.manager.targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen.environment.specs = specs
+	updated, _ := screen.Update(tunnelRowsMsg(screen.environment.manager.rows(context.Background(), specs)))
+	return updated.(tunnelScreen), runner
+}
+
+func selectTunnelRow(t *testing.T, screen tunnelScreen, name string) tunnelScreen {
+	t.Helper()
+	for index, row := range screen.rows {
+		if row.Name == name {
+			screen.cursor = index
+			return screen
+		}
+	}
+	t.Fatalf("no row %q in %+v", name, screen.rows)
+	return screen
+}
+
+func TestTunnelFormFilledFromASpecGivesTheSameSpecBack(t *testing.T) {
+	for _, spec := range []tunnelSpec{
+		{Host: "jump1", Local: "5432", Remote: "db.internal:5432"},
+		{Host: "jump1", Local: "auto", Remote: "[::1]:5432"},
+		{Host: "ops@jump1", Reverse: "8080:localhost:3000"},
+		{Host: "jump1", Socks: "1080"},
+	} {
+		form := tunnelForm{name: "kept"}.filled(spec)
+		if name, got := form.spec(); got != spec || name != "kept" {
+			t.Errorf("filled(%+v).spec() = %q, %+v", spec, name, got)
+		}
+	}
+}
+
+func TestTunnelScreenEditsAStoppedDefinitionInPlace(t *testing.T) {
+	screen, runner := newEditTunnelScreen(t)
+	screen = selectTunnelRow(t, screen, "db")
+	if first := strings.SplitN(ansi.Strip(screen.View().Content), "\n", 2)[0]; !strings.Contains(first, "e edit") {
+		t.Errorf("the list must offer edit: %q", first)
+	}
+	model, _ := tunnelKey(screen, tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	form := edit.form
+	if edit.mode != tunnelModeForm || form.host != "jump1" || form.port != "5432" || form.destination != "db.internal:5432" || form.name != "db" {
+		t.Fatalf("the form must hold the definition: %+v", form)
+	}
+	for _, field := range form.visibleFields() {
+		if field == tunnelFieldSave || field == tunnelFieldTTL {
+			t.Errorf("a stopped saved tunnel must not show field %d", field)
+		}
+	}
+	if view := ansi.Strip(edit.View().Content); !strings.Contains(view, "edit db") {
+		t.Errorf("the title must name the tunnel:\n%s", view)
+	}
+	edit.form.port = "6543"
+	model, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter})
+	final := runTunnelCmd(t, model, command).(tunnelScreen)
+	if final.failed || len(runner.started) != 0 || final.environment.specs["db"].Local != "6543" {
+		t.Fatalf("notice %q, started %+v, specs %+v", final.notice, runner.started, final.environment.specs)
+	}
+	data, _ := os.ReadFile(final.environment.file)
+	text := string(data)
+	if !strings.Contains(text, "# 운영 DB") || strings.Index(text, "db:") > strings.Index(text, "cache:") || !strings.Contains(text, "local: 6543") {
+		t.Errorf("the definition must change in place, with its comment and order:\n%s", text)
+	}
+}
+
+func TestTunnelScreenEditRestartsARunningDefinitionWithItsTimeLimit(t *testing.T) {
+	screen, runner := newEditTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.start(context.Background(), "db", screen.environment.specs["db"], 30*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	screen = selectTunnelRow(t, updated.(tunnelScreen), "db")
+	model, _ := tunnelKey(screen, tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	if edit.form.ttl != "30m0s" {
+		t.Fatalf("the form must keep the running time limit: %q", edit.form.ttl)
+	}
+	edit.form.destination = "replica.internal:5432"
+	model, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter})
+	final := runTunnelCmd(t, model, command).(tunnelScreen)
+	if final.failed || len(runner.stopped) != 1 || len(runner.started) != 2 || runner.started[1].Destination != "replica.internal:5432" {
+		t.Fatalf("notice %q, stopped %v, started %+v", final.notice, runner.stopped, runner.started)
+	}
+	record, _ := manager.store.find("db")
+	if record.TTL != 30*time.Minute || final.environment.specs["db"].Remote != "replica.internal:5432" {
+		t.Fatalf("record %+v, specs %+v", record, final.environment.specs)
+	}
+}
+
+func TestTunnelScreenEditKeepsTheNewDefinitionWhenTheRestartFails(t *testing.T) {
+	screen, runner := newEditTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.up(context.Background(), "db", screen.environment.specs["db"]); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	model, _ := tunnelKey(selectTunnelRow(t, updated.(tunnelScreen), "db"), tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	edit.form.destination = "replica.internal:5432"
+	runner.failure = errors.New("Permission denied (publickey)")
+	model, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter})
+	final := runTunnelCmd(t, model, command).(tunnelScreen)
+	if !final.failed || !strings.Contains(final.notice, "Permission denied") || final.environment.specs["db"].Remote != "replica.internal:5432" {
+		t.Fatalf("notice %q, specs %+v", final.notice, final.environment.specs)
+	}
+}
+
+func TestTunnelScreenEditRenamesADefinition(t *testing.T) {
+	screen, _ := newEditTunnelScreen(t)
+	model, _ := tunnelKey(selectTunnelRow(t, screen, "db"), tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	edit.form.name = "cache"
+	if next, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter}); command != nil || next.(tunnelScreen).form.problem == "" {
+		t.Fatalf("a name that another definition uses must stay in the form: %+v", next.(tunnelScreen).form)
+	}
+	edit.form.name = "primary"
+	model, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter})
+	final := runTunnelCmd(t, model, command).(tunnelScreen)
+	if _, old := final.environment.specs["db"]; old || final.environment.specs["primary"].Remote != "db.internal:5432" {
+		t.Fatalf("specs %+v, notice %q", final.environment.specs, final.notice)
+	}
+	data, _ := os.ReadFile(final.environment.file)
+	if text := string(data); !strings.Contains(text, "# 운영 DB\n  primary:") {
+		t.Errorf("the renamed entry must keep its place and comment:\n%s", text)
+	}
+}
+
+func TestTunnelScreenEditsAnUnsavedTunnelAndCanSaveIt(t *testing.T) {
+	for _, save := range []bool{false, true} {
+		screen, runner := newTestTunnelScreen(t)
+		manager := screen.environment.manager
+		if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+			t.Fatal(err)
+		}
+		updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+		model, _ := tunnelKey(selectTunnelRow(t, updated.(tunnelScreen), "adhoc"), tea.KeyPressMsg{Code: 'e', Text: "e"})
+		edit := model.(tunnelScreen)
+		if edit.form.save || edit.form.port != "auto" || edit.form.destination != "cache:6379" {
+			t.Fatalf("an unsaved tunnel must open unsaved with its running values: %+v", edit.form)
+		}
+		edit.form.destination, edit.form.save = "cache:6380", save
+		model, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter})
+		final := runTunnelCmd(t, model, command).(tunnelScreen)
+		if final.failed || len(runner.started) != 2 || runner.started[1].Destination != "cache:6380" {
+			t.Fatalf("save %v: notice %q, started %+v", save, final.notice, runner.started)
+		}
+		if _, saved := final.environment.specs["adhoc"]; saved != save {
+			t.Errorf("save %v: specs %+v", save, final.environment.specs)
+		}
+	}
+}
+
+func TestTunnelScreenEditRefusesARenameOntoARunningTunnel(t *testing.T) {
+	screen, runner := newEditTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	model, _ := tunnelKey(selectTunnelRow(t, updated.(tunnelScreen), "db"), tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	edit.form.name = "adhoc"
+	if next, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter}); command != nil || !strings.Contains(next.(tunnelScreen).form.problem, "adhoc") {
+		t.Fatalf("problem %q", next.(tunnelScreen).form.problem)
+	}
+	if len(runner.stopped) != 0 {
+		t.Errorf("nothing may stop: %v", runner.stopped)
+	}
+}
+
+func TestTunnelScreenEditRefusesToRenameAnUnsavedTunnelOntoADefinition(t *testing.T) {
+	screen, runner := newEditTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.up(context.Background(), "adhoc", tunnelSpec{Host: "jump1", Local: "auto", Remote: "cache:6379"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	model, _ := tunnelKey(selectTunnelRow(t, updated.(tunnelScreen), "adhoc"), tea.KeyPressMsg{Code: 'e', Text: "e"})
+	edit := model.(tunnelScreen)
+	// db는 멈춰 있는 저장 정의다. 저장하지 않아도 같은 이름이면 목록의 한 줄을 두 터널이 나눠 쓴다.
+	edit.form.name, edit.form.save = "db", false
+	if next, command := tunnelKey(edit, tea.KeyPressMsg{Code: tea.KeyEnter}); command != nil || !strings.Contains(next.(tunnelScreen).form.problem, "db") {
+		t.Fatalf("problem %q", next.(tunnelScreen).form.problem)
+	}
+	if len(runner.stopped) != 0 {
+		t.Errorf("nothing may stop: %v", runner.stopped)
+	}
+}
+
+func TestTunnelScreenExtendsARunningTunnelWithPlus(t *testing.T) {
+	screen, runner := newTestTunnelScreen(t)
+	model, command := tunnelKey(screen, tea.KeyPressMsg{Code: '+', Text: "+"})
+	if command != nil || !model.(tunnelScreen).failed {
+		t.Fatal("+ on a stopped tunnel must only say that it does not run")
+	}
+	model = runTunnelCmd(t, model, func() tea.Cmd { _, start := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter}); return start }())
+	manager := model.(tunnelScreen).environment.manager
+	updated, _ := model.Update(tunnelRowsMsg(manager.rows(context.Background(), model.(tunnelScreen).environment.specs)))
+	screen = updated.(tunnelScreen)
+	if first := strings.SplitN(ansi.Strip(screen.View().Content), "\n", 2)[0]; !strings.Contains(first, "+/- 30 min") || !strings.Contains(first, "c copy address") {
+		t.Errorf("a running row must offer + and c: %q", first)
+	}
+	model, command = tunnelKey(screen, tea.KeyPressMsg{Code: '+', Text: "+"})
+	if !model.(tunnelScreen).busy {
+		t.Fatal("+ must wait for the result")
+	}
+	final := runTunnelCmd(t, model, command).(tunnelScreen)
+	record, _ := manager.store.find("db")
+	if final.failed || record.Expires == nil || !record.Expires.Equal(manager.now().Add(tunnelExtendStep)) || !strings.Contains(final.notice, "30m") {
+		t.Fatalf("notice %q, record %+v, started %d", final.notice, record, len(runner.started))
+	}
+}
+
+func TestTunnelScreenShortensATimedTunnelWithMinus(t *testing.T) {
+	screen, _ := newTestTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.start(context.Background(), "db", screen.environment.specs["db"], 0); err != nil {
+		t.Fatal(err)
+	}
+	minus := func(screen tunnelScreen) tunnelScreen {
+		t.Helper()
+		updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+		model, command := tunnelKey(updated, tea.KeyPressMsg{Code: '-', Text: "-"})
+		return runTunnelCmd(t, model, command).(tunnelScreen)
+	}
+	if final := minus(screen); !final.failed || final.notice != T("tunnel.error.shorten_untimed", "db") {
+		t.Fatalf("- on a tunnel without a limit must change nothing: %q", final.notice)
+	}
+	if record, _ := manager.store.find("db"); record.Expires != nil {
+		t.Fatalf("a limit must not appear: %+v", record)
+	}
+	for range 3 {
+		if _, err := manager.adjustExpiry("db", tunnelExtendStep); err != nil {
+			t.Fatal(err)
+		}
+	}
+	final := minus(screen)
+	record, _ := manager.store.find("db")
+	if final.failed || !record.Expires.Equal(manager.now().Add(time.Hour)) || record.TTL != time.Hour {
+		t.Fatalf("90 minutes minus 30 must leave an hour: notice %q, record %+v", final.notice, record)
+	}
+	minus(screen)
+	if final := minus(screen); !final.failed || !strings.Contains(final.notice, "30m") {
+		t.Fatalf("30 minutes left must not become 0: %q", final.notice)
+	}
+	if record, _ := manager.store.find("db"); !record.Expires.Equal(manager.now().Add(30 * time.Minute)) {
+		t.Fatalf("record %+v", record)
+	}
+}
+
+func TestTunnelStepKeyReadsEveryEncodingOfPlusAndMinus(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{"minus", tea.KeyPressMsg{Code: '-', Text: "-"}, "-"},
+		{"keypad minus without text", tea.KeyPressMsg{Code: tea.KeyKpMinus}, "-"},
+		{"keypad minus with text", tea.KeyPressMsg{Code: tea.KeyKpMinus, Text: "-"}, "-"},
+		{"underscore while shift is still held after +", tea.KeyPressMsg{Code: '_', Text: "_"}, "-"},
+		{"plus", tea.KeyPressMsg{Code: '+', Text: "+"}, "+"},
+		{"shifted equal", tea.KeyPressMsg{Code: '=', ShiftedCode: '+', Mod: tea.ModShift, Text: "+"}, "+"},
+		{"equal without shift", tea.KeyPressMsg{Code: '=', Text: "="}, "+"},
+		{"keypad plus without text", tea.KeyPressMsg{Code: tea.KeyKpPlus}, "+"},
+		{"ctrl+minus", tea.KeyPressMsg{Code: '-', Mod: tea.ModCtrl}, ""},
+		{"a letter", tea.KeyPressMsg{Code: 'c', Text: "c"}, ""},
+	} {
+		if got := tunnelStepKey(test.key); got != test.want {
+			t.Errorf("%s: %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestTunnelScreenCopiesTheAddressWithC(t *testing.T) {
+	screen, _ := newTestTunnelScreen(t)
+	manager := screen.environment.manager
+	if _, err := manager.up(context.Background(), "db", screen.environment.specs["db"]); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := screen.Update(tunnelRowsMsg(manager.rows(context.Background(), screen.environment.specs)))
+	screen = updated.(tunnelScreen)
+	output := filepath.Join(t.TempDir(), "clipboard")
+	restore := tunnelClipboardCommand
+	t.Cleanup(func() { tunnelClipboardCommand = restore })
+	for _, test := range []struct {
+		name    string
+		command []string
+		want    string
+	}{
+		{"a clipboard command", []string{"sh", "-c", "cat > " + output}, T("tunnel.notice.copied", "127.0.0.1:5432")},
+		{"no clipboard command", nil, T("tunnel.notice.copied_terminal", "127.0.0.1:5432")},
+		{"a failing clipboard command", []string{"false"}, T("tunnel.notice.copied_terminal", "127.0.0.1:5432")},
+	} {
+		tunnelClipboardCommand = func() []string { return test.command }
+		model, command := tunnelKey(screen, tea.KeyPressMsg{Code: 'c', Text: "c"})
+		if command == nil {
+			t.Fatalf("%s: want a copy command", test.name)
+		}
+		model, terminal := model.Update(command())
+		final := model.(tunnelScreen)
+		if final.failed || final.notice != test.want {
+			t.Errorf("%s: notice %q, want %q", test.name, final.notice, test.want)
+		}
+		// 터미널이 SSH 너머에 있을 수 있으므로 명령이 성공해도 OSC 52를 보낸다.
+		if terminal == nil {
+			t.Errorf("%s: the address must also go to the terminal", test.name)
+		}
+	}
+	if data, err := os.ReadFile(output); err != nil || string(data) != "127.0.0.1:5432" {
+		t.Errorf("clipboard = %q, err %v", data, err)
+	}
+	screen.rows[screen.cursor].State = tunnelStateDown
+	if _, command := tunnelKey(screen, tea.KeyPressMsg{Code: 'c', Text: "c"}); command != nil {
+		t.Error("a stopped tunnel has no address to copy")
+	}
+}
+
+func newQuickTunnelScreen(t *testing.T) (tunnelScreen, *fakeTunnelRunner) {
+	t.Helper()
+	screen, runner := newTestTunnelScreen(t)
+	screen.quick, screen.mode = true, tunnelModeForm
+	screen.form = screen.newForm()
+	screen.form.hosts, screen.form.host = []string{"jump1"}, "jump1"
+	return screen, runner
+}
+
+func TestTunnelQuickFormStartsOneTunnelAndQuitsWithoutSaving(t *testing.T) {
+	screen, runner := newQuickTunnelScreen(t)
+	if screen.form.save || screen.Init() != nil {
+		t.Fatal("the quick form must default to a one-time tunnel and must not poll the list")
+	}
+	model := typeTunnelText(screen, "jump1 6000:cache:6379")
+	model, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, T("tunnel.form.starting")) {
+		t.Errorf("the form must show that it is starting:\n%s", view)
+	}
+	if next, ignored := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter}); ignored != nil || next.(tunnelScreen).done != nil {
+		t.Fatal("a second enter while starting must not start again")
+	}
+	if command == nil {
+		t.Fatal("want a start command")
+	}
+	model, quit := model.Update(command())
+	final := model.(tunnelScreen)
+	if quit == nil || final.done == nil || len(runner.started) != 1 {
+		t.Fatalf("done %+v, started %+v", final.done, runner.started)
+	}
+	if _, isQuit := quit().(tea.QuitMsg); !isQuit {
+		t.Fatal("a started tunnel must close the form")
+	}
+	text := final.done.notice + "\n" + strings.Join(final.done.details, "\n")
+	for _, want := range []string{"127.0.0.1:6000", "$ ssh -N -L 127.0.0.1:6000:cache:6379"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the result misses %q: %q", want, text)
+		}
+	}
+	if _, err := os.Stat(final.environment.file); err == nil {
+		t.Error("the quick form must not save by default")
+	}
+}
+
+func TestTunnelQuickFormCancelsTheStartAndWaitsForItsResult(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		failure error
+	}{
+		{"the tunnel came up anyway", nil},
+		{"the start stopped", errors.New("signal: killed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			screen, runner := newQuickTunnelScreen(t)
+			runner.failure = test.failure
+			cancelled := 0
+			screen.cancel = func() { cancelled++ }
+			model := typeTunnelText(screen, "jump1 6000:cache:6379")
+			model, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+			model, quit := tunnelKey(model, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+			if quit != nil || cancelled != 1 {
+				t.Fatalf("ctrl+c while starting must cancel the start and wait: quit %v, cancelled %d", quit != nil, cancelled)
+			}
+			model, quit = model.Update(command())
+			final := model.(tunnelScreen)
+			if quit == nil {
+				t.Fatal("the form must close when the cancelled start reports")
+			}
+			if test.failure == nil && (final.done == nil || final.aborted != nil) {
+				t.Fatalf("a tunnel that came up must be reported: %+v", final)
+			}
+			if test.failure != nil && (final.done != nil || final.aborted == nil) {
+				t.Fatalf("a stopped start must be reported as an error: %+v", final)
+			}
+		})
+	}
+}
+
+func TestTunnelQuickFormKeepsTheInputWhenTheStartFails(t *testing.T) {
+	screen, runner := newQuickTunnelScreen(t)
+	runner.failure = errors.New("Permission denied (publickey)")
+	model := typeTunnelText(screen, "jump1 6000:cache:6379")
+	model, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	model, quit := model.Update(command())
+	final := model.(tunnelScreen)
+	if quit != nil || final.done != nil || final.mode != tunnelModeForm || final.busy {
+		t.Fatalf("a failed start must stay in the form: %+v", final)
+	}
+	if final.form.host != "jump1" || final.form.port != "6000" || final.form.destination != "cache:6379" || !strings.Contains(final.form.problem, "Permission denied") {
+		t.Fatalf("form = %+v", final.form)
+	}
+	_, quit = tunnelKey(final, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if quit == nil {
+		t.Fatal("esc must close the quick form")
+	}
+}
+
+func TestTunnelFormTimeLimitReachesTheTunnelAndSurvivesARestart(t *testing.T) {
+	screen, runner := openTunnelForm(t, "jump1")
+	var timed []time.Duration
+	screen.environment.manager.expire = func(_ tunnelStore, record tunnelRecord) error {
+		timed = append(timed, record.TTL)
+		return nil
+	}
+	screen.now = screen.environment.manager.now
+	screen.form.destination, screen.form.name, screen.form.field = "db.internal:5432", "timed", tunnelFieldTTL
+	if view := ansi.Strip(screen.View().Content); !strings.Contains(view, "time limit") || !strings.Contains(view, "stops by itself") {
+		t.Errorf("the form must explain the time limit:\n%s", view)
+	}
+	model := typeTunnelText(screen, "soon")
+	blocked, command := tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command != nil || !strings.Contains(blocked.(tunnelScreen).form.problem, "soon") {
+		t.Fatalf("an unreadable time limit must keep the form: %+v", blocked.(tunnelScreen).form)
+	}
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	model = typeTunnelText(model, "30m")
+	model, command = tunnelKey(model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = runTunnelCmd(t, model, command)
+	final := model.(tunnelScreen)
+	if len(runner.started) != 1 || len(timed) != 1 || timed[0] != 30*time.Minute {
+		t.Fatalf("started %d, timers %v, notice %q", len(runner.started), timed, final.notice)
+	}
+	rows := final.environment.manager.rows(context.Background(), final.environment.specs)
+	model, _ = final.Update(tunnelRowsMsg(rows))
+	final = model.(tunnelScreen)
+	if view := ansi.Strip(final.View().Content); !strings.Contains(view, "expires") || !strings.Contains(view, "30m0s") {
+		t.Errorf("the list must show the time that remains:\n%s", view)
+	}
+	for index, row := range final.rows {
+		if row.Name == "timed" {
+			final.cursor = index
+		}
+	}
+	model, command = tunnelKey(final, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	runTunnelCmd(t, model, command)
+	if len(runner.started) != 2 || len(timed) != 2 || timed[1] != 30*time.Minute {
+		t.Fatalf("a restart must keep the time limit: started %d, timers %v", len(runner.started), timed)
 	}
 }

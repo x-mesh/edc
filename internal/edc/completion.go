@@ -302,12 +302,13 @@ _edc() {
           _arguments $common \
             '--file[tunnels YAML 경로]:path:_files' \
             '--name[즉석 터널 이름]:name' \
-            '-L[로컬 포워딩 port:host:port]:spec' \
+            '-L[로컬 포워딩 \[port:\]host:port]:spec' \
             '-R[원격 포워딩 port:host:port]:spec' \
             '-D[SOCKS 포트]:port' \
             '--save[즉석 터널의 정의를 저장]' \
             '--all[모든 터널]' \
             '--connect-timeout[SSH 연결 제한 시간]:duration' \
+            '--ttl[자동 종료까지의 시간]:duration' \
             '1::subcommand:(list up test down)'
           ;;
         completion)
@@ -528,7 +529,7 @@ _edc() {
       case "$prev" in
         --file|--json) COMPREPLY=($(compgen -f -- "$cur")); return ;;
       esac
-      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "$common --file --name -L -R -D --save --all --connect-timeout" -- "$cur"))
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "$common --file --name -L -R -D --save --all --connect-timeout --ttl" -- "$cur"))
       elif [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list up test down" -- "$cur")); fi ;;
     shell) COMPREPLY=($(compgen -W "zsh bash --no-alias" -- "$cur")) ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;

@@ -89,11 +89,12 @@ command:
   audit:
     summary: "Read-only check of host exposure and settings (Linux)"
     notes:
-      - "It reads files, sysctl values, and listening sockets."
+      - "It reads files, sysctl values, listening sockets, login records, and /proc."
       - "It changes nothing and sends nothing over the network."
       - "Run it as root. Without root, some checks show skip."
       - "The firewall check sees this host only, not a cloud security group."
       - "It does not match package versions against CVEs."
+      - "A login or history fail means that two records disagree. It is not proof of an intrusion."
   changes:
     summary: "Recent package, /etc, and service changes (Linux)"
     notes:
@@ -707,12 +708,13 @@ command:
     option:
       file: "tunnels YAML path"
       name: "name of an ad hoc tunnel, default is built from the host and port"
-      local: "local forward, [port|auto]:host:port"
+      local: "local forward, [port|auto:]host:port, a free port if you give none"
       reverse: "remote forward, port:host:port"
       socks: "SOCKS proxy port, or auto"
       save: "save an ad hoc tunnel in tunnels.yaml after it starts"
       all: "apply to every running tunnel"
       connect_timeout: "SSH connection time limit"
+      ttl: "stop the tunnel automatically after this time, such as 30m"
     sub:
       list: "print the defined and running tunnels"
       up: "start a tunnel by name, or an ad hoc tunnel with -L, -R, or -D"
@@ -727,6 +729,8 @@ command:
       - "Ports bind to 127.0.0.1. auto picks a free port."
       - "reach is ok if the destination keeps the connection open, and refused if it closes at once. Reverse tunnels show -."
       - "test checks the local port, the SSH login, and the destination as the host sees it. For a reverse tunnel, it checks the remote port and the local target. It starts no tunnel."
+      - "In a terminal, up without a name opens the new tunnel form. The form starts one tunnel and does not save it unless you choose to."
+      - "With --ttl, a detached edc process stops the tunnel at the end time. The list shows the time that remains."
   shell:
     summary: "Print shell completion and short aliases"
     option:

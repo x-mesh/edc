@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -16,8 +18,17 @@ import (
 
 const (
 	tunnelRefreshInterval = 2 * time.Second
-	tunnelHostCandidates  = 50
+	// tunnelHostShown은 호스트 후보를 한 줄에 보이는 개수다. 거르는 대상은 후보 전체다.
+	tunnelHostShown = 8
+	// tunnelExtendStep은 +와 -를 한 번 누를 때 옮기는 시간이다. 키 안내 문구도 이 값을 적는다.
+	tunnelExtendStep = 30 * time.Minute
 )
+
+// tunnelCopiedMsg는 주소 복사의 결과다. address는 OSC 52로 터미널에도 보낸다.
+type tunnelCopiedMsg struct {
+	notice  string
+	address string
+}
 
 type tunnelMode int
 
@@ -42,6 +53,8 @@ type tunnelCheckMsg struct {
 type tunnelDoneMsg struct {
 	notice  string
 	warning string
+	// details는 notice 아래에 이어 적을 줄이다. 폼만 여는 화면이 끝난 뒤 터미널에 남긴다.
+	details []string
 	err     error
 	file    string
 	specs   map[string]tunnelSpec
@@ -52,19 +65,35 @@ const (
 	tunnelFieldKind
 	tunnelFieldPort
 	tunnelFieldDestination
+	tunnelFieldTTL
 	tunnelFieldName
 	tunnelFieldSave
 )
 
 var tunnelKinds = []tunnelKind{tunnelLocal, tunnelReverse, tunnelSocks}
 
+// tunnelEdit는 e로 연 폼이 고치는 원래 터널이다.
+type tunnelEdit struct {
+	name string
+	// defined면 정의 파일을 고치고, running이면 고친 값으로 다시 시작한다.
+	defined, running bool
+}
+
 type tunnelForm struct {
-	hosts       []string
-	hostPick    int
+	// editing이 있으면 새 터널이 아니라 기존 터널을 고치는 폼이다.
+	editing  *tunnelEdit
+	hosts    []string
+	hostPick int
+	// hostQuery는 사용자가 직접 친 글자다. ←/→는 이 글자가 들어간 후보 안에서만 돈다.
+	hostQuery string
+	// hostPrefilled는 host가 폼이 미리 채운 첫 후보라는 뜻이다. 이때 첫 입력은 덧붙이지 않고 바꿔 쓴다.
+	hostPrefilled bool
+	// host에는 호스트 이름 대신 "jump1 db.internal:5432" 같은 한 줄 입력이 올 수 있다. 값을 읽을 때는 expanded를 거친다.
 	host        string
 	kind        tunnelKind
 	port        string
 	destination string
+	ttl         string
 	name        string
 	save        bool
 	field       int
@@ -89,6 +118,13 @@ type tunnelScreen struct {
 	failed      bool
 	busy        bool
 	now         func() time.Time
+	// quick은 edc tunnel up이 목록 없이 폼만 여는 화면이다. 시작에 성공하면 done에 결과를 담고 끝난다.
+	quick bool
+	done  *tunnelDoneMsg
+	// cancel은 quick 화면에서 진행 중인 시작을 끊는다. 끊은 뒤에도 결과를 기다려야 이미 올라온 터널을 알릴 수 있다.
+	cancel   context.CancelFunc
+	aborting bool
+	aborted  error
 }
 
 func runTunnelScreen(environment tunnelEnvironment, timeout time.Duration) int {
@@ -106,6 +142,42 @@ func runTunnelScreen(environment tunnelEnvironment, timeout time.Duration) int {
 	return 0
 }
 
+// runTunnelForm은 폼만 열어 터널 하나를 시작하고 끝난다. 결과는 화면이 닫힌 뒤 터미널에 남긴다.
+func runTunnelForm(environment tunnelEnvironment, timeout time.Duration, name string, ttl time.Duration, save bool) int {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	screen := newTunnelScreen(environment, timeout, os.Getenv("NO_COLOR") == "")
+	screen.ctx, screen.cancel, screen.quick, screen.mode = ctx, cancel, true, tunnelModeForm
+	screen.form = screen.newForm()
+	screen.form.name, screen.form.save = name, save
+	if ttl > 0 {
+		screen.form.ttl = ttl.String()
+	}
+	final, err := tea.NewProgram(screen, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	if err != nil {
+		if errors.Is(err, tea.ErrInterrupted) || errors.Is(err, tea.ErrProgramKilled) {
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	finished, ok := final.(tunnelScreen)
+	if ok && finished.aborted != nil {
+		fmt.Fprintln(os.Stderr, finished.aborted)
+		return 1
+	}
+	if ok && finished.done != nil {
+		fmt.Println(finished.done.notice)
+		for _, line := range finished.done.details {
+			fmt.Println(line)
+		}
+		if finished.done.warning != "" {
+			fmt.Fprintln(os.Stderr, finished.done.warning)
+		}
+	}
+	return 0
+}
+
 func (screen tunnelScreen) baseContext() context.Context {
 	if screen.ctx != nil {
 		return screen.ctx
@@ -118,6 +190,9 @@ func newTunnelScreen(environment tunnelEnvironment, timeout time.Duration, color
 }
 
 func (screen tunnelScreen) Init() tea.Cmd {
+	if screen.quick {
+		return nil
+	}
 	return tea.Batch(screen.refresh(), screen.tick())
 }
 
@@ -159,6 +234,19 @@ func (screen tunnelScreen) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tunnelDoneMsg:
 		screen.busy = false
+		if screen.quick {
+			// 시작이 실패하면 입력을 그대로 둔 채 폼에 머문다. 한 번 쓰는 화면이라 돌아갈 목록이 없다.
+			if value.err != nil && screen.aborting {
+				screen.aborted = value.err
+				return screen, tea.Quit
+			}
+			if value.err != nil {
+				screen.form.problem = value.err.Error()
+				return screen, nil
+			}
+			screen.done = &value
+			return screen, tea.Quit
+		}
 		screen.notice, screen.warning, screen.failed = value.notice, value.warning, value.err != nil
 		if value.err != nil {
 			screen.notice = value.err.Error()
@@ -171,6 +259,15 @@ func (screen tunnelScreen) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		screen.mode = tunnelModeList
 		return screen, screen.refresh()
+	case tunnelCopiedMsg:
+		screen.notice, screen.warning, screen.failed = value.notice, "", false
+		return screen, tea.SetClipboard(value.address)
+	case tea.PasteMsg:
+		// 붙여 넣은 글은 KeyPressMsg가 아니라 이 메시지로 온다. 받지 않으면 붙여 넣은 ssh 명령이 사라진다.
+		if screen.mode == tunnelModeForm && !(screen.quick && screen.busy) {
+			screen.form = screen.form.insert(strings.Join(strings.Fields(value.Content), " "))
+			screen.form.problem = ""
+		}
 	case tea.KeyPressMsg:
 		switch screen.mode {
 		case tunnelModeForm:
@@ -184,7 +281,28 @@ func (screen tunnelScreen) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return screen, nil
 }
 
+// tunnelStepKey는 +와 -를 가린다. 숫자 키패드의 키는 터미널에 따라 글자 없이 "minus"처럼 와서 String으로는 놓친다.
+// +는 Shift를 눌러야 해서 Shift를 쥔 채 -를 누르면 _가 온다. 그래서 두 키 모두 Shift를 누른 글자와 누르지 않은 글자를 받는다.
+func tunnelStepKey(key tea.KeyPressMsg) string {
+	switch {
+	case key.Mod&(tea.ModCtrl|tea.ModAlt) != 0:
+		return ""
+	case key.Code == '+' || key.Code == '=' || key.Code == tea.KeyKpPlus || key.Text == "+":
+		return "+"
+	case key.Code == '-' || key.Code == '_' || key.Code == tea.KeyKpMinus || key.Text == "-" || key.Text == "_":
+		return "-"
+	}
+	return ""
+}
+
 func (screen tunnelScreen) updateList(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if step := tunnelStepKey(key); step != "" {
+		row, ok := screen.selected()
+		if !ok || screen.busy {
+			return screen, nil
+		}
+		return screen.act(step, row)
+	}
 	switch key.String() {
 	case "q", "esc", "ctrl+c":
 		return screen, tea.Quit
@@ -199,7 +317,13 @@ func (screen tunnelScreen) updateList(key tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	case "n":
 		screen.form = screen.newForm()
 		screen.mode, screen.notice, screen.warning = tunnelModeForm, "", ""
-	case "enter", "r", "x":
+	case "e":
+		row, ok := screen.selected()
+		if !ok || screen.busy {
+			return screen, nil
+		}
+		return screen.editForm(row), nil
+	case "enter", "r", "x", "s", "c":
 		row, ok := screen.selected()
 		if !ok || screen.busy {
 			return screen, nil
@@ -212,6 +336,30 @@ func (screen tunnelScreen) updateList(key tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 func (screen tunnelScreen) act(action string, row tunnelRow) (tea.Model, tea.Cmd) {
 	running := row.State == tunnelStateUp || row.State == tunnelStateStale
 	switch {
+	case action == "s":
+		if row.Defined || !running {
+			return screen, nil
+		}
+		screen.busy, screen.notice = true, ""
+		return screen, screen.saveCmd(row.Name)
+	case action == "+" || action == "-":
+		if row.State != tunnelStateUp {
+			screen.notice, screen.failed = T("tunnel.error.not_running", row.Name), true
+			return screen, nil
+		}
+		step := tunnelExtendStep
+		if action == "-" {
+			step = -step
+		}
+		screen.busy, screen.notice = true, ""
+		return screen, screen.adjustCmd(row.Name, step)
+	case action == "c":
+		address := tunnelAddress(row)
+		if address == "" {
+			screen.notice, screen.failed = T("tunnel.error.not_running", row.Name), true
+			return screen, nil
+		}
+		return screen, copyTunnelAddress(address)
 	case action == "x":
 		if !row.Defined {
 			screen.notice, screen.failed = T("tunnel.notice.not_defined", row.Name), true
@@ -230,7 +378,7 @@ func (screen tunnelScreen) act(action string, row tunnelRow) (tea.Model, tea.Cmd
 		return screen, screen.stopCmd(row.Name, true)
 	default:
 		screen.busy, screen.notice = true, ""
-		return screen, screen.startCmd(row.Name, screen.environment.specs[row.Name], "", false)
+		return screen, screen.startCmd(row.Name, screen.environment.specs[row.Name], "", false, 0)
 	}
 }
 
@@ -250,16 +398,21 @@ func (screen tunnelScreen) updateConfirm(key tea.KeyPressMsg) (tea.Model, tea.Cm
 	return screen, nil
 }
 
-func (screen tunnelScreen) startCmd(name string, spec tunnelSpec, savePath string, save bool) tea.Cmd {
+func (screen tunnelScreen) startCmd(name string, spec tunnelSpec, savePath string, save bool, ttl time.Duration) tea.Cmd {
 	environment, timeout, base := screen.environment, screen.timeout, screen.baseContext()
+	display := screen.displayPath(savePath)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, timeout)
 		defer cancel()
-		row, err := environment.manager.up(ctx, name, spec)
+		row, err := environment.manager.start(ctx, name, spec, ttl)
 		if err != nil {
 			return tunnelDoneMsg{err: err}
 		}
-		done := tunnelDoneMsg{notice: T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row))}
+		done := tunnelDoneMsg{notice: T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row)),
+			details: []string{"  $ " + row.Command}}
+		if row.Expires != nil {
+			done.details = append(done.details, "  "+tunnelExpiryText(row, environment.manager.now()))
+		}
 		specs := environment.specs
 		// 시작에 성공한 뒤에만 저장한다. 시작이 실패했는데 정의만 남는 일을 막는다.
 		if save {
@@ -271,30 +424,110 @@ func (screen tunnelScreen) startCmd(name string, spec tunnelSpec, savePath strin
 				return tunnelDoneMsg{err: tunnelError("tunnel.error.save_after_start", name, err.Error())}
 			}
 			done.specs, done.file, specs = reloaded, savePath, reloaded
+			done.details = append(done.details, T("tunnel.up.saved", name, display))
 		}
 		done.warning = tunnelJoinWarnings(row, name, specs, environment.manager.targets)
 		return done
 	}
 }
 
-// stopCmd는 터널을 끝낸다. restart면 같은 정의로 다시 시작한다.
+// saveCmd는 정의 없이 실행 중인 터널을 정의 파일에 올린다. 터널은 건드리지 않는다.
+func (screen tunnelScreen) saveCmd(name string) tea.Cmd {
+	environment, savePath := screen.environment, screen.savePath()
+	display := screen.displayPath(savePath)
+	return func() tea.Msg {
+		record, found := environment.manager.store.find(name)
+		if !found {
+			return tunnelDoneMsg{err: tunnelError("tunnel.error.not_running", name)}
+		}
+		if err := saveTunnelDefinition(savePath, name, record.definition()); err != nil {
+			return tunnelDoneMsg{err: err}
+		}
+		specs, err := loadTunnelDefinitions(savePath, environment.manager.targets)
+		if err != nil {
+			return tunnelDoneMsg{err: err}
+		}
+		return tunnelDoneMsg{notice: T("tunnel.up.saved", name, display), specs: specs, file: savePath}
+	}
+}
+
+// stopCmd는 터널을 끝낸다. restart면 같은 정의와 같은 유지 시간으로 다시 시작한다.
 func (screen tunnelScreen) stopCmd(name string, restart bool) tea.Cmd {
 	environment, timeout, base := screen.environment, screen.timeout, screen.baseContext()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, timeout)
 		defer cancel()
+		previous, _ := environment.manager.store.find(name)
 		if _, err := environment.manager.down(ctx, name); err != nil {
 			return tunnelDoneMsg{err: err}
 		}
 		if !restart {
 			return tunnelDoneMsg{notice: T("tunnel.down.done", name)}
 		}
-		row, err := environment.manager.up(ctx, name, environment.specs[name])
+		row, err := environment.manager.start(ctx, name, environment.specs[name], previous.TTL)
 		if err != nil {
 			return tunnelDoneMsg{err: err}
 		}
 		return tunnelDoneMsg{notice: T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row)),
 			warning: tunnelJoinWarnings(row, name, environment.specs, environment.manager.targets)}
+	}
+}
+
+func (screen tunnelScreen) adjustCmd(name string, step time.Duration) tea.Cmd {
+	manager := screen.environment.manager
+	return func() tea.Msg {
+		record, err := manager.adjustExpiry(name, step)
+		if err != nil {
+			return tunnelDoneMsg{err: err}
+		}
+		return tunnelDoneMsg{notice: T("tunnel.notice.extended", name, tunnelRemaining(record.Expires, manager.now()),
+			record.Expires.Local().Format("01-02 15:04"))}
+	}
+}
+
+// tunnelAddress는 터널이 연 포트의 주소다. reverse는 접속 호스트의 loopback에 열리므로 그 호스트에서 쓸 주소다.
+func tunnelAddress(row tunnelRow) string {
+	if row.State != tunnelStateUp || row.Port == 0 {
+		return ""
+	}
+	return fmt.Sprintf("127.0.0.1:%d", row.Port)
+}
+
+// tunnelClipboardCommand는 테스트가 바꿔 끼운다.
+var tunnelClipboardCommand = localTunnelClipboardCommand
+
+// localTunnelClipboardCommand는 edc가 도는 컴퓨터의 클립보드에 쓰는 명령이다.
+func localTunnelClipboardCommand() []string {
+	var candidates [][]string
+	switch {
+	case runtime.GOOS == "darwin":
+		candidates = [][]string{{"pbcopy"}}
+	case os.Getenv("WAYLAND_DISPLAY") != "":
+		candidates = [][]string{{"wl-copy"}}
+	case os.Getenv("DISPLAY") != "":
+		candidates = [][]string{{"xclip", "-selection", "clipboard"}, {"xsel", "--clipboard", "--input"}}
+	}
+	for _, candidate := range candidates {
+		if _, err := exec.LookPath(candidate[0]); err == nil {
+			return candidate
+		}
+	}
+	return nil
+}
+
+// copyTunnelAddress는 클립보드 명령과 OSC 52를 함께 쓴다. macOS Terminal은 OSC 52를 받지 않고, SSH로 접속한
+// 화면에서는 명령이 접속한 호스트의 클립보드에 쓴다. 어느 쪽인지는 SSH_CONNECTION처럼 tmux가 물려준 값으로
+// 가릴 수 없으므로 둘 다 쓴다. 명령이 없거나 실패하면 터미널이 받는지 알 수 없다고 알린다.
+func copyTunnelAddress(address string) tea.Cmd {
+	return func() tea.Msg {
+		if command := tunnelClipboardCommand(); command != nil {
+			copier := exec.Command(command[0], command[1:]...)
+			copier.Stdin = strings.NewReader(address)
+			if err := copier.Run(); err == nil {
+				return tunnelCopiedMsg{notice: T("tunnel.notice.copied", address), address: address}
+			}
+		}
+		return tunnelCopiedMsg{notice: T("tunnel.notice.copied_terminal", address), address: address}
 	}
 }
 
@@ -325,13 +558,130 @@ func tunnelJoinWarnings(row tunnelRow, name string, specs map[string]tunnelSpec,
 	return strings.Join(warnings, "  ")
 }
 
-func (screen tunnelScreen) newForm() tunnelForm {
-	hosts := tunnelHostChoices(screen.environment.manager.targets)
-	form := tunnelForm{hosts: hosts, kind: tunnelLocal, port: tunnelAutoPort, save: true}
-	if len(hosts) > 0 {
-		form.host = hosts[0]
+// editForm은 고른 터널의 값으로 채운 폼을 연다. 저장된 터널은 정의를, 저장되지 않은 터널은 실행 기록을 읽는다.
+func (screen tunnelScreen) editForm(row tunnelRow) tunnelScreen {
+	running := row.State == tunnelStateUp || row.State == tunnelStateStale
+	record, recorded := screen.environment.manager.store.find(row.Name)
+	spec, defined := screen.environment.specs[row.Name]
+	if !defined {
+		if !recorded {
+			screen.notice, screen.failed = T("tunnel.error.not_running", row.Name), true
+			return screen
+		}
+		spec = record.definition()
+	}
+	form := screen.newForm().filled(spec)
+	form.editing = &tunnelEdit{name: row.Name, defined: defined, running: running}
+	form.name, form.save = row.Name, defined
+	if running && recorded && record.TTL > 0 {
+		form.ttl = record.TTL.String()
+	}
+	screen.form, screen.mode, screen.notice, screen.warning = form, tunnelModeForm, "", ""
+	return screen
+}
+
+// filled는 정의를 항목별 값으로 옮긴 폼이다. spec과 반대 방향이라, 고치지 않고 적용하면 같은 정의가 된다.
+func (form tunnelForm) filled(spec tunnelSpec) tunnelForm {
+	form.host, form.hostQuery, form.hostPick, form.hostPrefilled = spec.Host, "", -1, false
+	switch {
+	case spec.Reverse != "":
+		form.kind = tunnelReverse
+		form.port, form.destination, _ = strings.Cut(spec.Reverse, ":")
+	case spec.Socks != "":
+		form.kind, form.port, form.destination = tunnelSocks, string(spec.Socks), ""
+	default:
+		form.kind, form.port, form.destination = tunnelLocal, string(spec.Local), spec.Remote
 	}
 	return form
+}
+
+func (screen tunnelScreen) newForm() tunnelForm {
+	hosts := tunnelHostChoices(screen.environment.manager.targets)
+	// 폼만 여는 화면은 한 번 쓰려는 것이므로 저장하지 않는 쪽이 기본이다.
+	form := tunnelForm{hosts: hosts, kind: tunnelLocal, port: tunnelAutoPort, save: !screen.quick}
+	if len(hosts) > 0 {
+		form.host, form.hostPrefilled = hosts[0], true
+	}
+	return form
+}
+
+// hostMatches는 친 글자가 들어간 후보다. 한 줄 입력을 쓰는 동안에는 고를 후보가 없다.
+func (form tunnelForm) hostMatches() []string {
+	if strings.ContainsAny(form.host, " \t") {
+		return nil
+	}
+	query := strings.ToLower(form.hostQuery)
+	if query == "" {
+		return form.hosts
+	}
+	var matches []string
+	for _, host := range form.hosts {
+		if strings.Contains(strings.ToLower(host), query) {
+			matches = append(matches, host)
+		}
+	}
+	return matches
+}
+
+// line은 호스트 칸이 한 줄 입력인지와 그 해석을 돌려준다. 호스트 이름에는 공백이 없으므로 공백이 있으면 한 줄 입력이다.
+func (form tunnelForm) line() (tunnelSpec, bool, error) {
+	text := strings.TrimSpace(form.host)
+	if !strings.ContainsAny(text, " \t") {
+		return tunnelSpec{}, false, nil
+	}
+	spec, err := parseTunnelLine(text)
+	return spec, true, err
+}
+
+// expanded는 한 줄 입력을 항목별 값으로 푼 폼이다. 한 줄 입력이 아니거나 아직 해석되지 않으면 그대로다.
+func (form tunnelForm) expanded() tunnelForm {
+	spec, isLine, err := form.line()
+	if !isLine || err != nil {
+		return form
+	}
+	return form.filled(spec)
+}
+
+// settled는 한 줄 입력을 항목에 옮겨 적는다. 해석하지 못하면 problem에 이유를 적고 false를 돌려준다.
+func (form tunnelForm) settled() (tunnelForm, bool) {
+	if _, isLine, err := form.line(); isLine && err != nil {
+		form.problem = err.Error()
+		return form, false
+	}
+	return form.expanded(), true
+}
+
+// insert는 지금 고른 칸에 글자를 넣는다. 키 입력과 붙여 넣기가 함께 쓴다.
+func (form tunnelForm) insert(text string) tunnelForm {
+	if form.field == tunnelFieldHost && form.hostPrefilled {
+		form.host = ""
+	}
+	target := form.text()
+	if target == nil {
+		return form
+	}
+	*target += text
+	return form.hostEdited()
+}
+
+func (form tunnelForm) hostEdited() tunnelForm {
+	if form.field == tunnelFieldHost {
+		form.hostQuery, form.hostPick, form.hostPrefilled = form.host, -1, false
+	}
+	return form
+}
+
+// lifetime은 유지 시간 칸의 값이다. 비어 있으면 0이고 터널은 직접 끝낼 때까지 남는다.
+func (form tunnelForm) lifetime() (time.Duration, error) {
+	text := strings.TrimSpace(form.ttl)
+	if text == "" {
+		return 0, nil
+	}
+	duration, err := parseFlagDuration(text)
+	if err != nil || duration <= 0 {
+		return 0, tunnelError("tunnel.error.ttl_invalid", text)
+	}
+	return duration, nil
 }
 
 // tunnelHostChoices는 inventory의 host 이름과 ~/.ssh/config의 Host 별칭이다. 와일드카드 패턴은 뺀다.
@@ -339,7 +689,7 @@ func tunnelHostChoices(targets map[string]string) []string {
 	seen := make(map[string]struct{})
 	var names []string
 	add := func(name string) {
-		if _, exists := seen[name]; exists || name == "" || strings.HasPrefix(name, "-") || len(names) >= tunnelHostCandidates {
+		if _, exists := seen[name]; exists || name == "" || strings.HasPrefix(name, "-") {
 			return
 		}
 		seen[name] = struct{}{}
@@ -382,7 +732,15 @@ func (form tunnelForm) visibleFields() []int {
 	if form.kind != tunnelSocks {
 		fields = append(fields, tunnelFieldDestination)
 	}
-	return append(fields, tunnelFieldName, tunnelFieldSave)
+	// 실행 중이 아닌 저장된 터널을 고치면 시작하지 않으므로 유지 시간을 쓸 곳이 없다. 저장된 터널은 늘 정의를 고친다.
+	if form.editing == nil || form.editing.running {
+		fields = append(fields, tunnelFieldTTL)
+	}
+	fields = append(fields, tunnelFieldName)
+	if form.editing == nil || !form.editing.defined {
+		fields = append(fields, tunnelFieldSave)
+	}
+	return fields
 }
 
 func (form tunnelForm) moveField(step int) tunnelForm {
@@ -398,6 +756,7 @@ func (form tunnelForm) moveField(step int) tunnelForm {
 }
 
 func (form tunnelForm) spec() (string, tunnelSpec) {
+	form = form.expanded()
 	port := strings.TrimSpace(form.port)
 	destination := strings.TrimSpace(form.destination)
 	spec := tunnelSpec{Host: strings.TrimSpace(form.host)}
@@ -417,6 +776,10 @@ func (form tunnelForm) spec() (string, tunnelSpec) {
 }
 
 func (form tunnelForm) check() error {
+	form = form.expanded()
+	if _, err := form.lifetime(); err != nil {
+		return err
+	}
 	if form.kind != tunnelSocks && strings.TrimSpace(form.destination) == "" {
 		return tunnelError("tunnel.error.destination_required")
 	}
@@ -431,6 +794,8 @@ func (form *tunnelForm) text() *string {
 		return &form.port
 	case tunnelFieldDestination:
 		return &form.destination
+	case tunnelFieldTTL:
+		return &form.ttl
 	case tunnelFieldName:
 		return &form.name
 	}
@@ -439,14 +804,32 @@ func (form *tunnelForm) text() *string {
 
 func (screen tunnelScreen) updateForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	form := screen.form
+	if screen.quick && screen.busy {
+		// 바로 끝내면 그사이 올라온 터널을 알리지 못한다. 시작을 끊고 그 결과가 올 때 끝낸다.
+		if key.String() == "ctrl+c" && screen.cancel != nil {
+			screen.cancel()
+			screen.aborting = true
+		}
+		return screen, nil
+	}
 	switch key.String() {
 	case "esc", "ctrl+c":
+		if screen.quick {
+			return screen, tea.Quit
+		}
 		screen.mode = tunnelModeList
 		return screen, nil
-	case "tab", "down":
-		form = form.moveField(1)
-	case "shift+tab", "up":
-		form = form.moveField(-1)
+	case "tab", "down", "shift+tab", "up":
+		settled, ok := form.settled()
+		if !ok {
+			screen.form = settled
+			return screen, nil
+		}
+		step := 1
+		if key.String() == "shift+tab" || key.String() == "up" {
+			step = -1
+		}
+		form = settled.moveField(step)
 	case "left", "right":
 		step := 1
 		if key.String() == "left" {
@@ -471,9 +854,12 @@ func (screen tunnelScreen) updateForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		case tunnelFieldSave:
 			form.save = !form.save
 		case tunnelFieldHost:
-			if len(form.hosts) > 0 {
-				form.hostPick = (form.hostPick + step + len(form.hosts)) % len(form.hosts)
-				form.host = form.hosts[form.hostPick]
+			if matches := form.hostMatches(); len(matches) > 0 {
+				if form.hostPick < 0 && step < 0 {
+					form.hostPick = 0
+				}
+				form.hostPick = (form.hostPick + step + len(matches)) % len(matches)
+				form.host, form.hostPrefilled = matches[form.hostPick], false
 			}
 		}
 	case "backspace":
@@ -482,18 +868,20 @@ func (screen tunnelScreen) updateForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			if len(runes) > 0 {
 				*text = string(runes[:len(runes)-1])
 			}
+			form = form.hostEdited()
 		}
 	case "ctrl+u":
 		if text := form.text(); text != nil {
 			*text = ""
+			form = form.hostEdited()
 		}
 	case "ctrl+t":
 		return screen.startCheck(form)
 	case "enter":
 		return screen.submitForm(form)
 	default:
-		if text := form.text(); text != nil && key.Text != "" {
-			*text += key.Text
+		if key.Text != "" {
+			form = form.insert(key.Text)
 		}
 	}
 	form.problem = ""
@@ -509,6 +897,11 @@ func (form tunnelForm) signature() string {
 // startCheck는 폼의 입력으로 연결 시험을 시작한다. 시험은 호스트에 접속하므로 화면 밖에서 돌고, 결과는 tunnelCheckMsg로 온다.
 func (screen tunnelScreen) startCheck(form tunnelForm) (tea.Model, tea.Cmd) {
 	if form.checking {
+		return screen, nil
+	}
+	form, ok := form.settled()
+	if !ok {
+		screen.form = form
 		return screen, nil
 	}
 	name, spec := form.spec()
@@ -533,8 +926,14 @@ func (screen tunnelScreen) startCheck(form tunnelForm) (tea.Model, tea.Cmd) {
 }
 
 func (screen tunnelScreen) submitForm(form tunnelForm) (tea.Model, tea.Cmd) {
+	form, ok := form.settled()
+	if !ok {
+		screen.form = form
+		return screen, nil
+	}
 	save := form.save
 	name, spec := form.spec()
+	ttl, _ := form.lifetime()
 	err := form.check()
 	if err == nil {
 		err = screen.duplicateProblem(form)
@@ -548,8 +947,68 @@ func (screen tunnelScreen) submitForm(form tunnelForm) (tea.Model, tea.Cmd) {
 		return screen, nil
 	}
 	savePath := screen.savePath()
-	screen.busy, screen.mode, screen.notice = true, tunnelModeList, ""
-	return screen, screen.startCmd(name, spec, savePath, save)
+	screen.busy, screen.notice, screen.form = true, "", form
+	if !screen.quick {
+		screen.mode = tunnelModeList
+	}
+	if form.editing != nil {
+		return screen, screen.editCmd(*form.editing, name, spec, savePath, save, ttl)
+	}
+	return screen, screen.startCmd(name, spec, savePath, save, ttl)
+}
+
+// editCmd는 고친 값을 적용한다. 저장된 터널은 정의를 먼저 고쳐, 다시 시작이 실패해도 고친 값이 남아 e로 이어 고칠 수 있다.
+func (screen tunnelScreen) editCmd(edit tunnelEdit, name string, spec tunnelSpec, savePath string, save bool, ttl time.Duration) tea.Cmd {
+	environment, timeout, base := screen.environment, screen.timeout, screen.baseContext()
+	display := screen.displayPath(savePath)
+	return func() tea.Msg {
+		var done tunnelDoneMsg
+		specs := environment.specs
+		if edit.defined {
+			if err := replaceTunnelDefinition(environment.file, edit.name, name, spec); err != nil {
+				return tunnelDoneMsg{err: err}
+			}
+			reloaded, err := loadTunnelDefinitions(environment.file, environment.manager.targets)
+			if err != nil {
+				return tunnelDoneMsg{err: err}
+			}
+			done.specs, specs = reloaded, reloaded
+			done.notice = T("tunnel.notice.edited", name)
+		}
+		if !edit.running {
+			return done
+		}
+		ctx, cancel := context.WithTimeout(base, timeout)
+		defer cancel()
+		if _, err := environment.manager.down(ctx, edit.name); err != nil {
+			done.err = err
+			return done
+		}
+		row, err := environment.manager.start(ctx, name, spec, ttl)
+		if err != nil {
+			done.err = err
+			if edit.defined {
+				done.err = tunnelError("tunnel.error.edit_restart", name, err.Error())
+			}
+			return done
+		}
+		done.notice = T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row))
+		if !edit.defined && save {
+			if err := saveTunnelDefinition(savePath, name, spec); err != nil {
+				done.err = tunnelError("tunnel.error.save_after_start", name, err.Error())
+				return done
+			}
+			reloaded, err := loadTunnelDefinitions(savePath, environment.manager.targets)
+			if err != nil {
+				done.err = tunnelError("tunnel.error.save_after_start", name, err.Error())
+				return done
+			}
+			done.specs, done.file, specs = reloaded, savePath, reloaded
+			done.notice += "  " + T("tunnel.up.saved", name, display)
+		}
+		done.warning = tunnelJoinWarnings(row, name, specs, environment.manager.targets)
+		return done
+	}
 }
 
 // savePath는 폼이 저장할 정의 파일이다. 찾은 파일이 없으면 현재 디렉터리의 ./.edc/tunnels.yaml을 새로 만든다.
@@ -573,10 +1032,22 @@ func (screen tunnelScreen) displayPath(path string) string {
 
 // duplicateProblem은 저장하려는 이름이 이미 정의에 있을 때의 오류다. 덮어쓰지 않고 폼에서 바로 알린다.
 func (screen tunnelScreen) duplicateProblem(form tunnelForm) error {
-	if !form.save {
+	name, _ := form.spec()
+	if form.editing != nil && name != form.editing.name {
+		// 다른 이름으로 바꿔 다시 시작하면 원래 터널을 끝낸 뒤에야 실패하므로 미리 막는다.
+		for _, row := range screen.rows {
+			if row.Name == name && (row.State == tunnelStateUp || row.State == tunnelStateStale) {
+				return tunnelError("tunnel.error.already_up", name, row.Port)
+			}
+		}
+	}
+	if form.editing != nil && name == form.editing.name {
 		return nil
 	}
-	name, _ := form.spec()
+	// 저장하지 않는 임시 터널을 고칠 때도 정의 이름으로 바꾸면, 목록에서 실행 중인 임시 터널과 멈춘 정의가 한 이름을 나눠 쓴다.
+	if !form.save && form.editing == nil {
+		return nil
+	}
 	if _, exists := screen.environment.specs[name]; exists {
 		return tunnelError("tunnel.error.duplicate", name, screen.displayPath(screen.savePath()))
 	}
@@ -649,8 +1120,16 @@ func (screen tunnelScreen) listView() string {
 // listTitle은 선택한 줄에서 쓸 수 있는 키만 안내한다. 정의가 없는 일회용 터널에는 재시작과 정의 삭제가 없다.
 func (screen tunnelScreen) listTitle() string {
 	hints := []string{T("tunnel.hint.toggle"), T("tunnel.hint.new")}
-	if row, ok := screen.selected(); ok && row.Defined {
-		hints = append(hints, T("tunnel.hint.restart"), T("tunnel.hint.remove"))
+	if row, ok := screen.selected(); ok {
+		hints = append(hints, T("tunnel.hint.edit"))
+		if row.Defined {
+			hints = append(hints, T("tunnel.hint.restart"), T("tunnel.hint.remove"))
+		} else {
+			hints = append(hints, T("tunnel.hint.save"))
+		}
+		if row.State == tunnelStateUp {
+			hints = append(hints, T("tunnel.hint.extend"), T("tunnel.hint.copy"))
+		}
 	}
 	hints = append(hints, T("tunnel.hint.quit"))
 	return T("tunnel.screen.name") + "   " + strings.Join(hints, "   ")
@@ -665,7 +1144,7 @@ func tunnelSavedMark(defined bool) string {
 
 func (screen tunnelScreen) table() string {
 	headers := []string{T("tunnel.column.name"), T("tunnel.column.kind"), T("tunnel.column.listen"), T("tunnel.column.destination"),
-		T("tunnel.column.host"), T("tunnel.column.state"), T("tunnel.column.reach"), T("tunnel.column.uptime"), T("tunnel.column.saved")}
+		T("tunnel.column.host"), T("tunnel.column.state"), T("tunnel.column.reach"), T("tunnel.column.uptime"), T("tunnel.column.expires"), T("tunnel.column.saved")}
 	cells := make([][]string, 0, len(screen.rows)+1)
 	cells = append(cells, headers)
 	for _, row := range screen.rows {
@@ -674,7 +1153,7 @@ func (screen tunnelScreen) table() string {
 			destination = "-"
 		}
 		cells = append(cells, []string{row.Name, string(row.Kind), tunnelListen(row), destination, row.Host,
-			string(row.State), row.Reach, tunnelUptime(row.Started, screen.now()), tunnelSavedMark(row.Defined)})
+			string(row.State), row.Reach, tunnelUptime(row.Started, screen.now()), tunnelRemaining(row.Expires, screen.now()), tunnelSavedMark(row.Defined)})
 	}
 	widths := make([]int, len(headers))
 	for _, line := range cells {
@@ -727,16 +1206,23 @@ func joinTunnelCells(line []string, widths []int, paint func(int, string) string
 }
 
 func (screen tunnelScreen) formView() string {
-	form := screen.form
+	// 호스트 칸은 친 글자를 그대로 보이고, 나머지 칸은 한 줄 입력을 푼 값을 보인다.
+	typed := screen.form.host
+	form := screen.form.expanded()
 	var builder strings.Builder
-	builder.WriteString(liveTitleHints(T("tunnel.screen.form_title"), screen.color) + "\n\n")
+	title := T("tunnel.screen.form_title")
+	if form.editing != nil {
+		title = T("tunnel.screen.edit_title", form.editing.name)
+	}
+	builder.WriteString(liveTitleHints(title, screen.color) + "\n\n")
 	portLabel, destinationLabel := T("tunnel.form.local_port"), T("tunnel.form.destination")
 	if form.kind == tunnelReverse {
 		portLabel, destinationLabel = T("tunnel.form.remote_port"), T("tunnel.form.local_target")
 	}
 	labels := map[int]string{
 		tunnelFieldHost: T("tunnel.form.host"), tunnelFieldKind: T("tunnel.form.kind"), tunnelFieldPort: portLabel,
-		tunnelFieldDestination: destinationLabel, tunnelFieldName: T("tunnel.form.name"), tunnelFieldSave: T("tunnel.form.save"),
+		tunnelFieldDestination: destinationLabel, tunnelFieldTTL: T("tunnel.form.ttl"), tunnelFieldName: T("tunnel.form.name"),
+		tunnelFieldSave: T("tunnel.form.save"),
 	}
 	width := 0
 	for _, label := range labels {
@@ -754,7 +1240,17 @@ func (screen tunnelScreen) formView() string {
 		case tunnelFieldSave:
 			value = screen.saveChoices(form)
 		case tunnelFieldHost:
-			value = form.host
+			value = typed
+		case tunnelFieldTTL:
+			value = form.ttl
+			if value == "" {
+				hint := liveMuted(T("tunnel.form.hint_ttl"), screen.color)
+				if field == form.field {
+					hint = "▏" + hint
+				}
+				builder.WriteString(bar + " " + screen.fieldLabel(form, field, labels[field], width) + "  " + hint + "\n")
+				continue
+			}
 		case tunnelFieldPort:
 			value = form.port
 			if value == "" {
@@ -793,7 +1289,36 @@ func (screen tunnelScreen) formView() string {
 	builder.WriteString("  " + liveMuted(screen.saveTarget(form), screen.color) + "\n")
 	builder.WriteString("\n" + screen.helpView(form) + "\n" + screen.previewView(form) + "\n")
 	builder.WriteString(screen.checksView(form))
+	if screen.quick && screen.busy {
+		builder.WriteString("\n  " + liveMuted(T("tunnel.form.starting"), screen.color) + "\n")
+	}
 	return builder.String()
+}
+
+// hostCandidates는 호스트 칸 아래에 고를 수 있는 후보를 한 줄로 보인다. 지금 값과 같은 후보는 선택 행처럼 칠한다.
+func (screen tunnelScreen) hostCandidates(form tunnelForm) string {
+	matches := form.hostMatches()
+	if len(matches) == 0 {
+		return ""
+	}
+	first := min(max(form.hostPick-tunnelHostShown+1, 0), max(len(matches)-tunnelHostShown, 0))
+	shown := matches[first:min(first+tunnelHostShown, len(matches))]
+	parts := make([]string, len(shown))
+	for index, host := range shown {
+		parts[index] = liveMuted(host, screen.color)
+		switch {
+		case host != form.host:
+		case liveRich(screen.color):
+			parts[index] = liveSelected(" "+host+" ", true)
+		default:
+			parts[index] = "[" + host + "]"
+		}
+	}
+	line := strings.Join(parts, "  ")
+	if hidden := len(matches) - len(shown); hidden > 0 {
+		line += liveMuted(fmt.Sprintf("  +%d", hidden), screen.color)
+	}
+	return line
 }
 
 func (screen tunnelScreen) saveChoices(form tunnelForm) string {
@@ -856,6 +1381,9 @@ func (screen tunnelScreen) previewView(form tunnelForm) string {
 	if form.problem != "" {
 		return "  " + screen.paint(form.problem, richRed)
 	}
+	if _, isLine, err := form.line(); isLine && err != nil {
+		return "  " + liveMuted(err.Error(), screen.color)
+	}
 	name, spec := form.spec()
 	if err := screen.duplicateProblem(form); err != nil {
 		return "  " + screen.paint(err.Error(), richRed)
@@ -895,6 +1423,8 @@ func (screen tunnelScreen) helpView(form tunnelForm) string {
 		lines = TList("tunnel.help.port." + string(form.kind))
 	case tunnelFieldDestination:
 		lines = TList("tunnel.help.destination." + string(form.kind))
+	case tunnelFieldTTL:
+		lines = TList("tunnel.help.ttl")
 	case tunnelFieldName:
 		lines = TList("tunnel.help.name")
 	case tunnelFieldSave:
@@ -903,6 +1433,11 @@ func (screen tunnelScreen) helpView(form tunnelForm) string {
 	var builder strings.Builder
 	for _, line := range lines {
 		builder.WriteString("  " + liveMuted(line, screen.color) + "\n")
+	}
+	if form.field == tunnelFieldHost {
+		if candidates := screen.hostCandidates(screen.form); candidates != "" {
+			builder.WriteString("\n  " + candidates + "\n")
+		}
 	}
 	builder.WriteString("\n  " + screen.diagram(form) + "\n")
 	return builder.String()
@@ -915,6 +1450,7 @@ func (screen tunnelScreen) diagram(form tunnelForm) string {
 		}
 		return placeholder
 	}
+	form = form.expanded()
 	host, port := orPlaceholder(form.host, "<host>"), orPlaceholder(form.port, "<port>")
 	destination := orPlaceholder(form.destination, "<host:port>")
 	switch form.kind {

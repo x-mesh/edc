@@ -58,6 +58,9 @@ type viewLine struct {
 	// message는 JSON 줄을 "time level message key=value"로 줄여 보여 줄 때의 본문이다.
 	message string
 	fields  []viewField
+	// arrived는 화면을 연 뒤 이 줄을 받은 Unix 초다. 화면을 열 때 읽은 줄은 0이다. filter를 바꾸면 이 값으로 filter에 맞는
+	// 줄의 초당 수를 다시 센다.
+	arrived int64
 }
 
 // viewSanitize는 로그에 든 escape와 제어 문자를 지운다. 로그 내용이 화면을 움직이거나 터미널 설정을 바꾸지 못하게 하고,

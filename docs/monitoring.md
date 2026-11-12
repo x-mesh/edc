@@ -512,9 +512,28 @@ The goloop format is the log of an ICON goloop node: the level letter (`P`, `F`,
 
 Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. In an access log, the list shows the time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden, and the header names it, for example `hidden: host int.example.com · client 203.0.113.9`. Press `c` to show the raw lines. Press Left or Right to scroll the list sideways.
 
-Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
+Press `/` to type a filter. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
 
 The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
+
+When a filter is on, the panel counts only the lines that match it. The panel title shows `filtered`, and the `filter` row under it shows the whole filter. The header also shows the filter after the status. The `events` row shows the matched lines and all kept lines, for example `3 / 6`. Each status class or level shows its percent of the counted lines.
+
+Press Tab to select a row in the panel. Use Up and Down to move. Press Enter to add the row to the filter, for example `path:/api/users` or `status:5xx`. If the filter has a term for the same field, the new term replaces it. You stay in the panel, so you can select a client next. Press Backspace to go back to the filter before the last change, as Esc does in the list. Press Esc or Tab to go back to the list.
+
+In the list, Esc goes back one step. If a line is selected, Esc follows the new lines again. Then each Esc changes the filter back to the filter before it. For example, `score status:2xx` goes back to `score`, and then to all lines.
+
+A filter is a list of terms with spaces between them. A line must match all terms.
+
+| Term | Lines that it selects |
+| --- | --- |
+| `timeout` | lines that contain the text, in uppercase or lowercase |
+| `path:/api/users` | lines with this path. The value must match all of the field. |
+| `path:/api/*` | lines with a path that starts with `/api/`. `*` matches any text. |
+| `status:5xx`, `status:404` | lines with a status class or a status code |
+| `client:`, `method:`, `rpc:`, `level:`, `program:` | lines with this client address, HTTP method, JSON-RPC method, level, or program |
+| `-path:/health`, `-healthz` | lines that do not match the term after `-` |
+
+Put quotes around text with a space to find it as one phrase, for example `"connection refused"`. Without quotes, each word is a term. Put quotes around a field value with a space too, for example `path:"/api/v3 icx_sendTransaction"`. Put `\` before `*`, `"`, `\`, or a space to use it as a letter, for example `path:/api/a\*b`. A filter that the panel adds uses these escapes, so it selects only the value in the panel. An unknown field name is text, so `10:00:01` finds a time. If `edc` cannot read the filter, the input stays open and shows the problem.
 
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 

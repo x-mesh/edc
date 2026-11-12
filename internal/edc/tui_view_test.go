@@ -33,6 +33,12 @@ func viewPress(model viewScreenModel, keys ...string) viewScreenModel {
 			msg = tea.KeyPressMsg{Code: tea.KeyLeft}
 		case "right":
 			msg = tea.KeyPressMsg{Code: tea.KeyRight}
+		case "down":
+			msg = tea.KeyPressMsg{Code: tea.KeyDown}
+		case "tab":
+			msg = tea.KeyPressMsg{Code: tea.KeyTab}
+		case "backspace":
+			msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
 		default:
 			msg = tea.KeyPressMsg{Code: rune(key[0]), Text: key}
 		}
@@ -126,11 +132,13 @@ func TestViewScreenDetailShowsStackTrace(t *testing.T) {
 
 func TestViewScreenFilterAndReset(t *testing.T) {
 	model := viewScreenWith(t, "access.log", 100, 20)
-	model.filter = "login"
+	if err := model.setFilter("login"); err != nil {
+		t.Fatal(err)
+	}
 	if shown := model.shown(); len(shown) != 1 {
 		t.Fatalf("filter shows %d lines", len(shown))
 	}
-	model.filter = ""
+	_ = model.setFilter("")
 	model.receive(viewDataMsg{event: viewFollowEvent{reset: viewResetReplaced}}, time.Now())
 	if last, _ := model.line(model.last()); !last.marker || !strings.Contains(last.text, "file replaced") {
 		t.Fatalf("rotation marker: %+v", last)
@@ -141,6 +149,42 @@ func TestViewScreenFilterAndReset(t *testing.T) {
 	}
 	if model.stats.lines != 6 {
 		t.Fatalf("the marker must not count as a line: %d", model.stats.lines)
+	}
+}
+
+// filter를 걸면 통계 패널은 filter에 맞는 줄만 센다. 머리 줄의 events는 보관한 줄 전체다.
+func TestViewScreenPanelCountsFilteredLines(t *testing.T) {
+	model := viewScreenWith(t, "access.log", 140, 30)
+	model = viewPress(model, "/", "u", "s", "e", "r", "s", "enter")
+	stats := model.panelStats()
+	if stats.lines != 3 || stats.paths["/api/users"] != 3 || len(stats.paths) != 1 || stats.classes[2] != 2 || stats.classes[4] != 1 || stats.classes[5] != 0 || stats.failures != 0 {
+		t.Fatalf("filtered stats %+v", stats)
+	}
+	joined := strings.Join(model.screen(false), "\n")
+	if !strings.Contains(joined, "STATS  filtered · last 10,000 lines") || strings.Contains(joined, "/api/orders") || strings.Contains(joined, "5xx") || !strings.Contains(joined, "events 3 / 6") || !strings.Contains(joined, "events    3 / 6") || !strings.Contains(joined, " 67%") || !strings.Contains(joined, " 33%") {
+		t.Fatalf("filtered panel:\n%s", joined)
+	}
+	model.ingest([]string{
+		`192.0.2.1 - - [26/Oct/2026:10:00:06 +0900] "GET /api/users HTTP/1.1" 500 1 "-" "x"`,
+		`192.0.2.1 - - [26/Oct/2026:10:00:07 +0900] "GET /api/orders HTTP/1.1" 200 1 "-" "x"`,
+	}, time.Now(), true)
+	if stats := model.panelStats(); stats.lines != 4 || stats.failures != 1 || stats.clients["192.0.2.1"] != 1 || stats.rate(time.Now()) != 0.1 {
+		t.Fatalf("new lines: filtered stats %+v rate %.2f", stats, stats.rate(time.Now()))
+	}
+	model = viewPress(model, "esc")
+	if stats := model.panelStats(); model.filter != "" || stats.lines != 8 || stats.paths["/api/users"] != 4 || stats.failures != 2 {
+		t.Fatalf("esc must show all lines again: %+v", stats)
+	}
+}
+
+// 보관한 줄이 밀려나면 filter 통계에서도 빠진다.
+func TestViewScreenFilteredStatsForgetEvictedLines(t *testing.T) {
+	model := newViewScreenModel("app", 3)
+	model.ingest([]string{"2026-10-26 10:00:00 ERROR score boom", "2026-10-26 10:00:01 INFO score ok"}, time.Now(), false)
+	model = viewPress(model, "/", "s", "c", "o", "r", "e", "enter")
+	model.ingest([]string{"2026-10-26 10:00:02 INFO other", "2026-10-26 10:00:03 INFO other"}, time.Now(), false)
+	if stats := model.panelStats(); stats.lines != 1 || stats.failures != 0 || stats.lastError.text != "" || stats.levels["info"] != 1 {
+		t.Fatalf("filtered stats after eviction %+v", stats)
 	}
 }
 
@@ -207,7 +251,9 @@ func TestViewScreenSidePanelWithFullListAndPartialLine(t *testing.T) {
 			t.Fatal("the last line must stay pending")
 		}
 		for _, filter := range []string{"", "partial"} {
-			model.filter = filter
+			if err := model.setFilter(filter); err != nil {
+				t.Fatal(err)
+			}
 			if rows := model.screen(false); len(rows) != max(height, len(model.header(false))) {
 				t.Fatalf("height %d filter %q: %d rows", height, filter, len(rows))
 			}
@@ -309,5 +355,94 @@ func TestViewScreenScrollsSideways(t *testing.T) {
 	model = viewPress(model, "left", "left")
 	if model.scroll != 0 {
 		t.Fatalf("scroll %d", model.scroll)
+	}
+}
+
+// filter를 바꾸면 이미 받은 줄의 받은 시각으로 초당 줄 수를 바로 다시 센다. 화면을 열 때 읽은 줄은 세지 않는다.
+func TestViewScreenFilteredRateCountsLinesBeforeTheFilter(t *testing.T) {
+	model := viewScreenWith(t, "access.log", 140, 30)
+	now := time.Now()
+	model.ingest([]string{
+		`192.0.2.1 - - [26/Oct/2026:10:00:06 +0900] "GET /api/users HTTP/1.1" 200 1 "-" "x"`,
+		`192.0.2.1 - - [26/Oct/2026:10:00:07 +0900] "GET /api/users HTTP/1.1" 500 1 "-" "x"`,
+		`192.0.2.1 - - [26/Oct/2026:10:00:08 +0900] "GET /api/orders HTTP/1.1" 200 1 "-" "x"`,
+	}, now, true)
+	if err := model.setFilter("path:/api/users"); err != nil {
+		t.Fatal(err)
+	}
+	if rate := model.panelStats().rate(now); rate != 0.2 {
+		t.Fatalf("filtered rate %.2f", rate)
+	}
+	// 형식을 다시 정해 줄을 다시 읽어도 받은 시각은 남는다.
+	model.formatFixed, model.format = false, viewFormatPlain
+	model.redetect(nil)
+	if model.format != viewFormatAccess {
+		t.Fatalf("redetect format %q", model.format)
+	}
+	if rate := model.panelStats().rate(now); rate != 0.2 {
+		t.Fatalf("rate after redetect %.2f", rate)
+	}
+	if rate := model.panelStats().rate(now.Add(viewRateWindow + 2*time.Second)); rate != 0 {
+		t.Fatalf("old arrivals leave the window: %.2f", rate)
+	}
+}
+
+// filter를 걸고 패널에서 조건을 더한 뒤 Esc를 누르면 한 단계씩 되돌아간다. 걸린 filter는 패널에 다 보인다.
+func TestViewScreenEscStepsBackThroughFilters(t *testing.T) {
+	model := viewScreenWith(t, "access.log", 140, 30)
+	model = viewPress(model, "/", "u", "s", "e", "r", "s", "enter", "tab", "enter")
+	if model.filter != "users status:2xx" {
+		t.Fatalf("filter %q", model.filter)
+	}
+	model = viewPress(model, "esc")
+	screen := strings.Join(model.screen(false), "\n")
+	if model.picking || model.filter != "users status:2xx" || !strings.Contains(screen, "filter    users status:2xx") || !strings.Contains(model.header(false)[0], "filter users status:2xx") {
+		t.Fatalf("esc leaves the panel and shows the filter: %q\n%s", model.filter, screen)
+	}
+	model = viewPress(model, "esc")
+	if model.filter != "users" || model.panelStats().lines != 3 {
+		t.Fatalf("esc goes back to the filter before: %q", model.filter)
+	}
+	model = viewPress(model, "esc")
+	if model.filter != "" || strings.Contains(strings.Join(model.screen(false), "\n"), "filter    ") {
+		t.Fatalf("esc goes back to all lines: %q", model.filter)
+	}
+	if model = viewPress(model, "esc"); model.filter != "" {
+		t.Fatalf("nothing to undo: %q", model.filter)
+	}
+}
+
+// 패널 안에서는 Backspace가 마지막에 더한 조건을 되돌리고, 패널에 그대로 남는다.
+func TestViewScreenBackspaceUndoesThePick(t *testing.T) {
+	model := viewPress(viewScreenWith(t, "access.log", 140, 30), "tab", "enter", "down", "enter")
+	if model.filter != "status:2xx path:/api/users" {
+		t.Fatalf("filter %q picks %v", model.filter, model.panelPicks())
+	}
+	model = viewPress(model, "backspace")
+	if !model.picking || model.filter != "status:2xx" {
+		t.Fatalf("backspace undoes one pick: picking %v filter %q", model.picking, model.filter)
+	}
+	model = viewPress(model, "backspace", "backspace")
+	if !model.picking || model.filter != "" {
+		t.Fatalf("backspace goes back to all lines: %q", model.filter)
+	}
+}
+
+// 패널보다 긴 filter는 잘리지 않고 줄을 바꾼다. 좁은 화면에서는 통계 첫 줄에 보인다.
+func TestViewScreenShowsALongFilter(t *testing.T) {
+	model := viewScreenWith(t, "access.log", 140, 30)
+	long := "path:/api/* -path:/api/orders?id=7 -client:192.0.2.77 -status:4xx"
+	if err := model.applyFilter(long); err != nil {
+		t.Fatal(err)
+	}
+	panel, _ := model.panelColumn(model.panelWidth(), false)
+	joined := strings.ReplaceAll(strings.Join(panel, ""), " ", "")
+	if !strings.Contains(joined, strings.ReplaceAll(long, " ", "")) {
+		t.Fatalf("the panel must show the whole filter:\n%s", strings.Join(panel, "\n"))
+	}
+	narrow := viewScreenWith(t, "access.log", 90, 30)
+	_ = narrow.applyFilter("users")
+	if rows, _ := narrow.panelRows(90, false); !strings.Contains(rows[0], "filter users") {
+		t.Fatalf("narrow stats: %q", rows[0])
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -155,7 +156,8 @@ func runViewScreen(path string, lines int) int {
 	if lines > 0 {
 		keep = lines
 	}
-	title := path
+	// 머리 줄에는 filter와 상태가 이어지므로, 긴 경로가 그 자리를 차지하지 않게 파일 이름만 쓴다.
+	title := filepath.Base(path)
 	if path == "" {
 		title = "stdin"
 	}

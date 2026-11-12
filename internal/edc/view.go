@@ -169,8 +169,9 @@ func runViewScreen(path string, lines int) int {
 	if lines > 0 {
 		keep = lines
 	}
-	// 머리 줄에는 filter와 상태가 이어지므로, 긴 경로가 그 자리를 차지하지 않게 파일 이름만 쓴다.
-	title := filepath.Base(path)
+	// 머리 줄에는 filter와 상태가 이어지므로, 긴 경로가 그 자리를 차지하지 않게 파일 이름만 쓴다. 파일 이름에 든 escape가
+	// 터미널을 움직이지 않게 로그 줄처럼 지운다.
+	title := viewSanitize(filepath.Base(path))
 	if path == "" {
 		title = "stdin"
 	}

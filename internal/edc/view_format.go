@@ -30,6 +30,10 @@ const viewParseLimit = 16 << 10
 // viewDetectLines는 형식을 정할 때 보는 첫 줄 수다.
 const viewDetectLines = 64
 
+// viewDetectScanLines는 형식을 정하려고 보는 줄의 상한이다. stack trace 줄은 viewDetectLines에 세지 않고 건너뛰므로, 깊은
+// stack trace가 이어지는 표본에서도 앞부분만 보도록 따로 막는다.
+const viewDetectScanLines = 4 * viewDetectLines
+
 var viewLevels = []string{"fatal", "error", "warn", "info", "debug", "trace"}
 
 // viewField는 상세 화면의 "이름: 값" 한 줄이다.
@@ -111,8 +115,8 @@ func viewSanitize(raw string) string {
 func detectViewFormat(lines []string) viewFormat {
 	counts := map[viewFormat]int{}
 	seen := 0
-	for _, line := range lines {
-		if seen == viewDetectLines {
+	for index, line := range lines {
+		if seen == viewDetectLines || index == viewDetectScanLines {
 			break
 		}
 		// stack trace 줄은 형식을 가리지 않고 앞 줄에 붙는다. 오류만 모은 로그는 ERROR 줄 하나에 stack trace가 수십 줄이라,

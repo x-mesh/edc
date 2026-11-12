@@ -67,7 +67,8 @@ func runViewStats(stdout io.Writer, path string, color bool) error {
 	defer closeInput()
 	summary, err := viewSummarize(input)
 	if summary != nil {
-		title := filepath.Base(path)
+		// 파일 이름도 로그 내용처럼 터미널을 움직이는 문자를 지운다.
+		title := viewSanitize(filepath.Base(path))
 		if path == "" {
 			title = "stdin"
 		}

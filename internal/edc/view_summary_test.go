@@ -159,3 +159,38 @@ func TestViewStatsPaintsOnlyColor(t *testing.T) {
 		}
 	}
 }
+
+// 형식을 정할 때 stack trace 줄은 세지 않고 건너뛰지만, 보는 줄 수에는 상한이 있다. 깊은 stack trace 뒤의 줄은 보지 않는다.
+func TestViewDetectStopsAfterTheScanLimit(t *testing.T) {
+	lines := []string{"2026-11-12 12:14:46.603 ERROR --- [pool-1] c.e.Job : failed", "java.lang.IllegalStateException: boom"}
+	for len(lines) < viewDetectScanLines {
+		lines = append(lines, "\tat com.example.Job.run(Job.java:1)")
+	}
+	for range viewDetectLines {
+		lines = append(lines, `{"level":"info","msg":"later"}`)
+	}
+	if format := detectViewFormat(lines); format != viewFormatLevel {
+		t.Fatalf("format %q: lines after the scan limit decided it", format)
+	}
+}
+
+// 파일 이름에 든 escape는 --stats 제목에 그대로 나오지 않는다.
+func TestViewStatsSanitizesTheFileName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evil\x1b]0;owned\x07\x1b[31m.log")
+	if err := os.WriteFile(path, []byte("2026-11-12 13:51:11.258 ERROR --- [main] c.e.Job : failed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, color := range []bool{false, true} {
+		var out bytes.Buffer
+		if err := runViewStats(&out, path, color); err != nil {
+			t.Fatal(err)
+		}
+		title, _, _ := strings.Cut(ansi.Strip(out.String()), "\n")
+		if strings.ContainsAny(title, "\x1b\x07") || !strings.HasPrefix(title, "evil") {
+			t.Fatalf("color %v: title %q", color, title)
+		}
+		if strings.Contains(out.String(), "owned\x07") || strings.Contains(out.String(), "]0;") {
+			t.Fatalf("color %v: the OSC sequence reached the output: %q", color, out.String())
+		}
+	}
+}

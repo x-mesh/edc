@@ -98,7 +98,7 @@ audit:
     unreadable: "root ではないため、%d 個の process の実行ファイルを読めませんでした"
     preload_ok: "事前に読み込むライブラリなし (%d 個の process を確認)"
     preload_bad: "/etc/ld.so.preload に %d 個の項目があり、LD_PRELOAD で実行中の process が %d 個あります"
-    env_unreadable: "root ではないため、%d 個の process の環境を読めませんでした"
+    env_unreadable: "%d 個の process の環境を読めませんでした"
     proc_unreadable: "/proc を読めないため (%s)、process の LD_PRELOAD は確認していません"
     reason:
       temp: "一時ディレクトリから実行"

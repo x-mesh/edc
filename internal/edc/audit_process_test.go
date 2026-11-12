@@ -141,3 +141,24 @@ func TestAuditProcessPreloadWithoutProc(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestCollectAuditProcessesCountsAnEnvironmentItCannotRead(t *testing.T) {
+	root := t.TempDir()
+	writeTestProcess(t, root, 10, "/usr/sbin/sshd", "", "HOME=/root\x00")
+	writeTestProcess(t, root, 11, "/usr/bin/bash", "", "HOME=/root\x00")
+	// 읽을 수 없는 environ은 파일 대신 디렉터리로 흉내 낸다. 권한 오류가 아닌 읽기 오류다.
+	environ := filepath.Join(root, "proc/11/environ")
+	if err := os.Remove(environ); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(environ, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	processes := collectAuditProcesses(auditSources{root: root})
+	if processes.EnvUnreadable != 1 || processes.Checked != 2 {
+		t.Fatalf("processes = %+v", processes)
+	}
+	if result := auditProcessPreload(auditFacts{Processes: processes}); !reflect.DeepEqual(result.Warnings, []string{T("audit.proc.env_unreadable", 1)}) {
+		t.Fatalf("warnings = %v", result.Warnings)
+	}
+}

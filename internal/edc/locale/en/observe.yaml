@@ -127,6 +127,14 @@ observe:
     summary: "%d resolvers compared, matching=%t"
     details: "resolver answers"
 
+  tcp_wait:
+    value_separate: "edc tcp check: write the wait time with =, for example -w=%s"
+    value_invalid: "-w takes no value, or a time such as -w=5m: %s"
+    connected: "waited %s, attempt %d"
+    not_connected: "not connected · waited %s, attempt %d"
+    waiting: "waiting for %s · %s · attempt %d · %s"
+    waiting_line: "edc tcp check: %s attempt %d: %s"
+
   probe:
     cancelled: "edc cancelled the probe."
     tcp_connected: "%s connected (%s)"

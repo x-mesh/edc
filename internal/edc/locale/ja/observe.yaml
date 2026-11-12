@@ -127,6 +127,14 @@ observe:
     summary: "resolver %d 件を比較、一致=%t"
     details: "resolver ごとの応答"
 
+  tcp_wait:
+    value_separate: "edc tcp check: 待機時間は -w=%s のように = で付けて書きます"
+    value_invalid: "-w は値なしで使うか、-w=5m のように時間を付けて書きます: %s"
+    connected: "%s 待機、%d 回目の試行"
+    not_connected: "未接続 · %s 待機、%d 回目の試行"
+    waiting: "%s を待機中 · %s · %d 回目の試行 · %s"
+    waiting_line: "edc tcp check: %s %d 回目の試行: %s"
+
   probe:
     cancelled: "probe を中断しました"
     tcp_connected: "%s に接続しました (%s)"

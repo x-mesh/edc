@@ -52,6 +52,7 @@ command:
       count: "試行回数 (既定 5)、指定すると --diagnose で実行"
       interval: "試行間隔 (既定 1s)、指定すると --diagnose で実行"
       peer: "この host で ssh 経由で tcp expect を同時に実行し、両方の結果を結合します。指定すると --diagnose で実行"
+      wait: "接続できるまで 1 秒ごとに再試行 (1 回の試行は --timeout、既定 3s)。-w=5m なら 5 分後に停止"
       from: "expect: このアドレスや範囲から来た packet だけを数えます"
       duration: "expect: 待つ時間、省略すると Ctrl-C まで"
       until: "expect: 最初の SYN (syn) を見た 1 秒後 (応答も記録するため) か、最初の handshake 完了 (handshake) で止まります"
@@ -68,6 +69,7 @@ command:
       - "scan は --timeout を scan 全体の予算として使います (既定 60s)。確認できなかった port は not scanned として残します。"
       - "--diagnose は追跡中、試行ごとに 300ms 待つため、試行間隔はそれより短くなりません。"
       - "IPsec transport mode では expect は復号した SYN を見られず、kernel の drop 理由で判定します。"
+      - "-w はポートが接続を受け付けるまで待ってから check の結果を出力します。時間制限は -w=5m のように = で付けて書きます。Ctrl-C で止めると終了コード 4 です。"
   tls:
     summary: "証明書と handshake の確認"
     option:

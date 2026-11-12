@@ -43,6 +43,15 @@ edc report diff before.json after.json
 
 실패한 probe는 phase와 cause를 ERROR 블록으로 보여 주고 exit code `1`을 돌려줍니다.
 
+서버가 뜨는 동안처럼 포트가 연결을 받을 때까지 기다리려면 `-w`를 씁니다:
+
+```bash
+edc tcp check -w 10.0.0.9:5432      # 연결될 때까지 기다림, Ctrl-C로 멈춤
+edc tcp check -w=5m 10.0.0.9:5432   # 5분 뒤 멈춤
+```
+
+`-w`는 1초마다 다시 시도하고, 시도 한 번은 `--timeout`(기본 3s)까지만 기다립니다. 그래서 SYN을 버리는 대상도 15초에 한 번이 아니라 3초마다 시도합니다. 터미널에서는 한 줄에 기다린 시간, 시도 번호, 마지막 원인을 고쳐 씁니다. pipe나 `--json`에서는 원인이 바뀔 때만 stderr에 한 줄 씁니다. 끝나면 마지막 시도를 보통 check처럼 출력하고, 기다린 시간과 시도 번호를 붙입니다. 종료 코드는 연결되면 `0`, 시간이 지나면 `1`, Ctrl-C면 `4`입니다. 시간 제한은 `=`로 붙여 씁니다. `-w 5m`으로 띄어 쓰면 `5m`이 두 번째 대상으로 읽히므로 edc가 `-w=5m`로 쓰라고 알립니다. `edc alias`는 `edc tcp check -w`를 `etw`로 줄여 줍니다.
+
 `edc watch http -i 0.1 https://example.com`은 Ctrl-C까지 페이지를 반복 확인합니다. `-i`는 초 단위 소수(최소 `0.1`)나 `100ms` 같은 duration을 받으며, `--duration 1m`으로 종료 시각을 정할 수 있습니다. 매 sample에 HTTP status, 읽은 body byte(최대 10 MiB), 소요 시간과 수집된 DNS/TCP/TLS/TTFB 시간을 표시합니다. DNS의 IP 집합이 바뀌면 새 목록을 보여 줍니다. 완료한 표본이 있으면 마지막에 min/avg/p95/max 지연과 최장 연속 실패 시간을 요약합니다. `--json <path|->`는 마지막 요약을 포함한 JSON Lines를 출력합니다. 요약에는 `observation_status`(`observed` 또는 `no_samples`)와 `stop_reason`(`duration` 또는 `cancelled`)이 추가됩니다.
 
 완료한 표본이 없으면 텍스트 요약은 관측 종료 이유를 설명하고 지연 통계를 생략합니다. 이때 대상의 상태를 판단할 수 없습니다. 완료한 표본 없이 관측 시간이 끝나면 exit code는 `2`, 취소하면 `4`입니다. 완료한 표본이 있으면 기존 정책을 유지합니다. 실패한 표본이 있으면 `1`, 없으면 취소한 경우에도 `0`입니다.

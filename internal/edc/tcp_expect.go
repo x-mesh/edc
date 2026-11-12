@@ -705,6 +705,7 @@ const (
 	expectEventDrop          = "drop"
 	expectEventRoute         = "route"
 	expectEventDuplicate     = "duplicate"
+	expectEventHint          = "hint"
 )
 
 // expectSession은 packet과 kernel drop을 받아 연결 시도로 묶는다. packet과 drop은 서로 다른 goroutine에서 오므로
@@ -741,6 +742,8 @@ type expectSession struct {
 	listener *expectListener
 	// rstCause는 result가 정한 RST 판정의 이유다. 결과 뒤의 다음 할 일이 같은 이유를 말한다.
 	rstCause expectRSTCause
+	// hinted는 거부된 이유를 실행 중에 알린 출발지다. 출발지마다 한 번만 알린다.
+	hinted map[expectSourceKey]bool
 	// until과 stopAfter는 멈출 조건이다. 조건을 만나면 stopReason과 멈출 시각 stopAt을 적고, capture는 stopDue를 보고 멈춘다.
 	until      string
 	stopAfter  int
@@ -759,7 +762,7 @@ func newExpectSession(port uint16, from netip.Prefix, emit func(expectEvent)) *e
 	return &expectSession{
 		port: port, from: from, emit: emit,
 		flows: map[expectFlowKey]*expectFlow{}, sources: map[expectSourceKey]*expectSource{}, routes: map[expectSourceKey]*expectReturnPath{},
-		pendingDrops: map[expectFlowKey]*expectPendingDrops{}, otherDrops: map[string]int{},
+		pendingDrops: map[expectFlowKey]*expectPendingDrops{}, otherDrops: map[string]int{}, hinted: map[expectSourceKey]bool{},
 		flowLimit: expectFlowTrackLimit, sourceLimit: expectSourceTrackLimit,
 	}
 }
@@ -1105,11 +1108,11 @@ func (session *expectSession) tick(now time.Time) {
 		flow.routeShown = true
 		key := expectSourceKey{remote: flow.key.remote.Addr(), local: flow.key.local.Addr(), iface: flow.iface}
 		// 조회 한 번이 netlink dump 세 번이다. scanner가 출발지를 쏟아내도 packet 읽기가 멈추지 않게 상한을 둔다.
-		if _, known := session.routes[key]; known || len(session.routes) >= expectSourceLimit {
-			continue
+		if _, known := session.routes[key]; !known && len(session.routes) < expectSourceLimit {
+			route := session.lookupRoute(key)
+			session.emit(expectEvent{at: now, kind: expectEventRoute, iface: flow.iface, remote: flow.key.remote, local: flow.key.local, detail: describeExpectRoute(route, flow.iface)})
 		}
-		route := session.lookupRoute(key)
-		session.emit(expectEvent{at: now, kind: expectEventRoute, iface: flow.iface, remote: flow.key.remote, local: flow.key.local, detail: describeExpectRoute(route, flow.iface)})
+		session.hint(flow, key, now)
 	}
 	if now.Sub(session.lastSweep) < expectSweepInterval {
 		return
@@ -1127,6 +1130,20 @@ func (session *expectSession) tick(now time.Time) {
 		}
 		session.releaseDrops(key, pending)
 	}
+}
+
+// hint는 거부된 연결 시도의 이유를 실행 중에 한 줄로 알린다. RST와 kernel drop은 서로 다른 goroutine에서 순서 없이 오므로,
+// 둘이 모인 ROUTE 줄 자리에서 정한다. 요약과 같은 근거를 쓰고, 근거가 없으면 알리지 않는다.
+func (session *expectSession) hint(flow *expectFlow, key expectSourceKey, now time.Time) {
+	if flow.rstOut == 0 && flow.drops["NO_SOCKET"] == 0 || session.hinted[key] || len(session.hinted) >= expectSourceLimit {
+		return
+	}
+	text := explainExpectRST(session.port, flow.key.local.Addr().String(), flow.drops, session.listener).hint()
+	if text == "" {
+		return
+	}
+	session.hinted[key] = true
+	session.emit(expectEvent{at: now, kind: expectEventHint, iface: flow.iface, remote: flow.key.remote, local: flow.key.local, detail: text})
 }
 
 // releaseDrops는 SYN이 따라오지 않은 drop을 정리한다. SYN 경로의 이유는 packet socket이 보지 못한 SYN으로 출발지에 남긴다.
@@ -1334,6 +1351,21 @@ func (cause expectRSTCause) nextStep() string {
 		return T("expect.next.rst_listening")
 	}
 	return T("expect.next.rst")
+}
+
+// hint는 실행 중에 보이는 이유 줄이다. DROP 줄의 drop 이유와 client가 보는 오류를 잇는다.
+func (cause expectRSTCause) hint() string {
+	switch cause.kind {
+	case expectRSTFirewall:
+		return T("expect.live.hint.firewall")
+	case expectRSTNoListener:
+		return T("expect.live.hint.no_listener", cause.port)
+	case expectRSTLoopbackOnly, expectRSTOtherAddress:
+		return T("expect.live.hint.listener_address", cause.listener, cause.local)
+	case expectRSTNoSocket:
+		return T("expect.live.hint.no_socket", net.JoinHostPort(cause.local, strconv.Itoa(int(cause.port))))
+	}
+	return ""
 }
 
 // command는 결과 상자의 next 명령이다.
@@ -1704,7 +1736,7 @@ type expectLivePrinter struct {
 var expectEventLabels = map[string]string{
 	expectEventSYN: "SYN in", expectEventSYNRetransmit: "SYN in", expectEventSYNACK: "SYN-ACK out", expectEventSYNACKRetrans: "SYN-ACK out",
 	expectEventRSTOut: "RST out", expectEventRSTIn: "RST in", expectEventEstablished: "ESTABLISHED", expectEventDrop: "DROP",
-	expectEventRoute: "ROUTE", expectEventDuplicate: "SYN in",
+	expectEventRoute: "ROUTE", expectEventDuplicate: "SYN in", expectEventHint: "HINT",
 }
 
 // expectHeader는 시작할 때 보이는 머리말의 값이다.
@@ -1792,14 +1824,20 @@ func formatExpectEvent(event expectEvent, style textStyle) string {
 		label = style.good(label)
 	case expectEventRoute, expectEventDuplicate:
 		label = style.dim(label)
+	case expectEventHint:
+		label = style.warn(label)
 	}
 	iface := event.iface
 	if iface == "" {
 		iface = "-"
 	}
 	peers := event.remote.String() + " → " + event.local.String()
-	if event.kind == expectEventRoute {
+	switch event.kind {
+	case expectEventRoute:
 		peers = event.remote.Addr().String()
+	// 이유는 출발지마다 한 번 보이므로 연결 시도 하나의 port를 붙이지 않는다.
+	case expectEventHint:
+		peers = event.remote.Addr().String() + " → " + event.local.String()
 	}
 	parts := []string{style.dim(event.at.Local().Format("15:04:05.000")), label, fmt.Sprintf("%-12s", iface), peers}
 	switch event.kind {
@@ -1808,7 +1846,10 @@ func formatExpectEvent(event expectEvent, style textStyle) string {
 	case expectEventDuplicate:
 		parts = append(parts, style.dim(T("expect.live.duplicate")))
 	}
-	if event.detail != "" {
+	switch {
+	case event.kind == expectEventHint:
+		parts = append(parts, event.detail)
+	case event.detail != "":
 		parts = append(parts, style.dim(event.detail))
 	}
 	return strings.Join(parts, "  ")

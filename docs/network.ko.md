@@ -201,7 +201,7 @@ sudo edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] 
 - `--duration`을 생략하면 Ctrl-C까지 기다립니다. 최대 1h입니다.
 - `--from`은 주소 하나나 CIDR 대역에서 온 packet만 셉니다.
 
-실행 중에는 `SYN in`, `SYN-ACK out`, `RST out`, `ESTABLISHED`, `DROP`, `ROUTE`를 한 줄씩 보입니다. 같은 연결 시도에서 SYN-ACK가 다시 나가면 재전송 번호가 붙고, 돌아가는 경로가 끊긴 신호입니다. 끝나면 출발지와 도착 interface별 표, 돌아가는 경로, 판정을 보입니다.
+실행 중에는 `SYN in`, `SYN-ACK out`, `RST out`, `ESTABLISHED`, `DROP`, `ROUTE`를 한 줄씩 보입니다. 같은 연결 시도에서 SYN-ACK가 다시 나가면 재전송 번호가 붙고, 돌아가는 경로가 끊긴 신호입니다. 이 host가 연결 시도를 거부하면 `ROUTE` 줄 뒤에 `HINT` 줄이 붙어 이유와 drop 이유, client가 보는 오류를 알립니다. 출발지마다 한 번만 보이며, 아래 `rst` 이유와 같은 규칙을 쓰므로 drop 이유가 없으면 나오지 않습니다. 끝나면 출발지와 도착 interface별 표, 돌아가는 경로, 판정을 보입니다.
 
 | 판정 | 뜻 | 상태 | exit code |
 |---|---|---|---|

@@ -24,6 +24,11 @@ expect:
     retransmit: "再送 %d"
     duplicate: "同じ packet が別の interface にも見えます"
     handshake_time: "handshake %s"
+    hint:
+      firewall: "host firewall のルールが SYN を破棄し (NETFILTER_DROP)、RST で応答したため、client には connection refused と見えます"
+      no_listener: "port %d で待ち受ける process がありません。kernel が SYN を破棄し (NO_SOCKET)、RST で応答したため、client には connection refused と見えます"
+      listener_address: "listener は %[1]s だけで待ち受けています。kernel が %[2]s への SYN を破棄し (NO_SOCKET)、RST で応答したため、client には connection refused と見えます"
+      no_socket: "%s を受け付ける socket がありません。kernel が SYN を破棄し (NO_SOCKET)、RST で応答したため、client には connection refused と見えます"
   listener:
     present: "listener: %[1]s、アドレス %[2]s"
     loopback: "listener: %[1]s、アドレス %[2]s。loopback だけに bind しているため、他の host からの SYN は RST を受けます"

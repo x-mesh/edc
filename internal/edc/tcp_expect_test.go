@@ -778,6 +778,49 @@ func TestExpectRSTSummaryNamesTheCause(t *testing.T) {
 	}
 }
 
+// 실행 중 hint는 RST와 drop 이유가 모인 ROUTE 줄 뒤에 출발지마다 한 번 보인다. 요약과 같은 근거를 쓰므로 drop 이유가 없으면
+// 보이지 않는다.
+func TestExpectHintNamesTheRefusalOnce(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	attempt := func(scenario *expectScenario, seq uint32, reason string) {
+		scenario.in("eth0", "10.85.1.2", tcpFlagSYN, seq, time.Second)
+		if reason != "" {
+			scenario.session.drop(scenario.now, "10.85.1.2:53122", "100.83.200.248:2142", reason, "tcp_v4_rcv")
+		}
+		scenario.out("eth0", "10.85.1.2", tcpFlagRST|tcpFlagACK, 0, time.Millisecond)
+		scenario.session.tick(scenario.now.Add(time.Second))
+	}
+	scenario := newExpectScenario("")
+	scenario.session.listener = &expectListener{State: expectListenerNone}
+	attempt(scenario, 7, "NO_SOCKET")
+	attempt(scenario, 8, "NO_SOCKET")
+	if got := scenario.kinds(); got != "syn,drop,rst_out,route,hint,syn,drop,rst_out" {
+		t.Fatalf("events = %s", got)
+	}
+	hint := scenario.events[4]
+	line := formatExpectEvent(hint, textStyle{})
+	for _, want := range []string{"HINT", "10.85.1.2 → 100.83.200.248:2142", "no process listens on port 2142", "(NO_SOCKET)", "connection refused"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("hint %q lacks %q", line, want)
+		}
+	}
+	loopback := newExpectScenario("")
+	loopback.session.listener = &expectListener{State: expectListenerPresent, Process: "docker-proxy", Address: "127.0.0.1:2142", Scope: "loopback", bound: []string{"127.0.0.1"}}
+	attempt(loopback, 7, "NO_SOCKET")
+	if last := loopback.events[len(loopback.events)-1]; last.kind != expectEventHint || !strings.Contains(last.detail, "takes 127.0.0.1:2142 only") || !strings.Contains(last.detail, "SYN to 100.83.200.248") {
+		t.Errorf("loopback hint = %+v", last)
+	}
+	// drop 추적이 꺼졌으면 RST를 누가 보냈는지 근거가 없다.
+	silent := newExpectScenario("")
+	silent.session.listener = &expectListener{State: expectListenerNone}
+	attempt(silent, 7, "")
+	if got := silent.kinds(); got != "syn,rst_out,route" {
+		t.Errorf("events without a drop reason = %s", got)
+	}
+}
+
 func TestExpectResultCarriesTheListener(t *testing.T) {
 	scenario := newExpectScenario("")
 	scenario.session.listener = &expectListener{State: expectListenerNone}

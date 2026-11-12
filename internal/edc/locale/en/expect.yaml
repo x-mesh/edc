@@ -24,6 +24,11 @@ expect:
     retransmit: "retransmit %d"
     duplicate: "same packet on another interface"
     handshake_time: "handshake %s"
+    hint:
+      firewall: "a host firewall rule drops the SYN (NETFILTER_DROP) and answers with an RST, so the client gets connection refused"
+      no_listener: "no process listens on port %d: the kernel drops the SYN (NO_SOCKET) and answers with an RST, so the client gets connection refused"
+      listener_address: "the listener takes %[1]s only: the kernel drops the SYN to %[2]s (NO_SOCKET) and answers with an RST, so the client gets connection refused"
+      no_socket: "no socket takes %s: the kernel drops the SYN (NO_SOCKET) and answers with an RST, so the client gets connection refused"
   listener:
     present: "listener: %[1]s on %[2]s"
     loopback: "listener: %[1]s on %[2]s, loopback only. SYNs from other hosts get an RST"

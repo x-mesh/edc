@@ -24,6 +24,11 @@ expect:
     retransmit: "재전송 %d"
     duplicate: "같은 packet이 다른 interface에도 보임"
     handshake_time: "handshake %s"
+    hint:
+      firewall: "host firewall 규칙이 SYN을 버리고(NETFILTER_DROP) RST로 답해서 client에는 connection refused로 보입니다"
+      no_listener: "port %d에서 기다리는 process가 없습니다. kernel이 SYN을 버리고(NO_SOCKET) RST로 답해서 client에는 connection refused로 보입니다"
+      listener_address: "listener가 %[1]s에서만 기다립니다. kernel이 %[2]s 주소로 온 SYN을 버리고(NO_SOCKET) RST로 답해서 client에는 connection refused로 보입니다"
+      no_socket: "%s 주소를 받는 socket이 없습니다. kernel이 SYN을 버리고(NO_SOCKET) RST로 답해서 client에는 connection refused로 보입니다"
   listener:
     present: "listener: %[1]s, 주소 %[2]s"
     loopback: "listener: %[1]s, 주소 %[2]s. loopback에만 묶여 있어 다른 host의 SYN은 RST를 받습니다"

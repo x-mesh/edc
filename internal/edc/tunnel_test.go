@@ -1223,7 +1223,7 @@ func TestRunTunnelUpWithATimeLimitRecordsItAndStartsItsTimer(t *testing.T) {
 }
 
 func TestRunTunnelRejectsATimeLimitOutsideUp(t *testing.T) {
-	for _, args := range [][]string{{"list", "--ttl", "30m"}, {"down", "--ttl", "30m", "db"}, {"up", "--ttl", "-5m", "db"}} {
+	for _, args := range [][]string{{"list", "--ttl", "30m"}, {"down", "--ttl", "30m", "db"}, {"up", "--ttl", "-5m", "db"}, {"up", "--ttl", "0", "db"}, {"up", "--ttl", "0s", "db"}, {"list", "--ttl", "0"}} {
 		stderr := captureTraceStderr(t, func() {
 			if status := runTunnel(args, "test"); status != 2 {
 				t.Errorf("%v: status = %d, want 2", args, status)
@@ -1273,5 +1273,33 @@ func TestTunnelExpiryLockTellsWhetherTheTimerLives(t *testing.T) {
 	}
 	if leftovers, _ := filepath.Glob(filepath.Join(store.dir, "*"+tunnelExpiryLockSuffix)); len(leftovers) != 0 {
 		t.Fatalf("leftovers = %v", leftovers)
+	}
+}
+
+// 분리된 보조 프로세스는 실패를 알릴 곳이 없다. 끝내지 못하면 끝낼 때까지 다시 시도해야 한다.
+func TestTunnelExpireWhenDueRetriesAFailedStop(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if _, err := manager.start(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "6000", Remote: "db:5432"}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := manager.store.find("db")
+	due := record.Expires.Add(time.Second)
+	manager.now = func() time.Time { return due }
+	runner.stopFailure = errors.New("control socket busy")
+	var naps []time.Duration
+	sleep := func(nap time.Duration) {
+		naps = append(naps, nap)
+		if len(naps) == 2 {
+			runner.stopFailure = nil
+		}
+	}
+	if err := manager.expireWhenDue("db", record.Started.UnixNano(), sleep); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.stopped) != 1 || len(naps) != 2 || naps[0] != tunnelExpiryPoll {
+		t.Fatalf("stopped %v, naps %v", runner.stopped, naps)
+	}
+	if _, found := manager.store.find("db"); found {
+		t.Fatal("the stopped tunnel must leave no record")
 	}
 }

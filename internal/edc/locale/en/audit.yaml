@@ -98,7 +98,7 @@ audit:
     unreadable: "%d processes are unreadable without root"
     preload_ok: "no preloaded library (%d processes checked)"
     preload_bad: "/etc/ld.so.preload has %d entries, and %d processes run with LD_PRELOAD"
-    env_unreadable: "%d process environments are unreadable without root"
+    env_unreadable: "edc cannot read the environment of %d processes"
     proc_unreadable: "cannot read /proc (%s), edc did not check LD_PRELOAD of processes"
     reason:
       temp: "runs from a temporary directory"

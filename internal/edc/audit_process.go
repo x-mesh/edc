@@ -80,8 +80,11 @@ func collectAuditProcesses(sources auditSources) auditProcesses {
 			processes.Suspicious = append(processes.Suspicious, auditProcess{PID: pid, Comm: comm(), Exe: library, Reason: "deleted_lib"})
 		}
 		environ, err := os.ReadFile(filepath.Join(dir, "environ"))
-		if errors.Is(err, fs.ErrPermission) {
-			processes.EnvUnreadable++
+		// 그 사이에 끝난 process는 확인할 것이 없다. 다른 오류는 확인하지 못한 것으로 센다.
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				processes.EnvUnreadable++
+			}
 			continue
 		}
 		for _, variable := range strings.Split(string(environ), "\x00") {

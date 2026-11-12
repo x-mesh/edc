@@ -98,7 +98,7 @@ audit:
     unreadable: "root가 아니라 process %d개의 실행 파일을 읽지 못했습니다"
     preload_ok: "미리 넣은 라이브러리 없음 (process %d개 확인)"
     preload_bad: "/etc/ld.so.preload에 항목이 %d개 있고, LD_PRELOAD로 실행 중인 process가 %d개 있습니다"
-    env_unreadable: "root가 아니라 process %d개의 환경을 읽지 못했습니다"
+    env_unreadable: "process %d개의 환경을 읽지 못했습니다"
     proc_unreadable: "/proc를 읽지 못해(%s) process의 LD_PRELOAD는 확인하지 않았습니다"
     reason:
       temp: "임시 디렉터리에서 실행"

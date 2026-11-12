@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -600,6 +601,7 @@ func spawnTunnelExpiry(store tunnelStore, record tunnelRecord) error {
 
 // expireWhenDue는 만료 시각까지 기다렸다가 터널을 끝낸다. 긴 timer 하나는 컴퓨터가 잠든 동안 멈추므로 벽시계를 짧은 간격으로 다시 본다.
 // 기록이 사라졌거나 같은 이름의 다른 터널로 바뀌었으면 끝낼 대상이 아니므로 그대로 끝난다.
+// 끝내지 못하면 다시 시도한다. 분리된 프로세스라 실패를 알릴 곳이 없고, 그대로 끝나면 시간 제한이 지난 터널이 계속 열려 있다.
 func (manager tunnelManager) expireWhenDue(name string, started int64, sleep func(time.Duration)) error {
 	due := func(record tunnelRecord) bool {
 		return record.Started.UnixNano() == started && record.Expires != nil && !record.Expires.After(manager.now())
@@ -616,9 +618,13 @@ func (manager tunnelManager) expireWhenDue(name string, started int64, sleep fun
 		ctx, cancel := context.WithTimeout(context.Background(), tunnelProbeTimeout)
 		stopped, err := manager.downIf(ctx, name, due)
 		cancel()
+		if err != nil {
+			sleep(tunnelExpiryPoll)
+			continue
+		}
 		// 끝내지 않았다면 확인한 뒤 잠그기 전에 종료 시각이 늦춰졌거나 터널이 사라진 것이다. 처음부터 다시 본다.
-		if err != nil || stopped {
-			return err
+		if stopped {
+			return nil
 		}
 	}
 }
@@ -1189,7 +1195,10 @@ func runTunnel(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.save_up_only"))
 		return 2
 	}
-	if ttl < 0 || (ttl != 0 && subcommand != "up") {
+	// --ttl 0은 시간 제한 없음이 아니라 잘못된 값이다. 시간 제한이 없으면 --ttl을 빼면 된다.
+	ttlSet := false
+	set.Visit(func(flag *flag.Flag) { ttlSet = ttlSet || flag.Name == "ttl" })
+	if ttlSet && (ttl <= 0 || subcommand != "up") {
 		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.ttl_up_only"))
 		return 2
 	}

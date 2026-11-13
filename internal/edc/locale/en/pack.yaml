@@ -11,6 +11,7 @@ pack:
   paths: "%d paths"
   hint_bundle: "to make one archive: %s"
   error:
+    level: "edc pack: --level takes 1 to 9: %d"
     unknown: "not gzip, zstd, xz, bzip2, zip, or tar data"
     directory_extract: "a directory is not an archive; run edc pack without -x to pack it"
     remove_directory: "--rm works with files only; edc does not delete a directory"

@@ -419,7 +419,8 @@ edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, a
 - If you ran `edc pack *` before, the directory holds the files and their `.gz` copies. Then `edc pack -o NAME.tar.gz *` packs both.
 - A packed directory keeps symlinks as links. edc skips sockets, devices, and FIFOs and counts them. A file that edc cannot read stops the pack.
 - A file goes through the same steps as `edc compress` and `edc decompress`: the temporary file, the sync, `--rm`, and the kept modification time. `--rm` deletes an input file only. It does not delete a directory. If edc skipped an entry of an archive, `--rm` keeps the archive and exits with code 1.
-- Use `edc compress` and `edc decompress` for stdin, stdout, `-l N`, and `-j N`. `edc alias` adds `ep` for `edc pack`.
+- `--level N` sets the compression level from 1 to 9. The default is 6 for gzip and 3 for zstd. A higher level makes a smaller file and takes more time. `-l` lists an archive in `edc pack`, so the level has a long name.
+- Use `edc compress` and `edc decompress` for stdin, stdout, and `-j N`. `edc alias` adds `ep` for `edc pack`.
 
 ## Compress and decompress files
 

@@ -414,7 +414,8 @@ edc pack -o all.tar.gz app.log conf/ /var/app   # 묶음 하나: app.log, conf/,
 - 앞서 `edc pack *`를 실행했다면 디렉터리에 원본과 `.gz`가 함께 있습니다. 이때 `edc pack -o NAME.tar.gz *`는 둘 다 묶습니다.
 - 디렉터리를 묶을 때 symlink는 링크로 담습니다. 소켓, 장치, FIFO는 건너뛰고 개수를 알립니다. 읽을 수 없는 파일이 있으면 묶기를 멈춥니다.
 - 파일 하나는 `edc compress`, `edc decompress`와 같은 단계를 거칩니다. 임시 파일, 디스크 동기화, `--rm`, 수정 시각 유지가 같습니다. `--rm`은 입력 파일만 지우고 디렉터리는 지우지 않습니다. 압축 파일의 항목을 건너뛰었으면 `--rm`은 압축 파일을 남기고 종료 코드 1로 끝납니다.
-- stdin, stdout, `-l N`, `-j N`이 필요하면 `edc compress`와 `edc decompress`를 씁니다. `edc alias`는 `edc pack`을 `ep`로 줄여 줍니다.
+- `--level N`은 압축 수준을 1부터 9까지 정합니다. 기본값은 gzip 6, zstd 3입니다. 높을수록 파일이 작아지고 시간이 더 듭니다. `edc pack`에서 `-l`은 목록 보기라 수준 옵션은 긴 이름을 씁니다.
+- stdin, stdout, `-j N`이 필요하면 `edc compress`와 `edc decompress`를 씁니다. `edc alias`는 `edc pack`을 `ep`로 줄여 줍니다.
 
 ## 파일 압축과 해제
 

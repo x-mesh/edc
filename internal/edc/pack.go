@@ -18,7 +18,7 @@ import (
 	"syscall"
 )
 
-const packUsage = "edc pack [-z | -x] [-l] [--zstd] [-o path] [--force] [--rm] [-v] <path...>"
+const packUsage = "edc pack [-z | -x] [-l] [--zstd] [--level N] [-o path] [--force] [--rm] [-v] <path...>"
 
 var (
 	errPackUnknown   = errors.New("not gzip, zstd, xz, bzip2, zip, or tar data")
@@ -103,6 +103,8 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	extract := set.Bool("x", false, T("command.pack.option.extract"))
 	set.BoolVar(&options.list, "l", false, T("command.pack.option.list"))
 	set.BoolVar(&options.useZstd, "zstd", false, T("command.pack.option.zstd"))
+	// -l은 목록이라 edc compress의 -l N을 쓰지 못한다.
+	level := set.Int("level", 0, T("command.pack.option.level"))
 	set.StringVar(&options.output, "o", "", T("command.pack.option.output"))
 	set.BoolVar(&options.remove, "rm", false, T("command.pack.option.remove"))
 	set.BoolVar(&options.force, "force", false, T("command.pack.option.force"))
@@ -123,6 +125,7 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	bundle := options.output != "" && len(paths) > 1
 	switch {
 	case *compress && *extract, options.list && (*compress || options.output != "" || options.remove || options.force),
+		*level != 0 && (*extract || options.list),
 		len(paths) == 0, bundle && (*extract || options.remove):
 		fmt.Fprintln(stderr, T("cli.usage", packUsage))
 		return 2
@@ -134,6 +137,13 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	options.level = compressGzipLevel
 	if options.useZstd {
 		options.level = compressZstdLevel
+	}
+	if *level != 0 {
+		if *level < 1 || *level > 9 {
+			fmt.Fprintln(stderr, T("pack.error.level", *level))
+			return 2
+		}
+		options.level = *level
 	}
 	if bundle {
 		return packRunBundle(ctx, paths, options)

@@ -11,6 +11,7 @@ pack:
   paths: "경로 %d개"
   hint_bundle: "묶음 하나로 만들려면: %s"
   error:
+    level: "edc pack: --level은 1부터 9까지입니다: %d"
     unknown: "gzip, zstd, xz, bzip2, zip, tar 데이터가 아닙니다"
     directory_extract: "디렉터리는 압축 파일이 아닙니다. 묶으려면 -x 없이 edc pack을 실행합니다"
     remove_directory: "--rm은 파일에만 씁니다. edc는 디렉터리를 지우지 않습니다"

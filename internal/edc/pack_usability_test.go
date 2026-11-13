@@ -2,6 +2,7 @@ package edc
 
 import (
 	"crypto/rand"
+	mathrand "math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,39 @@ func TestPackFreeName(t *testing.T) {
 	for name, want := range map[string]string{"d.tar.gz": "d-1.tar.gz", "app.log": "app-1.log", "logs": "logs-1", ".bashrc": ".bashrc-1", "x.out": "x-1.out"} {
 		if got := packFreeName(filepath.Join(dir, name)); got != filepath.Join(dir, want) {
 			t.Errorf("%s: got %s, want %s", name, got, want)
+		}
+	}
+}
+
+// --level은 압축 수준을 정한다. 1~9 밖이거나 -x, -l과 함께면 사용법 오류다.
+func TestPackLevel(t *testing.T) {
+	dir := t.TempDir()
+	words := []string{"alpha", "beta", "gamma", "delta", "error", "warn", "info", "request", "user", "id"}
+	random := mathrand.New(mathrand.NewPCG(1, 2))
+	var text strings.Builder
+	for range 40000 {
+		text.WriteString(words[random.IntN(len(words))])
+		text.WriteByte(" \n"[random.IntN(2)])
+	}
+	body := text.String()
+	packWrite(t, filepath.Join(dir, "a.log"), body)
+	if code, _, stderr := packTest(t, dir, "--level", "1", "-o", "fast.gz", "a.log"); code != 0 {
+		t.Fatalf("level 1: %d %s", code, stderr)
+	}
+	if code, _, stderr := packTest(t, dir, "--level", "9", "-o", "small.gz", "a.log"); code != 0 {
+		t.Fatalf("level 9: %d %s", code, stderr)
+	}
+	fast, _ := os.Stat(filepath.Join(dir, "fast.gz"))
+	small, _ := os.Stat(filepath.Join(dir, "small.gz"))
+	if fast == nil || small == nil || small.Size() >= fast.Size() {
+		t.Fatalf("level 9 is not smaller than level 1: %v %v", fast, small)
+	}
+	if code, _, stderr := packTest(t, dir, "--level", "10", "a.log"); code != 2 || !strings.Contains(stderr, "--level takes 1 to 9: 10") {
+		t.Fatalf("level 10: %d %s", code, stderr)
+	}
+	for _, args := range [][]string{{"--level", "3", "-x", "fast.gz"}, {"--level", "3", "-l", "fast.gz"}} {
+		if code, _, _ := packTest(t, dir, args...); code != 2 {
+			t.Fatalf("%v is a usage error", args)
 		}
 	}
 }

@@ -11,6 +11,7 @@ pack:
   paths: "パス %d 個"
   hint_bundle: "1 つのアーカイブにまとめるには: %s"
   error:
+    level: "edc pack: --level は 1 から 9 までです: %d"
     unknown: "gzip、zstd、xz、bzip2、zip、tar のデータではありません"
     directory_extract: "ディレクトリはアーカイブではありません。まとめるには -x なしで edc pack を実行します"
     remove_directory: "--rm はファイルにだけ使います。edc はディレクトリを削除しません"

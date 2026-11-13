@@ -741,12 +741,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "pack", group: "tool",
-		usage: []string{"edc pack [-z | -x] [--zstd] [-o path] [--force] [--rm] [-v] <path...>", "edc pack -l <archive>"},
+		usage: []string{"edc pack [-z | -x] [--zstd] [--level N] [-o path] [--force] [--rm] [-v] <path...>", "edc pack -l <archive>"},
 		options: []optionDoc{
 			{"-z", "command.pack.option.compress"},
 			{"-x", "command.pack.option.extract"},
 			{"-l", "command.pack.option.list"},
 			{"--zstd", "command.pack.option.zstd"},
+			{"--level N", "command.pack.option.level"},
 			{"-o path", "command.pack.option.output"},
 			{"--force", "command.pack.option.force"},
 			{"--rm", "command.pack.option.remove"},

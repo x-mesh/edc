@@ -23,12 +23,12 @@ type testUtmp struct {
 func encodeTestUtmp(records ...testUtmp) []byte {
 	var data []byte
 	for _, record := range records {
-		raw := make([]byte, auditUtmpRecordSize)
+		raw := make([]byte, auditLayout.utmpSize)
 		binary.LittleEndian.PutUint16(raw[0:2], uint16(record.kind))
 		copy(raw[8:40], record.line)
 		copy(raw[44:76], record.user)
 		copy(raw[76:332], record.host)
-		binary.LittleEndian.PutUint32(raw[340:344], uint32(record.at.Unix()))
+		putTestRecordTime(raw[auditLayout.utmpTime:], record.at)
 		data = append(data, raw...)
 	}
 	return data
@@ -46,14 +46,23 @@ func writeTestLastlog(t *testing.T, root string, entries map[int]auditLastlog) {
 	}
 	defer file.Close()
 	for uid, entry := range entries {
-		raw := make([]byte, auditLastlogRecordSize)
-		binary.LittleEndian.PutUint32(raw[0:4], uint32(entry.Time.Unix()))
-		copy(raw[4:36], entry.Line)
-		copy(raw[36:292], entry.Host)
-		if _, err := file.WriteAt(raw, int64(uid)*auditLastlogRecordSize); err != nil {
+		raw := make([]byte, auditLayout.lastlogSize)
+		putTestRecordTime(raw, entry.Time)
+		line := auditLayout.timeBytes
+		copy(raw[line:line+32], entry.Line)
+		copy(raw[line+32:line+288], entry.Host)
+		if _, err := file.WriteAt(raw, int64(uid)*int64(auditLayout.lastlogSize)); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+func putTestRecordTime(data []byte, at time.Time) {
+	if auditLayout.timeBytes == 8 {
+		binary.LittleEndian.PutUint64(data, uint64(at.Unix()))
+		return
+	}
+	binary.LittleEndian.PutUint32(data, uint32(at.Unix()))
 }
 
 var testLoginBase = time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)
@@ -113,7 +122,7 @@ func TestReadAuditLoginsReportsZeroedTruncatedAndCompressed(t *testing.T) {
 	root := t.TempDir()
 	writeAuditFile(t, root, "/var/log/wtmp.1", "\x1f\x8b\x08\x00compressed", 0o664)
 	data := encodeTestUtmp(testUtmp{kind: auditUtmpTypeUser, line: "pts/0", user: "deploy", at: testLoginAt(1)})
-	data = append(data, make([]byte, auditUtmpRecordSize)...)
+	data = append(data, make([]byte, auditLayout.utmpSize)...)
 	data = append(data, encodeTestUtmp(testUtmp{kind: auditUtmpTypeDead, line: "pts/0", at: testLoginAt(2)})...)
 	data = append(data, 1, 2, 3)
 	writeAuditFile(t, root, "/var/log/wtmp", string(data), 0o664)
@@ -135,7 +144,7 @@ func TestReadAuditLoginsReportsZeroedTruncatedAndCompressed(t *testing.T) {
 
 func TestReadAuditLoginsLimitKeepsRecordBoundary(t *testing.T) {
 	previous := auditLoginMaxBytes
-	auditLoginMaxBytes = 2*auditUtmpRecordSize + 100
+	auditLoginMaxBytes = int64(2*auditLayout.utmpSize + 100)
 	t.Cleanup(func() { auditLoginMaxBytes = previous })
 	root := t.TempDir()
 	data := encodeTestUtmp(
@@ -290,7 +299,6 @@ func TestCollectAuditFactsReadsLoginRecords(t *testing.T) {
 		root:     root,
 		listen:   func() ([]listenSocket, error) { return nil, nil },
 		firewall: func(context.Context) (auditFirewall, error) { return auditFirewall{}, errAuditNoFirewallTool },
-		kernel:   func() string { return "" },
 		owner:    func(fs.FileInfo) (uint32, bool) { return 0, false },
 	}
 	if result := auditResultByID(t, evaluateAudit(collectAuditFacts(context.Background(), sources)), "login.mismatch"); result.Status != StatusPass {
@@ -316,7 +324,8 @@ func TestAuditKeyChangedShowsTheLoginBeforeTheChange(t *testing.T) {
 	if result.Status != StatusWarn || result.Next != "ssh-keygen -lf /home/deploy/.ssh/authorized_keys" {
 		t.Fatalf("result = %+v", result)
 	}
-	want := "deploy  /home/deploy/.ssh/authorized_keys  " + T("audit.ssh.key_changed_at", auditLoginTime(testLoginAt(20))) + ", " + T("audit.ssh.key_login", "root", auditLoginTime(testLoginAt(18)), "pts/0", "203.0.113.7")
+	want := "deploy  /home/deploy/.ssh/authorized_keys\n" + auditDetailPrefix + T("audit.ssh.key_changed_at", auditLoginTime(testLoginAt(20))) + "\n" +
+		auditDetailPrefix + T("audit.ssh.key_login", "root", auditLoginTime(testLoginAt(18)), "pts/0", "203.0.113.7")
 	if result.Evidence[0].Value != want {
 		t.Fatalf("evidence = %q, want %q", result.Evidence[0].Value, want)
 	}
@@ -423,5 +432,50 @@ func TestCollectAuditKeyFilesReadsOtherPathsWhenTheHomeIsLocked(t *testing.T) {
 	files, skipped := collectAuditKeyFiles(auditSources{root: root, owner: owner}, []auditPasswd{{Name: "deploy", UID: 1000, Home: "/home/deploy"}}, auditKeyFilePatterns(config))
 	if skipped != 1 || len(files) != 1 || files[0].Path != "/etc/ssh/keys/deploy" {
 		t.Fatalf("files = %+v, skipped = %d", files, skipped)
+	}
+}
+
+// aarch64 glibc는 시각이 8바이트라 utmp가 400바이트, lastlog가 296바이트다. x86_64 배치로 읽으면 wtmp가 1996년부터로 보이고
+// lastlog의 터미널이 비어, 정상 로그인이 login.mismatch fail이 된다. okrr-intranet-slackbot-1(Ubuntu 24.04 arm64)에서 본 값이다.
+func TestAuditLoginRecordsFollowTheArchitectureLayout(t *testing.T) {
+	if auditLayoutFor("amd64") != auditLayoutCompat32 || auditLayoutFor("arm64") != auditLayoutTime64 {
+		t.Fatal("layout by architecture")
+	}
+	at := time.Date(2026, 11, 13, 1, 0, 24, 0, time.UTC)
+	for name, layout := range map[string]auditRecordLayout{"compat32": auditLayoutCompat32, "time64": auditLayoutTime64} {
+		previous := auditLayout
+		auditLayout = layout
+		root := t.TempDir()
+		wtmp := make([]byte, layout.utmpSize)
+		binary.LittleEndian.PutUint16(wtmp[0:2], auditUtmpTypeUser)
+		binary.LittleEndian.PutUint32(wtmp[4:8], 1313221)
+		copy(wtmp[8:40], "pts/1")
+		copy(wtmp[44:76], "root")
+		copy(wtmp[76:332], "100.65.168.177")
+		lastlog := make([]byte, layout.lastlogSize)
+		if layout.timeBytes == 8 {
+			binary.LittleEndian.PutUint64(wtmp[344:352], uint64(at.Unix()))
+			binary.LittleEndian.PutUint64(lastlog[0:8], uint64(at.Unix()))
+		} else {
+			binary.LittleEndian.PutUint32(wtmp[340:344], uint32(at.Unix()))
+			binary.LittleEndian.PutUint32(lastlog[0:4], uint32(at.Unix()))
+		}
+		copy(lastlog[layout.timeBytes:], "pts/1")
+		copy(lastlog[layout.timeBytes+32:], "100.65.168.177")
+		writeAuditFile(t, root, "/var/log/wtmp", string(wtmp), 0o664)
+		writeAuditFile(t, root, auditLastlogFile, string(lastlog), 0o664)
+		records, err := readAuditLogins(auditSources{root: root})
+		last, lastErr := readAuditLastlog(auditSources{root: root}, []int{0})
+		auditLayout = previous
+		if err != nil || lastErr != nil {
+			t.Fatalf("%s: %v %v", name, err, lastErr)
+		}
+		want := auditLogin{User: "root", Line: "pts/1", Host: "100.65.168.177", PID: 1313221, Start: at}
+		if len(records.Truncated) != 0 || !records.Since.Equal(at) || !reflect.DeepEqual(records.Sessions, []auditLogin{want}) {
+			t.Errorf("%s: records = %+v", name, records)
+		}
+		if !reflect.DeepEqual(last[0], auditLastlog{Time: at, Line: "pts/1", Host: "100.65.168.177"}) {
+			t.Errorf("%s: lastlog = %+v", name, last[0])
+		}
 	}
 }

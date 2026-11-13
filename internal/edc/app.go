@@ -59,6 +59,7 @@ func Run(args []string, version string) int {
 	if len(args) > 1 && args[0] != "watch" && helpRequested(args[1:]) && printCommandHelp(os.Stdout, args[0]) {
 		return 0
 	}
+	args = normalizeJSONFlag(args)
 	switch args[0] {
 	case "help", "-h", "--help":
 		if len(args) > 2 && args[1] == "history" && args[2] == "prune" {
@@ -569,6 +570,30 @@ func parseInterspersed(set *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, rest[0])
 		args = rest[1:]
 	}
+}
+
+// normalizeJSONFlag는 값 없이 쓴 --json을 --json -로 바꿔 stdout으로 보낸다. --json이 맨 끝이거나 다음 인자가 다른 옵션일 때만이다.
+// flag package는 문자열 옵션의 다음 인자를 무엇이든 값으로 가져가서, 이 두 경우는 오류가 나거나 -v 같은 옵션을 파일 이름으로 썼다.
+// --json report.json과 --json=report.json은 그대로다. -- 뒤는 edc log처럼 다른 프로그램에 넘기는 인자라 건드리지 않는다.
+// grep의 --json은 값이 없는 불리언이라 뒤에 -를 붙이면 검색 대상이 된다.
+func normalizeJSONFlag(args []string) []string {
+	if len(args) == 0 || args[0] == "grep" {
+		return args
+	}
+	normalized := make([]string, 0, len(args)+1)
+	for index, arg := range args {
+		normalized = append(normalized, arg)
+		if arg == "--" {
+			return append(normalized, args[index+1:]...)
+		}
+		if arg != "--json" && arg != "-json" {
+			continue
+		}
+		if index+1 == len(args) || (strings.HasPrefix(args[index+1], "-") && args[index+1] != "-") {
+			normalized = append(normalized, "-")
+		}
+	}
+	return normalized
 }
 
 // probeContext는 사용자 취소용 cancel과 timeout을 분리해 돌려준다.

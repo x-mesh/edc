@@ -3,7 +3,9 @@ package edc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -461,5 +463,66 @@ func TestCheckContainersFailAStopWithCodeZeroUnderAnAlwaysPolicy(t *testing.T) {
 	policy.acceptContainers = []string{"web", "api"}
 	if result := checkContainers(facts, policy); result.Status != StatusPass {
 		t.Fatalf("accepted containers = %+v", result)
+	}
+}
+
+// 재부팅 요약은 원인을 밝힌다. 새 커널이 설치됐는지, 커널 밖의 패키지가 재부팅을 요구하는지, 언제부터 기다렸는지다.
+func TestCheckRebootNamesTheReason(t *testing.T) {
+	since := time.Date(2026, 7, 21, 15, 45, 2, 0, time.Local)
+	now := since.Add(115*24*time.Hour + time.Hour)
+	boot := time.Date(2026, 2, 25, 17, 2, 23, 0, time.Local)
+	kernels := []string{"6.17.0-14-generic", "6.17.0-41-generic"}
+	kernelPackages := []string{"linux-base", "linux-image-6.17.0-19-generic", "linux-image-6.17.0-41-generic"}
+	for name, test := range map[string]struct {
+		facts checkFacts
+		want  string
+	}{
+		"kernel": {checkFacts{Reboot: checkReboot{Flag: true, Since: since, Packages: kernelPackages, Running: kernels[0], Kernels: kernels, Boot: boot}},
+			T("check.reboot.kernel", "6.17.0-14-generic", "6.17.0-41-generic")},
+		"kernel and packages": {checkFacts{Reboot: checkReboot{Flag: true, Since: since, Packages: append(slices.Clone(kernelPackages), "libc6", "dbus"), Running: kernels[0], Kernels: kernels}},
+			T("check.reboot.kernel_packages", "6.17.0-14-generic", "6.17.0-41-generic", 2)},
+		"packages only": {checkFacts{Reboot: checkReboot{Flag: true, Since: since, Packages: []string{"libc6", "dbus", "systemd", "openssl"}, Running: kernels[1], Kernels: kernels}},
+			T("check.reboot.packages", "libc6, dbus, systemd (+1)")},
+		"new kernel without the flag": {checkFacts{Reboot: checkReboot{Running: kernels[0], Kernels: kernels}},
+			T("check.reboot.kernel", "6.17.0-14-generic", "6.17.0-41-generic")},
+	} {
+		result := checkRebootResult(test.facts)
+		if result.Status != StatusWarn || result.Summary != test.want {
+			t.Errorf("%s: summary = %q, want %q", name, result.Summary, test.want)
+		}
+	}
+	result := checkRebootResult(checkFacts{Now: now, Reboot: checkReboot{Flag: true, Since: since, Packages: kernelPackages, Running: kernels[0], Kernels: kernels, Boot: boot}})
+	want := []Evidence{
+		{Label: T("check.reboot.evidence_request"), Value: T("check.reboot.since", auditLoginTime(since), 115)},
+		{Label: T("check.reboot.evidence_kernels"), Value: "6.17.0-41-generic\n6.17.0-14-generic  " + T("check.reboot.kernel_running_since", auditLoginTime(boot))},
+		{Label: T("check.reboot.evidence_packages"), Value: strings.Join(kernelPackages, "\n")},
+	}
+	if !reflect.DeepEqual(result.Evidence, want) {
+		t.Fatalf("evidence = %+v", result.Evidence)
+	}
+	if result := checkRebootResult(checkFacts{Reboot: checkReboot{Running: kernels[1], Kernels: kernels}}); result.Status != StatusPass {
+		t.Fatalf("newest running = %+v", result)
+	}
+}
+
+// 결과 줄은 요약을 160 byte에서 자른다(firstLine). 클라우드 커널 이름은 길고 한국어·일본어는 글자당 3 byte라, 가장 긴 재부팅 요약도 그 안에 들어야 한다.
+func TestCheckRebootSummaryFitsTheResultLine(t *testing.T) {
+	loadCatalogs()
+	for _, language := range supportedLanguages {
+		format, ok := catalogs[language].text("check.reboot.kernel_packages")
+		if !ok {
+			t.Fatalf("%s: missing", language)
+		}
+		summary := fmt.Sprintf(format, "6.17.0-1011-oracle-fips", "7.0.0-1013-oracle-fips", 99)
+		if len(summary) > 160 {
+			t.Errorf("%s: %d bytes: %q", language, len(summary), summary)
+		}
+	}
+}
+
+// /boot에 없는 커널(WSL, 직접 넣은 커널)은 설치된 커널과 비교할 기준이 없다.
+func TestCheckRebootSkipsAKernelOutsideBoot(t *testing.T) {
+	if got := checkRebootResult(checkFacts{Reboot: checkReboot{Running: "6.6.87.2-microsoft-standard-WSL2", Kernels: []string{"6.8.0-48-generic"}}}); got.Status != StatusPass {
+		t.Fatalf("/boot에 없는 커널 = %s %q", got.Status, got.Summary)
 	}
 }

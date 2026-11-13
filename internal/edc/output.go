@@ -104,6 +104,10 @@ func resultPendingStatus(spinner string, color bool) string {
 // 저장한 report를 report show로 다시 그릴 때도 같은 규칙을 써야 하므로, 표시를 JSON에 두지 않고 probe 이름으로 정한다.
 var evidenceShownProbes = map[string]bool{}
 
+// warnEvidenceProbes는 warn일 때만 -v 없이 evidence를 보이는 probe다. 무엇이 걸렸는지가 warn의 내용이지만, pass의 evidence는
+// 판정과 무관한 참고 값이라 -v에 남긴다.
+var warnEvidenceProbes = map[string]bool{}
+
 func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	if result.Status == StatusFail {
 		printFailureBox(writer, resultLabel(result), result, color)
@@ -122,7 +126,8 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 			fmt.Fprintf(writer, "      warning: %s\n", warning)
 		}
 	}
-	if (verbose || evidenceShownProbes[result.Probe]) && result.Status != StatusFail && !isRemoteResult(result) {
+	shown := verbose || evidenceShownProbes[result.Probe] || (result.Status == StatusWarn && warnEvidenceProbes[result.Probe])
+	if shown && result.Status != StatusFail && !isRemoteResult(result) {
 		if lines := richEvidenceLinesWidth(color, result, writerWidth(writer)); lines != nil {
 			for _, line := range lines {
 				fmt.Fprintln(writer, line)

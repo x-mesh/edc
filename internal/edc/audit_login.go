@@ -9,16 +9,46 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 )
 
-// utmp와 lastlog 레코드의 크기와 위치는 x86_64·arm64 glibc의 struct utmp, struct lastlog다. 시각은 32비트 초다.
-const (
-	auditUtmpRecordSize    = 384
-	auditLastlogRecordSize = 292
+// auditRecordLayout은 glibc의 struct utmp와 struct lastlog 배치다. 시각 앞까지의 필드는 두 아키텍처가 같다.
+// x86_64 glibc만 32비트 시절의 파일을 그대로 읽으려고 시각을 4바이트로 둔다(__WORDSIZE_TIME64_COMPAT32).
+// aarch64는 8바이트 time_t라 utmp가 400바이트, lastlog가 296바이트다. Ubuntu 24.04 arm64에서 offsetof로 쟀다.
+type auditRecordLayout struct {
+	utmpSize, utmpTime int
+	lastlogSize        int
+	// timeBytes는 utmp와 lastlog의 시각 크기다. lastlog는 시각 바로 뒤에 터미널이 온다.
+	timeBytes int
+}
 
+var (
+	auditLayoutCompat32 = auditRecordLayout{utmpSize: 384, utmpTime: 340, lastlogSize: 292, timeBytes: 4}
+	auditLayoutTime64   = auditRecordLayout{utmpSize: 400, utmpTime: 344, lastlogSize: 296, timeBytes: 8}
+)
+
+// auditLayout은 edc가 도는 아키텍처의 배치다. 기록은 그 호스트의 glibc가 쓴다. edc는 linux/amd64와 linux/arm64로 배포한다.
+var auditLayout = auditLayoutFor(runtime.GOARCH)
+
+func auditLayoutFor(arch string) auditRecordLayout {
+	if arch == "arm64" {
+		return auditLayoutTime64
+	}
+	return auditLayoutCompat32
+}
+
+// readTime은 기록의 시각이다. 두 배치 모두 little endian이다.
+func (layout auditRecordLayout) readTime(data []byte) int64 {
+	if layout.timeBytes == 8 {
+		return int64(binary.LittleEndian.Uint64(data))
+	}
+	return int64(int32(binary.LittleEndian.Uint32(data)))
+}
+
+const (
 	auditUtmpTypeBoot = 2
 	auditUtmpTypeUser = 7
 	auditUtmpTypeDead = 8
@@ -114,13 +144,14 @@ func readAuditWtmpFile(full, path string, records *auditLoginRecords) ([]byte, e
 			return nil, nil
 		}
 	}
-	whole := size - size%auditUtmpRecordSize
+	recordSize := int64(auditLayout.utmpSize)
+	whole := size - size%recordSize
 	if whole != size {
 		records.Truncated = append(records.Truncated, path)
 	}
 	offset := int64(0)
 	if whole > auditLoginMaxBytes {
-		offset = whole - auditLoginMaxBytes/auditUtmpRecordSize*auditUtmpRecordSize
+		offset = whole - auditLoginMaxBytes/recordSize*recordSize
 		records.Limited = append(records.Limited, path)
 	}
 	data := make([]byte, whole-offset)
@@ -132,15 +163,16 @@ func readAuditWtmpFile(full, path string, records *auditLoginRecords) ([]byte, e
 
 // parse는 USER_PROCESS를 터미널마다 열고 같은 터미널의 DEAD_PROCESS로 닫는다. open은 파일 사이에 이어진다.
 func (records *auditLoginRecords) parse(data []byte, open map[string]int) {
-	for offset := 0; offset+auditUtmpRecordSize <= len(data); offset += auditUtmpRecordSize {
-		record := data[offset : offset+auditUtmpRecordSize]
+	layout := auditLayout
+	for offset := 0; offset+layout.utmpSize <= len(data); offset += layout.utmpSize {
+		record := data[offset : offset+layout.utmpSize]
 		if isZeroBytes(record) {
 			records.Zeroed++
 			continue
 		}
 		kind := int16(binary.LittleEndian.Uint16(record[0:2]))
 		line := cString(record[8:40])
-		at := time.Unix(int64(int32(binary.LittleEndian.Uint32(record[340:344]))), 0).UTC()
+		at := time.Unix(layout.readTime(record[layout.utmpTime:layout.utmpTime+layout.timeBytes]), 0).UTC()
 		if records.Since.IsZero() && at.Unix() > 0 {
 			records.Since = at
 		}
@@ -172,22 +204,24 @@ func readAuditLastlog(sources auditSources, uids []int) (map[int]auditLastlog, e
 	}
 	defer file.Close()
 	entries := map[int]auditLastlog{}
-	record := make([]byte, auditLastlogRecordSize)
+	layout := auditLayout
+	record := make([]byte, layout.lastlogSize)
 	for _, uid := range uids {
 		if uid < 0 {
 			continue
 		}
-		if _, err := file.ReadAt(record, int64(uid)*auditLastlogRecordSize); err != nil {
+		if _, err := file.ReadAt(record, int64(uid)*int64(layout.lastlogSize)); err != nil {
 			if errors.Is(err, io.EOF) {
 				continue
 			}
 			return nil, err
 		}
-		seconds := int32(binary.LittleEndian.Uint32(record[0:4]))
+		seconds := layout.readTime(record[:layout.timeBytes])
 		if seconds <= 0 {
 			continue
 		}
-		entries[uid] = auditLastlog{Time: time.Unix(int64(seconds), 0).UTC(), Line: cString(record[4:36]), Host: cString(record[36:292])}
+		line := layout.timeBytes
+		entries[uid] = auditLastlog{Time: time.Unix(seconds, 0).UTC(), Line: cString(record[line : line+32]), Host: cString(record[line+32 : line+288])}
 	}
 	return entries, nil
 }
@@ -311,8 +345,15 @@ func auditLoginMismatch(facts auditFacts) Result {
 		result.Next = "journalctl -t sshd -t sshd-session --since '" + auditLoginTime(unlogged[0].Start.Add(-time.Minute)) + "'"
 	case records.Since.IsZero() && before > 0:
 		result = auditResult(id, StatusWarn, T("audit.login.wtmp_empty", before))
+		lines := make([]string, 0, len(uids))
+		for _, uid := range uids {
+			last := facts.Lastlog[uid]
+			lines = append(lines, fmt.Sprintf("%s  lastlog %s %s %s", strings.Join(names[uid], ","), auditLoginTime(last.Time), last.Line, last.Host))
+		}
+		result.Evidence = []Evidence{{Label: T("audit.evidence.accounts"), Value: strings.Join(lines, "\n")}}
 	case records.Zeroed > 0:
 		result = auditResult(id, StatusWarn, T("audit.login.zeroed", records.Zeroed, auditLoginTime(records.Since)))
+		result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: fmt.Sprintf("zeroed records = %d\nwtmp files = %s", records.Zeroed, strings.Join(auditWtmpFiles, ", "))}}
 	case records.Since.IsZero():
 		result = auditResult(id, StatusPass, T("audit.login.none"))
 	default:
@@ -323,6 +364,9 @@ func auditLoginMismatch(facts auditFacts) Result {
 		result.Warnings = append(result.Warnings, T("audit.login.unjoinable"))
 	} else if facts.JoinedByTime > 0 {
 		result.Warnings = append(result.Warnings, T("audit.login.joined_by_time", facts.JoinedByTime))
+	}
+	if facts.JoinedByConnection > 0 {
+		result.Warnings = append(result.Warnings, T("audit.login.joined_by_connection", facts.JoinedByConnection))
 	}
 	if facts.JournalErr != nil {
 		result.Warnings = append(result.Warnings, auditJournalSkipReason(facts.JournalErr))
@@ -393,7 +437,8 @@ func auditKeyChanged(facts auditFacts) Result {
 			continue
 		}
 		firstPath = cmp.Or(firstPath, file.Path)
-		changed = append(changed, file.User+"  "+file.Path+"  "+auditKeyChangeEvidence(facts, file))
+		details, notes := auditKeyChangeEvidence(facts, file)
+		changed = append(changed, auditItem(file.User+"  "+file.Path, details, notes))
 	}
 	var result Result
 	if len(changed) == 0 {
@@ -423,16 +468,17 @@ func auditKeyChangeTime(file auditFile) time.Time {
 	return file.ModTime
 }
 
-// auditKeyChangeEvidence는 키 파일이 바뀌기 바로 전의 로그인이다. 그 로그인에서 키를 넣었을 가능성이 가장 크다.
-func auditKeyChangeEvidence(facts auditFacts, file auditFile) string {
+// auditKeyChangeEvidence는 키 파일이 바뀐 시각과 바로 전의 로그인, 그리고 시각의 뜻이다. 그 로그인에서 키를 넣었을 가능성이 가장 크다.
+func auditKeyChangeEvidence(facts auditFacts, file auditFile) ([]string, []string) {
 	at := auditKeyChangeTime(file)
-	changed := T("audit.ssh.key_changed_at", auditLoginTime(at))
+	details := []string{T("audit.ssh.key_changed_at", auditLoginTime(at))}
+	var notes []string
 	// 내용을 바꾸면 mtime과 ctime이 같이 움직인다. mtime만 크게 앞서면 touch -r로 되돌렸거나 chmod·chown만 한 것이다.
 	if at.Sub(file.ModTime) > time.Minute {
-		changed += ", " + T("audit.ssh.key_mtime_older", auditLoginTime(file.ModTime))
+		notes = append(notes, T("audit.ssh.key_mtime_older", auditLoginTime(file.ModTime)))
 	}
 	if facts.LoginErr != nil {
-		return changed
+		return details, notes
 	}
 	var previous auditLogin
 	found := false
@@ -445,7 +491,7 @@ func auditKeyChangeEvidence(facts auditFacts, file auditFile) string {
 		}
 	}
 	if !found {
-		return changed + ", " + T("audit.ssh.key_no_login")
+		return append(details, T("audit.ssh.key_no_login")), notes
 	}
-	return changed + ", " + T("audit.ssh.key_login", previous.User, auditLoginTime(previous.Start), previous.Line, cmp.Or(previous.Host, "-"))
+	return append(details, T("audit.ssh.key_login", previous.User, auditLoginTime(previous.Start), previous.Line, cmp.Or(previous.Host, "-"))), notes
 }

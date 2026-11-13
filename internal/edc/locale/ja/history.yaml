@@ -131,7 +131,7 @@ history:
     from: "開始時刻を含む (RFC3339)"
     to: "終了時刻を含まない (RFC3339)"
     limit: "最大件数、既定 200。0 はすべて"
-    json: "結果ごとに JSON 1 行、stdout は -"
+    json: "結果ごとに JSON 1 行、stdout は - か値の省略"
     metric: "検索する数値 field 名"
     min: "最小値を含む。--metric が必要"
     max: "最大値を含む。--metric が必要"

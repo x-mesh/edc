@@ -121,6 +121,10 @@ func (reader packCountingReader) Read(p []byte) (int, error) {
 // packKindText는 판단 줄에 쓰는 입력의 종류다.
 func packKindText(kind packKind) string {
 	switch {
+	case kind.format == packFormatZip:
+		return T("pack.verbose.kind_zip")
+	case kind.foreign != "":
+		return T("pack.verbose.kind_compressed", kind.foreign)
 	case kind.format != "" && kind.tar:
 		return T("pack.verbose.kind_compressed_tar", kind.format)
 	case kind.format != "":

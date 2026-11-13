@@ -38,6 +38,7 @@ var (
 	errCodecUnknown    = errors.New("not gzip or zstd data")
 	errCodecNoName     = errors.New("no output name")
 	errCodecChanged    = errors.New("input changed")
+	errCodecSameFile   = errors.New("the output is the input")
 	errCodecNoProc     = errors.New("/proc is not available")
 	errCodecUnchecked  = errors.New("cannot check every process that may write the input")
 )
@@ -64,6 +65,10 @@ type codecOptions struct {
 	convert func(dst io.Writer, src io.Reader) error
 	// target은 입력 경로로 출력 경로를 정한다.
 	target func(path string) (string, error)
+	// replace는 이미 있는 출력 파일을 바꾼다. 디렉터리와 입력 자신은 바꾸지 않는다.
+	replace bool
+	// keep은 --rm이어도 입력을 남길지 읽은 크기와 쓴 크기로 정한다. nil이면 늘 지운다.
+	keep func(read, written int64) bool
 }
 
 func runCompress(args []string) int {
@@ -191,6 +196,8 @@ type codecResult struct {
 	elapsed       time.Duration
 	// decompress면 read가 압축본이다. 비율은 어느 쪽이든 압축본 크기를 원본 크기로 나눈 값이다.
 	decompress bool
+	// kept는 --rm이었지만 keep이 입력을 남겼다는 뜻이다.
+	kept bool
 }
 
 func (result codecResult) line() string {
@@ -233,6 +240,8 @@ func codecErrorText(err error) string {
 		return T("compress.error.no_name")
 	case errors.Is(err, errCodecChanged):
 		return T("compress.error.changed")
+	case errors.Is(err, errCodecSameFile):
+		return T("compress.error.same_file")
 	case errors.Is(err, errCodecNoProc):
 		return T("compress.error.no_proc")
 	case errors.Is(err, errCodecUnchecked):
@@ -278,8 +287,14 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 	}
 	result.output = target
 	// 끝까지 변환한 뒤에야 이름이 겹친다고 알리지 않도록 먼저 본다. 그 사이에 생긴 파일은 아래 os.Link가 거부한다.
-	if _, err := os.Lstat(target); err == nil {
-		return result, fmt.Errorf("%s: %w", target, errCodecExists)
+	if existing, err := os.Lstat(target); err == nil {
+		if !options.replace || existing.IsDir() {
+			return result, fmt.Errorf("%s: %w", target, errCodecExists)
+		}
+		// 입력 자신을 바꾸면 --rm이 지울 입력이 이미 출력이다.
+		if info != nil && os.SameFile(info, existing) {
+			return result, errCodecSameFile
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return result, err
 	}
@@ -302,8 +317,11 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
-	// rename은 그 사이에 생긴 출력을 덮어쓰므로, 이름이 없을 때만 성공하는 hard link로 붙이고 임시 이름을 지운다.
-	if err == nil {
+	// rename은 그 사이에 생긴 출력을 덮어쓰므로, 이름이 없을 때만 성공하는 hard link로 붙이고 임시 이름을 지운다. replace면
+	// 덮어쓰는 것이 목적이라 rename으로 한 번에 바꾼다.
+	if err == nil && options.replace {
+		err = os.Rename(temp, target)
+	} else if err == nil {
 		if err = os.Link(temp, target); errors.Is(err, fs.ErrExist) {
 			err = fmt.Errorf("%s: %w", target, errCodecExists)
 		}
@@ -313,6 +331,10 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 		return result, err
 	}
 	result.read, result.written, result.elapsed = counted.count, written.count, time.Since(started)
+	if options.remove && options.keep != nil && options.keep(result.read, result.written) {
+		result.kept = true
+		return result, nil
+	}
 	if options.remove {
 		// 출력 이름이 디스크에 남기 전에 원본을 지운 상태로 전원이 꺼지면 둘 다 잃을 수 있다.
 		if err := codecSyncDir(filepath.Dir(target)); err != nil {

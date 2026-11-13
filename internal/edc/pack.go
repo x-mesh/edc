@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,10 +18,10 @@ import (
 	"syscall"
 )
 
-const packUsage = "edc pack [-z | -x] [-l] [--zstd] [-o path] [--rm] [-v] <path...>"
+const packUsage = "edc pack [-z | -x] [-l] [--zstd] [--level N] [--exclude PATTERN] [--gitignore] [-o path] [--force] [--rm] [-v] <path...>"
 
 var (
-	errPackUnknown   = errors.New("not gzip, zstd, or tar data")
+	errPackUnknown   = errors.New("not gzip, zstd, xz, bzip2, zip, or tar data")
 	errPackDirectory = errors.New("a directory is not an archive")
 	errPackRemoveDir = errors.New("--rm works with files only")
 	errPackInside    = errors.New("the output is inside the directory")
@@ -62,20 +64,30 @@ type packOptions struct {
 	useZstd bool
 	output  string
 	remove  bool
-	level   int
-	jobs    int
-	stdout  io.Writer
-	stderr  io.Writer
+	// force는 이미 있는 출력 파일을 바꾼다. 풀어 놓은 디렉터리는 지우지 않으므로 바꾸지 않는다.
+	force bool
+	// exclude와 gitignore는 디렉터리를 묶을 때 뺄 항목을 고른다.
+	exclude   packExcludes
+	gitignore bool
+	level     int
+	jobs      int
+	stdout    io.Writer
+	stderr    io.Writer
 	// report는 -v의 출력이다. -v가 없으면 아무것도 쓰지 않는다.
 	report *packReporter
 }
 
-// packKind는 입력을 앞부분 바이트로 본 결과다. compressed는 gzip이나 zstd이고, tar는 그것을 푼 내용(압축하지 않은 tar면
-// 그 자체)이 tar라는 뜻이다.
+// packKind는 입력을 앞부분 바이트로 본 결과다. format은 gzip, zstd, xz, bzip2, zip 가운데 하나이고, tar는 그것을 푼 내용
+// (압축하지 않은 tar면 그 자체)이 tar라는 뜻이다. zip은 항목을 여럿 담으므로 tar처럼 디렉터리로 푼다. foreign은 edc가 풀지
+// 못하는 압축 형식(7z, rar, lz4)이다.
 type packKind struct {
-	format string
-	tar    bool
+	format  string
+	tar     bool
+	foreign string
 }
+
+// many는 디렉터리로 푸는 입력이다.
+func (kind packKind) many() bool { return kind.tar || kind.format == packFormatZip }
 
 func (kind packKind) archive() bool { return kind.format != "" || kind.tar }
 
@@ -94,8 +106,13 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	extract := set.Bool("x", false, T("command.pack.option.extract"))
 	set.BoolVar(&options.list, "l", false, T("command.pack.option.list"))
 	set.BoolVar(&options.useZstd, "zstd", false, T("command.pack.option.zstd"))
+	// -l은 목록이라 edc compress의 -l N을 쓰지 못한다.
+	level := set.Int("level", 0, T("command.pack.option.level"))
 	set.StringVar(&options.output, "o", "", T("command.pack.option.output"))
 	set.BoolVar(&options.remove, "rm", false, T("command.pack.option.remove"))
+	set.BoolVar(&options.force, "force", false, T("command.pack.option.force"))
+	set.Var(&options.exclude, "exclude", T("command.pack.option.exclude"))
+	set.BoolVar(&options.gitignore, "gitignore", false, T("command.pack.option.gitignore"))
 	report := &packReporter{out: stderr}
 	set.BoolVar(&report.verbose, "v", false, T("command.pack.option.verbose"))
 	set.BoolVar(&report.verbose, "verbose", false, T("command.pack.option.verbose"))
@@ -112,7 +129,9 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// 받지 않는다.
 	bundle := options.output != "" && len(paths) > 1
 	switch {
-	case *compress && *extract, options.list && (*compress || options.output != "" || options.remove),
+	case *compress && *extract, options.list && (*compress || options.output != "" || options.remove || options.force),
+		*level != 0 && (*extract || options.list),
+		(len(options.exclude) > 0 || options.gitignore) && (*extract || options.list),
 		len(paths) == 0, bundle && (*extract || options.remove):
 		fmt.Fprintln(stderr, T("cli.usage", packUsage))
 		return 2
@@ -124,6 +143,13 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	options.level = compressGzipLevel
 	if options.useZstd {
 		options.level = compressZstdLevel
+	}
+	if *level != 0 {
+		if *level < 1 || *level > 9 {
+			fmt.Fprintln(stderr, T("pack.error.level", *level))
+			return 2
+		}
+		options.level = *level
 	}
 	if bundle {
 		return packRunBundle(ctx, paths, options)
@@ -197,6 +223,18 @@ func packErrorText(err error) string {
 	if errors.As(err, &same) {
 		return T("pack.error.same_name", viewSanitize(same.first), viewSanitize(same.second), viewSanitize(same.name))
 	}
+	var foreign packForeignError
+	if errors.As(err, &foreign) {
+		return T("pack.error.foreign", foreign.format)
+	}
+	var method packZipMethodError
+	if errors.As(err, &method) {
+		return T("pack.error.zip_method", viewSanitize(method.name))
+	}
+	if errors.Is(err, errPackZipEncrypted) {
+		name, _ := strings.CutSuffix(err.Error(), ": "+errPackZipEncrypted.Error())
+		return T("pack.error.zip_encrypted", viewSanitize(name))
+	}
 	var unsafe packUnsafeError
 	if errors.As(err, &unsafe) {
 		if unsafe.link {
@@ -207,6 +245,8 @@ func packErrorText(err error) string {
 	switch {
 	case errors.Is(err, errPackUnknown), errors.Is(err, errCodecUnknown):
 		return T("pack.error.unknown")
+	case errors.Is(err, errPackZipName):
+		return T("pack.error.zip_name")
 	case errors.Is(err, errPackDirectory):
 		return T("pack.error.directory_extract")
 	case errors.Is(err, errPackRemoveDir):
@@ -223,11 +263,58 @@ func packErrorText(err error) string {
 		// codecPath와 packPlace는 겹친 이름을 "이름: output exists"로 감싼다. 압축 파일 안의 최상위 이름은 압축 파일 이름과 다를
 		// 수 있어 무엇이 겹쳤는지 알려야 한다.
 		if name, ok := strings.CutSuffix(err.Error(), ": "+errCodecExists.Error()); ok {
-			return T("pack.error.exists_named", viewSanitize(name))
+			var directory packDirExistsError
+			if errors.As(err, &directory) {
+				return T("pack.error.exists_named", viewSanitize(name))
+			}
+			return packExistsText(name)
 		}
 		return T("pack.error.exists")
 	}
 	return viewSanitize(codecErrorText(err))
+}
+
+// packExistsText는 출력 파일 이름이 겹친 경우의 문구다. 비어 있는 다른 이름을 찾아 -o에 바로 쓸 수 있게 알린다. 그 이름이
+// 디렉터리면 --force가 바꾸지 않으므로 권하지 않는다.
+func packExistsText(name string) string {
+	if info, err := os.Lstat(name); err == nil && info.IsDir() {
+		return T("pack.error.exists_named", viewSanitize(name))
+	}
+	free := packFreeName(name)
+	if free == "" {
+		return T("pack.error.exists_named", viewSanitize(name))
+	}
+	return T("pack.error.exists_file", viewSanitize(name), viewSanitize(free))
+}
+
+// packNameSuffixes는 다른 이름을 지을 때 그대로 두는 끝부분이다. 긴 것부터 본다.
+var packNameSuffixes = []string{".tar.gz", ".tar.zst", ".tar.xz", ".tar.bz2", ".tgz", ".tzst", ".txz", ".tbz2", ".gz", ".zst", ".xz", ".bz2", ".out"}
+
+// packFreeName은 name과 같은 디렉터리에서 아직 없는 이름이다. 압축 확장자나 마지막 확장자 앞에 -1, -2를 붙인다(d.tar.gz →
+// d-1.tar.gz, app.log → app-1.log). 99까지 찾지 못하면 빈 문자열이다.
+func packFreeName(name string) string {
+	dir, base := filepath.Split(name)
+	stem, suffix := packSplitSuffix(base)
+	for number := 1; number < 100; number++ {
+		candidate := fmt.Sprintf("%s%s-%d%s", dir, stem, number, suffix)
+		if _, err := os.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// packSplitSuffix는 base를 이름과 끝부분으로 나눈다. ".bashrc"처럼 점으로만 시작하는 이름은 나누지 않는다.
+func packSplitSuffix(base string) (string, string) {
+	for _, known := range packNameSuffixes {
+		if stem, ok := strings.CutSuffix(base, known); ok && stem != "" {
+			return stem, known
+		}
+	}
+	if ext := filepath.Ext(base); ext != "" && ext != base {
+		return strings.TrimSuffix(base, ext), ext
+	}
+	return base, ""
 }
 
 // packPath는 입력 하나를 처리하고 결과 줄과 압축했는지를 돌려준다. 이름이 아니라 내용으로 형식을 본다. 자동이면 압축 파일과 tar는 풀고
@@ -257,6 +344,15 @@ func packPath(ctx context.Context, path string, options packOptions) (string, bo
 	if err != nil {
 		return "", false, err
 	}
+	// 자동으로는 이름이 .zip이 아닌 zip(Office 문서 등)과 풀지 못하는 압축 형식을 풀지도, 다시 압축하지도 않는다.
+	if options.mode == packAuto && !options.list {
+		switch {
+		case kind.format == packFormatZip && !packZipNamed(path):
+			return "", false, errPackZipName
+		case kind.foreign != "":
+			return "", false, packForeignError{format: kind.foreign}
+		}
+	}
 	action := "pack.verbose.action_extract"
 	switch {
 	case options.list:
@@ -277,34 +373,37 @@ func packPath(ctx context.Context, path string, options packOptions) (string, bo
 		return line, err == nil, err
 	case !kind.archive():
 		return "", false, errPackUnknown
-	case kind.tar:
+	case kind.many():
 		line, err := packExtractTar(ctx, path, kind, options)
 		return line, false, err
 	}
-	line, err := packDecompressFile(ctx, path, info.Size(), options)
+	line, err := packDecompressFile(ctx, path, info.Size(), kind.format, options)
 	return line, false, err
 }
 
-// packDetect는 파일 앞부분으로 형식을 본다. gzip이나 zstd면 앞 블록을 풀어 tar인지도 본다. tar의 첫 블록 257번째 바이트에는
-// "ustar"가 있다. 그 표시가 없는 아주 오래된 v7 tar는 파일 하나로 본다.
+// packDetect는 파일 앞부분으로 형식을 본다. 한 줄로 읽는 압축 형식이면 앞 블록을 풀어 tar인지도 본다. tar의 첫 블록 257번째
+// 바이트에는 "ustar"가 있다. 그 표시가 없는 아주 오래된 v7 tar는 파일 하나로 본다.
 func packDetect(path string) (packKind, error) {
 	input, _, err := codecOpenInput(path)
 	if err != nil {
 		return packKind{}, err
 	}
 	defer input.Close()
-	magic := make([]byte, 4)
+	magic := make([]byte, packMagicSize)
 	n, err := io.ReadFull(input, magic)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return packKind{}, err
 	}
-	kind := packKind{format: codecFormat(magic[:n])}
+	kind := packKind{format: packFormat(magic[:n]), foreign: packForeignFormat(magic[:n])}
+	if kind.format == packFormatZip {
+		return kind, nil
+	}
 	if _, err := input.Seek(0, io.SeekStart); err != nil {
 		return packKind{}, err
 	}
 	var block io.Reader = input
 	if kind.format != "" {
-		reader, err := codecOpenStream(input)
+		reader, err := packOpenStream(input, kind.format)
 		if err != nil {
 			return packKind{}, err
 		}
@@ -374,7 +473,7 @@ func packCompressFile(ctx context.Context, path string, size int64, options pack
 	if options.useZstd {
 		suffix = ".zst"
 	}
-	codec := codecOptions{command: "compress", output: options.output, remove: options.remove, stderr: options.stderr}
+	codec := codecOptions{command: "compress", output: options.output, remove: options.remove, replace: options.force, stderr: options.stderr}
 	codec.convert = func(dst io.Writer, src io.Reader) error {
 		var read atomic.Int64
 		defer options.report.track(viewSanitize(path), size, &read, nil)()
@@ -385,20 +484,41 @@ func packCompressFile(ctx context.Context, path string, size int64, options pack
 		return compressGzip(dst, src, options.level, options.jobs)
 	}
 	codec.target = func(path string) (string, error) { return path + suffix, nil }
+	// 자동으로 고른 압축이 줄지 않았으면 이미 압축된 데이터로 보고 --rm이어도 원본을 남긴다. -z는 사용자가 고른 방향이라 지운다.
+	codec.keep = func(read, written int64) bool { return options.mode == packAuto && packNotSmaller(read, written) }
 	result, err := codecPath(path, codec, false)
 	if err != nil {
 		return "", err
 	}
-	return packSanitizedLine(result), nil
+	line := packSanitizedLine(result)
+	switch {
+	case result.kept:
+		line += T("pack.not_smaller_kept", viewSanitize(path))
+	case packNotSmaller(result.read, result.written):
+		line += T("pack.not_smaller")
+	}
+	return line, nil
 }
 
-// packDecompressFile은 tar가 아닌 압축 파일 하나를 푼다. 이름이 .gz나 .zst로 끝나면 떼고, 아니면 .out을 붙인다.
-func packDecompressFile(ctx context.Context, path string, size int64, options packOptions) (string, error) {
-	codec := codecOptions{command: "decompress", output: options.output, remove: options.remove, stderr: options.stderr}
+// packSmallInput보다 작은 파일은 gzip 머리말(약 20바이트)만으로도 커지므로 비교하지 않고, --rm은 전처럼 지운다.
+const packSmallInput = 1024
+
+// packNotSmaller는 압축한 결과가 원본보다 작지 않은지 본다.
+func packNotSmaller(read, written int64) bool { return read >= packSmallInput && written >= read }
+
+// packDecompressFile은 tar가 아닌 압축 파일 하나를 푼다. 이름이 압축 확장자로 끝나면 떼고, 아니면 .out을 붙인다.
+func packDecompressFile(ctx context.Context, path string, size int64, format string, options packOptions) (string, error) {
+	codec := codecOptions{command: "decompress", output: options.output, remove: options.remove, replace: options.force, stderr: options.stderr}
 	codec.convert = func(dst io.Writer, src io.Reader) error {
 		var read atomic.Int64
 		defer options.report.track(viewSanitize(path), size, &read, nil)()
-		return decompressStream(dst, packContextReader{ctx: ctx, reader: packCountingReader{reader: src, count: &read}})
+		reader, err := packOpenStream(packContextReader{ctx: ctx, reader: packCountingReader{reader: src, count: &read}}, format)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+		_, err = io.CopyBuffer(dst, reader, make([]byte, codecBufferSize))
+		return err
 	}
 	codec.target = func(path string) (string, error) { return packPlainName(path), nil }
 	result, err := codecPath(path, codec, false)
@@ -415,7 +535,7 @@ func packSanitizedLine(result codecResult) string {
 
 // packPlainName은 압축을 푼 파일의 이름이다. 압축 확장자가 없으면 원래 이름 그대로 쓸 수 없으므로 .out을 붙인다.
 func packPlainName(path string) string {
-	for _, suffix := range []string{".gz", ".zst"} {
+	for _, suffix := range []string{".gz", ".zst", ".xz", ".bz2"} {
 		if name, ok := strings.CutSuffix(path, suffix); ok && packNamed(name) {
 			return name
 		}
@@ -425,10 +545,13 @@ func packPlainName(path string) string {
 
 // packArchiveName은 최상위가 여럿인 tar를 풀 디렉터리의 이름이다.
 func packArchiveName(path string) string {
-	for _, suffix := range []string{".tar.gz", ".tar.zst", ".tgz", ".tzst", ".tar"} {
+	for _, suffix := range []string{".tar.gz", ".tar.zst", ".tar.xz", ".tar.bz2", ".tgz", ".tzst", ".txz", ".tbz2", ".tbz", ".tar"} {
 		if name, ok := strings.CutSuffix(path, suffix); ok && packNamed(name) {
 			return name
 		}
+	}
+	if packZipNamed(path) && packNamed(path[:len(path)-4]) {
+		return path[:len(path)-4]
 	}
 	return path + ".out"
 }

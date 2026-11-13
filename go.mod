@@ -13,6 +13,7 @@ require (
 	github.com/go-git/go-git/v5 v5.16.3
 	github.com/miekg/dns v1.1.73
 	github.com/pelletier/go-toml/v2 v2.4.3
+	github.com/ulikunitz/xz v0.5.17
 	github.com/vishvananda/netlink v1.3.1
 	github.com/x-mesh/fastcompress v0.5.0
 	golang.org/x/arch v0.28.0

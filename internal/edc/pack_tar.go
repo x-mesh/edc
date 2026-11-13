@@ -331,6 +331,13 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	switch kind.format {
 	case "":
 	case packFormatZip:
+		// zip은 offset으로 읽어 TeeReader를 거치지 않는다. --rm이 지우기 전에 비교할 hash는 푸는 데 쓰는 바이트보다 먼저 만든다.
+		// 다 푼 뒤에 만들면 그사이 제자리에서 바뀐 zip이 기준이 되어, 푼 결과와 다른 zip을 지운다.
+		if options.remove {
+			if _, err := io.Copy(io.Discard, packContextReader{ctx: ctx, reader: counted}); err != nil {
+				return "", err
+			}
+		}
 		zipped = newPackZipStream(ctx, input, info.Size(), &progress)
 		defer zipped.Close()
 		stream = packContextReader{ctx: ctx, reader: zipped}
@@ -373,10 +380,11 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	}
 	if zipped != nil {
 		counts.skipped += int(zipped.skipped.Load())
+		if packZipExtractedHook != nil {
+			packZipExtractedHook()
+		}
 	}
-	// zip은 offset으로 읽어 input의 읽기 위치가 처음에 있다. --rm이면 지우기 전에 다시 읽어 비교할 hash를 여기서 처음부터 읽어 만든다.
-	// 큰 zip을 다시 읽는 동안 Ctrl-C를 받으면 옮기거나 지우지 않고 멈춘다.
-	if zipped == nil || options.remove {
+	if zipped == nil {
 		if _, err := io.Copy(io.Discard, packContextReader{ctx: ctx, reader: counted}); err != nil {
 			return "", err
 		}
@@ -412,6 +420,9 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	}
 	return line, nil
 }
+
+// packZipExtractedHook은 시험만 쓴다. zip을 다 푼 뒤 옮기기 전에 불려, 푼 뒤에 zip이 제자리에서 바뀌는 경우를 만든다.
+var packZipExtractedHook func()
 
 // packDirExistsError는 풀어 놓을 디렉터리 이름이 이미 있는 경우다. --force는 디렉터리를 바꾸지 않고, 최상위가 하나인 tar에
 // -o를 주면 그 안에 한 단계 더 들어가므로 다른 이름을 권하지 않는다.

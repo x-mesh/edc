@@ -69,11 +69,26 @@ func newPackFilter(dir string, options packOptions) (*packFilter, error) {
 		}
 	}
 	// 위의 규칙이 지정한 디렉터리 자체를 무시하면(dist/를 무시하는 저장소에서 edc pack --gitignore dist), 그 아래가 모두
-	// 빠져 빈 묶음이 된다. 직접 준 경로는 묶는다는 약속을 지키려고 위의 규칙을 쓰지 않고 그 디렉터리 안의 .gitignore만 읽는다.
+	// 빠져 빈 묶음이 된다. 직접 준 경로는 묶는다는 약속을 지키려고 그 디렉터리나 그 위를 무시하는 규칙만 뺀다. *.env처럼 안의
+	// 항목을 무시하는 규칙은 남겨, 비밀 파일이나 생성물이 묶음에 들어가지 않게 한다.
 	if len(filter.patterns) > 0 && gitignore.NewMatcher(filter.patterns).Match(filter.prefix, true) {
-		filter.patterns = nil
+		filter.patterns = packRulesBelow(filter.patterns, filter.prefix)
 	}
 	return filter, nil
+}
+
+func packRulesBelow(patterns []gitignore.Pattern, prefix []string) []gitignore.Pattern {
+	var kept []gitignore.Pattern
+	for _, pattern := range patterns {
+		above := false
+		for depth := 1; depth <= len(prefix) && !above; depth++ {
+			above = pattern.Match(prefix[:depth], true) == gitignore.Exclude
+		}
+		if !above {
+			kept = append(kept, pattern)
+		}
+	}
+	return kept
 }
 
 // enter는 디렉터리 하나에 들어갈 때 그 .gitignore를 읽는다. 그 규칙은 디렉터리 안의 항목에만 쓰인다.

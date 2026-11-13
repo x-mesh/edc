@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -119,6 +120,8 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
+	levelSet := false
+	set.Visit(func(given *flag.Flag) { levelSet = levelSet || given.Name == "level" })
 	// 진행 줄은 고쳐 쓰는 한 줄이라 터미널에서만 그린다. pipe나 파일로 남기는 로그에는 판단 줄과 항목 줄만 쓴다.
 	if file, ok := stderr.(*os.File); ok && isTerminal(file) {
 		report.live, report.color = true, richEnabled(file)
@@ -130,7 +133,7 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	bundle := options.output != "" && len(paths) > 1
 	switch {
 	case *compress && *extract, options.list && (*compress || options.output != "" || options.remove || options.force),
-		*level != 0 && (*extract || options.list),
+		levelSet && (*extract || options.list),
 		(len(options.exclude) > 0 || options.gitignore) && (*extract || options.list),
 		len(paths) == 0, bundle && (*extract || options.remove):
 		fmt.Fprintln(stderr, T("cli.usage", packUsage))
@@ -144,7 +147,7 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if options.useZstd {
 		options.level = compressZstdLevel
 	}
-	if *level != 0 {
+	if levelSet {
 		if *level < 1 || *level > 9 {
 			fmt.Fprintln(stderr, T("pack.error.level", *level))
 			return 2

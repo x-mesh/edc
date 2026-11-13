@@ -115,8 +115,10 @@ func TestPackLevel(t *testing.T) {
 	if fast == nil || small == nil || small.Size() >= fast.Size() {
 		t.Fatalf("level 9 is not smaller than level 1: %v %v", fast, small)
 	}
-	if code, _, stderr := packTest(t, dir, "--level", "10", "a.log"); code != 2 || !strings.Contains(stderr, "--level takes 1 to 9: 10") {
-		t.Fatalf("level 10: %d %s", code, stderr)
+	for _, level := range []string{"0", "10"} {
+		if code, _, stderr := packTest(t, dir, "--level", level, "a.log"); code != 2 || !strings.Contains(stderr, "--level takes 1 to 9: "+level) {
+			t.Fatalf("level %s: %d %s", level, code, stderr)
+		}
 	}
 	for _, args := range [][]string{{"--level", "3", "-x", "fast.gz"}, {"--level", "3", "-l", "fast.gz"}} {
 		if code, _, _ := packTest(t, dir, args...); code != 2 {
@@ -236,15 +238,16 @@ func TestPackExtractExistsDoesNotSuggestForce(t *testing.T) {
 func TestPackGitignoreKeepsANamedIgnoredDirectory(t *testing.T) {
 	repo := t.TempDir()
 	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
-	packWrite(t, filepath.Join(repo, ".gitignore"), "dist/\n")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "dist/\n*.env\n")
 	packWrite(t, filepath.Join(repo, "dist", "app.js"), "js")
+	packWrite(t, filepath.Join(repo, "dist", ".env"), "secret")
 	packWrite(t, filepath.Join(repo, "dist", ".gitignore"), "*.map\n")
 	packWrite(t, filepath.Join(repo, "dist", "app.js.map"), "map")
 	if code, _, stderr := packTest(t, repo, "--gitignore", "dist"); code != 0 {
 		t.Fatalf("dist: %d %s", code, stderr)
 	}
 	names := packArchiveNames(t, repo, "dist.tar.gz")
-	if !packHasName(names, "dist/app.js") || packHasName(names, "dist/app.js.map") {
+	if !packHasName(names, "dist/app.js") || packHasName(names, "dist/app.js.map") || packHasName(names, "dist/.env") {
 		t.Fatalf("names %v", names)
 	}
 }

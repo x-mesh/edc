@@ -293,7 +293,8 @@ flowchart LR
 | 기능 | 지원 환경 |
 | --- | --- |
 | 호스트 자원·디렉터리 사용량·캐시 조사·네트워크 probe | Linux와 macOS |
-| systemd·호스트 audit·최근 변경·커널 event | Linux |
+| 호스트 audit | Linux와 macOS (macOS는 일부 점검) |
+| systemd·최근 변경·커널 event | Linux |
 | 애플리케이션·커널 trace | trace·커널·권한에 따라 다름 |
 | 원격 recipe | 로컬 OpenSSH 사용, 원격 명령은 호스트 환경에 따름 |
 

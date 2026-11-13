@@ -3,8 +3,9 @@ audit:
   removed_accept: "audit.accept의 %s는 더 이상 audit 점검이 아닙니다. %s를 보세요"
   accepted: "받아들임 (%s): %s"
   skip:
+    unsupported_os: "이 OS에서는 점검하지 않습니다"
     no_dpkg: "dpkg 기록이 없습니다. edc는 dpkg 호스트에서만 패키지 파일을 확인합니다"
-    linux_only: "audit는 Linux에서만 동작합니다"
+    linux_only: "audit는 Linux와 macOS에서만 동작합니다"
     needs_root: "%s를 읽으려면 root가 필요합니다"
     unreadable: "%s를 읽지 못했습니다: %s"
     no_firewall_tool: "nft와 iptables-save가 모두 없습니다"
@@ -13,6 +14,15 @@ audit:
     no_sysctl: "/proc/sys에서 하드닝 값을 하나도 읽지 못했습니다"
     no_journal: "sshd journal을 읽지 않았습니다"
   net:
+    listen_partial: "root가 아니라 다른 사용자 process의 소켓은 읽지 못했습니다"
+    exposed_app_filter: "%s가 loopback 밖에 열려 있습니다. Application Firewall이 앱마다 거르므로 이 포트가 막혔는지는 확인하지 못했습니다"
+    firewall_alf_blocks: "Application Firewall이 필수 서비스 밖의 들어오는 연결을 모두 차단"
+    firewall_alf_apps: "Application Firewall이 앱마다 들어오는 연결을 거름 (어느 앱을 허용했는지는 판정하지 않음)"
+    firewall_pf_drops: "pf가 규칙에 맞지 않는 들어오는 연결을 차단 (input 규칙 %d개)"
+    firewall_mac_open: "Application Firewall이 꺼져 있고 pf에 들어오는 연결을 막는 규칙이 없어 모두 허용합니다"
+    ipv6_blocks: "IPv6도 들어오는 연결을 차단 (%s)"
+    ipv6_app_filter: "Application Firewall이 IPv4와 IPv6를 같은 기준으로 거름"
+    pf_unread: "pf  root가 아니라 읽지 않음"
     ipv6_none: "공인 IPv6 주소 없음 (IPv6 방화벽은 판정하지 않음)"
     ipv6_unknown: "공인 IPv6 주소가 있지만 IPv6 input 규칙을 읽지 못했습니다"
     ipv6_drops: "IPv6 input도 규칙에 맞지 않는 트래픽을 차단 (chain %d개, 규칙 %d개)"
@@ -39,6 +49,7 @@ audit:
     firewall_open: "%s에 input 규칙이 없어 들어오는 트래픽을 모두 허용합니다"
     allowed_ports: "설정의 allow_ports가 %s를 허용합니다"
     forward_off: "IP forwarding 꺼짐"
+    forward_on_host: "IP forwarding이 켜져 있어 이 호스트가 다른 장치의 패킷을 중계합니다"
     forward_container: "IP forwarding 켜짐 (%s가 사용)"
     forward_on: "IP forwarding이 켜져 있는데 컨테이너 런타임을 찾지 못했습니다"
   ssh:
@@ -73,6 +84,7 @@ audit:
     keys_command: "AuthorizedKeysCommand %s가 주는 키는 확인하지 않았습니다"
     keys_skipped: "root가 아니라 홈 디렉터리 %d개를 읽지 못했습니다"
   account:
+    external_ds: "Directory Services 검색 경로에 %s가 있습니다. edc는 로컬 노드(/Local/Default)의 계정만 확인했습니다"
     external: "nsswitch.conf가 %s에서도 계정을 가져옵니다. edc는 /etc/passwd의 계정만 확인했습니다"
     uid0_ok: "UID 0은 root뿐"
     uid0_bad: "root 외에 UID 0인 계정: %s"

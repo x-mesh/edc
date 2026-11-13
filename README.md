@@ -293,7 +293,8 @@ flowchart LR
 | Capability | Platforms |
 | --- | --- |
 | Host resources, directory usage, cache inspection, network probes | Linux and macOS |
-| systemd, host audit, recent host changes and kernel events | Linux |
+| Host audit | Linux and macOS (macOS: some checks) |
+| systemd, recent host changes and kernel events | Linux |
 | Application and kernel tracing | Varies by trace, kernel, and privileges |
 | Remote recipes | Uses local OpenSSH; remote commands depend on each host |
 

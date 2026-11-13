@@ -268,23 +268,35 @@ func TestAuditLocalSourceKeepsUnreadableLoginsApart(t *testing.T) {
 		!reflect.DeepEqual(result.Warnings, []string{T("audit.login.local_fd", 1, infoSingleLine(readErr.Error()))}) {
 		t.Fatalf("result = %+v", result)
 	}
-	// root로 본 /proc에 process가 없으면 그 연결은 끝난 것이다.
+	// /proc에 process가 없으면 그 연결은 끝난 것이다.
 	if err := os.RemoveAll(filepath.Join(root, "proc", "50")); err != nil {
 		t.Fatal(err)
 	}
 	if result := evaluateLocalSource(fake.sources(root), facts); result.Evidence[0].Label != T("audit.evidence.closed_logins") || len(result.Warnings) != 0 {
 		t.Fatalf("gone = %+v", result)
 	}
-	// root가 아니면 hidepid=2가 sshd를 가렸을 수 있다.
-	sources := fake.sources(root)
-	sources.euid = 1000
-	if result := evaluateLocalSource(sources, facts); result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
+	// /proc가 hidepid로 mount됐으면 euid와 관계없이 sshd가 가려졌을 수 있다. 커널은 hidepid를 superblock 옵션에 적는다.
+	writeAuditFile(t, root, "/proc/self/mountinfo", "28 32 0:25 / /proc rw,nosuid,nodev,noexec,relatime shared:11 - proc proc rw,hidepid=invisible\n", 0o644)
+	if result := evaluateLocalSource(fake.sources(root), facts); result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
 		!reflect.DeepEqual(result.Warnings, []string{T("audit.login.local_fd", 1, errAuditProcHidden.Error())}) {
 		t.Fatalf("hidden = %+v", result)
 	}
 }
 
 // fd 디렉터리는 읽혀도 fd 하나의 대상을 읽지 못하면 그 fd가 연결의 소켓인지 모른다.
+func TestAuditProcHidesPIDs(t *testing.T) {
+	for options, want := range map[string]bool{"rw": false, "rw,hidepid=0": false, "rw,hidepid=off": false, "rw,hidepid=2": true, "rw,hidepid=noaccess,gid=4": true} {
+		root := t.TempDir()
+		writeAuditFile(t, root, "/proc/self/mountinfo", "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n28 32 0:25 / /proc rw,nosuid shared:11 - proc proc "+options+"\n", 0o644)
+		if got := auditProcHidesPIDs(filepath.Join(root, "proc")); got != want {
+			t.Errorf("%s = %v, want %v", options, got, want)
+		}
+	}
+	if auditProcHidesPIDs(t.TempDir()) {
+		t.Fatal("no mountinfo")
+	}
+}
+
 func TestAuditHoldsSocketReportsAnUnreadableFD(t *testing.T) {
 	root := t.TempDir()
 	writeLocalSourceProcs(t, root, testLocalProc{pid: 50})

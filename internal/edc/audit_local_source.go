@@ -28,8 +28,8 @@ const auditLocalSourceArgsLimit = 160
 
 var errAuditNoSource = errors.New("no source")
 
-// errAuditProcHidden은 root가 아니어서 /proc/<pid>가 없는 것이 process가 끝난 것인지 hidepid로 가려진 것인지 모를 때다.
-var errAuditProcHidden = errors.New("process not visible without root; /proc may use hidepid")
+// errAuditProcHidden은 /proc가 hidepid로 mount되어 /proc/<pid>가 없는 것이 process가 끝난 것인지 가려진 것인지 모를 때다.
+var errAuditProcHidden = errors.New("process not visible; /proc is mounted with hidepid")
 
 // auditTCPSocket은 연결된(ESTABLISHED) TCP 소켓이다.
 type auditTCPSocket struct {
@@ -131,7 +131,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 		return
 	}
 	procRoot := sources.file("/proc")
-	root := sources.euid == 0
+	hidden := auditProcHidesPIDs(procRoot)
 	peerInodes := map[int]uint64{}
 	sshdPorts := map[int]uint16{}
 	wanted := map[uint64]bool{}
@@ -139,7 +139,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 		login := &local.Logins[index]
 		source := netip.AddrPortFrom(login.Addr, uint16(login.Port))
 		// 포트는 다른 연결에 재사용될 수 있다. Accepted를 남긴 process가 서버 쪽 소켓을 쥘 때만 그 로그인의 연결이다.
-		server, found, err := auditServerSocket(procRoot, root, login.PID, source, sockets)
+		server, found, err := auditServerSocket(procRoot, hidden, login.PID, source, sockets)
 		if err != nil {
 			login.Unverified = true
 			if local.FDErr == nil {
@@ -177,7 +177,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 }
 
 // auditServerSocket은 pid가 쥔, source에서 온 연결의 서버 쪽 소켓이다. 오류는 pid의 fd를 읽지 못한 것이고, 그때는 연결 중인지 모른다.
-func auditServerSocket(procRoot string, root bool, pid int, source netip.AddrPort, sockets []auditTCPSocket) (auditTCPSocket, bool, error) {
+func auditServerSocket(procRoot string, hidden bool, pid int, source netip.AddrPort, sockets []auditTCPSocket) (auditTCPSocket, bool, error) {
 	if pid <= 0 {
 		return auditTCPSocket{}, false, nil
 	}
@@ -185,7 +185,7 @@ func auditServerSocket(procRoot string, root bool, pid int, source netip.AddrPor
 		if socket.Remote != source || socket.Inode == 0 {
 			continue
 		}
-		held, err := auditHoldsSocket(procRoot, root, pid, socket.Inode)
+		held, err := auditHoldsSocket(procRoot, hidden, pid, socket.Inode)
 		if err != nil {
 			return auditTCPSocket{}, false, err
 		}
@@ -196,16 +196,17 @@ func auditServerSocket(procRoot string, root bool, pid int, source netip.AddrPor
 	return auditTCPSocket{}, false, nil
 }
 
-// auditHoldsSocket은 pid가 inode의 소켓을 쥐었는지다. root로 본 /proc에 process가 없으면 그 연결은 끝난 것이라 오류가 아니다.
-// root가 아니면 hidepid=2가 process를 가릴 수 있어 없는 것도 오류다. fd 디렉터리나 fd 하나를 읽지 못해도 오류다.
-func auditHoldsSocket(procRoot string, root bool, pid int, inode uint64) (bool, error) {
+// auditHoldsSocket은 pid가 inode의 소켓을 쥐었는지다. /proc에 process가 없으면 그 연결은 끝난 것이라 오류가 아니다.
+// hidden이면 hidepid가 process를 가릴 수 있어 없는 것도 오류다. euid 0이어도 user namespace 안이거나 CAP_SYS_PTRACE가 없으면 가려진다.
+// fd 디렉터리나 fd 하나를 읽지 못해도 오류다.
+func auditHoldsSocket(procRoot string, hidden bool, pid int, inode uint64) (bool, error) {
 	directory := filepath.Join(procRoot, strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, fs.ErrNotExist) {
-		if root {
-			return false, nil
+		if hidden {
+			return false, errAuditProcHidden
 		}
-		return false, errAuditProcHidden
+		return false, nil
 	}
 	if err != nil {
 		return false, err
@@ -223,6 +224,27 @@ func auditHoldsSocket(procRoot string, root bool, pid int, inode uint64) (bool, 
 		}
 	}
 	return false, nil
+}
+
+// auditProcHidesPIDs는 /proc가 hidepid=1, 2나 invisible, noaccess로 mount됐는지다. mountinfo를 읽지 못하면 Linux procfs가 아니라 보고 false다.
+func auditProcHidesPIDs(procRoot string) bool {
+	data, err := os.ReadFile(filepath.Join(procRoot, "self", "mountinfo"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		separator := slices.Index(fields, "-")
+		if separator < 6 || separator+3 >= len(fields) || fields[4] != "/proc" || fields[separator+1] != "proc" {
+			continue
+		}
+		for _, option := range strings.Split(fields[5]+","+fields[separator+3], ",") {
+			if value, ok := strings.CutPrefix(option, "hidepid="); ok && value != "0" && value != "off" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // auditForwardedBy는 상대 process가 sshd 포트로 받은 다른 연결을 찾는다. ssh -L, -D, -J는 원격 sshd-session이 로그인을 나르므로,

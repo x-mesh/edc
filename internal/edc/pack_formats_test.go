@@ -166,7 +166,7 @@ func TestPackExtractsZip(t *testing.T) {
 	if code != 0 || packRead(t, filepath.Join(dir, "site", "index.html")) != "<p>hi</p>" || packRead(t, filepath.Join(dir, "site", "css", "app.css")) != "p{}" {
 		t.Fatalf("zip: %d %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "site.zip → site/") || !strings.Contains(stderr, "1 special files skipped") {
+	if !strings.Contains(stderr, "site.zip → site/") || strings.Contains(stderr, " 0 B → ") || !strings.Contains(stderr, "1 special files skipped") {
 		t.Fatalf("result line %q", stderr)
 	}
 	if packExists(filepath.Join(dir, "__MACOSX")) {
@@ -237,5 +237,29 @@ func TestPackRejectsUnsafeAndUnreadableZips(t *testing.T) {
 	}
 	if left := packLeftovers(t, dir); len(left) > 0 {
 		t.Fatalf("leftovers %v", left)
+	}
+}
+
+// unix로 만들고 속성을 0으로 둔 zip 항목은 권한 0으로 읽힌다. 읽을 수 없는 파일로 풀지 않고 보통 권한을 준다.
+func TestPackZipWithoutModeGetsADefault(t *testing.T) {
+	dir := t.TempDir()
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	header := &zip.FileHeader{Name: "z/zero.txt", Method: zip.Store, CreatorVersion: 3 << 8}
+	writer, err := archive.CreateRaw(&zip.FileHeader{Name: header.Name, Method: zip.Store, CreatorVersion: header.CreatorVersion, CRC32: 0x3610a686, CompressedSize64: 5, UncompressedSize64: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Write([]byte("hello"))
+	archive.Close()
+	if err := os.WriteFile(filepath.Join(dir, "zero.zip"), buffer.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := packTest(t, dir, "zero.zip"); code != 0 || packRead(t, filepath.Join(dir, "z", "zero.txt")) != "hello" {
+		t.Fatalf("zero mode: %d %s", code, stderr)
+	}
+	info, err := os.Stat(filepath.Join(dir, "z", "zero.txt"))
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode %v %v", info, err)
 	}
 }

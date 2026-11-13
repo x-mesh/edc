@@ -375,6 +375,9 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 		}
 	}
 	final, err := packPlace(temp, archivePath, options.output, counts.crossTop)
+	if errors.Is(err, errCodecExists) {
+		return "", packDirExistsError{err: err}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -391,12 +394,25 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 			return "", err
 		}
 	}
-	line := T("pack.unpacked", viewSanitize(archivePath), viewSanitize(final)+"/", counts.files, counts.dirs, formatSizeShort(uint64(counted.count)), formatSizeShort(uint64(counts.bytes)), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
+	packed := counted.count
+	// zip은 offset으로 읽어 counted를 거치지 않으므로 파일 크기를 쓴다.
+	if zipped != nil {
+		packed = info.Size()
+	}
+	line := T("pack.unpacked", viewSanitize(archivePath), viewSanitize(final)+"/", counts.files, counts.dirs, formatSizeShort(uint64(packed)), formatSizeShort(uint64(counts.bytes)), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
 	if counts.skipped > 0 {
 		line += T("pack.skipped", counts.skipped)
 	}
 	return line, nil
 }
+
+// packDirExistsError는 풀어 놓을 디렉터리 이름이 이미 있는 경우다. --force는 디렉터리를 바꾸지 않고, 최상위가 하나인 tar에
+// -o를 주면 그 안에 한 단계 더 들어가므로 다른 이름을 권하지 않는다.
+type packDirExistsError struct{ err error }
+
+func (err packDirExistsError) Error() string { return err.err.Error() }
+
+func (err packDirExistsError) Unwrap() error { return err.err }
 
 type packUntarCounts struct {
 	files, dirs, skipped int

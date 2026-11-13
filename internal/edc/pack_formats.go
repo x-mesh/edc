@@ -155,6 +155,13 @@ func packZipEntry(file *zip.File, out *tar.Writer) error {
 	if strings.HasSuffix(file.Name, "/") {
 		header.Typeflag, header.Size = tar.TypeDir, 0
 	}
+	// unix로 만들었지만 속성을 0으로 둔 zip은 권한이 0으로 읽힌다. unzip처럼 보통 권한을 준다.
+	if header.Mode&0o777 == 0 {
+		header.Mode |= 0o644
+		if header.Typeflag == tar.TypeDir {
+			header.Mode |= 0o111
+		}
+	}
 	if err := out.WriteHeader(header); err != nil {
 		return err
 	}

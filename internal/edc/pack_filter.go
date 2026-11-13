@@ -68,6 +68,11 @@ func newPackFilter(dir string, options packOptions) (*packFilter, error) {
 			return nil, err
 		}
 	}
+	// 위의 규칙이 지정한 디렉터리 자체를 무시하면(dist/를 무시하는 저장소에서 edc pack --gitignore dist), 그 아래가 모두
+	// 빠져 빈 묶음이 된다. 직접 준 경로는 묶는다는 약속을 지키려고 위의 규칙을 쓰지 않고 그 디렉터리 안의 .gitignore만 읽는다.
+	if len(filter.patterns) > 0 && gitignore.NewMatcher(filter.patterns).Match(filter.prefix, true) {
+		filter.patterns = nil
+	}
 	return filter, nil
 }
 

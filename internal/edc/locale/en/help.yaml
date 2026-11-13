@@ -854,7 +854,7 @@ command:
       - "It does not overwrite a file or a directory that exists. --rm does not delete a directory, and it keeps an archive whose entries were skipped."
       - "Without -o, it handles each path on its own, so edc pack * writes one .gz for each file."
       - "-o with several paths packs them into one .tar.gz. Each path is a top-level entry with its base name, and archives go in as they are. It refuses two paths with the same name. -x and --rm do not work with this."
-      - "--force replaces an output file that exists, but not the input itself. It never replaces a directory. When an output exists, edc suggests a free name for -o."
+      - "--force replaces an output file that exists, but not the input itself. It never replaces a directory. When an output file exists, edc suggests a free name for -o."
       - "--exclude and --gitignore apply inside the directories that edc packs, and a path that you name is always packed. --gitignore also reads the .gitignore files above the directory up to the top of the git work tree."
       - "Use edc compress and edc decompress for stdin, stdout, and -j N."
   decompress:

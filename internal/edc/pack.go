@@ -263,6 +263,10 @@ func packErrorText(err error) string {
 		// codecPath와 packPlace는 겹친 이름을 "이름: output exists"로 감싼다. 압축 파일 안의 최상위 이름은 압축 파일 이름과 다를
 		// 수 있어 무엇이 겹쳤는지 알려야 한다.
 		if name, ok := strings.CutSuffix(err.Error(), ": "+errCodecExists.Error()); ok {
+			var directory packDirExistsError
+			if errors.As(err, &directory) {
+				return T("pack.error.exists_named", viewSanitize(name))
+			}
 			return packExistsText(name)
 		}
 		return T("pack.error.exists")
@@ -270,17 +274,15 @@ func packErrorText(err error) string {
 	return viewSanitize(codecErrorText(err))
 }
 
-// packExistsText는 출력 이름이 겹친 경우의 문구다. 비어 있는 다른 이름을 찾아 -o에 바로 쓸 수 있게 알린다. --force는 파일만
-// 바꾸므로 디렉터리에는 권하지 않는다.
+// packExistsText는 출력 파일 이름이 겹친 경우의 문구다. 비어 있는 다른 이름을 찾아 -o에 바로 쓸 수 있게 알린다. 그 이름이
+// 디렉터리면 --force가 바꾸지 않으므로 권하지 않는다.
 func packExistsText(name string) string {
-	free := packFreeName(name)
-	info, err := os.Lstat(name)
-	directory := err == nil && info.IsDir()
-	switch {
-	case free == "":
+	if info, err := os.Lstat(name); err == nil && info.IsDir() {
 		return T("pack.error.exists_named", viewSanitize(name))
-	case directory:
-		return T("pack.error.exists_dir", viewSanitize(name), viewSanitize(free))
+	}
+	free := packFreeName(name)
+	if free == "" {
+		return T("pack.error.exists_named", viewSanitize(name))
 	}
 	return T("pack.error.exists_file", viewSanitize(name), viewSanitize(free))
 }

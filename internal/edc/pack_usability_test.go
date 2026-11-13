@@ -63,7 +63,7 @@ func TestPackForceReplacesOnlyAnOutputFile(t *testing.T) {
 	if code, _, stderr := packTest(t, dir, "--force", "logs"); code != 0 || !strings.Contains(stderr, "logs/ → logs.tar.gz") {
 		t.Fatalf("--force archive: %d %s", code, stderr)
 	}
-	if code, _, stderr := packTest(t, dir, "--force", "logs.tar.gz"); code != 1 || !strings.Contains(stderr, "logs exists; delete it or give -o logs-1") || packRead(t, filepath.Join(dir, "logs", "a.log")) != "a" {
+	if code, _, stderr := packTest(t, dir, "--force", "logs.tar.gz"); code != 1 || !strings.Contains(stderr, "logs exists; delete it or give -o\n") || packRead(t, filepath.Join(dir, "logs", "a.log")) != "a" {
 		t.Fatalf("a directory is not replaced: %d %s", code, stderr)
 	}
 	if code, _, _ := packTest(t, dir, "-l", "--force", "logs.tar.gz"); code != 2 {
@@ -209,5 +209,33 @@ func TestPackGitignore(t *testing.T) {
 	names = packArchiveNames(t, repo, "src.tar.gz")
 	if packHasName(names, "src/a.tmp") || packHasName(names, "src/dist/") || !packHasName(names, "src/keep.tmp") {
 		t.Fatalf("the rules of the work tree apply to a subdirectory: %v", names)
+	}
+}
+
+// 풀 디렉터리 이름에 파일이 있어도, 디렉터리로 푸는 작업에는 --force나 다른 이름을 권하지 않는다.
+func TestPackExtractExistsDoesNotSuggestForce(t *testing.T) {
+	dir := t.TempDir()
+	packTarGz(t, filepath.Join(dir, "app.tar.gz"), packEntry{name: "app/", kind: '5'}, packEntry{name: "app/a", body: "a", kind: '0'})
+	packWrite(t, filepath.Join(dir, "app"), "a file")
+	code, _, stderr := packTest(t, dir, "app.tar.gz")
+	if code != 1 || !strings.Contains(stderr, "app exists; delete it or give -o\n") || strings.Contains(stderr, "--force") {
+		t.Fatalf("extract: %d %s", code, stderr)
+	}
+}
+
+// 작업 트리가 무시하는 디렉터리를 직접 주면 위의 규칙을 쓰지 않고 그 안을 묶는다.
+func TestPackGitignoreKeepsANamedIgnoredDirectory(t *testing.T) {
+	repo := t.TempDir()
+	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "dist/\n")
+	packWrite(t, filepath.Join(repo, "dist", "app.js"), "js")
+	packWrite(t, filepath.Join(repo, "dist", ".gitignore"), "*.map\n")
+	packWrite(t, filepath.Join(repo, "dist", "app.js.map"), "map")
+	if code, _, stderr := packTest(t, repo, "--gitignore", "dist"); code != 0 {
+		t.Fatalf("dist: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, repo, "dist.tar.gz")
+	if !packHasName(names, "dist/app.js") || packHasName(names, "dist/app.js.map") {
+		t.Fatalf("names %v", names)
 	}
 }

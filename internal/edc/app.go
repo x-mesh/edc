@@ -573,6 +573,7 @@ func parseInterspersed(set *flag.FlagSet, args []string) ([]string, error) {
 }
 
 // normalizeJSONFlag는 값 없이 쓴 --json을 --json -로 바꿔 stdout으로 보낸다. --json이 맨 끝이거나 다음 인자가 다른 옵션일 때만이다.
+// -report.json처럼 -로 시작해도 .이나 /가 들어 있으면 파일 이름으로 본다(jsonNextIsOption).
 // flag package는 문자열 옵션의 다음 인자를 무엇이든 값으로 가져가서, 이 두 경우는 오류가 나거나 -v 같은 옵션을 파일 이름으로 썼다.
 // --json report.json과 --json=report.json은 그대로다. -- 뒤는 edc log처럼 다른 프로그램에 넘기는 인자라 건드리지 않는다.
 // grep의 --json은 값이 없는 불리언이라 뒤에 -를 붙이면 검색 대상이 된다.
@@ -589,11 +590,26 @@ func normalizeJSONFlag(args []string) []string {
 		if arg != "--json" && arg != "-json" {
 			continue
 		}
-		if index+1 == len(args) || (strings.HasPrefix(args[index+1], "-") && args[index+1] != "-") {
+		if index+1 == len(args) || jsonNextIsOption(args[index+1]) {
 			normalized = append(normalized, "-")
 		}
 	}
 	return normalized
+}
+
+// jsonNextIsOption은 인자가 옵션 이름 모양인지다. -v, --since, --since=1h, 옵션의 끝인 --는 옵션이고, -와 -report.json은 아니다.
+// edc의 옵션 이름은 영문자로 시작하고 영문자, 숫자, -만 쓴다.
+func jsonNextIsOption(arg string) bool {
+	if arg == "--" {
+		return true
+	}
+	name, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
+	if !strings.HasPrefix(arg, "-") || name == "" || !(name[0] >= 'a' && name[0] <= 'z' || name[0] >= 'A' && name[0] <= 'Z') {
+		return false
+	}
+	return !strings.ContainsFunc(name, func(char rune) bool {
+		return !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-')
+	})
 }
 
 // probeContext는 사용자 취소용 cancel과 timeout을 분리해 돌려준다.

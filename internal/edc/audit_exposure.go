@@ -63,6 +63,8 @@ func auditIPv6Open(facts auditFacts) Result {
 	case firewall.perApp():
 		// ALF는 주소 family를 나누지 않는다. IPv4만 막고 IPv6를 열어 두는 틈이 생기지 않는다.
 		return auditResult(id, StatusPass, T("audit.net.ipv6_app_filter"))
+	case firewall.PFUnknown:
+		return auditResult(id, StatusSkip, T("audit.net.pf_anchor_unknown", firewall.PFAnchored))
 	}
 	var listeners []string
 	for _, socket := range facts.Listen {

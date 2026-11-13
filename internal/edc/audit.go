@@ -186,6 +186,9 @@ type auditFirewall struct {
 	ALF      bool
 	ALFState int
 	Detail   string
+	// PFBlocks는 최상위 pf의 들어오는 block 규칙 수, PFAnchored는 anchor 안의 조건 없는 규칙 수다. PFUnknown이면 그 규칙 때문에 pf가 막는지 판정하지 않았다.
+	PFBlocks, PFAnchored int
+	PFUnknown            bool
 }
 
 type auditFile struct {
@@ -1356,6 +1359,8 @@ func auditExposureResult(facts auditFacts, exposed auditExposed) Result {
 		result = auditResult(id, StatusWarn, T("audit.net.exposed_filtered", ports))
 	case facts.Firewall.perApp():
 		result = auditResult(id, StatusWarn, T("audit.net.exposed_app_filter", ports))
+	case facts.Firewall.PFUnknown:
+		result = auditResult(id, StatusWarn, T("audit.net.exposed_pf_unknown", ports))
 	default:
 		result = auditResult(id, StatusFail, T("audit.net.exposed_open", ports))
 		result.Error = &DiagnosticError{Kind: "exposure", Message: result.Summary}

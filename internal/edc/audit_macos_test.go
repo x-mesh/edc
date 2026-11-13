@@ -99,13 +99,15 @@ func TestParsePFInputRules(t *testing.T) {
 	}{
 		{"macOS default", "scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all\n", pfInputRules{}},
 		{"block then allow ssh", "block drop in all\npass in proto tcp from any to any port = 22 flags S/SA keep state\npass out all flags S/SA keep state\n",
-			pfInputRules{V4: 2, V6: 2, V4Drops: true, V6Drops: true}},
-		{"later pass all wins", "block drop in all\npass in all flags S/SA keep state\n", pfInputRules{V4: 2, V6: 2}},
-		{"quick pass stops", "pass in quick all\nblock drop in all\n", pfInputRules{V4: 2, V6: 2}},
-		{"quick block stops", "block drop in quick all\npass in all\n", pfInputRules{V4: 2, V6: 2, V4Drops: true, V6Drops: true}},
-		{"inet only", "block return in inet all\n", pfInputRules{V4: 1, V4Drops: true}},
-		{"interface only", "block drop in on en0 all\n", pfInputRules{V4: 1, V6: 1}},
+			pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"later pass all wins", "block drop in all\npass in all flags S/SA keep state\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, CatchAll: 2}},
+		{"quick pass stops", "pass in quick all\nblock drop in all\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, CatchAll: 2}},
+		{"quick block stops", "block drop in quick all\npass in all\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, V4Drops: true, V6Drops: true, CatchAll: 2}},
+		{"inet only", "block return in inet all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V4Drops: true, CatchAll: 1}},
+		{"interface only", "block drop in on en0 all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1}},
 		{"out ignored", "block drop out all\n", pfInputRules{}},
+		// 모르는 조건이 붙은 pass는 모두 통과시킨다고 본다. 앞의 block을 실제보다 넓게 보지 않는다.
+		{"unknown pass condition", "block drop in all\npass in all tagged trusted flags S/SA keep state\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, CatchAll: 2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,20 +120,36 @@ func TestParsePFInputRules(t *testing.T) {
 
 // pfctl -nvf가 macOS 27.0.1에서 찍은 정규형이다. pfctl -s rules와 같은 형식으로 규칙을 출력하고 root 없이 실행된다.
 func TestParsePFInputRulesCapturedOutput(t *testing.T) {
-	tests := map[string]pfInputRules{
-		"block drop in all\npass in proto tcp from any to any port = 22 flags S/SA keep state\npass in quick on lo0 all flags S/SA keep state\nblock return in inet6 all\npass out all flags S/SA keep state\n": {V4: 3, V6: 4, V4Drops: true, V6Drops: true},
-		"block drop in log all\npass in all flags S/SA keep state\n":                  {V4: 2, V6: 2},
-		"pass in quick all flags S/SA keep state\nblock drop in all\n":                {V4: 2, V6: 2},
-		"block drop in log quick inet all\npass in inet6 all flags S/SA keep state\n": {V4: 1, V6: 1, V4Drops: true},
-		"block drop all\n": {V4: 1, V6: 1, V4Drops: true, V6Drops: true},
-		"block drop in on en0 all\npass in all flags S/SA keep state\n":                                                  {V4: 2, V6: 2},
-		"block return-rst in proto tcp all\n":                                                                            {V4: 1, V6: 1},
-		"scrub-anchor \"/*\" all fragment reassemble\nnat-anchor \"/*\" all\nrdr-anchor \"/*\" all\nanchor \"/*\" all\n": {},
+	tests := []struct {
+		text string
+		want pfInputRules
+	}{
+		{"block drop in all\npass in proto tcp from any to any port = 22 flags S/SA keep state\npass in quick on lo0 all flags S/SA keep state\nblock return in inet6 all\npass out all flags S/SA keep state\n",
+			pfInputRules{Rules: 4, Blocks: 2, V4: 3, V6: 4, V4Drops: true, V6Drops: true, CatchAll: 2}},
+		{"block drop in log all\npass in all flags S/SA keep state\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, CatchAll: 2}},
+		{"pass in quick all flags S/SA keep state\nblock drop in all\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, CatchAll: 2}},
+		{"block drop in log quick inet all\npass in inet6 all flags S/SA keep state\n", pfInputRules{Rules: 2, Blocks: 1, V4: 1, V6: 1, V4Drops: true, CatchAll: 2}},
+		{"block drop all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"block drop in on en0 all\npass in all flags S/SA keep state\n", pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, CatchAll: 1}},
+		{"block return-rst in proto tcp all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1}},
+		// tagged는 표시가 붙은 packet에만 맞는다. 전체 차단으로 보면 열린 포트를 막혔다고 보고한다.
+		{"block drop in all tagged trusted\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1}},
+		{"block drop in log (all) quick all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"block drop in all label \"deny\"\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"block return in all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"scrub-anchor \"/*\" all fragment reassemble\nnat-anchor \"/*\" all\nrdr-anchor \"/*\" all\nanchor \"/*\" all\n", pfInputRules{}},
 	}
-	for text, want := range tests {
-		if got := parsePFInputRules(text); got != want {
-			t.Errorf("%q = %+v, want %+v", text, got, want)
+	for _, tt := range tests {
+		if got := parsePFInputRules(tt.text); got != tt.want {
+			t.Errorf("%q = %+v, want %+v", tt.text, got, tt.want)
 		}
+	}
+}
+
+func TestParsePFAnchors(t *testing.T) {
+	got := parsePFAnchors("  com.apple\n  com.apple/250.ApplicationFirewall\n\n")
+	if !reflect.DeepEqual(got, []string{"com.apple", "com.apple/250.ApplicationFirewall"}) {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -142,13 +160,17 @@ func TestAuditDarwinFirewall(t *testing.T) {
 		want     Status
 		summary  string
 	}{
-		{"alf off, pf off", darwinAuditFirewall(darwinALFOff, true, false, pfInputRules{}), StatusWarn, T("audit.net.firewall_mac_open")},
-		{"alf apps", darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{}), StatusPass, T("audit.net.firewall_alf_apps")},
-		{"alf block all", darwinAuditFirewall(darwinALFBlockAll, false, false, pfInputRules{}), StatusPass, T("audit.net.firewall_alf_blocks")},
-		{"pf drops", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{V4: 2, V6: 2, V4Drops: true, V6Drops: true}), StatusPass, T("audit.net.firewall_pf_drops", 2)},
-		{"pf rules only", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{V4: 1, V6: 1}), StatusPass, T("audit.net.firewall_rules", "pf", 1)},
+		{"alf off, pf off", darwinAuditFirewall(darwinALFOff, true, false, pfInputRules{}, pfInputRules{}), StatusWarn, T("audit.net.firewall_mac_open")},
+		{"alf apps", darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{}, pfInputRules{}), StatusPass, T("audit.net.firewall_alf_apps")},
+		{"alf block all", darwinAuditFirewall(darwinALFBlockAll, false, false, pfInputRules{}, pfInputRules{}), StatusPass, T("audit.net.firewall_alf_blocks")},
+		{"pf drops", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, V4Drops: true, V6Drops: true}, pfInputRules{}), StatusPass, T("audit.net.firewall_pf_drops", 2)},
+		{"pf block rules", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1}, pfInputRules{}), StatusPass, T("audit.net.firewall_pf_blocks", 1)},
+		// pass 규칙만 있으면 pf가 켜져 있어도 아무것도 막지 않는다.
+		{"pf pass only", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{Rules: 1, V4: 1, V6: 1}, pfInputRules{}), StatusWarn, T("audit.net.firewall_mac_open")},
+		// anchor 안의 규칙은 최상위 판정을 뒤집을 수 있다.
+		{"pf anchors", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{Rules: 2, Blocks: 1, V4: 2, V6: 2, V4Drops: true, V6Drops: true}, pfInputRules{Rules: 3, CatchAll: 3}), StatusSkip, T("audit.net.pf_anchor_unknown", 3)},
 		// pf가 켜져 있어도 규칙에 맞지 않은 트래픽을 통과시키면 막지 않는다.
-		{"pf enabled but empty", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{}), StatusWarn, T("audit.net.firewall_mac_open")},
+		{"pf enabled but empty", darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{}, pfInputRules{}), StatusWarn, T("audit.net.firewall_mac_open")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -161,18 +183,22 @@ func TestAuditDarwinFirewall(t *testing.T) {
 			}
 		})
 	}
-	if pf := darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{}); !strings.Contains(pf.Detail, T("audit.net.pf_unread")) {
+	if pf := darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{}, pfInputRules{}); !strings.Contains(pf.Detail, T("audit.net.pf_unread")) {
 		t.Fatalf("pf를 읽지 않았다는 표시가 없다: %q", pf.Detail)
 	}
 }
 
 func TestAuditExposureDarwin(t *testing.T) {
 	sockets := []listenSocket{{Proto: "tcp", Address: "*", Port: 5432, Process: "postgres"}}
-	perApp := darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{})
+	perApp := darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{}, pfInputRules{})
 	if result := auditExposure(auditFacts{Listen: sockets, Firewall: perApp}); result.Status != StatusWarn || result.Summary != T("audit.net.exposed_app_filter", "postgres/5432") {
 		t.Fatalf("ALF가 앱마다 거르는데 %s %q", result.Status, result.Summary)
 	}
-	blocked := darwinAuditFirewall(darwinALFBlockAll, false, false, pfInputRules{})
+	anchored := darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{}, pfInputRules{Rules: 1, CatchAll: 1})
+	if result := auditExposure(auditFacts{Listen: sockets, Firewall: anchored}); result.Status != StatusWarn || result.Summary != T("audit.net.exposed_pf_unknown", "postgres/5432") {
+		t.Fatalf("pf anchor를 해석하지 않았는데 %s %q", result.Status, result.Summary)
+	}
+	blocked := darwinAuditFirewall(darwinALFBlockAll, false, false, pfInputRules{}, pfInputRules{})
 	if result := auditExposure(auditFacts{Listen: sockets, Firewall: blocked}); result.Status != StatusWarn || result.Summary != T("audit.net.exposed_filtered", "postgres/5432") {
 		t.Fatalf("ALF가 모두 막는데 %s %q", result.Status, result.Summary)
 	}
@@ -195,10 +221,11 @@ func TestAuditIPv6Darwin(t *testing.T) {
 		want     Status
 		contains string
 	}{
-		{"alf apps", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{})}, StatusPass, T("audit.net.ipv6_app_filter")},
-		{"alf block all", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFBlockAll, false, false, pfInputRules{})}, StatusPass, T("audit.net.ipv6_blocks", "socketfilterfw")},
-		{"pf blocks inet only", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{V4: 1, V4Drops: true})}, StatusWarn, "pf  enabled"},
-		{"partial listen", auditFacts{Addrs: public, ListenPartial: true, Firewall: darwinAuditFirewall(darwinALFOff, true, false, pfInputRules{})}, StatusSkip, T("audit.net.listen_partial")},
+		{"alf apps", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFApps, false, false, pfInputRules{}, pfInputRules{})}, StatusPass, T("audit.net.ipv6_app_filter")},
+		{"alf block all", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFBlockAll, false, false, pfInputRules{}, pfInputRules{})}, StatusPass, T("audit.net.ipv6_blocks", "socketfilterfw")},
+		{"pf blocks inet only", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{Rules: 1, Blocks: 1, V4: 1, V4Drops: true}, pfInputRules{})}, StatusWarn, "pf  enabled"},
+		{"pf anchors", auditFacts{Addrs: public, Listen: sockets, Firewall: darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{}, pfInputRules{Rules: 2, CatchAll: 2})}, StatusSkip, T("audit.net.pf_anchor_unknown", 2)},
+		{"partial listen", auditFacts{Addrs: public, ListenPartial: true, Firewall: darwinAuditFirewall(darwinALFOff, true, false, pfInputRules{}, pfInputRules{})}, StatusSkip, T("audit.net.listen_partial")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -244,5 +271,33 @@ func TestAuditIPForwardWithVMContainers(t *testing.T) {
 	result := auditIPForward(facts)
 	if result.Status != StatusWarn || result.Summary != T("audit.net.forward_on_host") || result.Evidence[0].Value != "net.inet.ip.forwarding = 1" {
 		t.Fatalf("got %s %q %+v", result.Status, result.Summary, result.Evidence)
+	}
+}
+
+// macOS 인터넷 공유가 com.apple.internet-sharing/network_isolation anchor에 넣은 규칙이다(macOS 27.0.1, sudo pfctl -a ... -s rules).
+// 인터페이스와 주소를 지정한 규칙이라 조건에 맞지 않은 트래픽의 처리를 바꾸지 않는다.
+const pfInternetSharingAnchor = `pass quick on bridge102 inet from 192.168.97.0/24 to 192.168.97.0/24 flags any keep state
+pass quick on bridge100 inet6 from fd64:9cce:d87a:700e::/64 to fd64:9cce:d87a:700e::/64 flags any keep state
+pass quick on lo0 inet from <network_isolation_table_v4> to <network_isolation_table_v4> no state
+pass quick on lo0 inet6 from <network_isolation_table_v6> to <network_isolation_table_v6> no state
+block drop quick inet from <network_isolation_table_v4> to <network_isolation_table_v4>
+block drop quick inet6 from <network_isolation_table_v6> to <network_isolation_table_v6>
+`
+
+func TestDarwinFirewallJudgesPastQualifiedAnchorRules(t *testing.T) {
+	inside := parsePFInputRules(pfInternetSharingAnchor)
+	if inside.Rules != 6 || inside.CatchAll != 0 {
+		t.Fatalf("anchor = %+v", inside)
+	}
+	firewall := darwinAuditFirewall(darwinALFOff, true, true, pfInputRules{}, inside)
+	if firewall.PFUnknown {
+		t.Fatal("조건이 붙은 anchor 규칙 때문에 pf를 판정하지 않았다")
+	}
+	if result := auditFirewallResult(auditFacts{Firewall: firewall}); result.Status != StatusWarn || result.Summary != T("audit.net.firewall_mac_open") {
+		t.Fatalf("got %s %q", result.Status, result.Summary)
+	}
+	sockets := []listenSocket{{Proto: "tcp", Address: "*", Port: 5900, Process: "launchd"}}
+	if result := auditExposure(auditFacts{Listen: sockets, Firewall: firewall}); result.Status != StatusFail {
+		t.Fatalf("열린 vnc = %s %q", result.Status, result.Summary)
 	}
 }

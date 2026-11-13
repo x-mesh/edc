@@ -129,15 +129,44 @@ func parsePFStatus(text string) (bool, error) {
 }
 
 type pfInputRules struct {
+	// Rules는 들어오는 트래픽에 걸리는 block·pass 줄의 수이고 Blocks는 그 가운데 block, CatchAll은 조건 없는 규칙이다. V4, V6은 family마다 센 수다.
+	Rules, Blocks    int
+	CatchAll         int
 	V4, V6           int
 	V4Drops, V6Drops bool
 }
 
-// pfRuleQualifiers가 있는 규칙은 일부 트래픽에만 맞는다. 규칙에 맞지 않은 트래픽의 처리는 조건 없는 규칙으로만 정해진다.
+// pfRuleQualifiers가 있는 pass 규칙은 일부 트래픽만 통과시킨다. 모르는 조건이 붙은 pass는 모두 통과시킨다고 본다.
+// 그래야 앞의 block을 실제보다 넓게 보지 않는다.
 var pfRuleQualifiers = []string{"on", "proto", "from", "to", "port", "user", "group"}
 
+// pfCatchAllBlock은 조건 없는 block이다. pfctl이 정규형으로 찍는 앞부분(동작, 응답 방식, in, log, quick, family) 뒤에 all만 있어야 한다.
+// tagged, os, received-on처럼 모르는 조건이 붙은 block을 전체 차단으로 보면 열린 포트를 막혔다고 보고한다.
+func pfCatchAllBlock(fields []string) bool {
+	rest := fields[1:]
+	if len(rest) > 0 && (rest[0] == "drop" || strings.HasPrefix(rest[0], "return")) {
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && rest[0] == "in" {
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && rest[0] == "log" {
+		rest = rest[1:]
+		if len(rest) > 0 && strings.HasPrefix(rest[0], "(") {
+			rest = rest[1:]
+		}
+	}
+	if len(rest) > 0 && rest[0] == "quick" {
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && (rest[0] == "inet" || rest[0] == "inet6") {
+		rest = rest[1:]
+	}
+	return len(rest) > 0 && rest[0] == "all" && (len(rest) == 1 || rest[1] == "label")
+}
+
 // parsePFInputRules는 pfctl -s rules에서 들어오는 트래픽에 걸리는 block과 pass를 센다. pf는 마지막에 맞은 규칙을 따르고 quick이면 거기서 멈춘다.
-// anchor 안의 규칙은 pfctl -s rules가 펼치지 않아 세지 않는다. macOS 기본 com.apple anchor는 비어 있다.
+// anchor 안의 규칙은 이 출력에 펼쳐지지 않는다. readDarwinFirewall이 anchor마다 따로 읽는다.
 func parsePFInputRules(text string) pfInputRules {
 	var rules pfInputRules
 	verdict := map[string]string{"v4": "pass", "v6": "pass"}
@@ -147,13 +176,24 @@ func parsePFInputRules(text string) pfInputRules {
 		if len(fields) == 0 || (fields[0] != "block" && fields[0] != "pass") || slices.Contains(fields, "out") {
 			continue
 		}
+		rules.Rules++
+		block := fields[0] == "block"
+		if block {
+			rules.Blocks++
+		}
 		families := []string{"v4", "v6"}
 		if slices.Contains(fields, "inet") {
 			families = []string{"v4"}
 		} else if slices.Contains(fields, "inet6") {
 			families = []string{"v6"}
 		}
-		catchAll := slices.Contains(fields, "all") && !slices.ContainsFunc(fields, func(field string) bool { return slices.Contains(pfRuleQualifiers, field) })
+		catchAll := pfCatchAllBlock(fields)
+		if !block {
+			catchAll = slices.Contains(fields, "all") && !slices.ContainsFunc(fields, func(field string) bool { return slices.Contains(pfRuleQualifiers, field) })
+		}
+		if catchAll {
+			rules.CatchAll++
+		}
 		for _, family := range families {
 			if family == "v4" {
 				rules.V4++
@@ -170,11 +210,26 @@ func parsePFInputRules(text string) pfInputRules {
 	return rules
 }
 
+// parsePFAnchors는 pfctl -s Anchors -v의 anchor 경로다. 한 줄에 하나씩, 하위 anchor까지 전체 경로로 나온다.
+func parsePFAnchors(text string) []string {
+	var anchors []string
+	for _, line := range strings.Split(text, "\n") {
+		if anchor := strings.TrimSpace(line); anchor != "" && !strings.Contains(anchor, " ") {
+			anchors = append(anchors, anchor)
+		}
+	}
+	return anchors
+}
+
 // darwinAuditFirewall은 Application Firewall과 pf를 합친다. 두 방화벽을 모두 지나야 들어오므로 하나가 막으면 막힌다.
 // pf를 읽지 않았으면 pfRead가 거짓이고, ALF가 앱마다 거르거나 모두 막는다는 판정만 남는다.
-func darwinAuditFirewall(alfState int, pfRead, pfEnabled bool, pf pfInputRules) auditFirewall {
+// anchored는 모든 anchor의 규칙을 합친 것이다. anchor는 최상위 규칙 사이에서 평가된다. 조건 없는 규칙은 규칙에 맞지 않은 트래픽의 처리를
+// 바꿀 수 있어 하나라도 있으면 pf를 판정하지 않는다. 조건이 붙은 규칙은 일부 트래픽만 바꾸므로 최상위의 같은 규칙처럼 판정에 넣지 않는다.
+// macOS 인터넷 공유는 com.apple.internet-sharing anchor에 bridge 인터페이스와 주소를 지정한 규칙을 넣는다.
+func darwinAuditFirewall(alfState int, pfRead, pfEnabled bool, pf, anchored pfInputRules) auditFirewall {
 	firewall := auditFirewall{Tool: "socketfilterfw", ALF: true, ALFState: alfState, V6Known: true}
 	details := []string{fmt.Sprintf("socketfilterfw  globalstate %d", alfState)}
+	pfJudged := false
 	switch {
 	case !pfRead:
 		details = append(details, T("audit.net.pf_unread"))
@@ -182,12 +237,15 @@ func darwinAuditFirewall(alfState int, pfRead, pfEnabled bool, pf pfInputRules) 
 		details = append(details, "pf  disabled")
 	default:
 		firewall.Tool += "+pf"
-		firewall.Rules, firewall.V6Rules = pf.V4, pf.V6
-		details = append(details, fmt.Sprintf("pf  enabled  inet in %d  inet6 in %d  inet drop %t  inet6 drop %t", pf.V4, pf.V6, pf.V4Drops, pf.V6Drops))
+		firewall.Rules, firewall.V6Rules, firewall.PFBlocks, firewall.PFAnchored = pf.Rules, pf.V6, pf.Blocks, anchored.CatchAll
+		firewall.PFUnknown = anchored.CatchAll > 0
+		pfJudged = !firewall.PFUnknown
+		details = append(details, fmt.Sprintf("pf  enabled  in %d  block %d  inet drop %t  inet6 drop %t", pf.Rules, pf.Blocks, pf.V4Drops, pf.V6Drops),
+			fmt.Sprintf("pf anchors  rules %d  catch-all %d", anchored.Rules, anchored.CatchAll))
 	}
 	blockAll := alfState == darwinALFBlockAll
-	firewall.Drops = blockAll || (pfEnabled && pf.V4Drops)
-	firewall.V6Drops = blockAll || (pfEnabled && pf.V6Drops)
+	firewall.Drops = blockAll || (pfJudged && pf.V4Drops)
+	firewall.V6Drops = blockAll || (pfJudged && pf.V6Drops)
 	firewall.Detail = strings.Join(details, "\n")
 	return firewall
 }
@@ -208,8 +266,12 @@ func auditDarwinFirewallResult(facts auditFacts) Result {
 		result = auditResult(id, StatusPass, T("audit.net.firewall_pf_drops", firewall.Rules))
 	case firewall.perApp():
 		result = auditResult(id, StatusPass, T("audit.net.firewall_alf_apps"))
-	case firewall.Rules > 0:
-		result = auditResult(id, StatusPass, T("audit.net.firewall_rules", "pf", firewall.Rules))
+	case firewall.PFUnknown:
+		result = auditResult(id, StatusSkip, T("audit.net.pf_anchor_unknown", firewall.PFAnchored))
+		result.Next = "sudo pfctl -s Anchors -v"
+	// pass 규칙만 있으면 pf가 켜져 있어도 아무것도 막지 않는다.
+	case firewall.PFBlocks > 0:
+		result = auditResult(id, StatusPass, T("audit.net.firewall_pf_blocks", firewall.PFBlocks))
 	default:
 		result = auditResult(id, StatusWarn, T("audit.net.firewall_mac_open"))
 		result.Warnings = []string{T("audit.net.cloud_note")}

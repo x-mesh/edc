@@ -97,7 +97,7 @@ func readDarwinFirewall(ctx context.Context) (auditFirewall, error) {
 		if state == darwinALFOff {
 			return auditFirewall{}, errAuditNeedsRoot
 		}
-		return darwinAuditFirewall(state, false, false, pfInputRules{}), nil
+		return darwinAuditFirewall(state, false, false, pfInputRules{}, pfInputRules{}), nil
 	}
 	output, _, err = runDarwinCheckTool(ctx, "/sbin/pfctl", "-s", "info")
 	if err != nil {
@@ -107,13 +107,26 @@ func readDarwinFirewall(ctx context.Context) (auditFirewall, error) {
 	if err != nil {
 		return auditFirewall{}, err
 	}
-	var rules pfInputRules
+	var rules, anchored pfInputRules
 	if enabled {
 		output, _, err = runDarwinCheckTool(ctx, "/sbin/pfctl", "-s", "rules")
 		if err != nil {
 			return auditFirewall{}, err
 		}
 		rules = parsePFInputRules(output)
+		output, _, err = runDarwinCheckTool(ctx, "/sbin/pfctl", "-s", "Anchors", "-v")
+		if err != nil {
+			return auditFirewall{}, err
+		}
+		for _, anchor := range parsePFAnchors(output) {
+			output, _, err = runDarwinCheckTool(ctx, "/sbin/pfctl", "-a", anchor, "-s", "rules")
+			if err != nil {
+				return auditFirewall{}, err
+			}
+			inside := parsePFInputRules(output)
+			anchored.Rules += inside.Rules
+			anchored.CatchAll += inside.CatchAll
+		}
 	}
-	return darwinAuditFirewall(state, true, enabled, rules), nil
+	return darwinAuditFirewall(state, true, enabled, rules, anchored), nil
 }

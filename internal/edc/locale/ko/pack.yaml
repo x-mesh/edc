@@ -3,6 +3,8 @@ pack:
   packed: "%s → %s  파일 %d개  %s → %s (%s)  %s"
   unpacked: "%s → %s  파일 %d개, 디렉터리 %d개  %s → %s  %s"
   skipped: "  · 특수 파일 %d개 건너뜀"
+  not_smaller: "  · 입력보다 작지 않습니다. 이미 압축된 데이터로 보입니다"
+  not_smaller_kept: "  · 입력보다 작지 않아 --rm을 줬지만 %s을(를) 남겼습니다"
   list_single: "%s: %s, 파일 하나, 풀면 %s"
   list_summary: "파일 %d개, 디렉터리 %d개, %s"
   cancelled: "edc pack: 취소했습니다. 반쯤 쓴 출력은 지웠습니다"

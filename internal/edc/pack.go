@@ -416,12 +416,24 @@ func packCompressFile(ctx context.Context, path string, size int64, options pack
 		return compressGzip(dst, src, options.level, options.jobs)
 	}
 	codec.target = func(path string) (string, error) { return path + suffix, nil }
+	// 자동으로 고른 압축이 줄지 않았으면 이미 압축된 데이터로 보고 --rm이어도 원본을 남긴다. -z는 사용자가 고른 방향이라 지운다.
+	codec.keep = func(read, written int64) bool { return options.mode == packAuto && packNotSmaller(read, written) }
 	result, err := codecPath(path, codec, false)
 	if err != nil {
 		return "", err
 	}
-	return packSanitizedLine(result), nil
+	line := packSanitizedLine(result)
+	switch {
+	case result.kept:
+		line += T("pack.not_smaller_kept", viewSanitize(path))
+	case packNotSmaller(result.read, result.written):
+		line += T("pack.not_smaller")
+	}
+	return line, nil
 }
+
+// packNotSmaller는 압축한 결과가 원본보다 작지 않은지 본다. 빈 파일은 비교하지 않는다.
+func packNotSmaller(read, written int64) bool { return read > 0 && written >= read }
 
 // packDecompressFile은 tar가 아닌 압축 파일 하나를 푼다. 이름이 압축 확장자로 끝나면 떼고, 아니면 .out을 붙인다.
 func packDecompressFile(ctx context.Context, path string, size int64, format string, options packOptions) (string, error) {

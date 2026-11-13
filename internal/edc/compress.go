@@ -64,6 +64,8 @@ type codecOptions struct {
 	convert func(dst io.Writer, src io.Reader) error
 	// target은 입력 경로로 출력 경로를 정한다.
 	target func(path string) (string, error)
+	// keep은 --rm이어도 입력을 남길지 읽은 크기와 쓴 크기로 정한다. nil이면 늘 지운다.
+	keep func(read, written int64) bool
 }
 
 func runCompress(args []string) int {
@@ -191,6 +193,8 @@ type codecResult struct {
 	elapsed       time.Duration
 	// decompress면 read가 압축본이다. 비율은 어느 쪽이든 압축본 크기를 원본 크기로 나눈 값이다.
 	decompress bool
+	// kept는 --rm이었지만 keep이 입력을 남겼다는 뜻이다.
+	kept bool
 }
 
 func (result codecResult) line() string {
@@ -313,6 +317,10 @@ func codecPath(path string, options codecOptions, toStdout bool) (codecResult, e
 		return result, err
 	}
 	result.read, result.written, result.elapsed = counted.count, written.count, time.Since(started)
+	if options.remove && options.keep != nil && options.keep(result.read, result.written) {
+		result.kept = true
+		return result, nil
+	}
 	if options.remove {
 		// 출력 이름이 디스크에 남기 전에 원본을 지운 상태로 전원이 꺼지면 둘 다 잃을 수 있다.
 		if err := codecSyncDir(filepath.Dir(target)); err != nil {

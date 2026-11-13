@@ -3,6 +3,8 @@ pack:
   packed: "%s → %s  %d files  %s → %s (%s)  %s"
   unpacked: "%s → %s  %d files, %d directories  %s → %s  %s"
   skipped: "  · %d special files skipped"
+  not_smaller: "  · not smaller than the input; the data is likely compressed already"
+  not_smaller_kept: "  · not smaller than the input, so edc kept %s although --rm was given"
   list_single: "%s: %s, one file, %s unpacked"
   list_summary: "%d files, %d directories, %s"
   cancelled: "edc pack: cancelled; edc deleted the partial output"

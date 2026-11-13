@@ -493,6 +493,31 @@ func TestCollectAuditJournalJoinsAMultiplexedTerminalByItsParent(t *testing.T) {
 
 // okrr-intranet-1(OpenSSH 8.9)에서 Accepted 하나(10:50) 위에 터미널 셋이 열렸다. 11:08 터미널은 닫혔고 11:37 터미널은 열려 있다.
 // 0.86.1은 아무것도 짝짓지 못해 통과했고, 부모 짝짓기만 넣으면 닫힌 11:08 터미널이 Accepted 없는 로그인으로 보였다.
+// journal 범위 안에서 OpenSSH를 9.8 이상으로 올렸다. 새 로그인은 PID로 맞고, 올리기 전 연결 위에서 닫힌 터미널은 연결로 짝짓는다.
+// 옛 연결이 끝난 뒤의 로그인에 Accepted가 없으면 그대로 남는다.
+func TestCollectAuditJournalJoinsOldTerminalsAfterAnUpgrade(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/1", Host: "100.65.168.177", PID: 3231170, Start: testLoginAt(18), End: testLoginAt(40)},
+		{User: "root", Line: "pts/0", Host: "100.65.168.177", PID: 4000000, Start: testLoginAt(60)},
+		{User: "root", Line: "pts/2", Host: "100.65.168.177", PID: 4100000, Start: testLoginAt(70)},
+	}
+	lines := testAcceptedLine(testLoginAt(0), "sshd", 3220182, "Accepted publickey for root from 100.65.168.177 port 54907 ssh2: RSA SHA256:x") +
+		testClosedLine(testLoginAt(50), 3220182, "root") +
+		testAcceptedLine(testLoginAt(60), "sshd-session", 4000000, "Accepted publickey for root from 100.65.168.177 port 54990 ssh2: RSA SHA256:x")
+	entries, err := parseAuditJournal(strings.NewReader(lines))
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := testLoginFacts(sessions, map[int]auditLastlog{0: {Time: testLoginAt(70), Line: "pts/2", Host: "100.65.168.177"}})
+	facts.Root, facts.Now = true, testLoginAt(120)
+	source := func(context.Context, time.Time) ([]auditJournalEntry, bool, error) { return entries, false, nil }
+	collectAuditJournal(context.Background(), auditSources{root: t.TempDir(), journal: source}, &facts)
+	got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD, facts.Logins.Sessions[2].SSHD}
+	if !reflect.DeepEqual(got, []int{auditSSHDAmbiguous, 4000000, 0}) || facts.JoinedByConnection != 1 {
+		t.Fatalf("sshd = %v, by connection = %d", got, facts.JoinedByConnection)
+	}
+}
+
 func TestCollectAuditJournalJoinsClosedMultiplexedTerminals(t *testing.T) {
 	root := t.TempDir()
 	writeAuditFile(t, root, "/proc/3240000/stat", "3240000 (bash) S 3220182 1 1 0 -1 4194560 1 0 0 0 5 6 0 0 20 0 1 0 100 1000 50 18446744073709551615\n", 0o644)

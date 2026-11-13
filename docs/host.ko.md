@@ -80,7 +80,7 @@ Linux의 `storage`는 `/proc/mdstat`과 `smartctl --json`을 읽습니다. `smar
 
 macOS에서 `time`과 `reboot`은 `skip`입니다. Linux 결과에는 `thermal`과 `backup`이 없습니다.
 
-`reboot`는 `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, `/boot`의 커널을 읽습니다. 요약에는 재부팅이 필요한 이유가 나옵니다. `/boot`에 실행 중인 것보다 새 커널이 있으면 커널 업데이트가 재부팅해야 적용된다는 뜻입니다. 그 밖의 패키지는 라이브러리나 서비스입니다. 근거에는 재부팅을 요청한 시각과 지난 일수, 설치된 커널과 실행 중인 커널의 부팅 시각, 요청한 패키지 전체가 나옵니다.
+`reboot`는 `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, `/boot`의 커널을 읽습니다. 요약에는 재부팅이 필요한 이유가 나옵니다. `/boot`에 실행 중인 것보다 새 커널이 있으면 커널 업데이트가 재부팅해야 적용된다는 뜻입니다. 커널이 아닌 패키지도 재부팅을 요청할 수 있고, 그 업데이트도 재부팅해야 적용될 수 있습니다. 근거에는 재부팅을 요청한 시각과 지난 일수, 설치된 커널과 실행 중인 커널의 부팅 시각, 요청한 패키지 전체가 나옵니다.
 
 `--group`은 `edc remote`의 inventory와 OpenSSH 설정을 씁니다. 각 호스트에 `check`가 있는 edc가 있어야 합니다. 표에는 호스트마다 한 줄이 나옵니다. 결과를 받지 못한 호스트는 SSH 실패나 `check`가 없는 edc처럼 그 이유를 보여 줍니다.
 
@@ -199,7 +199,7 @@ sudo edc audit --json -         # 점검마다 결과 하나
 | `persist.changed` | | cron, systemd, 시작 스크립트, `sudoers.d`, `pam.d`, `ld.so.conf.d`, udev, motd 파일이나 계정의 shell 시작 파일, `~/.ssh/rc`가 최근 7일 안에 바뀜 |
 | `file.sensitive` | 다른 사용자가 `/etc/shadow`를 읽거나 `/etc/passwd`, `/etc/sudoers`, `docker.sock`에 쓸 수 있음 | |
 | `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
-| `file.pkg_modified` | binary나 PAM 모듈의 MD5가 소속 패키지의 dpkg checksum과 다름 | |
+| `file.pkg_modified` | binary나 PAM 모듈의 MD5가 소속 패키지의 dpkg checksum과 다름 | 그 패키지의 binary나 PAM 모듈이 없음 |
 | `kernel.sysctl` | | 하드닝 값이 권장 값과 다름 |
 | `kernel.taint` | | `/proc/sys/kernel/tainted`에 강제 적재(F), 커널 트리 밖(O), 서명 없음(E) 모듈이 표시됨 |
 | `docker.escape` | | 실행 중인 docker 컨테이너가 privileged이거나, 호스트 PID namespace를 쓰거나, `SYS_ADMIN` 같은 capability를 더하거나, `docker.sock`이나 호스트 `/`를 쓰기 가능하게 mount함 |
@@ -208,7 +208,7 @@ sudo edc audit --json -         # 점검마다 결과 하나
 | `ctr.root_user` | | edc가 컨테이너 안에서 UID 0으로 실행됨 |
 | `ctr.host_ns` | 컨테이너가 호스트의 PID namespace를 씀 | |
 
-DB·파일 공유·원격 데스크톱·제어 포트는 111, 139, 445, 2049, 2181, 2375, 2376, 2379, 3306, 3389, 4369, 5432, 5672, 5900, 5984, 6379, 8086, 8500, 9042, 9092, 9200, 10250, 11211, 15672, 27017입니다. 호스트 방화벽이 들어오는 트래픽을 막을 때는, docker가 모든 주소에 publish한 그 밖의 포트를 경고로 알립니다. 이 포트는 FORWARD chain을 지나므로 INPUT 차단이 적용되지 않습니다.
+DB·파일 공유·원격 데스크톱·제어 포트는 111, 139, 445, 2049, 2181, 2375, 2376, 2379, 3306, 3389, 4369, 5432, 5672, 5900, 5984, 6379, 8086, 8500, 9042, 9092, 9200, 10250, 11211, 15672, 27017입니다. 호스트 방화벽이 들어오는 트래픽을 막을 때는, docker가 모든 주소에 publish한 그 밖의 포트도 `net.exposed`의 warn이 됩니다. 이 포트는 FORWARD chain을 지나므로 INPUT 차단이 적용되지 않습니다. 이 포트는 `docker-proxy`와 docker socket에서 읽으므로, docker daemon을 `userland-proxy=false`로 실행해도 찾습니다.
 
 `ctr.*` 점검은 컨테이너 안에서만 실행됩니다. 컨테이너인지는 `edc info`와 같은 표식(`KUBERNETES_SERVICE_HOST`, `/.dockerenv`, `/run/.containerenv`)으로 판단하고, 호스트에서는 보고서에 나오지 않습니다. 컨테이너가 호스트의 PID namespace를 쓰면 `ctr.host_ns`는 network namespace도 PID 1의 것과 비교합니다.
 
@@ -248,7 +248,7 @@ root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoe
 
 방화벽 점검은 `nft list ruleset`을 읽고, nft에 input chain이 없으면 `iptables-save`를 읽습니다. input 규칙의 수는 세지만 규칙 순서는 해석하지 않습니다. 이 호스트만 보므로 클라우드 보안 그룹이 포트를 막고 있을 수 있습니다. `fail`은 호스트 자체가 그 포트를 막지 않는다는 뜻입니다. `net.ipv6_open`은 IPv6 input을 따로 읽습니다. nft의 `ip6`·`inet` 표나 `ip6tables-save`입니다. IPv4만 막고 IPv6는 허용하는 호스트가 많습니다. 공인 IPv6 주소가 있을 때만 warn입니다. Tailscale의 `fd7a::/48` 같은 ULA 주소와 link-local 주소는 공인 주소로 보지 않습니다.
 
-SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. 근거에는 설정마다 파일과 줄 번호가 나옵니다. 처음 값에 밀려 무시되는 뒤의 줄도 함께 나옵니다. 그 줄을 고쳐도 적용되지 않기 때문입니다. 적용되는 값이 위험하면 그 줄에 권장 값과 이유가 붙습니다. `ssh.forwarding`은 `GatewayPorts`가 `yes`나 `clientspecified`이면 warn입니다. 그러면 `ssh -R`로 연 포트가 모든 인터페이스에서 들리기 때문입니다. `PermitTunnel`이 켜져 있어도 warn입니다. `ssh -w`가 두 호스트 사이에 네트워크 장치를 만들 수 있기 때문입니다. `AllowTcpForwarding yes`는 기본값이라 값만 보여 줍니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
+SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. 근거에는 설정마다 파일과 줄 번호가 나옵니다. 처음 값에 밀려 무시되는 뒤의 줄도 함께 나옵니다. 그 줄을 고쳐도 적용되지 않기 때문입니다. 적용되는 값이 위험하면 그 줄에 권장 값과 이유가 붙습니다. `ssh.forwarding`은 `GatewayPorts`가 `yes`나 `clientspecified`이면 warn입니다. 그러면 `ssh -R`로 연 포트가 모든 인터페이스에서 들리기 때문입니다. `AllowTcpForwarding`이 `no`나 `local`이면 sshd가 `ssh -R`을 거부하므로 `GatewayPorts`는 판정하지 않습니다. `PermitTunnel`이 켜져 있어도 warn입니다. `ssh -w`가 두 호스트 사이에 네트워크 장치를 만들 수 있기 때문입니다. `AllowTcpForwarding yes`는 기본값이라 값만 보여 줍니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
 
 이미 확인한 결과를 받아들이려면 `config.toml`에 `[audit]` 표를 넣으세요.
 

@@ -90,7 +90,7 @@ On Linux, `storage` reads `/proc/mdstat` and `smartctl --json`. If `smartctl` is
 
 `time` and `reboot` show `skip` on macOS. Linux results do not include `thermal` and `backup`.
 
-`reboot` reads `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, and the kernels in `/boot`. The summary names the reason. A newer kernel in `/boot` means that the update takes effect only after a reboot. Other packages are libraries or services. The evidence shows the time of the request with the number of days, the installed kernels with the running kernel and its boot time, and all packages of the request.
+`reboot` reads `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, and the kernels in `/boot`. The summary names the reason. A newer kernel in `/boot` means that the update takes effect only after a reboot. A package other than the kernel can also ask for the reboot, and its update can need the reboot too. The evidence shows the time of the request with the number of days, the installed kernels with the running kernel and its boot time, and all packages of the request.
 
 `--group` uses the inventory and the OpenSSH setup of `edc remote`. Each host must have an edc with `check`. The table shows one row for each host. If a host gives no result, the row shows the reason, for example an SSH failure or an edc without `check`.
 
@@ -209,7 +209,7 @@ A `warn` or `fail` result shows its evidence below the summary, for example the 
 | `persist.changed` | | a cron, systemd, startup, `sudoers.d`, `pam.d`, `ld.so.conf.d`, udev, or motd file, or a shell start file or `~/.ssh/rc` of an account, changed in the last 7 days |
 | `file.sensitive` | other users can read `/etc/shadow`, or write `/etc/passwd`, `/etc/sudoers`, or `docker.sock` | |
 | `file.path_writable` | other users can write a directory in the root `PATH`, or `PATH` has a relative entry | |
-| `file.pkg_modified` | the MD5 of a binary or a PAM module differs from the dpkg checksum of its package | |
+| `file.pkg_modified` | the MD5 of a binary or a PAM module differs from the dpkg checksum of its package | a binary or a PAM module of those packages is missing |
 | `kernel.sysctl` | | a hardening value differs from the recommended value |
 | `kernel.taint` | | `/proc/sys/kernel/tainted` shows a forced (F), out-of-tree (O), or unsigned (E) module |
 | `docker.escape` | | a running docker container is privileged, uses the host PID namespace, adds a capability such as `SYS_ADMIN`, mounts `docker.sock`, or mounts the host `/` with write access |
@@ -218,7 +218,7 @@ A `warn` or `fail` result shows its evidence below the summary, for example the 
 | `ctr.root_user` | | edc runs as UID 0 in the container |
 | `ctr.host_ns` | the container uses the PID namespace of the host | |
 
-The database, file sharing, remote desktop, and control ports are 111, 139, 445, 2049, 2181, 2375, 2376, 2379, 3306, 3389, 4369, 5432, 5672, 5900, 5984, 6379, 8086, 8500, 9042, 9092, 9200, 10250, 11211, 15672, and 27017. If the host firewall drops inbound traffic, a warning names the other ports that docker publishes on all addresses. Those ports pass the FORWARD chain, so the INPUT drop does not apply to them.
+The database, file sharing, remote desktop, and control ports are 111, 139, 445, 2049, 2181, 2375, 2376, 2379, 3306, 3389, 4369, 5432, 5672, 5900, 5984, 6379, 8086, 8500, 9042, 9092, 9200, 10250, 11211, 15672, and 27017. If the host firewall drops inbound traffic, `net.exposed` also gives a warning for the other ports that docker publishes on all addresses. Those ports pass the FORWARD chain, so the INPUT drop does not apply to them. edc reads these ports from `docker-proxy` and from the docker socket, so it also finds them when the docker daemon runs with `userland-proxy=false`.
 
 The `ctr.*` checks run only inside a container. edc finds the container with the same markers as `edc info`: `KUBERNETES_SERVICE_HOST`, `/.dockerenv`, or `/run/.containerenv`. On a host, the report does not show these checks. If the container uses the PID namespace of the host, `ctr.host_ns` also compares the network namespace with the namespace of PID 1.
 
@@ -258,7 +258,7 @@ Run it as root. Without root, edc cannot read the firewall, `/etc/shadow`, `/etc
 
 The firewall check reads `nft list ruleset`. If nft shows no input chain, it reads `iptables-save`. It counts the input rules, but it does not read the rule order. The check sees only this host. A cloud security group can still block a port, so a `fail` means that the host itself does not block the port. `net.ipv6_open` reads the IPv6 input separately: the `ip6` and `inet` tables of nft, or `ip6tables-save`. Many hosts drop IPv4 and accept IPv6. The check gives a warning only if the host has a public IPv6 address. A ULA address, such as a Tailscale address in `fd7a::/48`, and a link-local address are not public.
 
-The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. The evidence shows each setting with its file and line. It also shows a later line that the first value overrides, because a change on that line has no effect. If the effective value is unsafe, the line also shows the recommended value and the reason. `ssh.forwarding` gives a warning for `GatewayPorts yes` or `clientspecified`, because a port that `ssh -R` opens then listens on all interfaces. It also gives a warning for `PermitTunnel`, because `ssh -w` then makes a network device between the two hosts. `AllowTcpForwarding yes` is the default, so the check only shows its value. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
+The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. The evidence shows each setting with its file and line. It also shows a later line that the first value overrides, because a change on that line has no effect. If the effective value is unsafe, the line also shows the recommended value and the reason. `ssh.forwarding` gives a warning for `GatewayPorts yes` or `clientspecified`, because a port that `ssh -R` opens then listens on all interfaces. If `AllowTcpForwarding` is `no` or `local`, sshd refuses `ssh -R`, and `GatewayPorts` is not judged. It also gives a warning for `PermitTunnel`, because `ssh -w` then makes a network device between the two hosts. `AllowTcpForwarding yes` is the default, so the check only shows its value. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
 
 To accept a known finding, add an `[audit]` table to `config.toml`:
 

@@ -92,18 +92,30 @@ func auditIPv6Open(facts auditFacts) Result {
 }
 
 // auditDockerPublished는 docker가 모든 주소에 publish한 포트다. 방화벽이 들어오는 트래픽을 막는다고 판정해도 이 포트는 DNAT되어
-// FORWARD를 지나므로 INPUT 차단이 적용되지 않는다. 민감 포트는 net.exposed가 따로 판정한다.
+// FORWARD를 지나므로 INPUT 차단이 적용되지 않는다. listen 목록에 있는 민감 포트는 net.exposed가 따로 판정한다.
 func auditDockerPublished(facts auditFacts) string {
 	if facts.FirewallErr != nil || !facts.Firewall.Drops {
 		return ""
 	}
 	var ports []int
-	for _, socket := range facts.Listen {
-		if _, sensitive := auditSensitivePorts[socket.Port]; sensitive || socket.Process != "docker-proxy" || listenBindingScope(socket.Proto, socket.Address) != "all" {
-			continue
+	listened := map[int]bool{}
+	add := func(port int) {
+		if !slices.Contains(ports, port) {
+			ports = append(ports, port)
 		}
-		if !slices.Contains(ports, socket.Port) {
-			ports = append(ports, socket.Port)
+	}
+	for _, socket := range facts.Listen {
+		listened[socket.Port] = true
+		if _, sensitive := auditSensitivePorts[socket.Port]; !sensitive && socket.Process == "docker-proxy" && listenBindingScope(socket.Proto, socket.Address) == "all" {
+			add(socket.Port)
+		}
+	}
+	// userland-proxy=false면 docker-proxy 없이 DNAT 규칙만 있어 listen 목록에 포트가 없다. 민감 포트도 net.exposed가 보지 못한다.
+	for _, container := range facts.Containers {
+		for _, port := range container.Published {
+			if _, sensitive := auditSensitivePorts[port]; !sensitive || !listened[port] {
+				add(port)
+			}
 		}
 	}
 	if len(ports) == 0 {
@@ -124,10 +136,12 @@ func auditSSHForwarding(facts auditFacts) Result {
 	}
 	gateway, _ := facts.SSHD.value("gatewayports", "no")
 	tunnel, _ := facts.SSHD.value("permittunnel", "no")
+	forwarding, _ := facts.SSHD.value("allowtcpforwarding", "yes")
 	settings := []sshdDefault{{"gatewayports", "no", ""}, {"permittunnel", "no", ""}, {"allowtcpforwarding", "yes", ""}}
 	var open []string
 	// GatewayPorts yes면 ssh -R로 연 포트가 loopback이 아니라 모든 인터페이스에서 들린다. clientspecified는 client가 주소를 고른다.
-	if gateway == "yes" || gateway == "clientspecified" {
+	// AllowTcpForwarding이 no나 local이면 ssh -R 자체가 거부되어 GatewayPorts가 쓰이지 않는다.
+	if (gateway == "yes" || gateway == "clientspecified") && forwarding != "no" && forwarding != "local" {
 		settings[0].advice = T("audit.ssh.advice_gateway")
 		open = append(open, "GatewayPorts "+gateway)
 	}
@@ -158,6 +172,8 @@ type auditContainer struct {
 	PidMode     string
 	CapAdd      []string
 	Mounts      []auditContainerMount
+	// Published는 모든 주소에 publish한 호스트 포트다.
+	Published []int
 }
 
 type auditAPIContainer struct {
@@ -175,6 +191,28 @@ type auditAPIContainer struct {
 		Destination string `json:"Destination"`
 		RW          bool   `json:"RW"`
 	} `json:"Mounts"`
+	NetworkSettings struct {
+		Ports map[string][]struct {
+			HostIP   string `json:"HostIp"`
+			HostPort string `json:"HostPort"`
+		} `json:"Ports"`
+	} `json:"NetworkSettings"`
+}
+
+// auditPublishedPorts는 모든 주소에 묶인 호스트 포트다. HostIp가 비어 있으면 docker는 모든 주소에 묶는다.
+func auditPublishedPorts(inspect auditAPIContainer) []int {
+	var ports []int
+	for _, bindings := range inspect.NetworkSettings.Ports {
+		for _, binding := range bindings {
+			port, err := strconv.Atoi(binding.HostPort)
+			if err != nil || (binding.HostIP != "" && binding.HostIP != "0.0.0.0" && binding.HostIP != "::") || slices.Contains(ports, port) {
+				continue
+			}
+			ports = append(ports, port)
+		}
+	}
+	slices.Sort(ports)
+	return ports
 }
 
 // readHostAuditContainers는 docker API로 실행 중인 container를 읽는다. socket이 없으면 fs.ErrNotExist다.
@@ -207,7 +245,7 @@ func readHostAuditContainers(ctx context.Context) ([]auditContainer, error) {
 			return nil, err
 		}
 		container := auditContainer{Name: strings.TrimPrefix(inspect.Name, "/"), Image: inspect.Config.Image, Privileged: inspect.HostConfig.Privileged,
-			PidMode: inspect.HostConfig.PidMode, CapAdd: inspect.HostConfig.CapAdd}
+			PidMode: inspect.HostConfig.PidMode, CapAdd: inspect.HostConfig.CapAdd, Published: auditPublishedPorts(inspect)}
 		for _, mount := range inspect.Mounts {
 			container.Mounts = append(container.Mounts, auditContainerMount{Source: mount.Source, Destination: mount.Destination, RW: mount.RW})
 		}
@@ -426,7 +464,7 @@ func auditPersistChanged(facts auditFacts) Result {
 			items = append(items, fmt.Sprintf("+%d", extra))
 		}
 		result.Evidence = []Evidence{{Label: T("audit.evidence.files"), Value: strings.Join(items, "\n")}}
-		result.Next = "ls -la --time-style=full-iso " + persist.Files[0].Path
+		result.Next = "ls -la --time-style=full-iso " + quoteLocalShellWord(persist.Files[0].Path)
 	}
 	if persist.Upgraded > 0 {
 		result.Warnings = append(result.Warnings, T("audit.persist.upgraded", persist.Upgraded))

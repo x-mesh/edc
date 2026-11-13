@@ -415,6 +415,10 @@ func auditReverseTunnel(facts auditFacts) Result {
 	}
 	var result Result
 	if len(backdoor.Listeners) == 0 && len(backdoor.Clients) == 0 {
+		// ssh -R이 연 포트는 listen 목록에서만 보인다. 그 목록을 읽지 못했으면 없다고 판정할 근거가 없다.
+		if facts.ListenErr != nil {
+			return auditSkip(id, "sockets", facts.ListenErr)
+		}
 		result = auditResult(id, StatusPass, T("audit.net.reverse_ok", backdoor.SSHClients, backdoor.SSHDSockets))
 	} else {
 		result = auditResult(id, StatusWarn, T("audit.net.reverse_bad", len(backdoor.Listeners), len(backdoor.Clients)))

@@ -3,6 +3,7 @@ package edc
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -203,6 +204,18 @@ func TestAuditSSHForwards(t *testing.T) {
 	}
 }
 
+// ssh -R의 포트는 listen 목록에서만 보이므로, 그 목록을 읽지 못하면 터널이 없다고 판정하지 않는다.
+func TestAuditReverseTunnelSkipsWithoutListeners(t *testing.T) {
+	facts := auditFacts{ListenErr: fs.ErrPermission}
+	if result := auditReverseTunnel(facts); result.Status != StatusSkip {
+		t.Fatalf("no listeners = %+v", result)
+	}
+	facts.Backdoor.Clients = []auditSSHClient{{Process: auditBackdoorProcess{auditProcess: auditProcess{PID: 7}}, Destination: "root@203.0.113.9"}}
+	if result := auditReverseTunnel(facts); result.Status != StatusWarn || !slices.Contains(result.Warnings, T("audit.net.reverse_no_listen", fs.ErrPermission.Error())) {
+		t.Fatalf("client found = %+v", result)
+	}
+}
+
 func TestAuditKernelTaint(t *testing.T) {
 	root := t.TempDir()
 	write := func(path, content string) { writeAuditFile(t, root, path, content, 0o644) }
@@ -280,7 +293,15 @@ func TestAuditPkgModified(t *testing.T) {
 	}
 	facts = auditFacts{}
 	collectAuditPkgVerify(auditSources{root: root}, &facts)
-	if result := auditPkgModified(facts); result.Status != StatusPass || result.Summary != T("audit.file.pkg_ok", 4, 4) {
+	// 바뀐 파일이 없어도 패키지 파일이 없으면 통과가 아니다.
+	if result := auditPkgModified(facts); result.Status != StatusWarn || result.Summary != T("audit.file.pkg_missing", 1, "/usr/bin/cvtsudoers") ||
+		result.Next != "dpkg --verify sudo" || len(result.Warnings) != 0 {
+		t.Fatalf("missing = %+v", result)
+	}
+	write("/usr/bin/cvtsudoers", "gone")
+	facts = auditFacts{}
+	collectAuditPkgVerify(auditSources{root: root}, &facts)
+	if result := auditPkgModified(facts); result.Status != StatusPass || result.Summary != T("audit.file.pkg_ok", 5, 4) {
 		t.Fatalf("pass = %+v", result)
 	}
 	// dpkg가 없는 호스트(RHEL, Alpine)는 skip이다.

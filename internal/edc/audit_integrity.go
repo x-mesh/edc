@@ -278,10 +278,20 @@ func auditPkgModified(facts auditFacts) Result {
 	if verify.Err != nil {
 		return auditSkip(id, "/var/lib/dpkg/info", verify.Err)
 	}
+	var missing []string
+	for _, file := range verify.Missing[:min(len(verify.Missing), 3)] {
+		missing = append(missing, file.Path)
+	}
 	var result Result
-	if len(verify.Modified) == 0 {
+	switch {
+	case len(verify.Modified) == 0 && len(verify.Missing) > 0:
+		// 관리자가 지운 파일일 수도 있어 fail이 아니라 warn이다.
+		result = auditResult(id, StatusWarn, T("audit.file.pkg_missing", len(verify.Missing), strings.Join(missing, ", ")))
+		result.Next = "dpkg --verify " + verify.Missing[0].Package
+		return result
+	case len(verify.Modified) == 0:
 		result = auditResult(id, StatusPass, T("audit.file.pkg_ok", verify.Checked, verify.Packages))
-	} else {
+	default:
 		result = auditResult(id, StatusFail, T("audit.file.pkg_bad", len(verify.Modified)))
 		result.Error = &DiagnosticError{Kind: "integrity", Message: result.Summary}
 		items := make([]string, 0, len(verify.Modified))
@@ -294,11 +304,7 @@ func auditPkgModified(facts auditFacts) Result {
 		result.Next = "dpkg --verify " + verify.Modified[0].Package
 	}
 	if len(verify.Missing) > 0 {
-		paths := make([]string, 0, min(len(verify.Missing), 3))
-		for _, file := range verify.Missing[:min(len(verify.Missing), 3)] {
-			paths = append(paths, file.Path)
-		}
-		result.Warnings = append(result.Warnings, T("audit.file.pkg_missing", len(verify.Missing), strings.Join(paths, ", ")))
+		result.Warnings = append(result.Warnings, T("audit.file.pkg_missing", len(verify.Missing), strings.Join(missing, ", ")))
 	}
 	return result
 }

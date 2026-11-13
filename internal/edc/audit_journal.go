@@ -117,9 +117,10 @@ func collectAuditJournal(ctx context.Context, sources auditSources, facts *audit
 	if byPID+byTime < recorded {
 		byParent = joinAuditLoginsByParent(&facts.Logins, accepted, sources.file("/proc"), facts.AcceptedSince, consumed)
 	}
-	// 9.8부터는 wtmp에도 sshd의 PID가 남아 PID로 짝지어진다. 하나라도 PID로 맞았으면 남은 로그인은 재사용된 PID이거나 기록이 없는 것이다.
+	// 9.8부터는 wtmp에도 sshd의 PID가 남아 PID로 짝지어지므로, 연결로 짝짓기는 9.8 미만의 연결에만 쓴다(auditAccepted.Legacy).
+	// journal 범위 안에서 업그레이드했으면 두 버전의 연결이 섞여 있다.
 	byConnection := 0
-	if byPID == 0 && byTime+byParent < recorded {
+	if byPID+byTime+byParent < recorded {
 		byConnection = joinAuditLoginsByConnection(&facts.Logins, accepted, facts.AcceptedSince, consumed)
 	}
 	facts.JoinedByConnection = byConnection
@@ -166,6 +167,8 @@ type auditAccepted struct {
 	Time time.Time
 	// Until은 이 접속이 끝난 시각이다. 같은 PID의 "session closed"나 그 PID의 다음 Accepted다. 0이면 범위 안에서 끝나지 않았다.
 	Until time.Time
+	// Legacy는 9.8 미만 sshd의 기록이다. 9.8부터는 접속마다 뜨는 sshd-session이 Accepted를 남긴다.
+	Legacy bool
 }
 
 // auditSSHDSessionClosed는 sshd 접속 하나가 끝날 때 PAM이 남기는 기록이다. UsePAM no면 없고, 그때는 같은 PID의 다음 Accepted로 끝을 정한다.
@@ -187,7 +190,7 @@ func auditSSHDAcceptedLogins(entries []auditJournalEntry) []auditAccepted {
 		if len(fields) < 6 || fields[0] != "Accepted" || fields[2] != "for" || fields[4] != "from" {
 			continue
 		}
-		login := auditAccepted{PID: entry.PID, User: fields[3], Host: fields[5], Method: fields[1], Time: entry.Time}
+		login := auditAccepted{PID: entry.PID, User: fields[3], Host: fields[5], Method: fields[1], Time: entry.Time, Legacy: entry.Identifier == "sshd"}
 		if len(fields) >= 8 && fields[6] == "port" {
 			if port, err := strconv.ParseUint(fields[7], 10, 16); err == nil {
 				login.Port = int(port)
@@ -378,7 +381,7 @@ func joinAuditLoginsByConnection(records *auditLoginRecords, accepted []auditAcc
 			continue
 		}
 		number := slices.IndexFunc(accepted, func(login auditAccepted) bool {
-			return login.User == session.User && auditSameSource(session.Host, login.Host) && !login.Time.After(session.Start.Add(auditJoinSkew)) &&
+			return login.Legacy && login.User == session.User && auditSameSource(session.Host, login.Host) && !login.Time.After(session.Start.Add(auditJoinSkew)) &&
 				(login.Until.IsZero() || !session.Start.After(login.Until.Add(auditJoinSkew)))
 		})
 		if number >= 0 {

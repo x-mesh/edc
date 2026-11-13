@@ -1220,7 +1220,12 @@ func auditExposure(facts auditFacts) Result {
 		}
 	}
 	if published := auditDockerPublished(facts); published != "" {
-		result.Warnings = append(result.Warnings, published)
+		if result.Status == StatusPass {
+			result = auditResult(id, StatusWarn, published)
+			result.Next = "docker ps --format '{{.Names}}  {{.Ports}}'"
+		} else {
+			result.Warnings = append(result.Warnings, published)
+		}
 	}
 	return result
 }

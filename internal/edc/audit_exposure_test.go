@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"encoding/json"
 	"io/fs"
 	"net/netip"
 	"os"
@@ -89,9 +90,32 @@ func TestAuditDockerPublishedBypassesInput(t *testing.T) {
 	if result := auditExposure(facts); !slices.Contains(result.Warnings, T("audit.net.docker_published", "80, 3000")) {
 		t.Fatalf("exposure = %+v", result)
 	}
+	// 민감 포트가 없으면 docker publish만으로 net.exposed가 warn이다.
+	facts.Listen = listen[:4]
+	if result := auditExposure(facts); result.Status != StatusWarn || result.Summary != T("audit.net.docker_published", "80, 3000") {
+		t.Fatalf("docker only = %+v", result)
+	}
+	// userland-proxy=false면 listen 목록에 포트가 없고 container의 publish만 있다.
+	facts.Listen = nil
+	facts.Containers = []auditContainer{{Name: "web", Published: []int{3000, 5432}}}
+	if got := auditDockerPublished(facts); got != T("audit.net.docker_published", "3000, 5432") {
+		t.Fatalf("no proxy = %q", got)
+	}
 	facts.Firewall.Drops = false
 	if got := auditDockerPublished(facts); got != "" {
 		t.Fatalf("open firewall = %q", got)
+	}
+}
+
+func TestAuditPublishedPorts(t *testing.T) {
+	var inspect auditAPIContainer
+	data := `{"NetworkSettings":{"Ports":{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"},{"HostIp":"::","HostPort":"8080"}],` +
+		`"5432/tcp":[{"HostIp":"","HostPort":"5432"}],"6379/tcp":[{"HostIp":"127.0.0.1","HostPort":"6379"}],"9000/tcp":null}}}`
+	if err := json.Unmarshal([]byte(data), &inspect); err != nil {
+		t.Fatal(err)
+	}
+	if got := auditPublishedPorts(inspect); !reflect.DeepEqual(got, []int{5432, 8080}) {
+		t.Fatalf("ports = %v", got)
 	}
 }
 
@@ -110,6 +134,15 @@ func TestAuditSSHForwarding(t *testing.T) {
 	}, "\n")
 	if result.Status != StatusWarn || result.Summary != T("audit.ssh.forwarding_bad", "GatewayPorts clientspecified, PermitTunnel yes") || result.Evidence[0].Value != want {
 		t.Fatalf("result = %+v", result)
+	}
+	// AllowTcpForwarding local이면 ssh -R이 거부되어 GatewayPorts가 쓰이지 않는다.
+	writeAuditFile(t, root, "/etc/ssh/sshd_config", "GatewayPorts yes\nAllowTcpForwarding local\n", 0o644)
+	local, err := readSSHDConfig(root, "/etc/ssh/sshd_config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := auditSSHForwarding(auditFacts{SSHD: local, SSHDPath: "/etc/ssh/sshd_config"}); result.Status != StatusPass {
+		t.Fatalf("local only = %+v", result)
 	}
 	clean, _ := readSSHDConfig(t.TempDir(), "/missing")
 	if result := auditSSHForwarding(auditFacts{SSHD: clean, SSHDPath: "/etc/ssh/sshd_config"}); result.Status != StatusPass || result.Summary != T("audit.ssh.forwarding_ok", "no", "no") {

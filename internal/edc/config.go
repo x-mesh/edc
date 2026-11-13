@@ -636,7 +636,7 @@ func validateConfig(config edcConfig) error {
 		return invalidConfig("defaults.log.command_display", "must be full, name, or none")
 	}
 	for _, id := range config.Audit.Accept {
-		if !slices.Contains(auditCheckIDs, id) {
+		if _, removed := auditRemovedIDs[id]; !slices.Contains(auditCheckIDs, id) && !removed {
 			return invalidConfig("audit.accept", fmt.Sprintf("%q is not an audit check id", id))
 		}
 	}

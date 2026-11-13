@@ -7,7 +7,7 @@ watchfs:
     rules: "YAML rule 파일; command는 argv 목록"
     debounce: "rule별 연속 이벤트를 묶는 시간; 기본 200ms"
     timeout: "action 실행 제한 시간; 기본 30s"
-    json: "JSON Lines 출력 경로; stdout은 -"
+    json: "JSON Lines 출력 경로; stdout은 -나 값 생략"
     dry_run: "실행하지 않고 일치한 action만 표시"
     smart: "한 변경을 한 줄로 합치고 시끄러운 디렉터리를 알림. 터미널에서 기본 켜짐"
     no_smart: "이벤트를 오는 대로 모두 출력하고 알림도 끔"

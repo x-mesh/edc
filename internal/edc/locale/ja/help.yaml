@@ -20,7 +20,7 @@ help:
 
 option:
   timeout: "実行の制限時間"
-  json: "JSON の出力先、stdout は -"
+  json: "JSON の出力先、stdout は - か値の省略"
   verbose: "詳細な evidence を表示"
   redact: "出力の機微な値を伏せる"
 
@@ -193,7 +193,7 @@ command:
       write: "SQLite に追記、path 省略時は既定 DB"
       auto_record: "高負荷・swap out・メモリ圧迫で5分前から自動記録"
       retain: "記録中、この期間より長く動きのない top 実行を削除 (30d, 2w)"
-      json: "sample ごとに 1 行の JSON、stdout は -"
+      json: "sample ごとに 1 行の JSON、stdout は - か値の省略"
     notes:
       - "wでDB記録を開始・停止します。再開すると新しい実行になり、pで記録も一時停止します。"
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"

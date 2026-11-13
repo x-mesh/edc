@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -589,5 +590,16 @@ func TestConfigCheckRoutinesLoadAndValidate(t *testing.T) {
 		if _, err := loadConfigAt(writeTOMLFixture(t, content)); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("config %q error = %v, want %s", content, err, field)
 		}
+	}
+}
+
+// patch.reboot는 audit에서 edc check의 reboot로 옮겼다. 예전 설정의 accept에 남아 있어도 설정 오류로 막지 않는다.
+func TestConfigAuditAcceptKeepsAMovedCheck(t *testing.T) {
+	config, err := loadConfigAt(writeTOMLFixture(t, "[audit]\naccept = [\"patch.reboot\", \"kernel.sysctl\"]\n"))
+	if err != nil || !reflect.DeepEqual(config.Audit.Accept, []string{"patch.reboot", "kernel.sysctl"}) {
+		t.Fatalf("audit = %#v, error = %v", config.Audit, err)
+	}
+	if slices.Contains(auditCheckIDs, "patch.reboot") {
+		t.Fatal("patch.reboot is still an audit check")
 	}
 }

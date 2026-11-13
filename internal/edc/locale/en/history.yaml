@@ -131,7 +131,7 @@ history:
     from: "inclusive start time (RFC3339)"
     to: "exclusive end time (RFC3339)"
     limit: "maximum rows, 200 by default; 0 means all"
-    json: "one JSON line per result, - for stdout"
+    json: "one JSON line per result; - or no value for stdout"
     metric: "numeric field to filter"
     min: "inclusive minimum; requires --metric"
     max: "inclusive maximum; requires --metric"

@@ -98,8 +98,16 @@ check:
   reboot:
     flag: "reboot required by %s"
     none: "no installed kernel to compare"
-    kernel: "kernel %s is installed, %s is running"
+    kernel: "reboot to run the new kernel: %s runs, %s is installed"
     ok: "running the newest kernel %s"
+    kernel_packages: "reboot to apply the new kernel and packages: %s runs, %s is installed, %d other packages"
+    packages: "reboot to apply package updates: %s"
+    since: "reboot asked since %s (%d days)"
+    kernel_running: "(running)"
+    kernel_running_since: "(running, booted %s)"
+    evidence_request: "request"
+    evidence_kernels: "installed kernels"
+    evidence_packages: "packages"
   group:
     summary: "%d hosts, %d checked, %d without a result; FAIL on %d, WARN on %d"
     col:

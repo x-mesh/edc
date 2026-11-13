@@ -126,7 +126,7 @@ cli:
       limit: "attempts per key (1-1000, default 20; terminal view grows with screen height)"
       failed: "known failures only"
       follow: "print runs as they start and end"
-      json: "--follow JSONL path (- for stdout)"
+      json: "--follow JSONL path (- or no value for stdout)"
     outcome:
       success: "✓ PASS"
       fail: "✗ FAIL"

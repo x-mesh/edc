@@ -382,3 +382,165 @@ func TestJoinAuditLoginsByTimeSharesCandidates(t *testing.T) {
 		t.Fatalf("sshd = %v, by time = %d", got, facts.JoinedByTime)
 	}
 }
+
+func TestAuditSSHDAcceptedLoginsReadsThePort(t *testing.T) {
+	entries, err := parseAuditJournal(strings.NewReader(
+		testAcceptedLine(testLoginAt(1), "sshd-session", 10, "Accepted publickey for root from 127.0.0.1 port 54424 ssh2: RSA SHA256:abc") +
+			testAcceptedLine(testLoginAt(2), "sshd-session", 11, "Accepted publickey for root from 127.0.0.1") +
+			testAcceptedLine(testLoginAt(3), "sshd-session", 12, "Accepted publickey for root from 127.0.0.1 port abc ssh2") +
+			testAcceptedLine(testLoginAt(4), "sshd-session", 13, "Accepted publickey for root from 127.0.0.1 port 70000 ssh2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ports []int
+	for _, login := range auditSSHDAcceptedLogins(entries) {
+		ports = append(ports, login.Port)
+	}
+	// port가 없거나 숫자가 아니어도 그 줄은 Accepted로 센다.
+	if !reflect.DeepEqual(ports, []int{54424, 0, 0, 0}) {
+		t.Fatalf("ports = %v", ports)
+	}
+}
+
+func TestCollectAuditJournalReadsWithoutWtmp(t *testing.T) {
+	now := testLoginAt(0).Add(30 * 24 * time.Hour)
+	entries, err := parseAuditJournal(strings.NewReader(
+		testAcceptedLine(testLoginAt(10), "sshd-session", 10, "Accepted publickey for root from 127.0.0.1 port 54424 ssh2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked time.Time
+	source := func(_ context.Context, since time.Time) ([]auditJournalEntry, bool, error) {
+		asked = since
+		return entries, false, nil
+	}
+	// wtmp를 읽지 못하면 Logins.Since가 있어도 쓰지 않고 최근 7일을 읽는다.
+	facts := auditFacts{Root: true, Now: now, LoginErr: errors.New("no wtmp"), Logins: auditLoginRecords{Since: now.Add(-time.Hour)}}
+	collectAuditJournal(context.Background(), auditSources{journal: source}, &facts)
+	if !asked.Equal(now.Add(-auditJournalWindow)) || !facts.JournalRead || facts.JournalErr != nil || len(facts.Accepted) != 1 || facts.Accepted[0].Port != 54424 {
+		t.Fatalf("since = %v, facts = %+v", asked, facts)
+	}
+	if !facts.JournalSince.Equal(testLoginAt(10)) {
+		t.Fatalf("journal since = %v", facts.JournalSince)
+	}
+	// wtmp 짝짓기는 하지 않는다.
+	if facts.Joined || facts.NoTTY != nil || !facts.AcceptedSince.IsZero() {
+		t.Fatalf("facts = %+v", facts)
+	}
+}
+
+func TestCollectAuditJournalMarksWhetherItRead(t *testing.T) {
+	source := func(context.Context, time.Time) ([]auditJournalEntry, bool, error) { return nil, false, nil }
+	facts := auditFacts{Now: testLoginAt(0), LoginErr: errors.New("no wtmp")}
+	collectAuditJournal(context.Background(), auditSources{journal: source}, &facts)
+	if !errors.Is(facts.JournalErr, errAuditNeedsRoot) || facts.JournalRead {
+		t.Fatalf("not root: %+v", facts)
+	}
+	facts = auditFacts{Root: true, Now: testLoginAt(0)}
+	collectAuditJournal(context.Background(), auditSources{}, &facts)
+	if facts.JournalErr != nil || facts.JournalRead {
+		t.Fatalf("no source: %+v", facts)
+	}
+	facts = auditFacts{Root: true, Now: testLoginAt(0)}
+	failing := func(context.Context, time.Time) ([]auditJournalEntry, bool, error) {
+		return nil, false, errEventsNoJournal
+	}
+	collectAuditJournal(context.Background(), auditSources{journal: failing}, &facts)
+	if !errors.Is(facts.JournalErr, errEventsNoJournal) || facts.JournalRead {
+		t.Fatalf("failed: %+v", facts)
+	}
+}
+
+// OpenSSH 9.6에서 연결 하나에 터미널을 하나 더 열면(ControlMaster) 새 Accepted가 없고 wtmp에는 shell의 PID가 남는다.
+// okrr-intranet-slackbot-1에서 두 shell의 부모가 모두 09:46에 Accepted를 남긴 sshd 1312953이었다.
+func TestCollectAuditJournalJoinsAMultiplexedTerminalByItsParent(t *testing.T) {
+	root := t.TempDir()
+	stat := func(pid, parent int) {
+		writeAuditFile(t, root, "/proc/"+strconv.Itoa(pid)+"/stat", strconv.Itoa(pid)+" (bash) S "+strconv.Itoa(parent)+" 1 1 0 -1 4194560 1 0 0 0 5 6 0 0 20 0 1 0 100 1000 50 18446744073709551615\n", 0o644)
+	}
+	stat(1313073, 1312953)
+	stat(1313221, 1312953)
+	stat(1313300, 1312953)
+	stat(1312953, 1261211)
+	stat(1261211, 1)
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/0", Host: "100.65.168.177", PID: 1313073, Start: testLoginAt(10)},
+		{User: "root", Line: "pts/1", Host: "100.65.168.177", PID: 1313221, Start: testLoginAt(24)},
+		// 끝난 로그인은 shell PID가 재사용됐을 수 있어 부모로 짝짓지 않는다. 같은 사용자·출발지의 연결이 열려 있던 때라 그 연결의 터미널로 본다.
+		{User: "root", Line: "pts/2", Host: "100.65.168.177", PID: 1313300, Start: testLoginAt(30), End: testLoginAt(31)},
+		// 다른 사용자는 같은 sshd 아래에 있어도 짝짓지 않는다.
+		{User: "deploy", Line: "pts/3", Host: "100.65.168.177", PID: 1313221, Start: testLoginAt(40)},
+	}
+	entries, err := parseAuditJournal(strings.NewReader(testAcceptedLine(testLoginAt(10), "sshd", 1312953, "Accepted publickey for root from 100.65.168.177 port 65380 ssh2: RSA SHA256:x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sshd는 터미널을 열 때마다 lastlog를 고치므로 마지막 root 터미널(pts/2)이 남는다.
+	facts := testLoginFacts(sessions, map[int]auditLastlog{0: {Time: testLoginAt(30), Line: "pts/2", Host: "100.65.168.177"}})
+	facts.Root, facts.Now = true, testLoginAt(120)
+	source := func(context.Context, time.Time) ([]auditJournalEntry, bool, error) { return entries, false, nil }
+	collectAuditJournal(context.Background(), auditSources{root: root, journal: source}, &facts)
+	got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD, facts.Logins.Sessions[2].SSHD, facts.Logins.Sessions[3].SSHD}
+	if !reflect.DeepEqual(got, []int{1312953, 1312953, auditSSHDAmbiguous, 0}) || facts.JoinedByTime != 1 || facts.JoinedByConnection != 1 || len(facts.NoTTY) != 0 {
+		t.Fatalf("sshd = %v, by time = %d, by connection = %d, no tty = %+v", got, facts.JoinedByTime, facts.JoinedByConnection, facts.NoTTY)
+	}
+	result := auditLoginMismatch(facts)
+	if result.Status != StatusWarn || strings.Contains(result.Evidence[0].Value, "pts/1") || strings.Contains(result.Evidence[0].Value, "pts/2") ||
+		!strings.Contains(result.Evidence[0].Value, "deploy") || !slices.Contains(result.Warnings, T("audit.login.joined_by_connection", 1)) {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// okrr-intranet-1(OpenSSH 8.9)에서 Accepted 하나(10:50) 위에 터미널 셋이 열렸다. 11:08 터미널은 닫혔고 11:37 터미널은 열려 있다.
+// 0.86.1은 아무것도 짝짓지 못해 통과했고, 부모 짝짓기만 넣으면 닫힌 11:08 터미널이 Accepted 없는 로그인으로 보였다.
+// journal 범위 안에서 OpenSSH를 9.8 이상으로 올렸다. 새 로그인은 PID로 맞고, 올리기 전 연결 위에서 닫힌 터미널은 연결로 짝짓는다.
+// 옛 연결이 끝난 뒤의 로그인에 Accepted가 없으면 그대로 남는다.
+func TestCollectAuditJournalJoinsOldTerminalsAfterAnUpgrade(t *testing.T) {
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/1", Host: "100.65.168.177", PID: 3231170, Start: testLoginAt(18), End: testLoginAt(40)},
+		{User: "root", Line: "pts/0", Host: "100.65.168.177", PID: 4000000, Start: testLoginAt(60)},
+		{User: "root", Line: "pts/2", Host: "100.65.168.177", PID: 4100000, Start: testLoginAt(70)},
+	}
+	lines := testAcceptedLine(testLoginAt(0), "sshd", 3220182, "Accepted publickey for root from 100.65.168.177 port 54907 ssh2: RSA SHA256:x") +
+		testClosedLine(testLoginAt(50), 3220182, "root") +
+		testAcceptedLine(testLoginAt(60), "sshd-session", 4000000, "Accepted publickey for root from 100.65.168.177 port 54990 ssh2: RSA SHA256:x")
+	entries, err := parseAuditJournal(strings.NewReader(lines))
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := testLoginFacts(sessions, map[int]auditLastlog{0: {Time: testLoginAt(70), Line: "pts/2", Host: "100.65.168.177"}})
+	facts.Root, facts.Now = true, testLoginAt(120)
+	source := func(context.Context, time.Time) ([]auditJournalEntry, bool, error) { return entries, false, nil }
+	collectAuditJournal(context.Background(), auditSources{root: t.TempDir(), journal: source}, &facts)
+	got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD, facts.Logins.Sessions[2].SSHD}
+	if !reflect.DeepEqual(got, []int{auditSSHDAmbiguous, 4000000, 0}) || facts.JoinedByConnection != 1 {
+		t.Fatalf("sshd = %v, by connection = %d", got, facts.JoinedByConnection)
+	}
+}
+
+func TestCollectAuditJournalJoinsClosedMultiplexedTerminals(t *testing.T) {
+	root := t.TempDir()
+	writeAuditFile(t, root, "/proc/3240000/stat", "3240000 (bash) S 3220182 1 1 0 -1 4194560 1 0 0 0 5 6 0 0 20 0 1 0 100 1000 50 18446744073709551615\n", 0o644)
+	sessions := []auditLogin{
+		{User: "root", Line: "pts/1", Host: "100.65.168.177", PID: 3231170, Start: testLoginAt(18), End: testLoginAt(40)},
+		{User: "root", Line: "pts/0", Host: "100.65.168.177", PID: 3240000, Start: testLoginAt(47)},
+		// 다른 출발지의 로그인은 그 연결의 터미널이 아니다.
+		{User: "root", Line: "pts/2", Host: "198.51.100.4", PID: 3250000, Start: testLoginAt(50)},
+	}
+	entries, err := parseAuditJournal(strings.NewReader(testAcceptedLine(testLoginAt(0), "sshd", 3220182, "Accepted publickey for root from 100.65.168.177 port 54907 ssh2: RSA SHA256:x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := testLoginFacts(sessions, map[int]auditLastlog{0: {Time: testLoginAt(47), Line: "pts/0", Host: "100.65.168.177"}})
+	facts.Root, facts.Now = true, testLoginAt(120)
+	source := func(context.Context, time.Time) ([]auditJournalEntry, bool, error) { return entries, false, nil }
+	collectAuditJournal(context.Background(), auditSources{root: root, journal: source}, &facts)
+	got := []int{facts.Logins.Sessions[0].SSHD, facts.Logins.Sessions[1].SSHD, facts.Logins.Sessions[2].SSHD}
+	if !reflect.DeepEqual(got, []int{auditSSHDAmbiguous, 3220182, 0}) || facts.JoinedByConnection != 1 || facts.Unjoinable {
+		t.Fatalf("sshd = %v, by connection = %d, unjoinable = %v", got, facts.JoinedByConnection, facts.Unjoinable)
+	}
+	result := auditLoginMismatch(facts)
+	if result.Status != StatusWarn || !strings.Contains(result.Evidence[0].Value, "198.51.100.4") || strings.Contains(result.Evidence[0].Value, "pts/1") {
+		t.Fatalf("result = %+v", result)
+	}
+}

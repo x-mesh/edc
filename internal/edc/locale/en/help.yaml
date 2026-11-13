@@ -20,7 +20,7 @@ help:
 
 option:
   timeout: "run time limit"
-  json: "JSON output path, - for stdout"
+  json: "JSON output path; - or no value for stdout"
   verbose: "print the detailed evidence"
   redact: "hide sensitive values in output"
 
@@ -193,7 +193,7 @@ command:
       write: "append to SQLite; omit path for the default DB"
       auto_record: "record load, swap out, or memory pressure spikes"
       retain: "while recording, delete top runs idle longer than this (30d, 2w)"
-      json: "one JSON line for each sample, - for stdout"
+      json: "one JSON line for each sample; - or no value for stdout"
     notes:
       - "Press w to start/stop DB recording. Each restart creates a new run; p pauses recording too."
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."

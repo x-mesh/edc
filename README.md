@@ -72,6 +72,8 @@ Press `q` to exit. For bounded output or a script, collect five samples as JSON 
 edc top --count 5 --json -
 ```
 
+`--json -` writes JSON to stdout. `--json report.json` writes it to a file. If `--json` is the last argument or the next argument is another option, it also writes to stdout.
+
 Use the task table above to choose the next command. `edc help` lists commands, and `edc help top` shows a command's options. Source builds use `./bin/edc` in place of `edc`.
 
 <a id="host-information"></a>

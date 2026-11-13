@@ -12,7 +12,7 @@ watchfs:
     rules: "YAML rules file; command is an argv list"
     debounce: "coalesce events per rule; default 200ms"
     timeout: "action time limit; default 30s"
-    json: "JSON Lines output path; - for stdout"
+    json: "JSON Lines output path; - or no value for stdout"
     dry_run: "show matching actions without executing them"
     smart: "merge a change into a line and hint at noisy dirs; on in a terminal"
     no_smart: "print every event as it comes, with no hints"

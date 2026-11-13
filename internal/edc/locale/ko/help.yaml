@@ -20,7 +20,7 @@ help:
 
 option:
   timeout: "실행 제한 시간"
-  json: "JSON 출력 경로, stdout은 -"
+  json: "JSON 출력 경로, stdout은 -나 값 생략"
   verbose: "상세 evidence 출력"
   redact: "출력의 민감정보 가리기"
 
@@ -193,7 +193,7 @@ command:
       write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"
       auto_record: "부하·swap out·메모리 압박이 생기면 5분 전부터 자동 기록"
       retain: "기록하는 동안 이 기간보다 오래 쉰 top 실행 삭제(30d, 2w)"
-      json: "sample당 한 줄 JSON, stdout은 -"
+      json: "sample당 한 줄 JSON, stdout은 -나 값 생략"
     notes:
       - "w로 DB 기록을 시작·중지합니다. 다시 시작하면 새 실행으로 기록하며 p 일시정지 시 기록도 멈춥니다."
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."

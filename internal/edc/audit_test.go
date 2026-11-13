@@ -94,17 +94,19 @@ func TestParseFirewallInput(t *testing.T) {
 		{
 			name: "nft policy drop",
 			got:  parseNftInputChains("table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy drop;\n\t\tct state established,related accept\n\t\ttcp dport 22 accept\n\t}\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n"),
-			want: auditFirewall{Tool: "nftables", Chains: 1, Rules: 2, Drops: true},
+			// inet 표라 IPv6도 같은 chain이 거른다.
+			want: auditFirewall{Tool: "nftables", Chains: 1, Rules: 2, Drops: true, V6Known: true, V6Chains: 1, V6Rules: 2, V6Drops: true},
 		},
 		{
 			name: "iptables-nft with final reject",
 			got:  parseNftInputChains("table ip filter {\n\tchain INPUT {\n\t\ttype filter hook input priority filter; policy accept;\n\t\tct state related,established counter packets 10 bytes 900 accept\n\t\tcounter packets 0 bytes 0 reject with icmp host-prohibited\n\t}\n}\ntable ip nat {\n\tchain INPUT {\n\t\ttype nat hook input priority 100; policy accept;\n\t}\n}\n"),
-			want: auditFirewall{Tool: "nftables", Chains: 1, Rules: 2, Drops: true},
+			// ip 표만 있어 IPv6 input chain은 없다. IPv6는 기본 허용이다.
+			want: auditFirewall{Tool: "nftables", Chains: 1, Rules: 2, Drops: true, V6Known: true},
 		},
 		{
 			name: "nft accept with port rule",
 			got:  parseNftInputChains("table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\ttcp dport 6379 drop\n\t}\n}\n"),
-			want: auditFirewall{Tool: "nftables", Chains: 1, Rules: 1},
+			want: auditFirewall{Tool: "nftables", Chains: 1, Rules: 1, V6Known: true, V6Chains: 1, V6Rules: 1},
 		},
 		{
 			name: "iptables reject last",
@@ -201,18 +203,6 @@ func TestAuditSSHPassword(t *testing.T) {
 	}
 }
 
-func TestAuditRebootComparesInstalledKernels(t *testing.T) {
-	if got := auditReboot(auditFacts{Running: "6.8.0-45-generic", Kernels: []string{"6.8.0-45-generic", "6.8.0-48-generic"}}); got.Status != StatusWarn || !strings.Contains(got.Summary, "6.8.0-48-generic") {
-		t.Fatalf("새 커널 = %s %q", got.Status, got.Summary)
-	}
-	if got := auditReboot(auditFacts{Running: "6.8.0-48-generic", Kernels: []string{"6.8.0-45-generic", "6.8.0-48-generic"}}); got.Status != StatusPass {
-		t.Fatalf("최신 커널 = %s %q", got.Status, got.Summary)
-	}
-	if got := auditReboot(auditFacts{Running: "6.6.87.2-microsoft-standard-WSL2", Kernels: []string{"6.8.0-48-generic"}}); got.Status != StatusPass {
-		t.Fatalf("/boot에 없는 커널 = %s %q", got.Status, got.Summary)
-	}
-}
-
 // 임시 디렉터리를 root로 삼아 수집부터 판정까지 한 번에 지난다. 파일 경로와 mode 해석이 틀리면 판정이 어긋난다.
 func TestCollectAuditFactsFromFiles(t *testing.T) {
 	root := t.TempDir()
@@ -224,9 +214,6 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 	writeAuditFile(t, root, "/proc/sys/kernel/randomize_va_space", "2\n", 0o644)
 	writeAuditFile(t, root, "/proc/sys/kernel/dmesg_restrict", "0\n", 0o644)
 	writeAuditFile(t, root, "/proc/sys/fs/suid_dumpable", "2\n", 0o644)
-	writeAuditFile(t, root, "/var/run/reboot-required", "", 0o644)
-	writeAuditFile(t, root, "/var/run/reboot-required.pkgs", "linux-base\nlinux-base\n", 0o644)
-	writeAuditFile(t, root, "/boot/vmlinuz-6.8.0-45-generic", "", 0o644)
 	if err := os.MkdirAll(filepath.Join(root, "usr/local/bin"), 0o777); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +226,6 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 		path:     "/usr/bin:.",
 		listen:   func() ([]listenSocket, error) { return nil, nil },
 		firewall: func(context.Context) (auditFirewall, error) { return auditFirewall{}, errAuditNoFirewallTool },
-		kernel:   func() string { return "6.8.0-45-generic" },
 		owner:    func(fs.FileInfo) (uint32, bool) { return 0, false },
 	}
 	results := evaluateAudit(collectAuditFacts(context.Background(), sources))
@@ -256,7 +242,6 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 		"file.sensitive":     StatusFail,
 		"file.path_writable": StatusFail,
 		"kernel.sysctl":      StatusWarn,
-		"patch.reboot":       StatusWarn,
 	}
 	for id, status := range want {
 		if result := auditResultByID(t, results, id); result.Status != status {
@@ -268,9 +253,6 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 	}
 	if summary := auditResultByID(t, results, "file.path_writable").Summary; !strings.Contains(summary, "/usr/local/bin") || !strings.Contains(summary, `"."`) {
 		t.Errorf("PATH 판정 = %q", summary)
-	}
-	if summary := auditResultByID(t, results, "patch.reboot").Summary; !strings.HasSuffix(summary, "linux-base") {
-		t.Errorf("재부팅 패키지 = %q", summary)
 	}
 
 	// PATH 없이 실행한 root를 현재 디렉터리가 PATH에 있는 것으로 보지 않는다.
@@ -401,7 +383,6 @@ func TestAuditContainerChecks(t *testing.T) {
 				euid:      tt.euid,
 				listen:    func() ([]listenSocket, error) { return nil, nil },
 				firewall:  func(context.Context) (auditFirewall, error) { return auditFirewall{}, errAuditNoFirewallTool },
-				kernel:    func() string { return "" },
 				owner:     func(fs.FileInfo) (uint32, bool) { return 0, false },
 				container: tt.container,
 			}
@@ -437,7 +418,6 @@ func TestAuditOmitsContainerChecksOnHost(t *testing.T) {
 		root:     root,
 		listen:   func() ([]listenSocket, error) { return nil, nil },
 		firewall: func(context.Context) (auditFirewall, error) { return auditFirewall{}, errAuditNoFirewallTool },
-		kernel:   func() string { return "" },
 		owner:    func(fs.FileInfo) (uint32, bool) { return 0, false },
 	}
 	for _, result := range evaluateAudit(collectAuditFacts(context.Background(), sources)) {
@@ -519,5 +499,124 @@ func TestAuditExposureAllowPorts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(partial.Metrics["allowed_ports"], []int{5432}) || !slices.Contains(partial.Warnings, T("audit.net.allowed_ports", "postgres/5432")) {
 		t.Fatalf("partial metrics = %#v warnings = %q", partial.Metrics, partial.Warnings)
+	}
+}
+
+// warn은 무엇이 걸렸는지가 내용이므로 -v 없이도 근거를 보인다. pass의 근거와 다른 명령의 warn은 그대로 -v에서만 보인다.
+func TestAuditWarnShowsEvidenceWithoutVerbose(t *testing.T) {
+	warn := auditResult("login.local_source", StatusWarn, "local logins")
+	warn.Evidence = []Evidence{{Label: "open logins", Value: "root  127.0.0.1:59630"}}
+	pass := auditResult("kernel.sysctl", StatusPass, "values match")
+	pass.Evidence = []Evidence{{Label: "values", Value: "kernel.kptr_restrict=1"}}
+	other := Result{Probe: "example.check", Status: StatusWarn, Summary: "other", Evidence: []Evidence{{Label: "other", Value: "other evidence"}}}
+	results := []Result{warn, pass, other}
+
+	var output strings.Builder
+	printTerminal(&output, results, false)
+	text := output.String()
+	if !strings.Contains(text, "open logins:") || !strings.Contains(text, "root  127.0.0.1:59630") {
+		t.Fatalf("warn evidence missing: %q", text)
+	}
+	if strings.Contains(text, "kernel.kptr_restrict") || strings.Contains(text, "other evidence") {
+		t.Fatalf("evidence shown without -v: %q", text)
+	}
+
+	output.Reset()
+	printTerminal(&output, results, true)
+	if text := output.String(); !strings.Contains(text, "kernel.kptr_restrict") || !strings.Contains(text, "other evidence") {
+		t.Fatalf("verbose evidence missing: %q", text)
+	}
+}
+
+// sshd는 처음 읽은 값을 쓴다. 근거에는 적용되는 줄과 무시되는 뒤의 줄, 설정이 없을 때의 기본값이 함께 나와야 고칠 곳을 알 수 있다.
+func TestAuditSSHEvidenceShowsEveryLineAndDefaults(t *testing.T) {
+	root := t.TempDir()
+	writeAuditFile(t, root, "/etc/ssh/sshd_config", "Include /etc/ssh/sshd_config.d/*.conf\n# comment\nPermitRootLogin yes\nPasswordAuthentication yes\nUsePAM yes\n", 0o644)
+	writeAuditFile(t, root, "/etc/ssh/sshd_config.d/50-cloud-init.conf", "PasswordAuthentication yes\n", 0o644)
+	config, err := readSSHDConfig(root, "/etc/ssh/sshd_config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := auditFacts{SSHD: config, SSHDPath: "/etc/ssh/sshd_config"}
+
+	password := auditSSHPassword(facts)
+	want := strings.Join([]string{
+		"PasswordAuthentication yes  /etc/ssh/sshd_config.d/50-cloud-init.conf:1",
+		auditNotePrefix + T("audit.ssh.advice_password"),
+		"PasswordAuthentication yes  /etc/ssh/sshd_config:4",
+		auditNotePrefix + T("audit.ssh.setting_ignored"),
+		"KbdInteractiveAuthentication yes  " + T("audit.ssh.setting_default"),
+		auditNotePrefix + T("audit.ssh.advice_kbd"),
+		"UsePAM yes  /etc/ssh/sshd_config:5",
+		"PermitEmptyPasswords no  " + T("audit.ssh.setting_default"),
+	}, "\n")
+	if password.Status != StatusWarn || len(password.Evidence) != 1 || password.Evidence[0].Label != T("audit.evidence.sshd_settings") || password.Evidence[0].Value != want {
+		t.Fatalf("password = %+v", password)
+	}
+	rootLogin := auditSSHRootLogin(facts)
+	if rootLogin.Status != StatusWarn || len(rootLogin.Evidence) != 1 || rootLogin.Evidence[0].Value != "PermitRootLogin yes  /etc/ssh/sshd_config:3\n"+auditNotePrefix+T("audit.ssh.advice_root") {
+		t.Fatalf("root login = %+v", rootLogin)
+	}
+}
+
+func TestAuditFindingsCarryTheirValues(t *testing.T) {
+	forward := auditIPForward(auditFacts{IPForward: "1"})
+	if forward.Status != StatusWarn || len(forward.Evidence) != 1 || !strings.HasPrefix(forward.Evidence[0].Value, "net.ipv4.ip_forward = 1\n") || !strings.Contains(forward.Evidence[0].Value, "/var/run/docker.sock") {
+		t.Fatalf("ip forward = %+v", forward)
+	}
+	uid0 := auditUID0(auditFacts{Passwd: []auditPasswd{{Name: "root", Home: "/root", Shell: "/bin/bash"}, {Name: "toor", GID: 0, Home: "/root", Shell: "/bin/sh"}}})
+	if uid0.Status != StatusFail || len(uid0.Evidence) != 1 || uid0.Evidence[0].Value != "toor  uid 0  gid 0  /root  /bin/sh" {
+		t.Fatalf("uid0 = %+v", uid0)
+	}
+}
+
+// warn·fail은 근거를 가져야 한다. 요약에 다 담기지 않는 값을 근거에서 보인다.
+func TestAuditAccountAndPathFindingsCarryEvidence(t *testing.T) {
+	passwd := []auditPasswd{{Name: "alice", UID: 1001, GID: 1001, Home: "/home/alice", Shell: "/bin/bash"}, {Name: "svc", UID: 998, GID: 998, Home: "/", Shell: "/usr/sbin/nologin"}}
+	empty := auditEmptyPasswords(auditFacts{Passwd: passwd, EmptyPass: []string{"svc", "ghost"}})
+	if empty.Status != StatusFail || len(empty.Evidence) != 1 || empty.Evidence[0].Value != "svc  uid 998  gid 998  /  /usr/sbin/nologin\nghost" {
+		t.Fatalf("empty = %+v", empty)
+	}
+	groups := auditRootGroups(auditFacts{Passwd: passwd, RootGroups: map[string][]string{"docker": {"alice"}}})
+	if groups.Status != StatusWarn || len(groups.Evidence) != 1 || groups.Evidence[0].Value != "docker  alice  uid 1001  gid 1001  /home/alice  /bin/bash" {
+		t.Fatalf("groups = %+v", groups)
+	}
+	firewall := auditFirewallResult(auditFacts{Firewall: auditFirewall{Tool: "iptables", Chains: 1}})
+	if firewall.Status != StatusWarn || len(firewall.Evidence) != 1 || firewall.Evidence[0].Value != "iptables  input chain 1  rule 0  drop false" || firewall.Next != "sudo iptables-save -t filter" {
+		t.Fatalf("firewall = %+v", firewall)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "usr/local/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "usr/local/bin"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	_, bad, details := auditPathEntries(auditSources{root: root, euid: 0, path: "/usr/local/bin:.", owner: func(fs.FileInfo) (uint32, bool) { return 1001, true }})
+	if !slices.Equal(bad, []string{"/usr/local/bin", `"."`}) || !slices.Equal(details, []string{"/usr/local/bin  drwxrwxrwx  uid 1001", `"."  ` + T("audit.file.path_relative")}) {
+		t.Fatalf("bad = %q, details = %q", bad, details)
+	}
+	path := auditPath(auditFacts{PathBad: bad, PathDetails: details})
+	if len(path.Evidence) != 1 || path.Evidence[0].Label != T("audit.evidence.paths") {
+		t.Fatalf("path = %+v", path)
+	}
+}
+
+// 색을 쓰면 찾은 항목은 굵게, 설명은 회색으로 그려 둘을 떼어 보인다. 들여 쓴 줄이 없는 값 목록은 굵게 칠하지 않는다.
+func TestRichAuditEvidenceSeparatesFindingsFromNotes(t *testing.T) {
+	result := auditResult("proc.unusual_exe", StatusWarn, "found")
+	result.Evidence = []Evidence{
+		{Label: "processes", Value: auditItem("7 p7  /tmp/miner", []string{"started 2026-11-13 09:00:00"}, []string{"runs from a temporary directory"})},
+		{Label: "values", Value: "kernel.kptr_restrict = 1"},
+	}
+	lines := richEvidence(result, 120)
+	text := strings.Join(lines, "\n")
+	for _, want := range []string{richBold("7 p7  /tmp/miner"), "  started 2026-11-13 09:00:00", richDim(auditNotePrefix + "runs from a temporary directory"), "kernel.kptr_restrict = 1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %q", want, text)
+		}
+	}
+	if strings.Contains(text, richBold("kernel.kptr_restrict = 1")) || strings.Contains(text, richBold("  started")) {
+		t.Fatalf("plain lines painted: %q", text)
 	}
 }

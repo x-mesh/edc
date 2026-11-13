@@ -126,7 +126,7 @@ cli:
       limit: "키별 최근 실행 수 (1-1000, 기본 20; 터미널에서는 화면 높이에 맞춰 증가)"
       failed: "확인된 실패만 조회"
       follow: "실행이 시작하고 끝날 때마다 출력"
-      json: "--follow의 JSONL 출력 경로 (-는 stdout)"
+      json: "--follow의 JSONL 출력 경로 (-나 값 생략은 stdout)"
     outcome:
       success: "성공"
       fail: "실패"

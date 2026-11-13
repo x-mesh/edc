@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,14 +26,30 @@ var errAuditNoFirewallTool = errors.New("no firewall tool")
 
 // auditSensitivePorts는 인터넷에 열려 있으면 거의 언제나 사고가 되는 포트다. 인증이 없거나 약한 기본값으로 배포되는 서비스다.
 var auditSensitivePorts = map[int]string{
+	111:   "rpcbind",
+	139:   "netbios",
+	445:   "smb",
+	2049:  "nfs",
+	2181:  "zookeeper",
 	2375:  "docker",
+	2376:  "docker-tls",
 	2379:  "etcd",
 	3306:  "mysql",
+	3389:  "rdp",
+	4369:  "epmd",
 	5432:  "postgres",
+	5672:  "amqp",
+	5900:  "vnc",
+	5984:  "couchdb",
 	6379:  "redis",
+	8086:  "influxdb",
+	8500:  "consul",
+	9042:  "cassandra",
+	9092:  "kafka",
 	9200:  "elasticsearch",
 	10250: "kubelet",
 	11211: "memcached",
+	15672: "rabbitmq",
 	27017: "mongodb",
 }
 
@@ -90,7 +107,6 @@ type auditSources struct {
 	path     string
 	listen   func() ([]listenSocket, error)
 	firewall func(context.Context) (auditFirewall, error)
-	kernel   func() string
 	owner    func(fs.FileInfo) (uint32, bool)
 	// ctime은 inode가 바뀐 시각이다. mtime은 touch로 되돌릴 수 있지만 ctime은 root도 시계를 바꾸지 않고는 되돌리지 못한다. nil이면 mtime만 쓴다.
 	ctime func(fs.FileInfo) (time.Time, bool)
@@ -98,6 +114,12 @@ type auditSources struct {
 	container string
 	// journal은 systemd-logind와 sshd의 journal 항목을 읽는다. nil이면 journal을 쓰지 않는다.
 	journal func(ctx context.Context, since time.Time) ([]auditJournalEntry, bool, error)
+	// interfaceAddrs는 이 호스트의 인터페이스 주소다. nil이면 loopback만 이 호스트의 출발지로 본다.
+	interfaceAddrs func() ([]netip.Addr, error)
+	// tcpConnected는 연결된 TCP 소켓이다. nil이면 로그인의 상대 process를 찾지 않는다.
+	tcpConnected func() ([]auditTCPSocket, error)
+	// containers는 docker의 실행 중인 container 설정이다. nil이면 container를 보지 않는다.
+	containers func(context.Context) ([]auditContainer, error)
 	// pid는 edc 자신이다. 내려받은 edc를 /tmp에서 실행하면 proc.unusual_exe가 자기를 잡는다.
 	pid int
 }
@@ -108,6 +130,11 @@ type auditFirewall struct {
 	Chains, Rules int
 	// Drops는 규칙에 맞지 않은 트래픽을 버리는지다. 기본 정책이 drop이거나 마지막 규칙이 조건 없는 drop·reject다.
 	Drops bool
+	// V6는 IPv6 input만 따로 본 값이다. nft의 ip6·inet 표, 또는 ip6tables-save다. IPv4만 막고 IPv6를 열어 두는 일이 흔하다.
+	// V6Known이 false면 IPv6 규칙을 읽지 못했다.
+	V6Known           bool
+	V6Chains, V6Rules int
+	V6Drops           bool
 }
 
 type auditFile struct {
@@ -168,25 +195,40 @@ type auditFacts struct {
 	JournalErr     error
 	JournalLimited bool
 	NoTTY          []auditNoTTY
+	// JournalRead는 journal을 실제로 읽었다는 표시다. 읽지 않았는데 Accepted가 없는 것을 통과로 보지 않게 한다. JournalSince는 읽은 범위의 시작이다.
+	JournalRead  bool
+	JournalSince time.Time
+	// Accepted는 wtmp를 읽지 못해도 채운다. LocalSource는 그 가운데 출발지가 이 호스트인 로그인이고 JournalRead일 때만 채운다.
+	Accepted    []auditAccepted
+	LocalSource auditLocalSource
 	// Joined면 wtmp 세션의 SSHD를 채웠다. AcceptedSince는 읽은 sshd 기록의 시작이다.
 	Joined        bool
 	AcceptedSince time.Time
 	// JoinedByTime은 PID가 맞지 않아 사용자, 출발지, 시각으로 짝지은 로그인 수다. OpenSSH 9.8 미만은 wtmp에 shell의 PID를 남긴다.
 	// Unjoinable은 그렇게도 하나도 맞지 않아 짝짓지 않은 것이다.
 	JoinedByTime int
-	Unjoinable   bool
-	Processes    auditProcesses
+	// JoinedByConnection은 같은 사용자·출발지의 열린 연결에서 연 터미널로 보고 짝지은 로그인 수다(ControlMaster, OpenSSH 9.8 미만).
+	JoinedByConnection int
+	Unjoinable         bool
+	Processes          auditProcesses
+	Backdoor           auditBackdoor
+	Persist            auditPersist
+	Containers         []auditContainer
+	// ContainersErr가 fs.ErrNotExist면 docker socket이 없는 호스트다.
+	ContainersErr error
+	// Addrs는 이 호스트의 인터페이스 주소다. IPv6 방화벽 공백을 판정할 때 공인 IPv6가 있는지 본다.
+	Addrs     []netip.Addr
+	AddrsErr  error
+	Taint     auditTaint
+	PkgVerify auditPkgVerify
 
 	Sensitive []auditFile
 	PathDirs  []string
 	PathBad   []string
+	// PathDetails는 PathBad마다 mode와 주인, 또는 상대 경로라는 이유다.
+	PathDetails []string
 
 	Sysctl map[string]string
-
-	RebootPackages []string
-	RebootFlag     bool
-	Running        string
-	Kernels        []string
 
 	// AllowPorts는 설정에서 열어 두기로 한 포트다. net.exposed 판정에서 빼고 따로 알린다.
 	AllowPorts []int
@@ -227,7 +269,18 @@ func runAudit(args []string, version string) int {
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("audit", T("audit.skip.linux_only"))}, options.redact))
 	}
+	// journal과 /proc를 읽는 동안 바쁜 호스트에서는 몇 초 걸린다. 화면이 멈춘 것처럼 보이지 않게 대기 줄을 그린다.
+	stopPending := func() {}
+	if options.jsonPath == "" && liveTerminal() {
+		stopPending = startPendingLine(os.Stdout, "audit", true, probeLiveDelay)
+	}
 	facts := collectAuditFacts(ctx, sources)
+	stopPending()
+	for _, id := range activeConfig.Audit.Accept {
+		if moved, ok := auditRemovedIDs[id]; ok {
+			fmt.Fprintln(os.Stderr, T("audit.removed_accept", id, moved))
+		}
+	}
 	facts.AllowPorts = activeConfig.Audit.AllowPorts
 	results := applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
 	return emit(options, buildReport(version, started, nil, results, options.redact))
@@ -235,13 +288,70 @@ func runAudit(args []string, version string) int {
 
 // auditCheckIDs는 evaluateAudit가 돌려줄 수 있는 모든 id다. 설정의 accept에 오타가 있으면 이 목록으로 거른다.
 var auditCheckIDs = []string{
-	"net.exposed", "net.firewall", "net.ip_forward",
-	"ssh.root_login", "ssh.password_auth", "ssh.key_files", "ssh.key_changed",
+	"net.exposed", "net.firewall", "net.ipv6_open", "net.ip_forward", "net.reverse_tunnel",
+	"ssh.root_login", "ssh.password_auth", "ssh.forwarding", "ssh.key_files", "ssh.key_changed", "ssh.extra_sshd",
 	"user.uid0", "user.empty_pass", "user.sudo_nopass", "user.root_groups",
-	"login.mismatch", "history.tampered", "history.disabled",
-	"proc.unusual_exe", "proc.preload",
-	"file.sensitive", "file.path_writable", "kernel.sysctl", "patch.reboot",
-	"ctr.privileged", "ctr.docker_sock", "ctr.root_user", "ctr.host_ns",
+	"login.mismatch", "login.local_source", "history.tampered", "history.disabled",
+	"proc.unusual_exe", "proc.preload", "proc.socket_shell", "proc.raw_socket",
+	"persist.changed", "file.sensitive", "file.path_writable", "file.pkg_modified", "kernel.sysctl", "kernel.taint",
+	"docker.escape", "ctr.privileged", "ctr.docker_sock", "ctr.root_user", "ctr.host_ns",
+}
+
+func init() {
+	for _, id := range auditCheckIDs {
+		warnEvidenceProbes["audit."+id] = true
+		richDetailRenderers["audit."+id] = richAuditEvidence
+	}
+}
+
+// audit 근거는 찾은 것과 edc의 설명을 줄로 나눈다. 들여 쓰지 않은 줄은 찾은 항목, auditDetailPrefix로 시작하는 줄은 그 항목에서
+// 읽은 값, auditNotePrefix로 시작하는 줄은 그 값이 무슨 뜻인지에 대한 설명이다. 한 줄에 섞으면 무엇이 사실이고 무엇이 해석인지 읽기 어렵다.
+const (
+	auditDetailPrefix = "  "
+	auditNotePrefix   = "  → "
+)
+
+// auditItem은 근거의 항목 하나를 만든다. 빈 값과 빈 설명은 건너뛴다.
+func auditItem(head string, details, notes []string) string {
+	lines := []string{head}
+	for _, detail := range details {
+		if detail != "" {
+			lines = append(lines, auditDetailPrefix+detail)
+		}
+	}
+	for _, note := range notes {
+		if note != "" {
+			lines = append(lines, auditNotePrefix+note)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// richAuditEvidence는 색을 쓸 때 audit 근거를 그린다. 항목을 굵게, 설명을 회색으로 칠해 찾은 것과 설명을 떼어 보인다.
+// 들여 쓴 줄이 없는 근거는 값의 목록이라 굵게 칠하지 않는다.
+func richAuditEvidence(result Result, _ int) []string {
+	var lines []string
+	for _, evidence := range result.Evidence {
+		values := evidenceValueLines(evidence.Value)
+		structured := slices.ContainsFunc(values, func(line string) bool { return strings.HasPrefix(line, auditDetailPrefix) })
+		lines = append(lines, richPanelTop(evidence.Label, resultLabel(result), ""))
+		for _, line := range values {
+			switch {
+			case strings.HasPrefix(line, auditNotePrefix):
+				line = richDim(line)
+			case structured && !strings.HasPrefix(line, auditDetailPrefix) && !strings.HasPrefix(line, "+"):
+				line = richBold(line)
+			}
+			lines = append(lines, richPanelLine(line, ""))
+		}
+		lines = append(lines, richPanelBottom(""))
+	}
+	return lines
+}
+
+// auditRemovedIDs는 audit에서 빠진 점검과 그 판정을 옮긴 곳이다. 설정의 accept에 남아 있어도 설정 오류로 보지 않고 실행할 때 알린다.
+var auditRemovedIDs = map[string]string{
+	"patch.reboot": "edc check (reboot)",
 }
 
 // applyAuditAccept는 받아들인 warn·fail을 skip으로 바꾼다. 결과를 지우지 않고 원래 판정을 요약과 metrics에 남긴다.
@@ -272,6 +382,20 @@ func (sources auditSources) file(path string) string { return filepath.Join(sour
 
 func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 	facts := auditFacts{Root: sources.euid == 0, Now: time.Now()}
+	// docker API는 container마다 inspect를 요청해 container가 둘만 있어도 0.1초를 넘긴다. 다른 원천과 상관없어 먼저 띄우고 끝에서 받는다.
+	type containerResult struct {
+		containers []auditContainer
+		err        error
+	}
+	containers := make(chan containerResult, 1)
+	if sources.containers == nil {
+		containers <- containerResult{err: errAuditNoSource}
+	} else {
+		go func() {
+			found, err := sources.containers(ctx)
+			containers <- containerResult{found, err}
+		}()
+	}
 	facts.Listen, facts.ListenErr = sources.listen()
 	if facts.Root {
 		facts.Firewall, facts.FirewallErr = sources.firewall(ctx)
@@ -299,6 +423,7 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 	facts.RootGroups, facts.GroupErr = readAuditRootGroups(sources.file("/etc/group"), facts.Passwd)
 	facts.Logins, facts.LoginErr = readAuditLogins(sources)
 	collectAuditJournal(ctx, sources, &facts)
+	collectAuditLocalSource(sources, &facts)
 	if facts.PasswdErr == nil {
 		uids := make([]int, 0, len(facts.Passwd))
 		for _, entry := range facts.Passwd {
@@ -315,8 +440,17 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 		}
 		facts.Sensitive = append(facts.Sensitive, auditFile{Path: file.path, Mode: info.Mode().Perm() & file.deny})
 	}
-	facts.PathDirs, facts.PathBad = auditPathEntries(sources)
+	facts.PathDirs, facts.PathBad, facts.PathDetails = auditPathEntries(sources)
 	facts.Processes = collectAuditProcesses(sources)
+	collectAuditBackdoor(sources, &facts)
+	collectAuditPersist(sources, &facts)
+	if sources.interfaceAddrs == nil {
+		facts.AddrsErr = errAuditNoSource
+	} else {
+		facts.Addrs, facts.AddrsErr = sources.interfaceAddrs()
+	}
+	collectAuditTaint(sources, &facts)
+	collectAuditPkgVerify(sources, &facts)
 
 	facts.Sysctl = map[string]string{}
 	for _, rule := range auditSysctlRules {
@@ -325,23 +459,11 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 		}
 	}
 
-	if _, err := os.Stat(sources.file("/var/run/reboot-required")); err == nil {
-		facts.RebootFlag = true
-		if data, err := os.ReadFile(sources.file("/var/run/reboot-required.pkgs")); err == nil {
-			facts.RebootPackages = uniqueFields(string(data))
-		}
-	}
-	facts.Running = sources.kernel()
-	matches, _ := filepath.Glob(sources.file("/boot/vmlinuz-*"))
-	for _, match := range matches {
-		release := strings.TrimPrefix(filepath.Base(match), "vmlinuz-")
-		if !strings.Contains(release, "rescue") {
-			facts.Kernels = append(facts.Kernels, release)
-		}
-	}
 	if sources.container != "" {
 		collectAuditContainer(sources, &facts)
 	}
+	result := <-containers
+	facts.Containers, facts.ContainersErr = result.containers, result.err
 	return facts
 }
 
@@ -608,7 +730,7 @@ func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd, patterns [
 }
 
 // auditPathEntries는 PATH에서 다른 사용자가 쓸 수 있는 디렉터리와 상대 경로를 찾는다. 거기에 ls 같은 이름의 파일을 두면 root가 실행한다.
-func auditPathEntries(sources auditSources) ([]string, []string) {
+func auditPathEntries(sources auditSources) ([]string, []string, []string) {
 	entries := strings.Split(auditDefaultPath, ":")
 	// root가 아닌 셸의 PATH는 root가 쓰는 PATH가 아니다. root로 실행할 때만 지금 PATH를 더한다.
 	// PATH가 아예 없으면 빈 항목 하나로 쪼개져 현재 디렉터리로 오판한다. cron처럼 PATH 없이 실행한 경우다.
@@ -619,10 +741,11 @@ func auditPathEntries(sources auditSources) ([]string, []string) {
 			}
 		}
 	}
-	var checked, bad []string
+	var checked, bad, details []string
 	for _, entry := range entries {
 		if !filepath.IsAbs(entry) {
 			bad = append(bad, strconv.Quote(entry))
+			details = append(details, strconv.Quote(entry)+"  "+T("audit.file.path_relative"))
 			continue
 		}
 		info, err := os.Stat(sources.file(entry))
@@ -632,9 +755,16 @@ func auditPathEntries(sources auditSources) ([]string, []string) {
 		checked = append(checked, entry)
 		if info.Mode().Perm()&0o002 != 0 {
 			bad = append(bad, entry)
+			detail := entry + "  " + info.Mode().String()
+			if sources.owner != nil {
+				if uid, ok := sources.owner(info); ok {
+					detail += fmt.Sprintf("  uid %d", uid)
+				}
+			}
+			details = append(details, detail)
 		}
 	}
-	return checked, bad
+	return checked, bad, details
 }
 
 // sshdConfig는 sshd처럼 처음 나온 값을 쓴다. Match 블록은 조건부라 해석하지 않고 있었다는 사실만 남긴다.
@@ -642,15 +772,22 @@ type sshdConfig struct {
 	values  map[string]string
 	sources map[string]string
 	// raw는 대소문자와 공백으로 나뉜 값을 그대로 둔 것이다. AuthorizedKeysFile처럼 경로를 여러 개 받는 설정에 쓴다.
-	raw   map[string]string
+	raw map[string]string
+	// lines는 설정마다 나온 모든 줄이다. 첫 줄만 적용되므로, 뒤의 줄을 고쳐도 sshd는 바뀌지 않는다는 것을 근거에 보인다.
+	lines map[string][]sshdLine
 	Match bool
+}
+
+type sshdLine struct {
+	path, value string
+	number      int
 }
 
 // sshdMaxIncludeDepth는 서로를 Include하는 파일이 끝나지 않게 막는다.
 const sshdMaxIncludeDepth = 16
 
 func readSSHDConfig(root, path string) (sshdConfig, error) {
-	config := sshdConfig{values: map[string]string{}, sources: map[string]string{}, raw: map[string]string{}}
+	config := sshdConfig{values: map[string]string{}, sources: map[string]string{}, raw: map[string]string{}, lines: map[string][]sshdLine{}}
 	return config, config.read(root, path, 0)
 }
 
@@ -662,7 +799,7 @@ func (config *sshdConfig) read(root, path string, depth int) error {
 	if err != nil {
 		return err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for number, line := range strings.Split(string(data), "\n") {
 		key, value, ok := sshdKeyword(line)
 		if !ok {
 			continue
@@ -690,6 +827,7 @@ func (config *sshdConfig) read(root, path string, depth int) error {
 				}
 			}
 		default:
+			config.lines[key] = append(config.lines[key], sshdLine{path: path, value: value, number: number + 1})
 			if _, seen := config.values[key]; !seen {
 				config.values[key] = strings.ToLower(strings.Fields(value)[0])
 				config.raw[key] = value
@@ -727,6 +865,43 @@ func (config sshdConfig) value(key, fallback string) (string, string) {
 		return value, config.sources[key]
 	}
 	return fallback, "default"
+}
+
+// sshdSettingNames는 근거에 적는 설정의 원래 이름이다. 파서는 키를 소문자로 바꾼다.
+var sshdSettingNames = map[string]string{
+	"passwordauthentication":       "PasswordAuthentication",
+	"kbdinteractiveauthentication": "KbdInteractiveAuthentication",
+	"usepam":                       "UsePAM",
+	"permitemptypasswords":         "PermitEmptyPasswords",
+	"permitrootlogin":              "PermitRootLogin",
+	"gatewayports":                 "GatewayPorts",
+	"permittunnel":                 "PermitTunnel",
+	"allowtcpforwarding":           "AllowTcpForwarding",
+}
+
+// sshdDefault는 근거에 적을 설정이다. advice는 적용되는 값이 위험할 때 붙이는 권장 값과 이유이고, 안전하면 비어 있다.
+type sshdDefault struct{ key, fallback, advice string }
+
+// auditSSHDEvidence는 설정마다 적용되는 줄과, 먼저 읽은 줄에 밀려 무시된 줄이다. 설정이 없으면 OpenSSH의 기본값을 적는다.
+// 권장 값은 적용되는 줄에만 붙인다. 무시된 줄을 고쳐도 sshd는 바뀌지 않는다.
+func auditSSHDEvidence(config sshdConfig, settings ...sshdDefault) Evidence {
+	var lines []string
+	for _, setting := range settings {
+		name := sshdSettingNames[setting.key]
+		occurrences := config.lines[setting.key]
+		if len(occurrences) == 0 {
+			lines = append(lines, auditItem(fmt.Sprintf("%s %s  %s", name, setting.fallback, T("audit.ssh.setting_default")), nil, []string{setting.advice}))
+			continue
+		}
+		for index, at := range occurrences {
+			note := setting.advice
+			if index > 0 {
+				note = T("audit.ssh.setting_ignored")
+			}
+			lines = append(lines, auditItem(fmt.Sprintf("%s %s  %s:%d", name, at.value, at.path, at.number), nil, []string{note}))
+		}
+	}
+	return Evidence{Label: T("audit.evidence.sshd_settings"), Value: strings.Join(lines, "\n")}
 }
 
 // readSudoNoPasswdRules는 비밀번호 없이 모든 명령을 실행하게 하는 규칙을 찾는다. 명령을 제한한 NOPASSWD 규칙은 흔하고 위험이 작아 세지 않는다.
@@ -811,27 +986,40 @@ func sudoRunsAllWithoutPassword(rule string) bool {
 
 // parseNftInputChains는 `nft list ruleset`에서 input hook에 걸린 filter chain만 센다. iptables-nft가 만든 규칙도 여기에 보인다.
 func parseNftInputChains(text string) auditFirewall {
-	firewall := auditFirewall{Tool: "nftables"}
-	inChain, input := false, false
-	last := ""
+	firewall := auditFirewall{Tool: "nftables", V6Known: true}
+	inChain, input, drops := false, false, false
+	last, family := "", ""
+	rules := 0
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
+		case strings.HasPrefix(line, "table ") && strings.HasSuffix(line, "{"):
+			if fields := strings.Fields(line); len(fields) >= 3 {
+				family = fields[1]
+			}
 		case strings.HasPrefix(line, "chain ") && strings.HasSuffix(line, "{"):
-			inChain, input, last = true, false, ""
+			inChain, input, drops, last, rules = true, false, false, "", 0
 		case inChain && line == "}":
 			if input {
+				drops = drops || firewallCatchAll(nftRuleVerdict(last))
 				firewall.Chains++
-				firewall.Drops = firewall.Drops || firewallCatchAll(nftRuleVerdict(last))
+				firewall.Rules += rules
+				firewall.Drops = firewall.Drops || drops
+				// inet 표는 IPv4와 IPv6를 함께 거른다. ip 표는 IPv4만, ip6 표는 IPv6만 거른다.
+				if family == "ip6" || family == "inet" {
+					firewall.V6Chains++
+					firewall.V6Rules += rules
+					firewall.V6Drops = firewall.V6Drops || drops
+				}
 			}
 			inChain = false
 		case inChain && strings.HasPrefix(line, "type filter hook input"):
 			input = true
 			if _, policy, ok := strings.Cut(line, "policy "); ok && strings.TrimSuffix(strings.TrimSpace(policy), ";") == "drop" {
-				firewall.Drops = true
+				drops = true
 			}
 		case inChain && input && line != "" && !strings.HasPrefix(line, "#"):
-			firewall.Rules++
+			rules++
 			last = line
 		}
 	}
@@ -936,24 +1124,34 @@ func evaluateAudit(facts auditFacts) []Result {
 	results := []Result{
 		auditExposure(facts),
 		auditFirewallResult(facts),
+		auditIPv6Open(facts),
 		auditIPForward(facts),
+		auditReverseTunnel(facts),
 		auditSSHRootLogin(facts),
 		auditSSHPassword(facts),
+		auditSSHForwarding(facts),
 		auditAuthorizedKeys(facts),
 		auditKeyChanged(facts),
+		auditExtraSSHDResult(facts),
 		auditUID0(facts),
 		auditEmptyPasswords(facts),
 		auditSudo(facts),
 		auditRootGroups(facts),
 		auditLoginMismatch(facts),
+		auditLoginLocalSource(facts),
 		auditHistoryTampered(facts),
 		auditHistoryDisabled(facts),
 		auditProcessExe(facts),
 		auditProcessPreload(facts),
+		auditSocketShellResult(facts),
+		auditRawSocketResult(facts),
+		auditPersistChanged(facts),
 		auditSensitiveModes(facts),
 		auditPath(facts),
+		auditPkgModified(facts),
 		auditKernelSysctl(facts),
-		auditReboot(facts),
+		auditKernelTaint(facts),
+		auditContainerEscape(facts),
 	}
 	if facts.Container != "" {
 		results = append(results, auditPrivileged(facts), auditDockerSocket(facts), auditRootUser(facts), auditHostNamespace(facts))
@@ -1005,20 +1203,29 @@ func auditExposure(facts auditFacts) Result {
 			rest.add(name, socket)
 		}
 	}
+	var result Result
 	switch {
 	case len(rest.labels) == 0 && len(allowed.labels) == 0:
-		return auditResult(id, StatusPass, T("audit.net.exposed_none", len(facts.Listen)))
+		result = auditResult(id, StatusPass, T("audit.net.exposed_none", len(facts.Listen)))
 	case len(rest.labels) == 0:
 		// 모두 허용한 포트여도 판정을 지우지 않는다. 원래 판정을 accepted로 보인다.
-		result := acceptAuditResult(auditExposureResult(facts, allowed))
+		result = acceptAuditResult(auditExposureResult(facts, allowed))
 		result.Metrics["allowed_ports"] = allowed.ports
 		result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
-		return result
+	default:
+		result = auditExposureResult(facts, rest)
+		if len(allowed.labels) > 0 {
+			result.Metrics = map[string]interface{}{"allowed_ports": allowed.ports}
+			result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
+		}
 	}
-	result := auditExposureResult(facts, rest)
-	if len(allowed.labels) > 0 {
-		result.Metrics = map[string]interface{}{"allowed_ports": allowed.ports}
-		result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
+	if published := auditDockerPublished(facts); published != "" {
+		if result.Status == StatusPass {
+			result = auditResult(id, StatusWarn, published)
+			result.Next = "docker ps --format '{{.Names}}  {{.Ports}}'"
+		} else {
+			result.Warnings = append(result.Warnings, published)
+		}
 	}
 	return result
 }
@@ -1064,6 +1271,11 @@ func auditFirewallResult(facts auditFacts) Result {
 	}
 	result := auditResult(id, StatusWarn, T("audit.net.firewall_open", firewall.Tool))
 	result.Warnings = []string{T("audit.net.cloud_note")}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: fmt.Sprintf("%s  input chain %d  rule %d  drop %t", firewall.Tool, firewall.Chains, firewall.Rules, firewall.Drops)}}
+	result.Next = "sudo nft list ruleset"
+	if firewall.Tool == "iptables" {
+		result.Next = "sudo iptables-save -t filter"
+	}
 	return result
 }
 
@@ -1078,7 +1290,13 @@ func auditIPForward(facts auditFacts) Result {
 	case facts.ContainerHost != "":
 		return auditResult(id, StatusPass, T("audit.net.forward_container", facts.ContainerHost))
 	default:
-		return auditResult(id, StatusWarn, T("audit.net.forward_on"))
+		markers := make([]string, 0, len(auditContainerMarkers))
+		for _, marker := range auditContainerMarkers {
+			markers = append(markers, marker.path)
+		}
+		result := auditResult(id, StatusWarn, T("audit.net.forward_on"))
+		result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: "net.ipv4.ip_forward = " + facts.IPForward + "\n" + T("audit.net.forward_markers", strings.Join(markers, ", "))}}
+		return result
 	}
 }
 
@@ -1106,12 +1324,20 @@ func auditSSHRootLogin(facts auditFacts) Result {
 	}
 	// OpenSSH 7.0부터 기본값은 prohibit-password다. root는 key로만 들어온다.
 	value, source := facts.SSHD.value("permitrootlogin", "prohibit-password")
+	advice := ""
+	if value == "yes" {
+		advice = T("audit.ssh.advice_root")
+	}
+	evidence := auditSSHDEvidence(facts.SSHD, sshdDefault{"permitrootlogin", "prohibit-password", advice})
 	if value == "yes" {
 		result := auditResult(id, StatusWarn, T("audit.ssh.root_login_yes", source))
 		result.Next = auditSSHDNext
+		result.Evidence = []Evidence{evidence}
 		return auditSSHMatchWarning(result, facts)
 	}
-	return auditSSHMatchWarning(auditResult(id, StatusPass, T("audit.ssh.root_login_ok", value, source)), facts)
+	result := auditResult(id, StatusPass, T("audit.ssh.root_login_ok", value, source))
+	result.Evidence = []Evidence{evidence}
+	return auditSSHMatchWarning(result, facts)
 }
 
 const auditSSHDNext = "sudo sshd -T | grep -Ei '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|permitemptypasswords|usepam) '"
@@ -1133,16 +1359,30 @@ func auditSSHPassword(facts auditFacts) Result {
 	if keyboard == "yes" && pam == "yes" {
 		methods = append(methods, "KbdInteractiveAuthentication ("+keyboardSource+") + UsePAM ("+pamSource+")")
 	}
+	settings := []sshdDefault{{"passwordauthentication", "yes", ""}, {"kbdinteractiveauthentication", "yes", ""}, {"usepam", "no", ""}, {"permitemptypasswords", "no", ""}}
+	if password == "yes" {
+		settings[0].advice = T("audit.ssh.advice_password")
+	}
+	if keyboard == "yes" && pam == "yes" {
+		settings[1].advice = T("audit.ssh.advice_kbd")
+	}
+	if empty == "yes" {
+		settings[3].advice = T("audit.ssh.advice_empty")
+	}
+	evidence := auditSSHDEvidence(facts.SSHD, settings...)
 	var result Result
 	switch {
 	case len(methods) == 0:
-		return auditSSHMatchWarning(auditResult(id, StatusPass, T("audit.ssh.password_off")), facts)
+		result = auditResult(id, StatusPass, T("audit.ssh.password_off"))
+		result.Evidence = []Evidence{evidence}
+		return auditSSHMatchWarning(result, facts)
 	case empty == "yes":
 		result = auditResult(id, StatusFail, T("audit.ssh.empty_passwords"))
 		result.Error = &DiagnosticError{Kind: "ssh", Message: result.Summary}
 	default:
 		result = auditResult(id, StatusWarn, T("audit.ssh.password_on", strings.Join(methods, ", ")))
 	}
+	result.Evidence = []Evidence{evidence}
 	result.Next = auditSSHDNext
 	return auditSSHMatchWarning(result, facts)
 }
@@ -1183,6 +1423,20 @@ func auditAuthorizedKeys(facts auditFacts) Result {
 	return result
 }
 
+// auditAccountLines는 계정마다 uid, gid, 홈, shell을 적는다. shell이 nologin이면 그 계정으로 로그인할 수 없어 위험이 다르다.
+func auditAccountLines(passwd []auditPasswd, names []string) string {
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		line := name
+		if index := slices.IndexFunc(passwd, func(entry auditPasswd) bool { return entry.Name == name }); index >= 0 {
+			entry := passwd[index]
+			line = fmt.Sprintf("%s  uid %d  gid %d  %s  %s", entry.Name, entry.UID, entry.GID, entry.Home, entry.Shell)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func auditUID0(facts auditFacts) Result {
 	const id = "user.uid0"
 	if facts.PasswdErr != nil {
@@ -1199,6 +1453,7 @@ func auditUID0(facts auditFacts) Result {
 	}
 	result := auditResult(id, StatusFail, T("audit.account.uid0_bad", strings.Join(others, ", ")))
 	result.Error = &DiagnosticError{Kind: "account", Message: result.Summary}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.accounts"), Value: auditAccountLines(facts.Passwd, others)}}
 	return result
 }
 
@@ -1213,6 +1468,7 @@ func auditEmptyPasswords(facts auditFacts) Result {
 	result := auditResult(id, StatusFail, T("audit.account.empty_bad", strings.Join(facts.EmptyPass, ", ")))
 	result.Error = &DiagnosticError{Kind: "account", Message: result.Summary}
 	result.Next = "sudo passwd -l " + facts.EmptyPass[0]
+	result.Evidence = []Evidence{{Label: T("audit.evidence.accounts"), Value: auditAccountLines(facts.Passwd, facts.EmptyPass)}}
 	return result
 }
 
@@ -1237,13 +1493,18 @@ func auditRootGroups(facts auditFacts) Result {
 	if len(facts.RootGroups) == 0 {
 		return auditResult(id, StatusPass, T("audit.account.groups_ok"))
 	}
-	var parts []string
+	var parts, lines []string
 	for _, group := range []string{"docker", "lxd"} {
 		if members := facts.RootGroups[group]; len(members) > 0 {
 			parts = append(parts, group+": "+strings.Join(members, ", "))
+			for _, line := range strings.Split(auditAccountLines(facts.Passwd, members), "\n") {
+				lines = append(lines, group+"  "+line)
+			}
 		}
 	}
-	return auditResult(id, StatusWarn, T("audit.account.groups_bad", strings.Join(parts, " · ")))
+	result := auditResult(id, StatusWarn, T("audit.account.groups_bad", strings.Join(parts, " · ")))
+	result.Evidence = []Evidence{{Label: T("audit.evidence.accounts"), Value: strings.Join(lines, "\n")}}
+	return result
 }
 
 func auditSensitiveModes(facts auditFacts) Result {
@@ -1281,6 +1542,9 @@ func auditPath(facts auditFacts) Result {
 	}
 	result := auditResult(id, StatusFail, T("audit.file.path_bad", strings.Join(facts.PathBad, ", ")))
 	result.Error = &DiagnosticError{Kind: "permission", Message: result.Summary}
+	if len(facts.PathDetails) > 0 {
+		result.Evidence = []Evidence{{Label: T("audit.evidence.paths"), Value: strings.Join(facts.PathDetails, "\n")}}
+	}
 	return result
 }
 
@@ -1313,35 +1577,20 @@ func auditKernelSysctl(facts auditFacts) Result {
 	return result
 }
 
-// auditRebootShown은 요약 줄에 적는 패키지 수다. 커널을 여러 번 올리면 수십 개가 쌓여 줄이 잘린다.
-const auditRebootShown = 3
-
-func auditReboot(facts auditFacts) Result {
-	const id = "patch.reboot"
-	if facts.RebootFlag {
-		packages := "/var/run/reboot-required"
-		if count := len(facts.RebootPackages); count > 0 {
-			packages = strings.Join(facts.RebootPackages[:min(count, auditRebootShown)], ", ")
-			if count > auditRebootShown {
-				packages += fmt.Sprintf(" (+%d)", count-auditRebootShown)
+// readAuditBootTime은 /proc/stat의 btime이다. 읽지 못하면 0이다.
+func readAuditBootTime(path string) time.Time {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if value, ok := strings.CutPrefix(line, "btime "); ok {
+			if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+				return time.Unix(seconds, 0)
 			}
 		}
-		return auditResult(id, StatusWarn, T("audit.patch.reboot_flag", packages))
 	}
-	// 실행 중인 커널이 /boot에 없으면 직접 넣은 커널이나 컨테이너다. 설치된 커널과 비교할 기준이 없다.
-	if facts.Running == "" || !slices.Contains(facts.Kernels, facts.Running) {
-		return auditResult(id, StatusPass, T("audit.patch.reboot_none"))
-	}
-	newest := facts.Running
-	for _, release := range facts.Kernels {
-		if compareKernelReleases(release, newest) > 0 {
-			newest = release
-		}
-	}
-	if newest != facts.Running {
-		return auditResult(id, StatusWarn, T("audit.patch.reboot_kernel", newest, facts.Running))
-	}
-	return auditResult(id, StatusPass, T("audit.patch.reboot_ok", facts.Running))
+	return time.Time{}
 }
 
 func auditPrivileged(facts auditFacts) Result {
@@ -1356,6 +1605,7 @@ func auditPrivileged(facts auditFacts) Result {
 	}
 	result := auditResult(id, StatusFail, T("audit.ctr.privileged", facts.Container, capEff))
 	result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: fmt.Sprintf("CapEff = %s  (%s)\ncap_last_cap = %d", capEff, facts.CapSource, facts.CapLast)}}
 	return result
 }
 
@@ -1364,6 +1614,7 @@ func auditDockerSocket(facts auditFacts) Result {
 	if facts.DockerSock != "" {
 		result := auditResult(id, StatusFail, T("audit.ctr.sock_mounted", facts.DockerSock))
 		result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+		result.Evidence = []Evidence{{Label: T("audit.evidence.files"), Value: facts.DockerSock + "  socket"}}
 		return result
 	}
 	if facts.DockerSockErr != nil {
@@ -1375,7 +1626,9 @@ func auditDockerSocket(facts auditFacts) Result {
 func auditRootUser(facts auditFacts) Result {
 	const id = "ctr.root_user"
 	if facts.EUID == 0 {
-		return auditResult(id, StatusWarn, T("audit.ctr.root_user", facts.Container))
+		result := auditResult(id, StatusWarn, T("audit.ctr.root_user", facts.Container))
+		result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: fmt.Sprintf("euid = %d\ncontainer = %s", facts.EUID, facts.Container)}}
+		return result
 	}
 	return auditResult(id, StatusPass, T("audit.ctr.user_ok", facts.EUID))
 }
@@ -1394,6 +1647,11 @@ func auditHostNamespace(facts auditFacts) Result {
 	}
 	result := auditResult(id, StatusFail, summary)
 	result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+	values := "pid namespace = " + facts.PIDNS
+	if facts.NetErr == nil {
+		values += fmt.Sprintf("\nnet namespace = PID 1: %t", facts.HostNet)
+	}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: values}}
 	if facts.NetErr != nil {
 		result.Warnings = []string{T("audit.ctr.net_unknown", facts.NetSource, infoSingleLine(facts.NetErr.Error()))}
 	}

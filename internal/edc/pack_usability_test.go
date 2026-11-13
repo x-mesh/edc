@@ -39,3 +39,45 @@ func TestPackKeepsAnInputThatDoesNotGetSmaller(t *testing.T) {
 		t.Fatalf("a log that gets smaller: %d %s", code, stderr)
 	}
 }
+
+// --force는 이미 있는 출력 파일만 바꾼다. 입력 자신과 디렉터리는 바꾸지 않는다. 출력이 있으면 -o에 쓸 빈 이름을 알린다.
+func TestPackForceReplacesOnlyAnOutputFile(t *testing.T) {
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "app.log"), strings.Repeat("new\n", 300))
+	packWrite(t, filepath.Join(dir, "app.log.gz"), "old")
+	packWrite(t, filepath.Join(dir, "app.log-1.gz"), "taken")
+	if code, _, stderr := packTest(t, dir, "app.log"); code != 1 || !strings.Contains(stderr, "app.log.gz exists; give --force to replace it, or -o app.log-2.gz") {
+		t.Fatalf("suggestion: %d %s", code, stderr)
+	}
+	if code, _, stderr := packTest(t, dir, "--force", "app.log"); code != 0 || packRead(t, filepath.Join(dir, "app.log.gz")) == "old" {
+		t.Fatalf("--force: %d %s", code, stderr)
+	}
+	if code, _, stderr := packTest(t, dir, "--force", "-z", "-o", "app.log", "app.log"); code != 1 || !strings.Contains(stderr, "the output is the input file") || packRead(t, filepath.Join(dir, "app.log")) != strings.Repeat("new\n", 300) {
+		t.Fatalf("the input itself: %d %s", code, stderr)
+	}
+	packWrite(t, filepath.Join(dir, "logs", "a.log"), "a")
+	if code, _, stderr := packTest(t, dir, "logs"); code != 0 {
+		t.Fatalf("pack: %d %s", code, stderr)
+	}
+	if code, _, stderr := packTest(t, dir, "--force", "logs"); code != 0 || !strings.Contains(stderr, "logs/ → logs.tar.gz") {
+		t.Fatalf("--force archive: %d %s", code, stderr)
+	}
+	if code, _, stderr := packTest(t, dir, "--force", "logs.tar.gz"); code != 1 || !strings.Contains(stderr, "logs exists; delete it or give -o logs-1") || packRead(t, filepath.Join(dir, "logs", "a.log")) != "a" {
+		t.Fatalf("a directory is not replaced: %d %s", code, stderr)
+	}
+	if code, _, _ := packTest(t, dir, "-l", "--force", "logs.tar.gz"); code != 2 {
+		t.Fatal("-l and --force together are a usage error")
+	}
+	if left := packLeftovers(t, dir); len(left) > 0 {
+		t.Fatalf("leftovers %v", left)
+	}
+}
+
+func TestPackFreeName(t *testing.T) {
+	dir := t.TempDir()
+	for name, want := range map[string]string{"d.tar.gz": "d-1.tar.gz", "app.log": "app-1.log", "logs": "logs-1", ".bashrc": ".bashrc-1", "x.out": "x-1.out"} {
+		if got := packFreeName(filepath.Join(dir, name)); got != filepath.Join(dir, want) {
+			t.Errorf("%s: got %s, want %s", name, got, want)
+		}
+	}
+}

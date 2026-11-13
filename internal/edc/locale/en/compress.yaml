@@ -12,6 +12,7 @@ compress:
     unknown_format: "not gzip or zstd data"
     no_name: "the name does not end in .gz or .zst; give -o or -c"
     changed: "the input changed during the run; edc kept it"
+    same_file: "the output is the input file; give -o another name"
     in_use: "process %d has the input open for writing; edc kept it"
     no_proc: "edc cannot look for processes that write the input, because /proc is not available; edc kept it. Mount /proc, or delete the input yourself"
     in_use_unknown: "another process has the input open for writing; edc kept it"

@@ -123,8 +123,10 @@ func (err packSameNameError) Error() string {
 // packWriteArchive는 roots를 target에 .tar.gz나 .tar.zst로 쓴다. 옆에 만든 임시 파일에 다 쓰고 fsync한 뒤 링크로 옮기므로,
 // 실패하거나 취소되면 반쯤 쓴 출력이 남지 않고 그사이 생긴 같은 이름의 파일도 덮지 않는다.
 func packWriteArchive(ctx context.Context, roots []packRoot, target, label string, started time.Time, options packOptions) (string, error) {
-	if _, err := os.Lstat(target); err == nil {
-		return "", fmt.Errorf("%s: %w", target, errCodecExists)
+	if existing, err := os.Lstat(target); err == nil {
+		if !options.force || existing.IsDir() {
+			return "", fmt.Errorf("%s: %w", target, errCodecExists)
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
@@ -143,7 +145,9 @@ func packWriteArchive(ctx context.Context, roots []packRoot, target, label strin
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
+	if err == nil && options.force {
+		err = os.Rename(temp, target)
+	} else if err == nil {
 		if err = os.Link(temp, target); errors.Is(err, fs.ErrExist) {
 			err = fmt.Errorf("%s: %w", target, errCodecExists)
 		}

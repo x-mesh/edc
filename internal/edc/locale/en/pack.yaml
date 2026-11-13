@@ -19,6 +19,8 @@ pack:
     list_directory: "-l reads an archive, not a directory"
     exists: "the output exists; delete it or give -o"
     exists_named: "%s exists; delete it or give -o"
+    exists_file: "%s exists; give --force to replace it, or -o %s"
+    exists_dir: "%s exists; delete it or give -o %s"
     kept: "%d entries were skipped, so edc kept the archive; delete it yourself"
     no_replace: "this file system cannot move a directory without replacing one that exists, so edc does not extract here; give -o a directory on another file system"
     same_name: "%s and %s have the same name in the archive: %s; rename one or pack them apart"

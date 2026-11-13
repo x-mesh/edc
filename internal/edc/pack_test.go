@@ -120,7 +120,7 @@ func TestPackFileDirection(t *testing.T) {
 	if code, _, stderr := packTest(t, dir, "app.log"); code != 0 || !strings.Contains(stderr, "app.log → app.log.gz") {
 		t.Fatalf("compress: %d %s", code, stderr)
 	}
-	if code, _, stderr := packTest(t, dir, "app.log.gz"); code != 1 || !strings.Contains(stderr, "app.log exists; delete it or give -o") {
+	if code, _, stderr := packTest(t, dir, "app.log.gz"); code != 1 || !strings.Contains(stderr, "app.log exists; give --force to replace it, or -o app-1.log") {
 		t.Fatalf("an existing output is kept: %d %s", code, stderr)
 	}
 	if code, _, stderr := packTest(t, dir, "-o", "again.log", "app.log.gz"); code != 0 || packRead(t, filepath.Join(dir, "again.log")) != body {

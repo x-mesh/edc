@@ -836,6 +836,7 @@ command:
       zstd: "write .zst or .tar.zst instead of .gz or .tar.gz"
       output: "output path: the file to write or the directory to extract into; with several inputs, the one archive that holds them"
       remove: "delete the input file after the output is written and synced"
+      force: "replace an output file that exists; a directory is never replaced"
       verbose: "show what edc decided, each entry, and in a terminal the progress"
     notes:
       - "It reads the first bytes, not the name. gzip, zstd, xz, bzip2, and tar data are extracted; other files are compressed; a directory becomes a .tar.gz."
@@ -850,6 +851,7 @@ command:
       - "It does not overwrite a file or a directory that exists. --rm does not delete a directory, and it keeps an archive whose entries were skipped."
       - "Without -o, it handles each path on its own, so edc pack * writes one .gz for each file."
       - "-o with several paths packs them into one .tar.gz. Each path is a top-level entry with its base name, and archives go in as they are. It refuses two paths with the same name. -x and --rm do not work with this."
+      - "--force replaces an output file that exists, but not the input itself. It never replaces a directory. When an output exists, edc suggests a free name for -o."
       - "Use edc compress and edc decompress for stdin, stdout, -l N, and -j N."
   decompress:
     summary: "Decompress .gz and .zst files"

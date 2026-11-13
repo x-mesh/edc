@@ -137,6 +137,14 @@ func TestParsePFInputRulesCapturedOutput(t *testing.T) {
 		{"block drop in log (all) quick all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
 		{"block drop in all label \"deny\"\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
 		{"block return in all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"block drop in log (to pflog1) all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"block drop in log (all, to pflog1) quick all\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		{"block drop in all label \"deny all\" tag foo queue q1\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		// pfctl은 block의 no state를 지우지만, 다른 도구가 만든 규칙 목록에는 남을 수 있다.
+		{"block drop in all no state\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1, V4Drops: true, V6Drops: true, CatchAll: 1}},
+		// probability는 일부 packet만 막는다.
+		{"block drop in all probability 50%\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1}},
+		{"block drop in all label\n", pfInputRules{Rules: 1, Blocks: 1, V4: 1, V6: 1}},
 		{"scrub-anchor \"/*\" all fragment reassemble\nnat-anchor \"/*\" all\nrdr-anchor \"/*\" all\nanchor \"/*\" all\n", pfInputRules{}},
 	}
 	for _, tt := range tests {

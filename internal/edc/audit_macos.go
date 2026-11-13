@@ -140,8 +140,9 @@ type pfInputRules struct {
 // 그래야 앞의 block을 실제보다 넓게 보지 않는다.
 var pfRuleQualifiers = []string{"on", "proto", "from", "to", "port", "user", "group"}
 
-// pfCatchAllBlock은 조건 없는 block이다. pfctl이 정규형으로 찍는 앞부분(동작, 응답 방식, in, log, quick, family) 뒤에 all만 있어야 한다.
-// tagged, os, received-on처럼 모르는 조건이 붙은 block을 전체 차단으로 보면 열린 포트를 막혔다고 보고한다.
+// pfCatchAllBlock은 조건 없는 block이다. pfctl이 정규형으로 찍는 앞부분(동작, 응답 방식, in, log, quick, family) 뒤에 all이 오고,
+// 그 뒤에는 매칭 범위를 바꾸지 않는 옵션(label, tag, queue, no state)만 있어야 한다.
+// tagged, probability처럼 모르는 조건이 붙은 block을 전체 차단으로 보면 열린 포트를 막혔다고 보고한다.
 func pfCatchAllBlock(fields []string) bool {
 	rest := fields[1:]
 	if len(rest) > 0 && (rest[0] == "drop" || strings.HasPrefix(rest[0], "return")) {
@@ -152,8 +153,9 @@ func pfCatchAllBlock(fields []string) bool {
 	}
 	if len(rest) > 0 && rest[0] == "log" {
 		rest = rest[1:]
+		// log의 선택 사항은 "(all)", "(to pflog1)"처럼 괄호로 묶이며 필드 여러 개로 나뉠 수 있다.
 		if len(rest) > 0 && strings.HasPrefix(rest[0], "(") {
-			rest = rest[1:]
+			rest = skipPFValue(rest)
 		}
 	}
 	if len(rest) > 0 && rest[0] == "quick" {
@@ -162,7 +164,43 @@ func pfCatchAllBlock(fields []string) bool {
 	if len(rest) > 0 && (rest[0] == "inet" || rest[0] == "inet6") {
 		rest = rest[1:]
 	}
-	return len(rest) > 0 && rest[0] == "all" && (len(rest) == 1 || rest[1] == "label")
+	if len(rest) == 0 || rest[0] != "all" {
+		return false
+	}
+	rest = rest[1:]
+	for len(rest) > 0 {
+		switch {
+		case rest[0] == "label" || rest[0] == "tag" || rest[0] == "queue":
+			if len(rest) < 2 {
+				return false
+			}
+			rest = skipPFValue(rest[1:])
+		case rest[0] == "no" && len(rest) > 1 && rest[1] == "state":
+			rest = rest[2:]
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// skipPFValue는 값 하나를 건너뛴다. 따옴표나 괄호로 묶인 값은 공백 때문에 필드 여러 개로 나뉘므로 닫는 문자까지 건너뛴다.
+func skipPFValue(fields []string) []string {
+	closer := ""
+	switch {
+	case strings.HasPrefix(fields[0], "\""):
+		closer = "\""
+	case strings.HasPrefix(fields[0], "("):
+		closer = ")"
+	default:
+		return fields[1:]
+	}
+	for index, field := range fields {
+		if (index > 0 || len(field) > 1) && strings.HasSuffix(field, closer) {
+			return fields[index+1:]
+		}
+	}
+	return nil
 }
 
 // parsePFInputRules는 pfctl -s rules에서 들어오는 트래픽에 걸리는 block과 pass를 센다. pf는 마지막에 맞은 규칙을 따르고 quick이면 거기서 멈춘다.

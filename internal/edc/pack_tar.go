@@ -127,6 +127,12 @@ func packWriteArchive(ctx context.Context, roots []packRoot, target, label strin
 		if !options.force || existing.IsDir() {
 			return "", fmt.Errorf("%s: %w", target, errCodecExists)
 		}
+		// 묶을 파일 가운데 하나를 출력으로 바꾸면 그 파일의 원래 내용을 잃는다.
+		for _, root := range roots {
+			if input, err := os.Lstat(root.path); err == nil && os.SameFile(input, existing) {
+				return "", fmt.Errorf("%s: %w", target, errCodecSameFile)
+			}
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
@@ -369,8 +375,9 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 		counts.skipped += int(zipped.skipped.Load())
 	}
 	// zip은 offset으로 읽어 input의 읽기 위치가 처음에 있다. --rm이면 지우기 전에 다시 읽어 비교할 hash를 여기서 처음부터 읽어 만든다.
+	// 큰 zip을 다시 읽는 동안 Ctrl-C를 받으면 옮기거나 지우지 않고 멈춘다.
 	if zipped == nil || options.remove {
-		if _, err := io.Copy(io.Discard, counted); err != nil {
+		if _, err := io.Copy(io.Discard, packContextReader{ctx: ctx, reader: counted}); err != nil {
 			return "", err
 		}
 	}

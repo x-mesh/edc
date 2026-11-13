@@ -71,6 +71,10 @@ func TestPackForceReplacesOnlyAnOutputFile(t *testing.T) {
 	if code, _, stderr := packTest(t, dir, "--force", "logs.tar.gz"); code != 1 || !strings.Contains(stderr, "logs exists; delete it or give -o\n") || packRead(t, filepath.Join(dir, "logs", "a.log")) != "a" {
 		t.Fatalf("a directory is not replaced: %d %s", code, stderr)
 	}
+	packWrite(t, filepath.Join(dir, "b.txt"), "b")
+	if code, _, stderr := packTest(t, dir, "--force", "-o", "app.log", "app.log", "b.txt"); code != 1 || !strings.Contains(stderr, "the output is the input file") || packRead(t, filepath.Join(dir, "app.log")) != strings.Repeat("new\n", 300) {
+		t.Fatalf("a bundle input is not replaced: %d %s", code, stderr)
+	}
 	if code, _, _ := packTest(t, dir, "-l", "--force", "logs.tar.gz"); code != 2 {
 		t.Fatal("-l and --force together are a usage error")
 	}

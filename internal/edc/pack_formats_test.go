@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"io"
 	"io/fs"
@@ -26,6 +27,7 @@ type packZipItem struct {
 	name, body string
 	mode       fs.FileMode
 	method     uint16
+	stored     bool
 	flags      uint16
 }
 
@@ -37,7 +39,7 @@ func packZip(t *testing.T, path string, items ...packZipItem) {
 	archive.RegisterCompressor(14, func(out io.Writer) (io.WriteCloser, error) { return packNopWriteCloser{out}, nil })
 	for _, item := range items {
 		header := &zip.FileHeader{Name: item.name, Method: item.method, Flags: item.flags, Modified: time.Unix(1700000000, 0)}
-		if header.Method == 0 && !strings.HasSuffix(item.name, "/") {
+		if header.Method == zip.Store && !item.stored && !strings.HasSuffix(item.name, "/") {
 			header.Method = zip.Deflate
 		}
 		mode := item.mode
@@ -159,7 +161,7 @@ func TestPackExtractsZip(t *testing.T) {
 	packZip(t, filepath.Join(dir, "site.zip"),
 		packZipItem{name: "site/"},
 		packZipItem{name: "site/index.html", body: "<p>hi</p>", mode: 0o666},
-		packZipItem{name: "site/css/app.css", body: "p{}", method: zip.Store},
+		packZipItem{name: "site/css/app.css", body: "p{}", stored: true},
 		packZipItem{name: "__MACOSX/site/._index.html", body: "attr"},
 	)
 	code, _, stderr := packTest(t, dir, "site.zip")
@@ -261,5 +263,37 @@ func TestPackZipWithoutModeGetsADefault(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dir, "z", "zero.txt"))
 	if err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("mode %v %v", info, err)
+	}
+}
+
+// --rm으로 zip을 푼 뒤 지우기 전에 다시 읽는 동안 취소하면 4로 끝나고, zip과 푼 결과를 남기지 않는다(zip은 남는다).
+func TestPackZipRemoveStopsOnCancelWhileItRereads(t *testing.T) {
+	defer func() { packReadHook = nil }()
+	dir := t.TempDir()
+	body := strings.Repeat("z", 3<<20)
+	reads := 0
+	packReadHook = func() { reads++ }
+	packZip(t, filepath.Join(dir, "first.zip"), packZipItem{name: "big/a.bin", body: body, stored: true})
+	if code, _, stderr := packTest(t, dir, "first.zip"); code != 0 {
+		t.Fatalf("dry run: %d %s", code, stderr)
+	}
+	before := reads
+	packZip(t, filepath.Join(dir, "big.zip"), packZipItem{name: "other/a.bin", body: body, stored: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reads = 0
+	packReadHook = func() {
+		if reads++; reads > before {
+			cancel()
+		}
+	}
+	if code, _, stderr := packTestContext(t, ctx, dir, "--rm", "big.zip"); code != 4 {
+		t.Fatalf("cancel: %d %s", code, stderr)
+	}
+	if !packExists(filepath.Join(dir, "big.zip")) || packExists(filepath.Join(dir, "other")) {
+		t.Fatal("the zip is kept and nothing is extracted")
+	}
+	if left := packLeftovers(t, dir); len(left) > 0 {
+		t.Fatalf("leftovers %v", left)
 	}
 }

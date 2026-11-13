@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // audit는 호스트의 설정과 노출 상태를 읽기만 하는 점검이다. 설정을 바꾸지 않고 네트워크로 나가지 않는다.
@@ -313,18 +314,42 @@ const (
 
 // auditItem은 근거의 항목 하나를 만든다. 빈 값과 빈 설명은 건너뛴다.
 func auditItem(head string, details, notes []string) string {
-	lines := []string{head}
+	lines := []string{auditPrintable(head)}
 	for _, detail := range details {
 		if detail != "" {
-			lines = append(lines, auditDetailPrefix+detail)
+			lines = append(lines, auditDetailPrefix+auditPrintable(detail))
 		}
 	}
 	for _, note := range notes {
 		if note != "" {
-			lines = append(lines, auditNotePrefix+note)
+			lines = append(lines, auditNotePrefix+auditPrintable(note))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// auditPrintable은 제어 문자를 \n, \x1b처럼 적는다. 실행 파일 경로와 명령 인자는 그 호스트의 계정이 정하므로,
+// 그대로 쓰면 줄바꿈으로 근거 줄을 꾸며 넣거나 terminal escape로 화면을 바꿀 수 있다.
+func auditPrintable(value string) string {
+	if !strings.ContainsFunc(value, unicode.IsControl) {
+		return value
+	}
+	var builder strings.Builder
+	for _, char := range value {
+		switch {
+		case char == '\n':
+			builder.WriteString(`\n`)
+		case char == '\t':
+			builder.WriteString(`\t`)
+		case char == '\r':
+			builder.WriteString(`\r`)
+		case unicode.IsControl(char) && char <= 0xff:
+			fmt.Fprintf(&builder, `\x%02x`, char)
+		default:
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
 }
 
 // richAuditEvidence는 색을 쓸 때 audit 근거를 그린다. 항목을 굵게, 설명을 회색으로 칠해 찾은 것과 설명을 떼어 보인다.

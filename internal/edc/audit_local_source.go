@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -27,6 +28,9 @@ const auditLocalSourceArgsLimit = 160
 
 var errAuditNoSource = errors.New("no source")
 
+// errAuditProcHidden은 /proc가 hidepid로 mount되어 /proc/<pid>가 없는 것이 process가 끝난 것인지 가려진 것인지 모를 때다.
+var errAuditProcHidden = errors.New("process not visible; /proc is mounted with hidepid")
+
 // auditTCPSocket은 연결된(ESTABLISHED) TCP 소켓이다.
 type auditTCPSocket struct {
 	Local, Remote netip.AddrPort
@@ -45,10 +49,12 @@ type auditLocalPeer struct {
 // Peers는 그 연결의 상대 소켓을 쥔 process이고, PeersMore는 auditLocalSourcePeers를 넘어 적지 않은 수다.
 type auditLocalLogin struct {
 	auditAccepted
-	Addr      netip.Addr
-	Open      bool
-	Peers     []auditLocalPeer
-	PeersMore int
+	Addr netip.Addr
+	Open bool
+	// Unverified면 Accepted를 남긴 sshd의 fd를 읽지 못해 연결 중인지 모른다.
+	Unverified bool
+	Peers      []auditLocalPeer
+	PeersMore  int
 }
 
 type auditLocalSource struct {
@@ -56,14 +62,20 @@ type auditLocalSource struct {
 	// Checked는 출발지를 주소로 읽어 판정한 Accepted의 수이고, Unparsed는 주소로 읽지 못해 판정하지 않은 수다.
 	Checked, Unparsed int
 	AddrsErr, TCPErr  error
+	// FDErr는 sshd의 fd를 읽지 못한 첫 오류다.
+	FDErr error
 }
 
 func (local auditLocalSource) openCount() int {
-	return len(local.Logins) - len(local.closed())
+	return len(local.Logins) - len(local.closed()) - len(local.unverified())
 }
 
 func (local auditLocalSource) closed() []auditLocalLogin {
-	return slices.DeleteFunc(slices.Clone(local.Logins), func(login auditLocalLogin) bool { return login.Open })
+	return slices.DeleteFunc(slices.Clone(local.Logins), func(login auditLocalLogin) bool { return login.Open || login.Unverified })
+}
+
+func (local auditLocalSource) unverified() []auditLocalLogin {
+	return slices.DeleteFunc(slices.Clone(local.Logins), func(login auditLocalLogin) bool { return !login.Unverified })
 }
 
 func normalizeAuditAddr(addr netip.Addr) netip.Addr { return addr.Unmap().WithZone("") }
@@ -119,6 +131,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 		return
 	}
 	procRoot := sources.file("/proc")
+	hidden := auditProcHidesPIDs(procRoot)
 	peerInodes := map[int]uint64{}
 	sshdPorts := map[int]uint16{}
 	wanted := map[uint64]bool{}
@@ -126,7 +139,14 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 		login := &local.Logins[index]
 		source := netip.AddrPortFrom(login.Addr, uint16(login.Port))
 		// 포트는 다른 연결에 재사용될 수 있다. Accepted를 남긴 process가 서버 쪽 소켓을 쥘 때만 그 로그인의 연결이다.
-		server, found := auditServerSocket(procRoot, login.PID, source, sockets)
+		server, found, err := auditServerSocket(procRoot, hidden, login.PID, source, sockets)
+		if err != nil {
+			login.Unverified = true
+			if local.FDErr == nil {
+				local.FDErr = err
+			}
+			continue
+		}
 		if !found {
 			continue
 		}
@@ -156,28 +176,72 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 	}
 }
 
-func auditServerSocket(procRoot string, pid int, source netip.AddrPort, sockets []auditTCPSocket) (auditTCPSocket, bool) {
+// auditServerSocket은 pid가 쥔, source에서 온 연결의 서버 쪽 소켓이다. 오류는 pid의 fd를 읽지 못한 것이고, 그때는 연결 중인지 모른다.
+func auditServerSocket(procRoot string, hidden bool, pid int, source netip.AddrPort, sockets []auditTCPSocket) (auditTCPSocket, bool, error) {
 	if pid <= 0 {
-		return auditTCPSocket{}, false
+		return auditTCPSocket{}, false, nil
 	}
 	for _, socket := range sockets {
-		if socket.Remote == source && socket.Inode != 0 && auditHoldsSocket(procRoot, pid, socket.Inode) {
-			return socket, true
+		if socket.Remote != source || socket.Inode == 0 {
+			continue
+		}
+		held, err := auditHoldsSocket(procRoot, hidden, pid, socket.Inode)
+		if err != nil {
+			return auditTCPSocket{}, false, err
+		}
+		if held {
+			return socket, true, nil
 		}
 	}
-	return auditTCPSocket{}, false
+	return auditTCPSocket{}, false, nil
 }
 
-func auditHoldsSocket(procRoot string, pid int, inode uint64) bool {
+// auditHoldsSocket은 pid가 inode의 소켓을 쥐었는지다. /proc에 process가 없으면 그 연결은 끝난 것이라 오류가 아니다.
+// hidden이면 hidepid가 process를 가릴 수 있어 없는 것도 오류다. euid 0이어도 user namespace 안이거나 CAP_SYS_PTRACE가 없으면 가려진다.
+// fd 디렉터리나 fd 하나를 읽지 못해도 오류다.
+func auditHoldsSocket(procRoot string, hidden bool, pid int, inode uint64) (bool, error) {
 	directory := filepath.Join(procRoot, strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		if hidden {
+			return false, errAuditProcHidden
+		}
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	want := fmt.Sprintf("socket:[%d]", inode)
 	for _, entry := range entries {
-		if target, err := os.Readlink(filepath.Join(directory, entry.Name())); err == nil && target == want {
-			return true
+		target, err := os.Readlink(filepath.Join(directory, entry.Name()))
+		switch {
+		case err == nil && target == want:
+			return true, nil
+		// 읽는 사이에 닫힌 fd다.
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// auditProcHidesPIDs는 /proc가 hidepid=1, 2나 invisible, noaccess로 mount됐는지다. mountinfo를 읽지 못하면 Linux procfs가 아니라 보고 false다.
+func auditProcHidesPIDs(procRoot string) bool {
+	data, err := os.ReadFile(filepath.Join(procRoot, "self", "mountinfo"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		separator := slices.Index(fields, "-")
+		if separator < 6 || separator+3 >= len(fields) || fields[4] != "/proc" || fields[separator+1] != "proc" {
+			continue
+		}
+		for _, option := range strings.Split(fields[5]+","+fields[separator+3], ",") {
+			if value, ok := strings.CutPrefix(option, "hidepid="); ok && value != "0" && value != "off" {
+				return true
+			}
 		}
 	}
 	return false
@@ -299,6 +363,9 @@ func auditLoginLocalSource(facts auditFacts) Result {
 	if local.TCPErr != nil {
 		result.Warnings = append(result.Warnings, T("audit.login.local_tcp", infoSingleLine(local.TCPErr.Error())))
 	}
+	if local.FDErr != nil {
+		result.Warnings = append(result.Warnings, T("audit.login.local_fd", len(local.unverified()), infoSingleLine(local.FDErr.Error())))
+	}
 	if local.Unparsed > 0 {
 		result.Warnings = append(result.Warnings, T("audit.login.local_unparsed", local.Unparsed))
 	}
@@ -327,15 +394,20 @@ func auditLocalSourceEvidence(local auditLocalSource) []Evidence {
 		}
 		open = append(open, auditLocalOpenItem(login))
 	}
+	unverified := auditLocalClosedLines(local.unverified())
 	closed := auditLocalClosedLines(local.closed())
-	extra := len(open) + len(closed) - auditLocalSourceShown
+	extra := len(open) + len(unverified) + len(closed) - auditLocalSourceShown
 	if extra > 0 {
 		open = open[:min(len(open), auditLocalSourceShown)]
-		closed = closed[:max(0, auditLocalSourceShown-len(open))]
+		unverified = unverified[:min(len(unverified), max(0, auditLocalSourceShown-len(open)))]
+		closed = closed[:max(0, auditLocalSourceShown-len(open)-len(unverified))]
 	}
 	var evidence []Evidence
 	if len(open) > 0 {
 		evidence = append(evidence, Evidence{Label: T("audit.evidence.open_logins"), Value: strings.Join(open, "\n")})
+	}
+	if len(unverified) > 0 {
+		evidence = append(evidence, Evidence{Label: T("audit.evidence.unverified_logins"), Value: strings.Join(unverified, "\n")})
 	}
 	if len(closed) > 0 {
 		evidence = append(evidence, Evidence{Label: T("audit.evidence.closed_logins"), Value: strings.Join(closed, "\n")})
@@ -353,7 +425,7 @@ func auditLocalOpenItem(login auditLocalLogin) string {
 	if len(login.Peers) == 0 {
 		return auditItem(head, nil, []string{T("audit.login.peer_none")})
 	}
-	lines := []string{head}
+	lines := []string{auditPrintable(head)}
 	for _, peer := range login.Peers {
 		fields := []string{T("audit.login.peer"), "pid " + strconv.Itoa(peer.PID)}
 		for _, value := range []string{peer.Comm, peer.Exe, peer.Args} {
@@ -361,7 +433,7 @@ func auditLocalOpenItem(login auditLocalLogin) string {
 				fields = append(fields, value)
 			}
 		}
-		lines = append(lines, auditDetailPrefix+strings.Join(fields, "  "))
+		lines = append(lines, auditDetailPrefix+auditPrintable(strings.Join(fields, "  ")))
 		switch {
 		case peer.ViaLogin != nil:
 			lines = append(lines, auditNotePrefix+T("audit.login.peer_forward", peer.ViaLogin.User, peer.Via.String(), peer.ViaLogin.Method, auditLoginTime(peer.ViaLogin.Time)))

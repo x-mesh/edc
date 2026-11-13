@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func testTCP(local, remote string, inode uint64) auditTCPSocket {
@@ -245,6 +246,92 @@ func TestAuditLocalSourceMasksSecretsInPeerArguments(t *testing.T) {
 	value := evaluateLocalSource(fake.sources(root), testLocalFacts(auditAccepted{PID: 50, User: "root", Host: "127.0.0.1", Method: "publickey", Port: 40000, Time: testLoginAt(1)})).Evidence[0].Value
 	if strings.Contains(value, "hunter2") || strings.Contains(value, "pw@") || !strings.Contains(value, "--password ***") || !strings.Contains(value, "://user:***@example.net") || strings.Contains(value, long) || strings.Count(value, "\n") != 1 {
 		t.Fatalf("value = %q", value)
+	}
+}
+
+// hidepid나 root 아닌 실행으로 sshd의 fd를 읽지 못하면 끝난 로그인으로 치지 않는다. fd를 파일로 두면 root로 돌려도 읽히지 않는다.
+func TestAuditLocalSourceKeepsUnreadableLoginsApart(t *testing.T) {
+	root := t.TempDir()
+	writeLocalSourceProcs(t, root, testLocalProc{pid: 50})
+	fd := filepath.Join(root, "proc", "50", "fd")
+	if err := os.Remove(fd); err != nil {
+		t.Fatal(err)
+	}
+	writeAuditFile(t, root, "/proc/50/fd", "", 0o644)
+	_, readErr := os.ReadDir(fd)
+	fake := &testLocalSources{sockets: []auditTCPSocket{testTCP("127.0.0.1:22", "127.0.0.1:40000", 1000), testTCP("127.0.0.1:40000", "127.0.0.1:22", 2000)}}
+	facts := testLocalFacts(auditAccepted{PID: 50, User: "root", Host: "127.0.0.1", Method: "publickey", Port: 40000, Time: testLoginAt(1)})
+	result := evaluateLocalSource(fake.sources(root), facts)
+	// 확인하지 못한 로그인은 연결 중인 수에도 끝난 로그인에도 넣지 않는다.
+	if result.Status != StatusWarn || result.Summary != T("audit.login.local_source_bad", 1, 0, auditLoginTime(facts.JournalSince)) ||
+		len(result.Evidence) != 1 || result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
+		!reflect.DeepEqual(result.Warnings, []string{T("audit.login.local_fd", 1, infoSingleLine(readErr.Error()))}) {
+		t.Fatalf("result = %+v", result)
+	}
+	// /proc에 process가 없으면 그 연결은 끝난 것이다.
+	if err := os.RemoveAll(filepath.Join(root, "proc", "50")); err != nil {
+		t.Fatal(err)
+	}
+	if result := evaluateLocalSource(fake.sources(root), facts); result.Evidence[0].Label != T("audit.evidence.closed_logins") || len(result.Warnings) != 0 {
+		t.Fatalf("gone = %+v", result)
+	}
+	// /proc가 hidepid로 mount됐으면 euid와 관계없이 sshd가 가려졌을 수 있다. 커널은 hidepid를 superblock 옵션에 적는다.
+	writeAuditFile(t, root, "/proc/self/mountinfo", "28 32 0:25 / /proc rw,nosuid,nodev,noexec,relatime shared:11 - proc proc rw,hidepid=invisible\n", 0o644)
+	if result := evaluateLocalSource(fake.sources(root), facts); result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
+		!reflect.DeepEqual(result.Warnings, []string{T("audit.login.local_fd", 1, errAuditProcHidden.Error())}) {
+		t.Fatalf("hidden = %+v", result)
+	}
+}
+
+// fd 디렉터리는 읽혀도 fd 하나의 대상을 읽지 못하면 그 fd가 연결의 소켓인지 모른다.
+func TestAuditProcHidesPIDs(t *testing.T) {
+	for options, want := range map[string]bool{"rw": false, "rw,hidepid=0": false, "rw,hidepid=off": false, "rw,hidepid=2": true, "rw,hidepid=noaccess,gid=4": true} {
+		root := t.TempDir()
+		writeAuditFile(t, root, "/proc/self/mountinfo", "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n28 32 0:25 / /proc rw,nosuid shared:11 - proc proc "+options+"\n", 0o644)
+		if got := auditProcHidesPIDs(filepath.Join(root, "proc")); got != want {
+			t.Errorf("%s = %v, want %v", options, got, want)
+		}
+	}
+	if auditProcHidesPIDs(t.TempDir()) {
+		t.Fatal("no mountinfo")
+	}
+}
+
+func TestAuditHoldsSocketReportsAnUnreadableFD(t *testing.T) {
+	root := t.TempDir()
+	writeLocalSourceProcs(t, root, testLocalProc{pid: 50})
+	// 디렉터리에 readlink를 하면 root로도 EINVAL이다.
+	if err := os.MkdirAll(filepath.Join(root, "proc", "50", "fd", "3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := auditHoldsSocket(filepath.Join(root, "proc"), true, 50, 1000); held || err == nil {
+		t.Fatalf("held = %v, err = %v", held, err)
+	}
+}
+
+// 실행 파일 경로와 명령 인자의 제어 문자는 escape해서, 근거 줄을 꾸며 넣거나 terminal을 바꾸지 못한다.
+func TestAuditLocalSourceEscapesControlCharacters(t *testing.T) {
+	root := t.TempDir()
+	writeLocalSourceProcs(t, root,
+		testLocalProc{pid: 50, inodes: []uint64{1000}},
+		testLocalProc{pid: 60, comm: "tool", exe: "/tmp/x\nWARN  fake\x1b[2J", cmdline: "tool\x00\x1b]0;title\x07\x00", inodes: []uint64{2000}},
+	)
+	fake := &testLocalSources{sockets: []auditTCPSocket{testTCP("127.0.0.1:22", "127.0.0.1:40000", 1000), testTCP("127.0.0.1:40000", "127.0.0.1:22", 2000)}}
+	value := evaluateLocalSource(fake.sources(root), testLocalFacts(auditAccepted{PID: 50, User: "root", Host: "127.0.0.1", Method: "publickey", Port: 40000, Time: testLoginAt(1)})).Evidence[0].Value
+	if strings.ContainsFunc(value, func(char rune) bool { return char != '\n' && unicode.IsControl(char) }) || strings.Count(value, "\n") != 1 ||
+		!strings.Contains(value, `/tmp/x\nWARN  fake\x1b[2J`) || !strings.Contains(value, `tool \x1b]0;title\x07`) {
+		t.Fatalf("value = %q", value)
+	}
+}
+
+func TestAuditPrintable(t *testing.T) {
+	for in, want := range map[string]string{"plain 한글": "plain 한글", "a\tb\r\n": `a\tb\r\n`, "\x00\x7f\u0085": `\x00\x7f\x85`} {
+		if got := auditPrintable(in); got != want {
+			t.Errorf("auditPrintable(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := auditItem("x\ny", []string{"\x1b[0m"}, nil); got != `x\ny`+"\n"+auditDetailPrefix+`\x1b[0m` {
+		t.Fatalf("item = %q", got)
 	}
 }
 

@@ -16,6 +16,10 @@ func TestNormalizeJSONFlag(t *testing.T) {
 		{[]string{"audit", "--json", "--"}, []string{"audit", "--json", "-", "--"}},
 		{[]string{"audit", "--json", "-"}, []string{"audit", "--json", "-"}},
 		{[]string{"audit", "--json", "report.json"}, []string{"audit", "--json", "report.json"}},
+		// -로 시작해도 .이나 /가 있으면 파일 이름이다. 옵션 이름은 영문자, 숫자, -만 쓴다.
+		{[]string{"audit", "--json", "-report.json"}, []string{"audit", "--json", "-report.json"}},
+		{[]string{"audit", "--json", "-out/report"}, []string{"audit", "--json", "-out/report"}},
+		{[]string{"audit", "--json", "--since=1h"}, []string{"audit", "--json", "-", "--since=1h"}},
 		{[]string{"audit", "--json=report.json", "-v"}, []string{"audit", "--json=report.json", "-v"}},
 		{[]string{"tcp", "check", "--json", "out.json", "host:443"}, []string{"tcp", "check", "--json", "out.json", "host:443"}},
 		{[]string{"tcp", "check", "host:443", "--json"}, []string{"tcp", "check", "host:443", "--json", "-"}},

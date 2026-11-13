@@ -831,14 +831,16 @@ command:
     summary: "Compress or extract a file or directory, chosen by its content"
     option:
       compress: "compress, even a file that is already compressed"
-      extract: "extract, whatever the name is; fail if the data is not gzip, zstd, or tar"
+      extract: "extract, whatever the name is; fail if the data is not gzip, zstd, xz, bzip2, zip, or tar"
       list: "list the files in an archive and do not write anything"
       zstd: "write .zst or .tar.zst instead of .gz or .tar.gz"
       output: "output path: the file to write or the directory to extract into; with several inputs, the one archive that holds them"
       remove: "delete the input file after the output is written and synced"
       verbose: "show what edc decided, each entry, and in a terminal the progress"
     notes:
-      - "It reads the first bytes, not the name. gzip, zstd, and tar data are extracted; other files are compressed; a directory becomes a .tar.gz."
+      - "It reads the first bytes, not the name. gzip, zstd, xz, bzip2, and tar data are extracted; other files are compressed; a directory becomes a .tar.gz."
+      - "A zip is extracted like a tar only when its name ends in .zip. Documents such as .docx and .jar are zip data too, so edc neither extracts nor compresses them without -x or -z. It skips __MACOSX/ and removes group and other write permission from zip entries."
+      - "It does not compress 7z, rar, or lz4 data again, because that data does not get smaller. Give -z to compress it anyway."
       - "-z and -x choose the direction. -x on backup.bin that holds gzip data writes backup.bin.out."
       - "A tar with one top-level directory extracts to that directory. A tar with several entries extracts to a directory named after the archive."
       - "It extracts into a temporary directory beside the output and moves it into place at the end. If it fails or you press Ctrl-C, it deletes the partial output."

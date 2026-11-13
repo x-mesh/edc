@@ -9,7 +9,7 @@ pack:
   paths: "パス %d 個"
   hint_bundle: "1 つのアーカイブにまとめるには: %s"
   error:
-    unknown: "gzip、zstd、tar のデータではありません"
+    unknown: "gzip、zstd、xz、bzip2、zip、tar のデータではありません"
     directory_extract: "ディレクトリはアーカイブではありません。まとめるには -x なしで edc pack を実行します"
     remove_directory: "--rm はファイルにだけ使います。edc はディレクトリを削除しません"
     inside: "出力がまとめるディレクトリの中にあります。-o でその外のパスを指定します"
@@ -22,6 +22,10 @@ pack:
     same_name: "%s と %s はアーカイブ内で同じ名前になります: %s。どちらかの名前を変えるか、別々にまとめます"
     unsafe_path: "アーカイブに出力ディレクトリの外の項目があります: %s"
     unsafe_link: "アーカイブに出力ディレクトリの外を指すリンクがあります: %s"
+    zip_name: "zip のデータですが、名前が .zip で終わらないため .docx などの文書かもしれません。展開するには -x を、圧縮するには -z を指定します"
+    foreign: "%s のデータはすでに圧縮されており、edc は展開できません。それでも圧縮するには -z を指定します"
+    zip_encrypted: "zip に暗号化された項目があります。edc は暗号化された zip を読みません: %s"
+    zip_method: "zip の項目が edc の読めない圧縮方式を使っています: %s"
   verbose:
     decision: "%s: %s → %s"
     kind_directory: "ディレクトリ"
@@ -30,6 +34,7 @@ pack:
     kind_compressed_tar: "%s tar"
     kind_tar: "tar"
     kind_plain: "未圧縮"
+    kind_zip: "zip"
     action_pack: "まとめる"
     action_compress: "圧縮"
     action_extract: "展開"

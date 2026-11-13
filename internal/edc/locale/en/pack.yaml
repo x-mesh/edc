@@ -9,7 +9,7 @@ pack:
   paths: "%d paths"
   hint_bundle: "to make one archive: %s"
   error:
-    unknown: "not gzip, zstd, or tar data"
+    unknown: "not gzip, zstd, xz, bzip2, zip, or tar data"
     directory_extract: "a directory is not an archive; run edc pack without -x to pack it"
     remove_directory: "--rm works with files only; edc does not delete a directory"
     inside: "the output is inside the directory that it packs; give -o outside it"
@@ -22,6 +22,10 @@ pack:
     same_name: "%s and %s have the same name in the archive: %s; rename one or pack them apart"
     unsafe_path: "the archive has an entry outside the output directory: %s"
     unsafe_link: "the archive has a link that points outside the output directory: %s"
+    zip_name: "zip data, but the name does not end in .zip, so it can be a document such as .docx; give -x to extract it or -z to compress it"
+    foreign: "%s data is already compressed, and edc cannot extract it; give -z to compress it anyway"
+    zip_encrypted: "the zip has an encrypted entry, and edc does not read encrypted zips: %s"
+    zip_method: "a zip entry uses a compression method that edc does not read: %s"
   verbose:
     decision: "%s: %s → %s"
     kind_directory: "directory"
@@ -30,6 +34,7 @@ pack:
     kind_compressed_tar: "%s tar"
     kind_tar: "tar"
     kind_plain: "not compressed"
+    kind_zip: "zip"
     action_pack: "pack"
     action_compress: "compress"
     action_extract: "extract"

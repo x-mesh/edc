@@ -292,8 +292,15 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	stop := options.report.track(viewSanitize(archivePath), info.Size(), &progress, nil)
 	defer stop()
 	var stream io.Reader = packContextReader{ctx: ctx, reader: counted}
-	if kind.format != "" {
-		reader, err := codecOpenStream(stream)
+	var zipped *packZipStream
+	switch kind.format {
+	case "":
+	case packFormatZip:
+		zipped = newPackZipStream(ctx, input, info.Size(), &progress)
+		defer zipped.Close()
+		stream = packContextReader{ctx: ctx, reader: zipped}
+	default:
+		reader, err := packOpenStream(stream, kind.format)
 		if err != nil {
 			return "", err
 		}
@@ -329,8 +336,14 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	if _, err := io.Copy(io.Discard, stream); err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(io.Discard, counted); err != nil {
-		return "", err
+	if zipped != nil {
+		counts.skipped += int(zipped.skipped.Load())
+	}
+	// zip은 offset으로 읽어 input의 읽기 위치가 처음에 있다. --rm이면 지우기 전에 다시 읽어 비교할 hash를 여기서 처음부터 읽어 만든다.
+	if zipped == nil || options.remove {
+		if _, err := io.Copy(io.Discard, counted); err != nil {
+			return "", err
+		}
 	}
 	final, err := packPlace(temp, archivePath, options.output, counts.crossTop)
 	if err != nil {
@@ -657,15 +670,26 @@ func packList(archivePath string, kind packKind, stdout io.Writer) error {
 	}
 	defer input.Close()
 	var stream io.Reader = input
-	if kind.format != "" {
-		reader, err := codecOpenStream(input)
+	switch kind.format {
+	case "":
+	case packFormatZip:
+		info, err := input.Stat()
+		if err != nil {
+			return err
+		}
+		var read atomic.Int64
+		zipped := newPackZipStream(context.Background(), input, info.Size(), &read)
+		defer zipped.Close()
+		stream = zipped
+	default:
+		reader, err := packOpenStream(input, kind.format)
 		if err != nil {
 			return err
 		}
 		defer reader.Close()
 		stream = reader
 	}
-	if !kind.tar {
+	if !kind.many() {
 		size, err := io.Copy(io.Discard, stream)
 		if err != nil {
 			return err

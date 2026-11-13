@@ -129,7 +129,7 @@ func TestPackFileDirection(t *testing.T) {
 	if code, _, _ := packTest(t, dir, "-z", "app.log.gz"); code != 0 || !packExists(filepath.Join(dir, "app.log.gz.gz")) {
 		t.Fatal("-z compresses a compressed file again")
 	}
-	if code, _, stderr := packTest(t, dir, "-x", "app.log"); code != 1 || !strings.Contains(stderr, "not gzip, zstd, or tar data") {
+	if code, _, stderr := packTest(t, dir, "-x", "app.log"); code != 1 || !strings.Contains(stderr, "not gzip, zstd, xz, bzip2, zip, or tar data") {
 		t.Fatalf("-x on plain data: %d %s", code, stderr)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "app.log.gz"))

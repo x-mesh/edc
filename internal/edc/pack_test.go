@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -785,6 +786,7 @@ func TestPackBundleRefusesBeforeItWrites(t *testing.T) {
 		{[]string{"-o", "out.tar.gz", "b.txt", "./b.txt"}, 1, "same name in the archive: b.txt"},
 		{[]string{"-o", "x/out.tar.gz", "b.txt", "x"}, 1, "edc pack: x: the output is inside the directory"},
 		{[]string{"-o", "out.tar.gz", "b.txt", "missing"}, 1, "edc pack: missing: lstat missing: no such file or directory\n"},
+		{[]string{"-o", "out.tar.gz", "b.txt", "/"}, 1, "edc pack: /: edc pack does not pack /\n"},
 		{[]string{"-o", "b.txt", "x", "y"}, 1, "edc pack: b.txt: b.txt exists"},
 		{[]string{"-x", "-o", "out.tar.gz", "x", "y"}, 2, "usage"},
 		{[]string{"--rm", "-o", "out.tar.gz", "x", "y"}, 2, "usage"},
@@ -838,5 +840,9 @@ func TestPackBundleCancelDeletesThePartialOutput(t *testing.T) {
 	}
 	if left := packLeftovers(t, dir); len(left) != 0 || packExists(filepath.Join(dir, "all.tar.gz")) {
 		t.Fatalf("left %v", left)
+	}
+	// 경로를 확인하는 동안에도 취소를 본다. 취소한 뒤 남은 경로를 모두 조회하지 않는다.
+	if _, err := packBundle(ctx, []string{filepath.Join(dir, "missing"), filepath.Join(dir, "b.txt")}, packOptions{output: filepath.Join(dir, "all.tar.gz")}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("checks after a cancel: %v", err)
 	}
 }

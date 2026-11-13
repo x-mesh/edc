@@ -67,6 +67,9 @@ func packBundle(ctx context.Context, paths []string, options packOptions) (strin
 	roots := make([]packRoot, 0, len(paths))
 	seen := map[string]string{}
 	for _, name := range paths {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		info, err := os.Lstat(name)
 		if err != nil {
 			return "", packBundleError{path: name, err: err}

@@ -392,6 +392,7 @@ edc pack -z app.log.gz    # 한 번 더 압축: app.log.gz.gz
 edc pack -l logs.tar.gz   # 목록 보기
 edc pack -v logs/         # 판단 결과, 항목, 진행 상황 보기
 edc pack -o all.tar.gz app.log conf/ /var/app   # 묶음 하나: app.log, conf/, app/
+edc pack --gitignore --exclude '*.log' project/  # 무시된 파일, .git, 로그를 빼고 묶기
 ```
 
 `-v`는 무엇을 발견했고 무엇을 하는지 한 줄로 씁니다(예: `app.log.gz: gzip, 파일 하나 → 풀기`). `-o`와 경로 여럿을 주면 이 줄은 `경로 3개: 묶음 하나 → 묶기`입니다. tar는 항목마다 한 줄을 씁니다. 묶은 항목은 `+`, 푼 항목은 `x`, 건너뛴 항목은 `-`와 이유로 표시합니다. 터미널에서는 마지막 줄에 읽은 바이트, 입력 대비 비율, 속도를 보이고, 이 줄을 고쳐 쓰다가 끝나면 지웁니다. pipe에서는 이 줄을 쓰지 않습니다.
@@ -413,6 +414,9 @@ edc pack -o all.tar.gz app.log conf/ /var/app   # 묶음 하나: app.log, conf/,
 - base 이름이 같은 경로가 둘이거나, 출력이 묶을 디렉터리 안에 있으면 거부하고 아무것도 쓰지 않습니다. 이 형태에는 `-x`와 `--rm`을 쓸 수 없습니다.
 - 앞서 `edc pack *`를 실행했다면 디렉터리에 원본과 `.gz`가 함께 있습니다. 이때 `edc pack -o NAME.tar.gz *`는 둘 다 묶습니다.
 - 디렉터리를 묶을 때 symlink는 링크로 담습니다. 소켓, 장치, FIFO는 건너뛰고 개수를 알립니다. 읽을 수 없는 파일이 있으면 묶기를 멈춥니다.
+- `--exclude PATTERN`은 묶는 디렉터리 안에서 패턴에 맞는 경로를 뺍니다. 패턴은 `.gitignore` 문법이라 `node_modules`는 어느 깊이에서나 맞고 `/build`는 맨 위에서만 맞습니다. 패턴이 여럿이면 `--exclude`를 여러 번 줍니다.
+- `--gitignore`는 `.gitignore`가 무시하는 항목과 `.git`을 뺍니다. 디렉터리가 git 작업 트리 안에 있으면 작업 트리의 맨 위까지 그 위의 `.gitignore`도 읽습니다. `.git/info/exclude`와 전역 ignore 파일은 읽지 않습니다.
+- 명령줄에 직접 준 경로는 언제나 묶습니다. 결과 줄에 뺀 항목 수를 쓰고, `-v`는 뺀 항목을 하나씩 보입니다.
 - 파일 하나는 `edc compress`, `edc decompress`와 같은 단계를 거칩니다. 임시 파일, 디스크 동기화, `--rm`, 수정 시각 유지가 같습니다. `--rm`은 입력 파일만 지우고 디렉터리는 지우지 않습니다. 압축 파일의 항목을 건너뛰었으면 `--rm`은 압축 파일을 남기고 종료 코드 1로 끝납니다.
 - `--level N`은 압축 수준을 1부터 9까지 정합니다. 기본값은 gzip 6, zstd 3입니다. 높을수록 파일이 작아지고 시간이 더 듭니다. `edc pack`에서 `-l`은 목록 보기라 수준 옵션은 긴 이름을 씁니다.
 - stdin, stdout, `-j N`이 필요하면 `edc compress`와 `edc decompress`를 씁니다. `edc alias`는 `edc pack`을 `ep`로 줄여 줍니다.

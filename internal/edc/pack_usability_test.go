@@ -115,3 +115,99 @@ func TestPackLevel(t *testing.T) {
 		}
 	}
 }
+
+func packArchiveNames(t *testing.T, dir, archive string) []string {
+	t.Helper()
+	code, stdout, stderr := packTest(t, dir, "-l", archive)
+	if code != 0 {
+		t.Fatalf("list %s: %d %s", archive, code, stderr)
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if fields := strings.Fields(line); len(fields) >= 5 {
+			names = append(names, fields[len(fields)-1])
+		}
+	}
+	return names
+}
+
+func packHasName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+// --exclude는 .gitignore 문법으로 묶는 디렉터리 안의 경로를 뺀다. 명령줄에 준 경로는 빼지 않는다. 결과 줄과 -v에 뺀 항목이 보인다.
+func TestPackExcludePatterns(t *testing.T) {
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "app", "main.go"), "package main")
+	packWrite(t, filepath.Join(dir, "app", "debug.log"), "log")
+	packWrite(t, filepath.Join(dir, "app", "node_modules", "x", "index.js"), "x")
+	packWrite(t, filepath.Join(dir, "app", "web", "node_modules", "y.js"), "y")
+	packWrite(t, filepath.Join(dir, "app", "build", "out.bin"), "b")
+	packWrite(t, filepath.Join(dir, "app", "web", "build", "keep.txt"), "k")
+	code, _, stderr := packTest(t, dir, "-v", "--exclude", "node_modules", "--exclude", "*.log", "--exclude", "/build", "app")
+	if code != 0 || !strings.Contains(stderr, "4 excluded") || !strings.Contains(stderr, "- app/debug.log (excluded)") || !strings.Contains(stderr, "- app/node_modules/ (excluded)") {
+		t.Fatalf("pack: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, dir, "app.tar.gz")
+	for _, gone := range []string{"app/debug.log", "app/node_modules/", "app/web/node_modules/", "app/build/"} {
+		if packHasName(names, gone) {
+			t.Errorf("%s is packed: %v", gone, names)
+		}
+	}
+	for _, kept := range []string{"app/main.go", "app/web/build/keep.txt"} {
+		if !packHasName(names, kept) {
+			t.Errorf("%s is missing: %v", kept, names)
+		}
+	}
+	packWrite(t, filepath.Join(dir, "top.log"), "named")
+	if code, _, stderr := packTest(t, dir, "--exclude", "*.log", "-o", "both.tar.gz", "top.log", "app"); code != 0 || !packHasName(packArchiveNames(t, dir, "both.tar.gz"), "top.log") {
+		t.Fatalf("a named path is packed: %d %s", code, stderr)
+	}
+	for _, args := range [][]string{{"--exclude", "x", "-x", "app.tar.gz"}, {"--gitignore", "-l", "app.tar.gz"}, {"--exclude", " ", "app"}} {
+		if code, _, _ := packTest(t, dir, args...); code != 2 {
+			t.Fatalf("%v is a usage error", args)
+		}
+	}
+}
+
+// --gitignore는 .gitignore를 git처럼 읽고 .git을 뺀다. 하위 디렉터리를 묶어도 작업 트리 맨 위의 .gitignore가 쓰인다.
+// 하위 .gitignore의 규칙은 그 디렉터리 안에만 쓰이고, !로 다시 넣은 항목은 묶는다.
+func TestPackGitignore(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "*.tmp\ndist/\n")
+	packWrite(t, filepath.Join(repo, "src", ".gitignore"), "generated.go\n!keep.tmp\n")
+	packWrite(t, filepath.Join(repo, "src", "main.go"), "package main")
+	packWrite(t, filepath.Join(repo, "src", "generated.go"), "gen")
+	packWrite(t, filepath.Join(repo, "src", "a.tmp"), "tmp")
+	packWrite(t, filepath.Join(repo, "src", "keep.tmp"), "keep")
+	packWrite(t, filepath.Join(repo, "src", "dist", "bundle.js"), "js")
+	packWrite(t, filepath.Join(repo, "generated.go"), "top generated")
+	if code, _, stderr := packTest(t, dir, "--gitignore", "repo"); code != 0 {
+		t.Fatalf("repo: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, dir, "repo.tar.gz")
+	for _, gone := range []string{"repo/.git/", "repo/src/generated.go", "repo/src/a.tmp", "repo/src/dist/"} {
+		if packHasName(names, gone) {
+			t.Errorf("%s is packed: %v", gone, names)
+		}
+	}
+	for _, kept := range []string{"repo/.gitignore", "repo/src/main.go", "repo/src/keep.tmp", "repo/generated.go"} {
+		if !packHasName(names, kept) {
+			t.Errorf("%s is missing: %v", kept, names)
+		}
+	}
+	if code, _, stderr := packTest(t, repo, "--gitignore", "src"); code != 0 {
+		t.Fatalf("src: %d %s", code, stderr)
+	}
+	names = packArchiveNames(t, repo, "src.tar.gz")
+	if packHasName(names, "src/a.tmp") || packHasName(names, "src/dist/") || !packHasName(names, "src/keep.tmp") {
+		t.Fatalf("the rules of the work tree apply to a subdirectory: %v", names)
+	}
+}

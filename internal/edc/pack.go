@@ -18,7 +18,7 @@ import (
 	"syscall"
 )
 
-const packUsage = "edc pack [-z | -x] [-l] [--zstd] [--level N] [-o path] [--force] [--rm] [-v] <path...>"
+const packUsage = "edc pack [-z | -x] [-l] [--zstd] [--level N] [--exclude PATTERN] [--gitignore] [-o path] [--force] [--rm] [-v] <path...>"
 
 var (
 	errPackUnknown   = errors.New("not gzip, zstd, xz, bzip2, zip, or tar data")
@@ -66,10 +66,13 @@ type packOptions struct {
 	remove  bool
 	// force는 이미 있는 출력 파일을 바꾼다. 풀어 놓은 디렉터리는 지우지 않으므로 바꾸지 않는다.
 	force bool
-	level int
-	jobs    int
-	stdout  io.Writer
-	stderr  io.Writer
+	// exclude와 gitignore는 디렉터리를 묶을 때 뺄 항목을 고른다.
+	exclude   packExcludes
+	gitignore bool
+	level     int
+	jobs      int
+	stdout    io.Writer
+	stderr    io.Writer
 	// report는 -v의 출력이다. -v가 없으면 아무것도 쓰지 않는다.
 	report *packReporter
 }
@@ -108,6 +111,8 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	set.StringVar(&options.output, "o", "", T("command.pack.option.output"))
 	set.BoolVar(&options.remove, "rm", false, T("command.pack.option.remove"))
 	set.BoolVar(&options.force, "force", false, T("command.pack.option.force"))
+	set.Var(&options.exclude, "exclude", T("command.pack.option.exclude"))
+	set.BoolVar(&options.gitignore, "gitignore", false, T("command.pack.option.gitignore"))
 	report := &packReporter{out: stderr}
 	set.BoolVar(&report.verbose, "v", false, T("command.pack.option.verbose"))
 	set.BoolVar(&report.verbose, "verbose", false, T("command.pack.option.verbose"))
@@ -126,6 +131,7 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch {
 	case *compress && *extract, options.list && (*compress || options.output != "" || options.remove || options.force),
 		*level != 0 && (*extract || options.list),
+		(len(options.exclude) > 0 || options.gitignore) && (*extract || options.list),
 		len(paths) == 0, bundle && (*extract || options.remove):
 		fmt.Fprintln(stderr, T("cli.usage", packUsage))
 		return 2

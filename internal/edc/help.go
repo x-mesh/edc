@@ -741,19 +741,21 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "pack", group: "tool",
-		usage: []string{"edc pack [-z | -x] [--zstd] [--level N] [-o path] [--force] [--rm] [-v] <path...>", "edc pack -l <archive>"},
+		usage: []string{"edc pack [-z | -x] [--zstd] [--level N] [--exclude PATTERN] [--gitignore] [-o path] [--force] [--rm] [-v] <path...>", "edc pack -l <archive>"},
 		options: []optionDoc{
 			{"-z", "command.pack.option.compress"},
 			{"-x", "command.pack.option.extract"},
 			{"-l", "command.pack.option.list"},
 			{"--zstd", "command.pack.option.zstd"},
 			{"--level N", "command.pack.option.level"},
+			{"--exclude PATTERN", "command.pack.option.exclude"},
+			{"--gitignore", "command.pack.option.gitignore"},
 			{"-o path", "command.pack.option.output"},
 			{"--force", "command.pack.option.force"},
 			{"--rm", "command.pack.option.remove"},
 			{"-v", "command.pack.option.verbose"},
 		},
-		examples: []string{"edc pack app.log", "edc pack app.log.gz", "edc pack logs/", "edc pack logs.tar.gz", "edc pack -x backup.bin", "edc pack -l logs.tar.gz", "edc pack -v logs/", "edc pack -o all.tar.gz app.log conf/"},
+		examples: []string{"edc pack app.log", "edc pack app.log.gz", "edc pack logs/", "edc pack logs.tar.gz", "edc pack -x backup.bin", "edc pack -l logs.tar.gz", "edc pack -v logs/", "edc pack -o all.tar.gz app.log conf/", "edc pack --gitignore --exclude '*.log' project/"},
 	},
 	{
 		name: "shell", group: "tool",

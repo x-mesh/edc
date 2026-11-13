@@ -835,6 +835,8 @@ command:
       list: "압축 파일 안의 목록만 보이고 아무것도 쓰지 않음"
       zstd: ".gz나 .tar.gz 대신 .zst나 .tar.zst로 씀"
       level: "압축 수준 1~9, 기본값은 gzip 6, zstd 3"
+      exclude: "디렉터리를 묶을 때 .gitignore 형식의 패턴에 맞는 경로를 뺌, 여러 번 줄 수 있음"
+      gitignore: ".gitignore가 무시하는 항목과 .git을 뺌"
       output: "출력 경로: 쓸 파일 또는 풀어 넣을 디렉터리. 입력이 여럿이면 그 입력을 모두 담을 묶음 하나"
       remove: "출력을 쓰고 디스크에 동기화한 뒤 입력 파일을 지움"
       force: "이미 있는 출력 파일을 바꿈, 디렉터리는 바꾸지 않음"
@@ -853,6 +855,7 @@ command:
       - "-o가 없으면 경로마다 따로 처리합니다. 그래서 edc pack *는 파일마다 .gz를 하나씩 씁니다."
       - "-o와 경로 여럿을 주면 .tar.gz 하나로 묶습니다. 각 경로는 base 이름으로 최상위에 들어가고, 압축 파일도 풀지 않고 그대로 담습니다. 이름이 같은 경로가 둘이면 묶지 않습니다. 이때는 -x와 --rm을 쓸 수 없습니다."
       - "--force는 이미 있는 출력 파일을 바꾸지만 입력 자신은 바꾸지 않습니다. 디렉터리는 바꾸지 않습니다. 출력이 이미 있으면 -o에 쓸 수 있는 비어 있는 이름을 알려 줍니다."
+      - "--exclude와 --gitignore는 묶는 디렉터리 안에 적용하고, 직접 준 경로는 언제나 묶습니다. --gitignore는 git 작업 트리의 맨 위까지 그 디렉터리 위의 .gitignore도 읽습니다."
       - "stdin, stdout, -j N이 필요하면 edc compress와 edc decompress를 씁니다."
   decompress:
     summary: ".gz와 .zst 파일의 압축 해제"

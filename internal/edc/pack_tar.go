@@ -160,6 +160,9 @@ func packWriteArchive(ctx context.Context, roots []packRoot, target, label strin
 	if skipped > 0 {
 		line += T("pack.skipped", skipped)
 	}
+	if tally.excluded > 0 {
+		line += T("pack.excluded", tally.excluded)
+	}
 	return line, nil
 }
 
@@ -175,6 +178,8 @@ func packRatio(packed, plain int64) string {
 // packTally는 -v의 진행 줄이 읽는 수다. 진행 줄은 다른 goroutine이 그리므로 원자적으로 센다.
 type packTally struct {
 	read, files atomic.Int64
+	// excluded는 --exclude와 --gitignore로 뺀 항목 수다. 걷는 goroutine만 쓴다.
+	excluded int
 }
 
 func packWriteTar(ctx context.Context, roots []packRoot, dst io.Writer, options packOptions, tally *packTally) (files int, read int64, skipped int, err error) {
@@ -204,6 +209,10 @@ func packWriteTar(ctx context.Context, roots []packRoot, dst io.Writer, options 
 // symlink는 따라가지 않고 링크로 담는다.
 func packWalkRoot(ctx context.Context, root packRoot, archive *tar.Writer, buffer []byte, options packOptions, tally *packTally, files *int, read *int64, skipped *int) error {
 	dir, base := root.path, root.base
+	filter, err := newPackFilter(dir, options)
+	if err != nil {
+		return err
+	}
 	return filepath.WalkDir(dir, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -216,12 +225,28 @@ func packWalkRoot(ctx context.Context, root packRoot, archive *tar.Writer, buffe
 			return err
 		}
 		entryName := path.Join(base, filepath.ToSlash(relative))
+		var parts []string
+		if relative != "." {
+			parts = strings.Split(filepath.ToSlash(relative), "/")
+		}
+		if filter.skip(parts, entry.IsDir()) {
+			tally.excluded++
+			if entry.IsDir() {
+				options.report.line("- " + viewSanitize(entryName) + "/ (" + T("pack.verbose.excluded") + ")")
+				return filepath.SkipDir
+			}
+			options.report.line("- " + viewSanitize(entryName) + " (" + T("pack.verbose.excluded") + ")")
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		switch {
 		case info.IsDir():
+			if err := filter.enter(name, parts); err != nil {
+				return err
+			}
 			header, err := tar.FileInfoHeader(info, "")
 			if err != nil {
 				return err

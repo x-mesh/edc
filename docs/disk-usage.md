@@ -397,6 +397,7 @@ edc pack -z app.log.gz    # compress again: app.log.gz.gz
 edc pack -l logs.tar.gz   # list the files
 edc pack -v logs/         # show the decision, each entry, and the progress
 edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, app/
+edc pack --gitignore --exclude '*.log' project/  # leave out ignored files, .git, and logs
 ```
 
 `-v` writes one line with what edc found and what it does, for example `app.log.gz: gzip, one file → extract`. With `-o` and several paths, the line is `3 paths: one archive → pack`. For a tar, it writes one line for each entry: `+` for an entry that it packs, `x` for an entry that it extracts, and `-` with the reason for an entry that it skips. In a terminal, a last line shows the bytes that edc read, the percent of the input, and the speed. edc rewrites this line and deletes it at the end. In a pipe, edc does not write this line.
@@ -418,6 +419,9 @@ edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, a
 - edc refuses two paths with the same base name, and an output inside a directory of the list. In these cases, edc writes no output. `-x` and `--rm` do not work with `-o` and two or more paths.
 - If you ran `edc pack *` before, the directory holds the files and their `.gz` copies. Then `edc pack -o NAME.tar.gz *` packs both.
 - A packed directory keeps symlinks as links. edc skips sockets, devices, and FIFOs and counts them. A file that edc cannot read stops the pack.
+- `--exclude PATTERN` leaves out the paths inside a packed directory that match the pattern. The pattern uses the `.gitignore` syntax, so `node_modules` matches at every depth and `/build` matches only at the top. Give `--exclude` again for more patterns.
+- `--gitignore` leaves out what the `.gitignore` files ignore, and it leaves out `.git`. If the directory is in a git work tree, edc also reads the `.gitignore` files above it, up to the top of the work tree. edc does not read `.git/info/exclude` or the global ignore file.
+- A path that you name on the command line is always packed. The result line counts the entries that edc left out, and `-v` shows each one.
 - A file goes through the same steps as `edc compress` and `edc decompress`: the temporary file, the sync, `--rm`, and the kept modification time. `--rm` deletes an input file only. It does not delete a directory. If edc skipped an entry of an archive, `--rm` keeps the archive and exits with code 1.
 - `--level N` sets the compression level from 1 to 9. The default is 6 for gzip and 3 for zstd. A higher level makes a smaller file and takes more time. `-l` lists an archive in `edc pack`, so the level has a long name.
 - Use `edc compress` and `edc decompress` for stdin, stdout, and `-j N`. `edc alias` adds `ep` for `edc pack`.

@@ -835,6 +835,8 @@ command:
       list: "list the files in an archive and do not write anything"
       zstd: "write .zst or .tar.zst instead of .gz or .tar.gz"
       level: "compression level 1 to 9; the default is 6 for gzip and 3 for zstd"
+      exclude: "leave out the paths that match a .gitignore pattern when edc packs a directory; repeat it for more patterns"
+      gitignore: "leave out what .gitignore files ignore, and .git"
       output: "output path: the file to write or the directory to extract into; with several inputs, the one archive that holds them"
       remove: "delete the input file after the output is written and synced"
       force: "replace an output file that exists; a directory is never replaced"
@@ -853,6 +855,7 @@ command:
       - "Without -o, it handles each path on its own, so edc pack * writes one .gz for each file."
       - "-o with several paths packs them into one .tar.gz. Each path is a top-level entry with its base name, and archives go in as they are. It refuses two paths with the same name. -x and --rm do not work with this."
       - "--force replaces an output file that exists, but not the input itself. It never replaces a directory. When an output exists, edc suggests a free name for -o."
+      - "--exclude and --gitignore apply inside the directories that edc packs, and a path that you name is always packed. --gitignore also reads the .gitignore files above the directory up to the top of the git work tree."
       - "Use edc compress and edc decompress for stdin, stdout, and -j N."
   decompress:
     summary: "Decompress .gz and .zst files"

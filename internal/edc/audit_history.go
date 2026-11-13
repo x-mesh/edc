@@ -107,7 +107,7 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 	for _, entry := range passwd {
 		shell := filepath.Base(entry.Shell)
 		spec, ok := auditHistoryShells[shell]
-		if (entry.UID != 0 && entry.UID < 1000) || !ok || entry.Home == "" || entry.Home == "/" {
+		if !sources.loginAccount(entry) || !ok || entry.Home == "" || entry.Home == "/" {
 			continue
 		}
 		account := auditHistoryAccount{User: entry.Name, Shell: shell}
@@ -307,7 +307,7 @@ func auditHistoryEndedSession(records auditLoginRecords, user string) auditHisto
 func auditHistoryTampered(facts auditFacts) Result {
 	const id = "history.tampered"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	loginsKnown := facts.LoginErr == nil
 	var fails, warns, notJudged []string
@@ -383,7 +383,7 @@ func auditHistoryTampered(facts auditFacts) Result {
 		result.Warnings = append(result.Warnings, T("audit.history.skipped", facts.History.Skipped))
 	}
 	if facts.ExternalAccounts != "" {
-		result.Warnings = append(result.Warnings, T("audit.account.external", facts.ExternalAccounts))
+		result.Warnings = append(result.Warnings, facts.externalAccountsWarning())
 	}
 	return result
 }
@@ -391,7 +391,7 @@ func auditHistoryTampered(facts auditFacts) Result {
 func auditHistoryDisabled(facts auditFacts) Result {
 	const id = "history.disabled"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	var result Result
 	if len(facts.History.Settings) == 0 {

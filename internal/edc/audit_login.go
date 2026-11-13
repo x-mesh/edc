@@ -275,7 +275,7 @@ func auditLoginWarnings(records auditLoginRecords) []string {
 func auditLoginMismatch(facts auditFacts) Result {
 	const id = "login.mismatch"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	if facts.LoginErr != nil {
 		return auditLoginSkip(id, auditWtmpFiles[len(auditWtmpFiles)-1], facts.LoginErr)
@@ -422,7 +422,7 @@ const auditKeyChangeWindow = 7 * 24 * time.Hour
 func auditKeyChanged(facts auditFacts) Result {
 	const id = "ssh.key_changed"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	since := facts.Now.Add(-auditKeyChangeWindow)
 	var changed []string
@@ -455,7 +455,7 @@ func auditKeyChanged(facts auditFacts) Result {
 		result.Warnings = append(result.Warnings, T("audit.ssh.keys_command", command))
 	}
 	if facts.ExternalAccounts != "" {
-		result.Warnings = append(result.Warnings, T("audit.account.external", facts.ExternalAccounts))
+		result.Warnings = append(result.Warnings, facts.externalAccountsWarning())
 	}
 	return result
 }

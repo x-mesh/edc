@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -140,27 +139,6 @@ func readHostAuditJournal(ctx context.Context, since time.Time) ([]auditJournalE
 		entries = append(entries, part.entries...)
 	}
 	return entries, limited, nil
-}
-
-func readHostInterfaceAddrs() ([]netip.Addr, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	var result []netip.Addr
-	for _, addr := range addrs {
-		var ip net.IP
-		switch value := addr.(type) {
-		case *net.IPNet:
-			ip = value.IP
-		case *net.IPAddr:
-			ip = value.IP
-		}
-		if parsed, ok := netip.AddrFromSlice(ip); ok {
-			result = append(result, parsed)
-		}
-	}
-	return result, nil
 }
 
 // readHostConnectedTCP는 이 network namespace의 ESTABLISHED TCP 소켓이다. IPv6를 끈 커널에는 tcp6 표가 없다.

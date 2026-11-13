@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func auditIPv6Open(facts auditFacts) Result {
 		return auditResult(id, StatusSkip, T("audit.skip.no_firewall_tool"))
 	}
 	if facts.FirewallErr != nil {
-		return auditSkip(id, "nft/ip6tables-save", facts.FirewallErr)
+		return auditSkip(id, cmp.Or(facts.FirewallSource, "nft/ip6tables-save"), facts.FirewallErr)
 	}
 	if facts.AddrsErr != nil {
 		return auditSkip(id, "interfaces", facts.AddrsErr)
@@ -54,8 +55,16 @@ func auditIPv6Open(facts auditFacts) Result {
 	if !firewall.V6Known {
 		return auditResult(id, StatusSkip, T("audit.net.ipv6_unknown"))
 	}
-	if firewall.V6Drops {
+	switch {
+	case firewall.V6Drops && firewall.ALF:
+		return auditResult(id, StatusPass, T("audit.net.ipv6_blocks", firewall.Tool))
+	case firewall.V6Drops:
 		return auditResult(id, StatusPass, T("audit.net.ipv6_drops", firewall.V6Chains, firewall.V6Rules))
+	case firewall.perApp():
+		// ALF는 주소 family를 나누지 않는다. IPv4만 막고 IPv6를 열어 두는 틈이 생기지 않는다.
+		return auditResult(id, StatusPass, T("audit.net.ipv6_app_filter"))
+	case firewall.PFUnknown:
+		return auditResult(id, StatusSkip, T("audit.net.pf_anchor_unknown", firewall.PFAnchored))
 	}
 	var listeners []string
 	for _, socket := range facts.Listen {
@@ -75,20 +84,55 @@ func auditIPv6Open(facts auditFacts) Result {
 			listeners = append(listeners, line)
 		}
 	}
+	if len(listeners) == 0 && facts.ListenPartial {
+		return auditResult(id, StatusSkip, T("audit.net.listen_partial"))
+	}
 	if len(listeners) == 0 {
 		return auditResult(id, StatusPass, T("audit.net.ipv6_no_listen", strings.Join(addresses, ", ")))
 	}
 	result := auditResult(id, StatusWarn, T("audit.net.ipv6_open", strings.Join(addresses, ", "), len(listeners)))
+	rules := T("audit.net.ipv6_rules", firewall.Tool, firewall.V6Chains, firewall.V6Rules) + "\n" + T("audit.net.ipv4_rules", firewall.Drops)
+	if firewall.ALF {
+		rules = firewall.Detail
+	}
 	result.Evidence = []Evidence{
-		{Label: T("audit.evidence.values"), Value: T("audit.net.ipv6_rules", firewall.Tool, firewall.V6Chains, firewall.V6Rules) + "\n" + T("audit.net.ipv4_rules", firewall.Drops)},
+		{Label: T("audit.evidence.values"), Value: rules},
 		{Label: T("audit.evidence.sockets"), Value: strings.Join(listeners, "\n")},
 	}
 	result.Warnings = []string{T("audit.net.cloud_note")}
-	result.Next = "sudo nft list ruleset | grep -B2 -A6 'hook input'"
-	if firewall.Tool == "iptables" {
+	if facts.ListenPartial {
+		result.Warnings = append(result.Warnings, T("audit.net.listen_partial"))
+	}
+	switch {
+	case firewall.ALF:
+		result.Next = "sudo pfctl -s rules"
+	case firewall.Tool == "iptables":
 		result.Next = "sudo ip6tables -S INPUT"
+	default:
+		result.Next = "sudo nft list ruleset | grep -B2 -A6 'hook input'"
 	}
 	return result
+}
+
+func readHostInterfaceAddrs() ([]netip.Addr, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var result []netip.Addr
+	for _, addr := range addrs {
+		var ip net.IP
+		switch value := addr.(type) {
+		case *net.IPNet:
+			ip = value.IP
+		case *net.IPAddr:
+			ip = value.IP
+		}
+		if parsed, ok := netip.AddrFromSlice(ip); ok {
+			result = append(result, parsed)
+		}
+	}
+	return result, nil
 }
 
 // auditDockerPublished는 docker가 모든 주소에 publish한 포트다. 방화벽이 들어오는 트래픽을 막는다고 판정해도 이 포트는 DNAT되어
@@ -379,7 +423,7 @@ func collectAuditPersist(sources auditSources, facts *auditFacts) {
 	}
 	if facts.PasswdErr == nil {
 		for _, account := range facts.Passwd {
-			if (account.UID != 0 && account.UID < 1000) || account.Home == "" || strings.HasSuffix(account.Shell, "nologin") || strings.HasSuffix(account.Shell, "false") {
+			if !sources.loginAccount(account) || account.Home == "" || strings.HasSuffix(account.Shell, "nologin") || strings.HasSuffix(account.Shell, "false") {
 				continue
 			}
 			for _, name := range auditPersistHomeFiles {

@@ -2,7 +2,7 @@
 
 # 호스트 상태와 점검
 
-[호스트 정보](#호스트-정보) · [호스트 점검 (Linux)](#호스트-점검-linux) · [서비스 보기 (Linux)](#서비스-보기-linux) · [Container 보기 (Linux와 macOS)](#container-보기-linux와-macos) · [최근 호스트 변경 (Linux)](#최근-호스트-변경-linux) · [커널과 systemd 이벤트 (Linux)](#커널과-systemd-이벤트-linux) · [현재 범위](#현재-범위) · [Listening port](#listening-port)
+[호스트 정보](#호스트-정보) · [호스트 점검 (Linux와 macOS)](#호스트-점검-linux와-macos) · [서비스 보기 (Linux)](#서비스-보기-linux) · [Container 보기 (Linux와 macOS)](#container-보기-linux와-macos) · [최근 호스트 변경 (Linux)](#최근-호스트-변경-linux) · [커널과 systemd 이벤트 (Linux)](#커널과-systemd-이벤트-linux) · [현재 범위](#현재-범위) · [Listening port](#listening-port)
 
 ## 호스트 정보
 
@@ -159,9 +159,11 @@ edc jobs --notify
 
 webhook이 2xx로 답하지 않으면 edc는 이유를 stderr에 적고, 점검이 통과했어도 종료 코드를 1로 만듭니다. Slack과 Discord URL은 경로가 비밀이므로 오류에는 URL의 scheme과 host만 적습니다. `config.toml`이나 그 위의 디렉터리를 다른 사용자가 바꿀 수 있으면 보내지 않습니다. 루틴의 셸 명령과 같은 규칙입니다. `--notify`는 `--group`과 함께 쓸 수 없습니다. 실행할 때마다 보내며, 지난 결과를 기억하지 않습니다.
 
-## 호스트 점검 (Linux)
+<a id="호스트-점검-linux"></a>
 
-`edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓, 로그인 기록, `/proc`, docker socket만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 읽는 파일이 page cache에 있으면 1초 안에 끝납니다. journal이 큰 호스트의 첫 실행은 몇 초 걸릴 수 있습니다.
+## 호스트 점검 (Linux와 macOS)
+
+`edc audit`는 Linux와 macOS 호스트의 노출 상태와 설정을 읽습니다. Linux에서는 파일, sysctl 값, listen 소켓, 로그인 기록, `/proc`, docker socket만 읽습니다. macOS에서 읽는 원천은 아래 macOS 단락에 있습니다. 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 읽는 파일이 page cache에 있으면 1초 안에 끝납니다. journal이 큰 호스트의 첫 실행은 몇 초 걸릴 수 있습니다.
 
 ```bash
 sudo edc audit
@@ -245,6 +247,8 @@ SSH 키 점검은 `AuthorizedKeysFile`의 파일을 읽습니다. 기본값은 `
 계정 점검은 `/etc/passwd`를 읽습니다. `nsswitch.conf`가 `sss`, `ldap`, `winbind`, `nis`, `nisplus`, `hesiod`에서도 계정을 가져오면, 그 계정은 확인하지 않았다고 경고로 알립니다.
 
 root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoers`, 다른 사용자의 홈 디렉터리를 읽지 못합니다. 이 점검은 `pass`가 아니라 `skip`으로 나옵니다.
+
+macOS에서는 계정을 `dscl`로 로컬 Directory Services 노드(`/Local/Default`)에서 읽고, UID 501 이상을 사용자 계정으로 봅니다. 검색 경로에 LDAP나 Active Directory 노드가 있으면 그 계정은 확인하지 않았다고 경고로 알립니다. 방화벽은 Application Firewall(`socketfilterfw --getglobalstate`)과 pf(`pfctl -s info`, `pfctl -s rules`)를 읽습니다. Application Firewall은 앱마다 들어오는 연결을 거르므로, 켜져 있으면 loopback 밖에 열린 DB·제어 포트를 `fail`이 아니라 `warn`으로 알립니다. pf는 root로 실행할 때만 읽습니다. pf anchor 안의 규칙도 읽습니다. anchor에 조건 없는 규칙이 있으면 그 규칙이 들어오는 트래픽 전체의 처리를 바꿀 수 있어 pf를 판정하지 않습니다. 인터넷 공유가 넣는 규칙처럼 인터페이스나 주소를 지정한 anchor 규칙은 판정을 바꾸지 않습니다. root가 아니면 다른 사용자 process의 소켓이 보이지 않으므로, 열린 포트를 찾지 못한 `net.exposed`와 `net.ipv6_open`은 `pass`가 아니라 `skip`입니다. IP forwarding은 `net.inet.ip.forwarding`을 읽습니다. `/proc`, `wtmp`, journal, dpkg, `/etc/shadow`를 읽는 점검(`login.*`, `history.tampered`, `proc.*`, `net.reverse_tunnel`, `ssh.extra_sshd`, `persist.changed`, `file.pkg_modified`, `kernel.*`, `user.empty_pass`, `user.root_groups`, `docker.escape`)은 macOS에서 `skip`입니다.
 
 방화벽 점검은 `nft list ruleset`을 읽고, nft에 input chain이 없으면 `iptables-save`를 읽습니다. input 규칙의 수는 세지만 규칙 순서는 해석하지 않습니다. 이 호스트만 보므로 클라우드 보안 그룹이 포트를 막고 있을 수 있습니다. `fail`은 호스트 자체가 그 포트를 막지 않는다는 뜻입니다. `net.ipv6_open`은 IPv6 input을 따로 읽습니다. nft의 `ip6`·`inet` 표나 `ip6tables-save`입니다. IPv4만 막고 IPv6는 허용하는 호스트가 많습니다. 공인 IPv6 주소가 있을 때만 warn입니다. Tailscale의 `fd7a::/48` 같은 ULA 주소와 link-local 주소는 공인 주소로 보지 않습니다.
 

@@ -281,7 +281,7 @@ func snapshotSections(since time.Duration, duPaths []string, timeout time.Durati
 			}
 			facts := collectAuditFacts(ctx, sources)
 			facts.AllowPorts = activeConfig.Audit.AllowPorts
-			return applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
+			return applyAuditAccept(markAuditUnsupported(evaluateAudit(facts), sources.unsupported), activeConfig.Audit.Accept)
 		}, ids: func() []string { return snapshotProbeIDs(evaluateAudit(auditFacts{})) }},
 		{name: "events", run: func(ctx context.Context) []Result {
 			sources, ok := hostEventsSources()

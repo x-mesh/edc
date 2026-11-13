@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -123,6 +124,51 @@ type auditSources struct {
 	containers func(context.Context) ([]auditContainer, error)
 	// pid는 edc 자신이다. 내려받은 edc를 /tmp에서 실행하면 proc.unusual_exe가 자기를 잡는다.
 	pid int
+
+	// accounts가 비어 있으면 /etc/passwd와 nsswitch.conf를 읽는다. macOS는 계정을 Directory Services에 두어 /etc/passwd에 사용자 계정이 없다.
+	accounts auditAccountSource
+	// ipForward가 nil이면 /proc/sys/net/ipv4/ip_forward를 읽는다. ipForwardName은 근거에 적는 설정 이름이다.
+	ipForward     func() (string, error)
+	ipForwardName string
+	// listenPartial이면 listen이 다른 사용자 process의 소켓을 빠뜨린다. macOS libproc은 root가 아니면 남의 fd를 읽지 못한다.
+	listenPartial bool
+	// firewallAsUser면 root가 아니어도 firewall을 부른다. 그 함수가 읽지 못한 부분을 errAuditNeedsRoot로 알린다.
+	firewallAsUser bool
+	// firewallSource는 방화벽을 읽지 못했을 때 적는 원천 이름이다. 비어 있으면 nft/iptables-save다.
+	firewallSource string
+	// vmContainers면 컨테이너 런타임이 VM 안에서 돈다. 호스트의 IP forwarding을 런타임 표식으로 설명하지 않는다.
+	vmContainers bool
+	// unsupported는 이 OS에서 읽을 원천이 없는 점검이다. 결과를 판정하지 않고 skip으로 둔다.
+	unsupported []string
+}
+
+type auditAccountSource struct {
+	// label은 skip 사유에 적는 계정 원천이다.
+	label    string
+	read     func() ([]auditPasswd, error)
+	external func() string
+	// externalKey는 external이 찾은 계정 원천을 알리는 메시지다.
+	externalKey string
+	// loginUID 미만의 UID는 서비스 계정이다. Linux 배포판은 1000부터, macOS는 501부터 사용자에게 준다.
+	loginUID int
+}
+
+func (sources auditSources) accountSource() auditAccountSource {
+	if sources.accounts.read != nil {
+		return sources.accounts
+	}
+	return auditAccountSource{
+		label:       "/etc/passwd",
+		read:        func() ([]auditPasswd, error) { return readAuditPasswd(sources.file("/etc/passwd")) },
+		external:    func() string { return readAuditExternalAccounts(sources.file("/etc/nsswitch.conf")) },
+		externalKey: "audit.account.external",
+		loginUID:    1000,
+	}
+}
+
+// loginAccount는 root와 사람에게 준 계정이다. 서비스 계정은 홈의 key와 history를 보지 않는다.
+func (sources auditSources) loginAccount(entry auditPasswd) bool {
+	return entry.UID == 0 || entry.UID >= sources.accountSource().loginUID
 }
 
 type auditFirewall struct {
@@ -136,6 +182,13 @@ type auditFirewall struct {
 	V6Known           bool
 	V6Chains, V6Rules int
 	V6Drops           bool
+	// ALF면 macOS Application Firewall을 읽었다. ALFState는 socketfilterfw의 globalstate이고 Detail은 읽은 값이다.
+	ALF      bool
+	ALFState int
+	Detail   string
+	// PFBlocks는 최상위 pf의 들어오는 block 규칙 수, PFAnchored는 anchor 안의 조건 없는 규칙 수다. PFUnknown이면 그 규칙 때문에 pf가 막는지 판정하지 않았다.
+	PFBlocks, PFAnchored int
+	PFUnknown            bool
 }
 
 type auditFile struct {
@@ -162,12 +215,17 @@ type auditFacts struct {
 
 	Listen    []listenSocket
 	ListenErr error
-	Firewall  auditFirewall
+	// ListenPartial이면 Listen에 다른 사용자 process의 소켓이 빠져 있다. 찾지 못한 것을 열린 포트가 없다고 보지 않는다.
+	ListenPartial bool
+	Firewall      auditFirewall
 	// FirewallErr가 있으면 방화벽을 모른다는 뜻이다. 막는다고도 열려 있다고도 판정하지 않는다.
-	FirewallErr   error
-	IPForward     string
-	IPForwardErr  error
-	ContainerHost string
+	FirewallErr    error
+	FirewallSource string
+	IPForward      string
+	IPForwardName  string
+	IPForwardErr   error
+	ContainerHost  string
+	VMContainers   bool
 
 	SSHD       sshdConfig
 	SSHDErr    error
@@ -175,16 +233,18 @@ type auditFacts struct {
 	KeyFiles   []auditFile
 	KeySkipped int
 
-	Passwd    []auditPasswd
-	PasswdErr error
-	// ExternalAccounts는 nsswitch.conf의 passwd에 적힌 /etc/passwd 밖의 계정 원천이다. 그 계정은 판정하지 않는다.
-	ExternalAccounts string
-	EmptyPass        []string
-	ShadowErr        error
-	Sudo             []string
-	SudoErr          error
-	RootGroups       map[string][]string
-	GroupErr         error
+	Passwd       []auditPasswd
+	PasswdErr    error
+	PasswdSource string
+	// ExternalAccounts는 계정 원천 밖에서 계정을 가져오는 곳이다(nsswitch.conf의 sss, Directory Services의 LDAP 노드). 그 계정은 판정하지 않는다.
+	ExternalAccounts    string
+	ExternalAccountsKey string
+	EmptyPass           []string
+	ShadowErr           error
+	Sudo                []string
+	SudoErr             error
+	RootGroups          map[string][]string
+	GroupErr            error
 
 	Logins     auditLoginRecords
 	LoginErr   error
@@ -283,8 +343,24 @@ func runAudit(args []string, version string) int {
 		}
 	}
 	facts.AllowPorts = activeConfig.Audit.AllowPorts
-	results := applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
+	results := applyAuditAccept(markAuditUnsupported(evaluateAudit(facts), sources.unsupported), activeConfig.Audit.Accept)
 	return emit(options, buildReport(version, started, nil, results, options.redact))
+}
+
+// markAuditUnsupported는 이 OS에서 원천이 없는 점검의 판정을 지운다. Linux 경로가 없어 생긴 판정은 그 OS의 상태가 아니다.
+func markAuditUnsupported(results []Result, ids []string) []Result {
+	for index, result := range results {
+		if slices.Contains(ids, strings.TrimPrefix(result.Probe, "audit.")) {
+			results[index] = auditResult(strings.TrimPrefix(result.Probe, "audit."), StatusSkip, T("audit.skip.unsupported_os"))
+		}
+	}
+	return results
+}
+
+func (facts auditFacts) passwdSource() string { return cmp.Or(facts.PasswdSource, "/etc/passwd") }
+
+func (facts auditFacts) externalAccountsWarning() string {
+	return T(cmp.Or(facts.ExternalAccountsKey, "audit.account.external"), facts.ExternalAccounts)
 }
 
 // auditCheckIDs는 evaluateAudit가 돌려줄 수 있는 모든 id다. 설정의 accept에 오타가 있으면 이 목록으로 거른다.
@@ -422,13 +498,24 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 		}()
 	}
 	facts.Listen, facts.ListenErr = sources.listen()
-	if facts.Root {
+	facts.ListenPartial = sources.listenPartial
+	facts.FirewallSource = sources.firewallSource
+	if facts.Root || sources.firewallAsUser {
 		facts.Firewall, facts.FirewallErr = sources.firewall(ctx)
 	} else {
 		facts.FirewallErr = errAuditNeedsRoot
 	}
-	facts.IPForward, facts.IPForwardErr = readTrimmed(sources.file("/proc/sys/net/ipv4/ip_forward"))
+	facts.IPForwardName = cmp.Or(sources.ipForwardName, "net.ipv4.ip_forward")
+	if sources.ipForward != nil {
+		facts.IPForward, facts.IPForwardErr = sources.ipForward()
+	} else {
+		facts.IPForward, facts.IPForwardErr = readTrimmed(sources.file("/proc/sys/net/ipv4/ip_forward"))
+	}
+	facts.VMContainers = sources.vmContainers
 	for _, marker := range auditContainerMarkers {
+		if sources.vmContainers {
+			break
+		}
 		if _, err := os.Stat(sources.file(marker.path)); err == nil {
 			facts.ContainerHost = marker.name
 			break
@@ -438,8 +525,10 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 	facts.SSHDPath = "/etc/ssh/sshd_config"
 	facts.SSHD, facts.SSHDErr = readSSHDConfig(sources.root, facts.SSHDPath)
 
-	facts.Passwd, facts.PasswdErr = readAuditPasswd(sources.file("/etc/passwd"))
-	facts.ExternalAccounts = readAuditExternalAccounts(sources.file("/etc/nsswitch.conf"))
+	accounts := sources.accountSource()
+	facts.PasswdSource, facts.ExternalAccountsKey = accounts.label, accounts.externalKey
+	facts.Passwd, facts.PasswdErr = accounts.read()
+	facts.ExternalAccounts = accounts.external()
 	if facts.PasswdErr == nil {
 		facts.KeyFiles, facts.KeySkipped = collectAuditKeyFiles(sources, facts.Passwd, auditKeyFilePatterns(facts.SSHD))
 	}
@@ -715,8 +804,7 @@ func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd, patterns [
 	// 홈을 함께 써도 %u, %U가 든 경로는 계정마다 다르다. 그래서 홈이 아니라 펼친 경로로 한 번씩만 본다.
 	seenPath := map[string]bool{}
 	for _, entry := range passwd {
-		// 1000 미만은 서비스 계정이다. 로그인 계정은 root와 일반 사용자뿐이다.
-		if (entry.UID != 0 && entry.UID < 1000) || entry.Home == "" || entry.Home == "/" {
+		if !sources.loginAccount(entry) || entry.Home == "" || entry.Home == "/" {
 			continue
 		}
 		paths := []string{filepath.Join(entry.Home, ".ssh")}
@@ -1230,6 +1318,8 @@ func auditExposure(facts auditFacts) Result {
 	}
 	var result Result
 	switch {
+	case len(rest.labels) == 0 && len(allowed.labels) == 0 && facts.ListenPartial:
+		result = auditResult(id, StatusSkip, T("audit.net.listen_partial"))
 	case len(rest.labels) == 0 && len(allowed.labels) == 0:
 		result = auditResult(id, StatusPass, T("audit.net.exposed_none", len(facts.Listen)))
 	case len(rest.labels) == 0:
@@ -1243,6 +1333,9 @@ func auditExposure(facts auditFacts) Result {
 			result.Metrics = map[string]interface{}{"allowed_ports": allowed.ports}
 			result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
 		}
+	}
+	if facts.ListenPartial && result.Status != StatusSkip {
+		result.Warnings = append(result.Warnings, T("audit.net.listen_partial"))
 	}
 	if published := auditDockerPublished(facts); published != "" {
 		if result.Status == StatusPass {
@@ -1264,6 +1357,10 @@ func auditExposureResult(facts auditFacts, exposed auditExposed) Result {
 		result = auditResult(id, StatusWarn, T("audit.net.exposed_unknown", ports))
 	case facts.Firewall.Drops:
 		result = auditResult(id, StatusWarn, T("audit.net.exposed_filtered", ports))
+	case facts.Firewall.perApp():
+		result = auditResult(id, StatusWarn, T("audit.net.exposed_app_filter", ports))
+	case facts.Firewall.PFUnknown:
+		result = auditResult(id, StatusWarn, T("audit.net.exposed_pf_unknown", ports))
 	default:
 		result = auditResult(id, StatusFail, T("audit.net.exposed_open", ports))
 		result.Error = &DiagnosticError{Kind: "exposure", Message: result.Summary}
@@ -1284,7 +1381,10 @@ func auditFirewallResult(facts auditFacts) Result {
 		return auditResult(id, StatusSkip, T("audit.skip.no_firewall_tool"))
 	}
 	if facts.FirewallErr != nil {
-		return auditSkip(id, "nft/iptables-save", facts.FirewallErr)
+		return auditSkip(id, cmp.Or(facts.FirewallSource, "nft/iptables-save"), facts.FirewallErr)
+	}
+	if facts.Firewall.ALF {
+		return auditDarwinFirewallResult(facts)
 	}
 	firewall := facts.Firewall
 	if firewall.Drops {
@@ -1307,20 +1407,24 @@ func auditFirewallResult(facts auditFacts) Result {
 func auditIPForward(facts auditFacts) Result {
 	const id = "net.ip_forward"
 	if facts.IPForwardErr != nil {
-		return auditSkip(id, "net.ipv4.ip_forward", facts.IPForwardErr)
+		return auditSkip(id, cmp.Or(facts.IPForwardName, "net.ipv4.ip_forward"), facts.IPForwardErr)
 	}
 	switch {
 	case facts.IPForward == "0":
 		return auditResult(id, StatusPass, T("audit.net.forward_off"))
 	case facts.ContainerHost != "":
 		return auditResult(id, StatusPass, T("audit.net.forward_container", facts.ContainerHost))
+	case facts.VMContainers:
+		result := auditResult(id, StatusWarn, T("audit.net.forward_on_host"))
+		result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: facts.IPForwardName + " = " + facts.IPForward}}
+		return result
 	default:
 		markers := make([]string, 0, len(auditContainerMarkers))
 		for _, marker := range auditContainerMarkers {
 			markers = append(markers, marker.path)
 		}
 		result := auditResult(id, StatusWarn, T("audit.net.forward_on"))
-		result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: "net.ipv4.ip_forward = " + facts.IPForward + "\n" + T("audit.net.forward_markers", strings.Join(markers, ", "))}}
+		result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: cmp.Or(facts.IPForwardName, "net.ipv4.ip_forward") + " = " + facts.IPForward + "\n" + T("audit.net.forward_markers", strings.Join(markers, ", "))}}
 		return result
 	}
 }
@@ -1415,7 +1519,7 @@ func auditSSHPassword(facts auditFacts) Result {
 func auditAuthorizedKeys(facts auditFacts) Result {
 	const id = "ssh.key_files"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	var bad []string
 	keys := 0
@@ -1465,7 +1569,7 @@ func auditAccountLines(passwd []auditPasswd, names []string) string {
 func auditUID0(facts auditFacts) Result {
 	const id = "user.uid0"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	var others []string
 	for _, entry := range facts.Passwd {

@@ -108,7 +108,7 @@ audit:
     sensitive_ok: "민감 파일 %d개의 권한 정상"
     sensitive_bad: "다른 사용자에게 열린 민감 파일 %d개"
     path_ok: "다른 사용자가 쓸 수 있는 PATH 디렉터리 없음 (%d개 확인)"
-    path_bad: "다른 사용자가 바꿀 수 있는 PATH 항목: %s"
+    path_bad: "다른 사용자가 바꾸거나 현재 디렉터리에 따라 바뀌는 PATH 항목: %s"
   login:
     peer: "상대 process"
     mismatch_bad: "계정 %d개의 lastlog가 wtmp나 sshd journal과 어긋납니다 (wtmp는 %s부터)"

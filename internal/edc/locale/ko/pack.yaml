@@ -25,6 +25,7 @@ pack:
   verbose:
     decision: "%s: %s → %s"
     kind_directory: "디렉터리"
+    kind_bundle: "묶음 하나"
     kind_compressed: "%s, 파일 하나"
     kind_compressed_tar: "%s tar"
     kind_tar: "tar"

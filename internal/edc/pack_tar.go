@@ -93,7 +93,9 @@ func packBundle(ctx context.Context, paths []string, options packOptions) (strin
 		}
 		roots = append(roots, packRoot{path: name, base: base})
 	}
-	return packWriteArchive(ctx, roots, options.output, T("pack.paths", len(paths)), started, options)
+	label := T("pack.paths", len(paths))
+	options.report.line(T("pack.verbose.decision", label, T("pack.verbose.kind_bundle"), T("pack.verbose.action_pack")))
+	return packWriteArchive(ctx, roots, options.output, label, started, options)
 }
 
 // packBundleError는 묶을 경로 가운데 하나 때문에 실패한 경우다. 실패 줄에 출력 대신 그 경로를 적는다.

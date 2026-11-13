@@ -398,7 +398,7 @@ edc pack -v logs/         # show the decision, each entry, and the progress
 edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, app/
 ```
 
-`-v` writes one line with what edc found and what it does, for example `app.log.gz: gzip, one file → extract`. For a tar, it writes one line for each entry: `+` for an entry that it packs, `x` for an entry that it extracts, and `-` with the reason for an entry that it skips. In a terminal, a last line shows the bytes that edc read, the percent of the input, and the speed. edc rewrites this line and deletes it at the end. In a pipe, edc does not write this line.
+`-v` writes one line with what edc found and what it does, for example `app.log.gz: gzip, one file → extract`. With `-o` and several paths, the line is `3 paths: one archive → pack`. For a tar, it writes one line for each entry: `+` for an entry that it packs, `x` for an entry that it extracts, and `-` with the reason for an entry that it skips. In a terminal, a last line shows the bytes that edc read, the percent of the input, and the speed. edc rewrites this line and deletes it at the end. In a pipe, edc does not write this line.
 
 - `-z` always compresses, and `-x` always extracts. `-x` fails when the data is not gzip, zstd, or tar. Use them when the content decides the wrong way, for example to compress a plain `.tar`.
 - An extracted file loses `.gz` or `.zst` from its name. Another name gets `.out`, so `backup.bin` becomes `backup.bin.out`. Give `-o` to choose the name.
@@ -408,7 +408,7 @@ edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, a
 - macOS `tar` adds `._name` entries for extended attributes. edc skips them and counts them with the skipped special files. A GNU sparse file extracts with its holes written as zeros, so it uses its full size on disk.
 - Without `-o`, edc handles each path on its own. Thus `edc pack *` writes one `.gz` for each file, and edc prints the command that makes one archive.
 - With `-o` and two or more paths, edc packs all of them into one `.tar.gz`, or `.tar.zst` with `--zstd`. Each path becomes a top-level entry with its base name, for example `/var/app` becomes `app/`. edc keeps the order of the paths. When edc extracts the result, it uses the archive name, so `all.tar.gz` becomes `all/`.
-- If an archive is in the list, edc puts it in as it is and does not extract it. A symlink in the list stays a link, and edc skips a socket, a device, or a FIFO.
+- If an archive is in the list, edc puts it in as it is and does not extract it. A symlink in the list stays a link, and edc skips a socket, a device, or a FIFO. If a link points outside the archive, for example to `/etc/hosts`, edc refuses the archive when it extracts it. A packed directory has the same rule.
 - edc refuses two paths with the same base name, and an output inside a directory of the list. In these cases, edc writes no output. `-x` and `--rm` do not work with `-o` and two or more paths.
 - If you ran `edc pack *` before, the directory holds the files and their `.gz` copies. Then `edc pack -o NAME.tar.gz *` packs both.
 - A packed directory keeps symlinks as links. edc skips sockets, devices, and FIFOs and counts them. A file that edc cannot read stops the pack.

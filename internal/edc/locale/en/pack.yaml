@@ -25,6 +25,7 @@ pack:
   verbose:
     decision: "%s: %s → %s"
     kind_directory: "directory"
+    kind_bundle: "one archive"
     kind_compressed: "%s, one file"
     kind_compressed_tar: "%s tar"
     kind_tar: "tar"

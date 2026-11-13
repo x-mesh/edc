@@ -738,7 +738,7 @@ func TestPackBundlesSeveralPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, _, stderr := packTest(t, dir, "-o", "all.tar.gz", "logs/", "a.txt", "other/app.log.gz", "link", "pipe")
-	if code != 0 || !strings.Contains(stderr, "5 paths → all.tar.gz  5 files") || !strings.Contains(stderr, "1 special files skipped") || strings.Contains(stderr, "one archive") {
+	if code != 0 || !strings.Contains(stderr, "5 paths → all.tar.gz  5 files") || !strings.Contains(stderr, "1 special files skipped") || strings.Contains(stderr, "to make one archive") {
 		t.Fatalf("bundle: %d %s", code, stderr)
 	}
 	want := []string{"logs/", "logs/sub/", "logs/sub/y", "logs/x.log", "a.txt", "app.log.gz", "link"}
@@ -761,7 +761,7 @@ func TestPackBundlesSeveralPaths(t *testing.T) {
 	if link, err := os.Readlink(filepath.Join(out, "all", "link")); err != nil || link != "a.txt" {
 		t.Fatalf("link %q %v", link, err)
 	}
-	if code, _, stderr := packTest(t, dir, "--zstd", "-o", "all.tar.zst", "a.txt", "logs"); code != 0 {
+	if code, _, stderr := packTest(t, dir, "-v", "--zstd", "-o", "all.tar.zst", "a.txt", "logs"); code != 0 || !strings.Contains(stderr, "2 paths: one archive → pack\n+ a.txt  1 B\n+ logs/\n") {
 		t.Fatalf("zstd bundle: %d %s", code, stderr)
 	}
 	if kind, err := packDetect(filepath.Join(dir, "all.tar.zst")); err != nil || kind.format != "zstd" || !kind.tar {
@@ -784,7 +784,7 @@ func TestPackBundleRefusesBeforeItWrites(t *testing.T) {
 		{[]string{"-o", "out.tar.gz", "x/a", "y/a"}, 1, "x/a and y/a have the same name in the archive: a"},
 		{[]string{"-o", "out.tar.gz", "b.txt", "./b.txt"}, 1, "same name in the archive: b.txt"},
 		{[]string{"-o", "x/out.tar.gz", "b.txt", "x"}, 1, "edc pack: x: the output is inside the directory"},
-		{[]string{"-o", "out.tar.gz", "b.txt", "missing"}, 1, "edc pack: missing:"},
+		{[]string{"-o", "out.tar.gz", "b.txt", "missing"}, 1, "edc pack: missing: lstat missing: no such file or directory\n"},
 		{[]string{"-o", "b.txt", "x", "y"}, 1, "edc pack: b.txt: b.txt exists"},
 		{[]string{"-x", "-o", "out.tar.gz", "x", "y"}, 2, "usage"},
 		{[]string{"--rm", "-o", "out.tar.gz", "x", "y"}, 2, "usage"},
@@ -813,7 +813,7 @@ func TestPackHintsAtOneArchive(t *testing.T) {
 		t.Fatalf("zstd hint: %d %s", code, stderr)
 	}
 	for _, args := range [][]string{{"a.txt.gz", "b.txt.gz"}, {"-l", "c.txt.zst", "d.txt.zst"}, {"-z", "c.txt"}} {
-		if code, _, stderr := packTest(t, dir, args...); code != 0 || strings.Contains(stderr, "one archive") {
+		if code, _, stderr := packTest(t, dir, args...); code != 0 || strings.Contains(stderr, "to make one archive") {
 			t.Fatalf("%v: %d %s", args, code, stderr)
 		}
 	}

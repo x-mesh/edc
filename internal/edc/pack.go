@@ -176,9 +176,10 @@ func packRunBundle(ctx context.Context, paths []string, options packOptions) int
 	}
 	if err != nil {
 		name := options.output
+		// 경로 때문에 실패했으면 그 경로를 이름 칸에 적고, 오류 문구에는 경로를 다시 붙이지 않는다.
 		var input packBundleError
 		if errors.As(err, &input) {
-			name = input.path
+			name, err = input.path, input.err
 		}
 		fmt.Fprintln(options.stderr, T("compress.failed", "pack", viewSanitize(name), packErrorText(err)))
 		return 1

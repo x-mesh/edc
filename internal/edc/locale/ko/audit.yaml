@@ -88,6 +88,7 @@ audit:
     pkg_package: "패키지 %s"
     pkg_note: "패키지가 설치한 파일과 내용이 다릅니다. 누가 일부러 바꾸지 않았다면 바꿔치기한 binary를 의심하세요"
     pkg_missing: "패키지 파일 %d개가 없습니다: %s"
+    pkg_unread: "checksum 목록이나 파일 %d개를 읽지 못해 비교하지 않았습니다: %s"
     path_relative: "상대 경로라 현재 디렉터리에 따라 가리키는 곳이 바뀜"
     sensitive_ok: "민감 파일 %d개의 권한 정상"
     sensitive_bad: "다른 사용자에게 열린 민감 파일 %d개"

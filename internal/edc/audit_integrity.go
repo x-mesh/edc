@@ -168,6 +168,16 @@ type auditPkgVerify struct {
 	Checked  int
 	Modified []auditPkgFile
 	Missing  []auditPkgFile
+	// Unread는 읽지 못한 checksum 목록이나 파일이고, UnreadErr는 그 첫 오류다.
+	Unread    []string
+	UnreadErr error
+}
+
+func (verify *auditPkgVerify) unread(path string, err error) {
+	verify.Unread = append(verify.Unread, path)
+	if verify.UnreadErr == nil {
+		verify.UnreadErr = err
+	}
 }
 
 func collectAuditPkgVerify(sources auditSources, facts *auditFacts) {
@@ -214,6 +224,7 @@ func readAuditDiversions(path string) map[string]bool {
 func verifyAuditMD5Sums(sources auditSources, list, name string, diverted map[string]bool, verify *auditPkgVerify) {
 	file, err := os.Open(list)
 	if err != nil {
+		verify.unread(list, err)
 		return
 	}
 	defer file.Close()
@@ -242,6 +253,7 @@ func verifyAuditMD5Sums(sources auditSources, list, name string, diverted map[st
 		}
 		actual, err := auditFileMD5(full)
 		if err != nil {
+			verify.unread(path, err)
 			continue
 		}
 		verify.Checked++
@@ -278,6 +290,10 @@ func auditPkgModified(facts auditFacts) Result {
 	if verify.Err != nil {
 		return auditSkip(id, "/var/lib/dpkg/info", verify.Err)
 	}
+	// 하나도 비교하지 못했으면 바뀐 파일이 없다고 판정할 근거가 없다.
+	if verify.Checked == 0 && len(verify.Modified) == 0 && len(verify.Missing) == 0 && verify.UnreadErr != nil {
+		return auditSkip(id, verify.Unread[0], verify.UnreadErr)
+	}
 	var missing []string
 	for _, file := range verify.Missing[:min(len(verify.Missing), 3)] {
 		missing = append(missing, file.Path)
@@ -288,7 +304,6 @@ func auditPkgModified(facts auditFacts) Result {
 		// 관리자가 지운 파일일 수도 있어 fail이 아니라 warn이다.
 		result = auditResult(id, StatusWarn, T("audit.file.pkg_missing", len(verify.Missing), strings.Join(missing, ", ")))
 		result.Next = "dpkg --verify " + verify.Missing[0].Package
-		return result
 	case len(verify.Modified) == 0:
 		result = auditResult(id, StatusPass, T("audit.file.pkg_ok", verify.Checked, verify.Packages))
 	default:
@@ -303,8 +318,11 @@ func auditPkgModified(facts auditFacts) Result {
 		result.Evidence = []Evidence{{Label: T("audit.evidence.files"), Value: strings.Join(items, "\n")}}
 		result.Next = "dpkg --verify " + verify.Modified[0].Package
 	}
-	if len(verify.Missing) > 0 {
+	if len(verify.Modified) > 0 && len(verify.Missing) > 0 {
 		result.Warnings = append(result.Warnings, T("audit.file.pkg_missing", len(verify.Missing), strings.Join(missing, ", ")))
+	}
+	if len(verify.Unread) > 0 {
+		result.Warnings = append(result.Warnings, T("audit.file.pkg_unread", len(verify.Unread), strings.Join(verify.Unread[:min(len(verify.Unread), 3)], ", ")))
 	}
 	return result
 }

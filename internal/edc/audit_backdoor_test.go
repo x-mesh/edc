@@ -304,6 +304,34 @@ func TestAuditPkgModified(t *testing.T) {
 	if result := auditPkgModified(facts); result.Status != StatusPass || result.Summary != T("audit.file.pkg_ok", 5, 4) {
 		t.Fatalf("pass = %+v", result)
 	}
+	// 읽지 못한 목록과 파일은 비교하지 않은 수로 알린다. 끊어진 symlink와 디렉터리는 root로 돌려도 읽히지 않는다.
+	if err := os.Symlink("/nonexistent", filepath.Join(root, "var/lib/dpkg/info/procps.md5sums")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "usr/bin/ps"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAuditFile(t, root, "/var/lib/dpkg/info/util-linux.md5sums", sum("ps")+"  usr/bin/ps\n", 0o644)
+	facts = auditFacts{}
+	collectAuditPkgVerify(auditSources{root: root}, &facts)
+	unread := []string{filepath.Join(root, "var/lib/dpkg/info/procps.md5sums"), "/usr/bin/ps"}
+	if result := auditPkgModified(facts); result.Status != StatusPass || !reflect.DeepEqual(facts.PkgVerify.Unread, unread) ||
+		!reflect.DeepEqual(result.Warnings, []string{T("audit.file.pkg_unread", 2, strings.Join(unread, ", "))}) {
+		t.Fatalf("unread = %+v, verify = %+v", result, facts.PkgVerify)
+	}
+	// 하나도 비교하지 못했으면 skip이다.
+	only := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(only, "var/lib/dpkg/info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/nonexistent", filepath.Join(only, "var/lib/dpkg/info/sudo.md5sums")); err != nil {
+		t.Fatal(err)
+	}
+	facts = auditFacts{}
+	collectAuditPkgVerify(auditSources{root: only}, &facts)
+	if result := auditPkgModified(facts); result.Status != StatusSkip {
+		t.Fatalf("nothing read = %+v", result)
+	}
 	// dpkg가 없는 호스트(RHEL, Alpine)는 skip이다.
 	facts = auditFacts{}
 	collectAuditPkgVerify(auditSources{root: t.TempDir()}, &facts)

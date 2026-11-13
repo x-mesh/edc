@@ -88,6 +88,7 @@ audit:
     pkg_package: "package %s"
     pkg_note: "the content differs from the file that the package installed; if nobody changed it on purpose, suspect a replaced binary"
     pkg_missing: "%d package files are missing: %s"
+    pkg_unread: "could not read %d checksum lists or files, so they are not compared: %s"
     path_relative: "a relative path, it changes with the current directory"
     sensitive_ok: "%d sensitive files have safe modes"
     sensitive_bad: "%d sensitive files are open to other users"

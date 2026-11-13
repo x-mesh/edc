@@ -231,7 +231,8 @@ func describeAuditProcess(sources auditSources, procRoot string, boot time.Time,
 	if data, err := os.ReadFile(filepath.Join(dir, "stat")); err == nil {
 		if stat, ok := parseLinuxProcessStat(process.PID, string(data)); ok {
 			if !boot.IsZero() {
-				process.Started = boot.Add(time.Duration(stat.StartTicks) * time.Second / auditClockTicks)
+				// tick을 먼저 Duration으로 바꾸면 3년쯤 켜 둔 호스트에서 int64를 넘는다.
+				process.Started = boot.Add(time.Duration(float64(stat.StartTicks) / auditClockTicks * float64(time.Second)))
 			}
 			process.ParentPID = stat.PPID
 			if stat.PPID > 0 {

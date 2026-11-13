@@ -167,6 +167,19 @@ func TestCollectAuditProcessesCountsAnEnvironmentItCannotRead(t *testing.T) {
 }
 
 // 근거는 process가 지금 돌고 있다는 것과 언제부터, 누가 띄웠는지, 지워진 파일이 새 파일로 바뀌었는지 사라졌는지를 보인다.
+// 4년 켜 둔 호스트의 starttime은 tick을 그대로 Duration으로 바꾸면 int64를 넘는다.
+func TestDescribeAuditProcessOnALongUptime(t *testing.T) {
+	root := t.TempDir()
+	boot := time.Date(2022, 11, 1, 0, 0, 0, 0, time.UTC)
+	uptime := 4 * 365 * 24 * time.Hour
+	start := int64(uptime/time.Second) * auditClockTicks
+	writeAuditFile(t, root, "/proc/77/stat", "77 (x) S 1 77 77 0 -1 4194560 1 0 0 0 5 6 0 0 20 0 1 0 "+strconv.FormatInt(start, 10)+" 1000 50 18446744073709551615\n", 0o644)
+	process := describeAuditProcess(auditSources{root: root}, filepath.Join(root, "proc"), boot, auditProcess{PID: 77})
+	if !process.Started.Equal(boot.Add(uptime)) {
+		t.Fatalf("started = %v, want %v", process.Started, boot.Add(uptime))
+	}
+}
+
 func TestAuditProcessEvidenceDescribesTheState(t *testing.T) {
 	root := t.TempDir()
 	boot := time.Date(2026, 2, 25, 17, 2, 23, 0, time.Local)

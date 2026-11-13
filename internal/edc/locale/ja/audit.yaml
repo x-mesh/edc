@@ -88,6 +88,7 @@ audit:
     pkg_package: "パッケージ %s"
     pkg_note: "パッケージがインストールしたファイルと内容が異なります。誰かが意図して変えていなければ、差し替えられた binary を疑ってください"
     pkg_missing: "パッケージファイル %d 個がありません: %s"
+    pkg_unread: "checksum の一覧またはファイル %d 個を読めず、比較していません: %s"
     path_relative: "相対パスのため、カレントディレクトリによって指す場所が変わる"
     sensitive_ok: "重要ファイル %d 個の権限は正常"
     sensitive_bad: "他のユーザーに開いている重要ファイル %d 個"

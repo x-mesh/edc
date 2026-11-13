@@ -260,17 +260,40 @@ func TestAuditLocalSourceKeepsUnreadableLoginsApart(t *testing.T) {
 	writeAuditFile(t, root, "/proc/50/fd", "", 0o644)
 	_, readErr := os.ReadDir(fd)
 	fake := &testLocalSources{sockets: []auditTCPSocket{testTCP("127.0.0.1:22", "127.0.0.1:40000", 1000), testTCP("127.0.0.1:40000", "127.0.0.1:22", 2000)}}
-	result := evaluateLocalSource(fake.sources(root), testLocalFacts(auditAccepted{PID: 50, User: "root", Host: "127.0.0.1", Method: "publickey", Port: 40000, Time: testLoginAt(1)}))
-	if result.Status != StatusWarn || len(result.Evidence) != 1 || result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
+	facts := testLocalFacts(auditAccepted{PID: 50, User: "root", Host: "127.0.0.1", Method: "publickey", Port: 40000, Time: testLoginAt(1)})
+	result := evaluateLocalSource(fake.sources(root), facts)
+	// 확인하지 못한 로그인은 연결 중인 수에도 끝난 로그인에도 넣지 않는다.
+	if result.Status != StatusWarn || result.Summary != T("audit.login.local_source_bad", 1, 0, auditLoginTime(facts.JournalSince)) ||
+		len(result.Evidence) != 1 || result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
 		!reflect.DeepEqual(result.Warnings, []string{T("audit.login.local_fd", 1, infoSingleLine(readErr.Error()))}) {
 		t.Fatalf("result = %+v", result)
 	}
-	// process가 끝나 fd 디렉터리가 없으면 그 연결은 끝난 것이다.
+	// root로 본 /proc에 process가 없으면 그 연결은 끝난 것이다.
 	if err := os.RemoveAll(filepath.Join(root, "proc", "50")); err != nil {
 		t.Fatal(err)
 	}
-	if result := evaluateLocalSource(fake.sources(root), testLocalFacts(auditAccepted{PID: 50, User: "root", Host: "127.0.0.1", Method: "publickey", Port: 40000, Time: testLoginAt(1)})); result.Evidence[0].Label != T("audit.evidence.closed_logins") || len(result.Warnings) != 0 {
+	if result := evaluateLocalSource(fake.sources(root), facts); result.Evidence[0].Label != T("audit.evidence.closed_logins") || len(result.Warnings) != 0 {
 		t.Fatalf("gone = %+v", result)
+	}
+	// root가 아니면 hidepid=2가 sshd를 가렸을 수 있다.
+	sources := fake.sources(root)
+	sources.euid = 1000
+	if result := evaluateLocalSource(sources, facts); result.Evidence[0].Label != T("audit.evidence.unverified_logins") ||
+		!reflect.DeepEqual(result.Warnings, []string{T("audit.login.local_fd", 1, errAuditProcHidden.Error())}) {
+		t.Fatalf("hidden = %+v", result)
+	}
+}
+
+// fd 디렉터리는 읽혀도 fd 하나의 대상을 읽지 못하면 그 fd가 연결의 소켓인지 모른다.
+func TestAuditHoldsSocketReportsAnUnreadableFD(t *testing.T) {
+	root := t.TempDir()
+	writeLocalSourceProcs(t, root, testLocalProc{pid: 50})
+	// 디렉터리에 readlink를 하면 root로도 EINVAL이다.
+	if err := os.MkdirAll(filepath.Join(root, "proc", "50", "fd", "3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := auditHoldsSocket(filepath.Join(root, "proc"), true, 50, 1000); held || err == nil {
+		t.Fatalf("held = %v, err = %v", held, err)
 	}
 }
 

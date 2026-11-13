@@ -28,6 +28,9 @@ const auditLocalSourceArgsLimit = 160
 
 var errAuditNoSource = errors.New("no source")
 
+// errAuditProcHidden은 root가 아니어서 /proc/<pid>가 없는 것이 process가 끝난 것인지 hidepid로 가려진 것인지 모를 때다.
+var errAuditProcHidden = errors.New("process not visible without root; /proc may use hidepid")
+
 // auditTCPSocket은 연결된(ESTABLISHED) TCP 소켓이다.
 type auditTCPSocket struct {
 	Local, Remote netip.AddrPort
@@ -128,6 +131,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 		return
 	}
 	procRoot := sources.file("/proc")
+	root := sources.euid == 0
 	peerInodes := map[int]uint64{}
 	sshdPorts := map[int]uint16{}
 	wanted := map[uint64]bool{}
@@ -135,7 +139,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 		login := &local.Logins[index]
 		source := netip.AddrPortFrom(login.Addr, uint16(login.Port))
 		// 포트는 다른 연결에 재사용될 수 있다. Accepted를 남긴 process가 서버 쪽 소켓을 쥘 때만 그 로그인의 연결이다.
-		server, found, err := auditServerSocket(procRoot, login.PID, source, sockets)
+		server, found, err := auditServerSocket(procRoot, root, login.PID, source, sockets)
 		if err != nil {
 			login.Unverified = true
 			if local.FDErr == nil {
@@ -173,7 +177,7 @@ func collectAuditLocalPeers(sources auditSources, local *auditLocalSource, accep
 }
 
 // auditServerSocket은 pid가 쥔, source에서 온 연결의 서버 쪽 소켓이다. 오류는 pid의 fd를 읽지 못한 것이고, 그때는 연결 중인지 모른다.
-func auditServerSocket(procRoot string, pid int, source netip.AddrPort, sockets []auditTCPSocket) (auditTCPSocket, bool, error) {
+func auditServerSocket(procRoot string, root bool, pid int, source netip.AddrPort, sockets []auditTCPSocket) (auditTCPSocket, bool, error) {
 	if pid <= 0 {
 		return auditTCPSocket{}, false, nil
 	}
@@ -181,7 +185,7 @@ func auditServerSocket(procRoot string, pid int, source netip.AddrPort, sockets 
 		if socket.Remote != source || socket.Inode == 0 {
 			continue
 		}
-		held, err := auditHoldsSocket(procRoot, pid, socket.Inode)
+		held, err := auditHoldsSocket(procRoot, root, pid, socket.Inode)
 		if err != nil {
 			return auditTCPSocket{}, false, err
 		}
@@ -192,21 +196,30 @@ func auditServerSocket(procRoot string, pid int, source netip.AddrPort, sockets 
 	return auditTCPSocket{}, false, nil
 }
 
-// auditHoldsSocket은 pid가 inode의 소켓을 쥐었는지다. process가 없으면 그 연결은 끝난 것이라 오류가 아니다.
-// hidepid나 root 아닌 실행처럼 fd를 읽을 수 없으면 오류다.
-func auditHoldsSocket(procRoot string, pid int, inode uint64) (bool, error) {
+// auditHoldsSocket은 pid가 inode의 소켓을 쥐었는지다. root로 본 /proc에 process가 없으면 그 연결은 끝난 것이라 오류가 아니다.
+// root가 아니면 hidepid=2가 process를 가릴 수 있어 없는 것도 오류다. fd 디렉터리나 fd 하나를 읽지 못해도 오류다.
+func auditHoldsSocket(procRoot string, root bool, pid int, inode uint64) (bool, error) {
 	directory := filepath.Join(procRoot, strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		if root {
+			return false, nil
+		}
+		return false, errAuditProcHidden
 	}
 	if err != nil {
 		return false, err
 	}
 	want := fmt.Sprintf("socket:[%d]", inode)
 	for _, entry := range entries {
-		if target, err := os.Readlink(filepath.Join(directory, entry.Name())); err == nil && target == want {
+		target, err := os.Readlink(filepath.Join(directory, entry.Name()))
+		switch {
+		case err == nil && target == want:
 			return true, nil
+		// 읽는 사이에 닫힌 fd다.
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return false, err
 		}
 	}
 	return false, nil

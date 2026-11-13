@@ -751,7 +751,7 @@ var commandDocs = []commandDoc{
 			{"--rm", "command.pack.option.remove"},
 			{"-v", "command.pack.option.verbose"},
 		},
-		examples: []string{"edc pack app.log", "edc pack app.log.gz", "edc pack logs/", "edc pack logs.tar.gz", "edc pack -x backup.bin", "edc pack -l logs.tar.gz", "edc pack -v logs/"},
+		examples: []string{"edc pack app.log", "edc pack app.log.gz", "edc pack logs/", "edc pack logs.tar.gz", "edc pack -x backup.bin", "edc pack -l logs.tar.gz", "edc pack -v logs/", "edc pack -o all.tar.gz app.log conf/"},
 	},
 	{
 		name: "shell", group: "tool",

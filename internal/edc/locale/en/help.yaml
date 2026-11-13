@@ -20,7 +20,7 @@ help:
 
 option:
   timeout: "run time limit"
-  json: "JSON output path, - for stdout"
+  json: "JSON output path; - or no value for stdout"
   verbose: "print the detailed evidence"
   redact: "hide sensitive values in output"
 
@@ -193,7 +193,7 @@ command:
       write: "append to SQLite; omit path for the default DB"
       auto_record: "record load, swap out, or memory pressure spikes"
       retain: "while recording, delete top runs idle longer than this (30d, 2w)"
-      json: "one JSON line for each sample, - for stdout"
+      json: "one JSON line for each sample; - or no value for stdout"
     notes:
       - "Press w to start/stop DB recording. Each restart creates a new run; p pauses recording too."
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
@@ -834,7 +834,7 @@ command:
       extract: "extract, whatever the name is; fail if the data is not gzip, zstd, or tar"
       list: "list the files in an archive and do not write anything"
       zstd: "write .zst or .tar.zst instead of .gz or .tar.gz"
-      output: "output path, for one input: the file to write, or the directory to extract into"
+      output: "output path: the file to write or the directory to extract into; with several inputs, the one archive that holds them"
       remove: "delete the input file after the output is written and synced"
       verbose: "show what edc decided, each entry, and in a terminal the progress"
     notes:
@@ -845,6 +845,8 @@ command:
       - "It refuses an entry or a link that points outside the output directory. It drops setuid and setgid. As root, it keeps the owner."
       - "A directory keeps symlinks as links. Sockets, devices, and FIFOs are skipped and counted."
       - "It does not overwrite a file or a directory that exists. --rm does not delete a directory, and it keeps an archive whose entries were skipped."
+      - "Without -o, it handles each path on its own, so edc pack * writes one .gz for each file."
+      - "-o with several paths packs them into one .tar.gz. Each path is a top-level entry with its base name, and archives go in as they are. It refuses two paths with the same name. -x and --rm do not work with this."
       - "Use edc compress and edc decompress for stdin, stdout, -l N, and -j N."
   decompress:
     summary: "Decompress .gz and .zst files"

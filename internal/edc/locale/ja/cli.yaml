@@ -126,7 +126,7 @@ cli:
       limit: "キー別の最近の実行数 (1-1000、既定20。端末では画面の高さに合わせて増加)"
       failed: "確認済みの失敗のみ"
       follow: "実行の開始と終了を順に出力"
-      json: "--follow の JSONL 出力先 (- は stdout)"
+      json: "--follow の JSONL 出力先 (- か値の省略は stdout)"
     outcome:
       success: "成功"
       fail: "失敗"

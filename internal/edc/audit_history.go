@@ -107,7 +107,7 @@ func collectAuditHistory(sources auditSources, passwd []auditPasswd) auditHistor
 	for _, entry := range passwd {
 		shell := filepath.Base(entry.Shell)
 		spec, ok := auditHistoryShells[shell]
-		if (entry.UID != 0 && entry.UID < 1000) || !ok || entry.Home == "" || entry.Home == "/" {
+		if !sources.loginAccount(entry) || !ok || entry.Home == "" || entry.Home == "/" {
 			continue
 		}
 		account := auditHistoryAccount{User: entry.Name, Shell: shell}
@@ -307,7 +307,7 @@ func auditHistoryEndedSession(records auditLoginRecords, user string) auditHisto
 func auditHistoryTampered(facts auditFacts) Result {
 	const id = "history.tampered"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	loginsKnown := facts.LoginErr == nil
 	var fails, warns, notJudged []string
@@ -347,10 +347,11 @@ func auditHistoryTampered(facts auditFacts) Result {
 		switch {
 		case !account.Exists || account.Size == 0:
 			firstPath = cmp.Or(firstPath, account.Path)
-			fails = append(fails, T("audit.history.empty_after", account.User, account.Path, auditLoginTime(ended.Start), auditLoginTime(ended.End), ended.Host))
+			fails = append(fails, auditItem(account.User+"  "+account.Path, nil, []string{T("audit.history.empty_after", auditLoginTime(ended.Start), auditLoginTime(ended.End), ended.Host)}))
 		// 세션 동안 shell이 하나라도 끝나면 history를 쓴다. 끝 시각과 비교하면 로그아웃 뒤에 남은 process 때문에 오탐이 나므로 시작 시각과 비교한다.
 		case account.ModTime.Before(ended.Start):
-			warns = append(warns, T("audit.history.older_than", account.User, account.Path, auditLoginTime(account.ModTime), auditLoginTime(ended.Start), auditLoginTime(ended.End)))
+			warns = append(warns, auditItem(account.User+"  "+account.Path, []string{T("audit.history.modified", auditLoginTime(account.ModTime))},
+				[]string{T("audit.history.older_than", auditLoginTime(ended.Start), auditLoginTime(ended.End))}))
 		}
 	}
 	var result Result
@@ -382,7 +383,7 @@ func auditHistoryTampered(facts auditFacts) Result {
 		result.Warnings = append(result.Warnings, T("audit.history.skipped", facts.History.Skipped))
 	}
 	if facts.ExternalAccounts != "" {
-		result.Warnings = append(result.Warnings, T("audit.account.external", facts.ExternalAccounts))
+		result.Warnings = append(result.Warnings, facts.externalAccountsWarning())
 	}
 	return result
 }
@@ -390,7 +391,7 @@ func auditHistoryTampered(facts auditFacts) Result {
 func auditHistoryDisabled(facts auditFacts) Result {
 	const id = "history.disabled"
 	if facts.PasswdErr != nil {
-		return auditSkip(id, "/etc/passwd", facts.PasswdErr)
+		return auditSkip(id, facts.passwdSource(), facts.PasswdErr)
 	}
 	var result Result
 	if len(facts.History.Settings) == 0 {

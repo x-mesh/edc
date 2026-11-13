@@ -6,6 +6,8 @@ pack:
   list_single: "%s: %s、ファイル 1 つ、展開すると %s"
   list_summary: "ファイル %d 個、ディレクトリ %d 個、%s"
   cancelled: "edc pack: 取り消しました。途中まで書いた出力は削除しました"
+  paths: "パス %d 個"
+  hint_bundle: "1 つのアーカイブにまとめるには: %s"
   error:
     unknown: "gzip、zstd、tar のデータではありません"
     directory_extract: "ディレクトリはアーカイブではありません。まとめるには -x なしで edc pack を実行します"
@@ -17,11 +19,13 @@ pack:
     exists_named: "%s がすでにあります。削除するか -o を指定します"
     kept: "%d 個の項目をスキップしたため、アーカイブを残しました。不要なら自分で削除します"
     no_replace: "このファイルシステムは既存のディレクトリを上書きせずに移動できないため、ここには展開しません。-o で別のファイルシステムのディレクトリを指定します"
+    same_name: "%s と %s はアーカイブ内で同じ名前になります: %s。どちらかの名前を変えるか、別々にまとめます"
     unsafe_path: "アーカイブに出力ディレクトリの外の項目があります: %s"
     unsafe_link: "アーカイブに出力ディレクトリの外を指すリンクがあります: %s"
   verbose:
     decision: "%s: %s → %s"
     kind_directory: "ディレクトリ"
+    kind_bundle: "1 つのアーカイブ"
     kind_compressed: "%s、ファイル 1 つ"
     kind_compressed_tar: "%s tar"
     kind_tar: "tar"

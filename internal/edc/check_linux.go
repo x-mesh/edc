@@ -190,17 +190,19 @@ func readCheckFileHandles() (*infoFileHandles, error) {
 
 func readCheckReboot() checkReboot {
 	var reboot checkReboot
-	_, err := os.Stat("/var/run/reboot-required")
+	info, err := os.Stat("/var/run/reboot-required")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		reboot.Err = err
 	}
 	if err == nil {
 		reboot.Flag = true
+		reboot.Since = info.ModTime()
 		if data, err := os.ReadFile("/var/run/reboot-required.pkgs"); err == nil {
 			reboot.Packages = uniqueFields(string(data))
 		}
 	}
 	reboot.Running = runningKernelRelease()
+	reboot.Boot = readAuditBootTime("/proc/stat")
 	matches, _ := filepath.Glob("/boot/vmlinuz-*")
 	for _, match := range matches {
 		release := strings.TrimPrefix(filepath.Base(match), "vmlinuz-")

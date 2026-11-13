@@ -188,3 +188,20 @@ func TestProbeCancelledByUserIgnoresTheDeadline(t *testing.T) {
 		t.Fatal("Ctrl-C cancels the probe")
 	}
 }
+
+// 금방 끝나는 수집에는 대기 줄을 그리지 않고, 오래 걸리면 그린 뒤 결과를 출력하기 전에 지운다.
+func TestStartPendingLineDrawsOnlyAfterTheDelayAndClears(t *testing.T) {
+	var quick strings.Builder
+	startPendingLine(&quick, "audit", false, time.Second)()
+	if quick.Len() != 0 {
+		t.Fatalf("quick = %q", quick.String())
+	}
+	var slow strings.Builder
+	stop := startPendingLine(&slow, "audit", false, 10*time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
+	stop()
+	text := slow.String()
+	if !strings.Contains(text, liveSpinnerFrames[0]) || !strings.Contains(text, "audit") || !strings.HasSuffix(text, "\r\033[K") || strings.Contains(text, "\n") {
+		t.Fatalf("slow = %q", text)
+	}
+}

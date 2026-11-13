@@ -98,8 +98,16 @@ check:
   reboot:
     flag: "再起動が必要: %s"
     none: "比較するインストール済みカーネルがありません"
-    kernel: "カーネル %s がインストール済みで、%s で実行中です"
+    kernel: "新カーネルは再起動後に有効: %s で実行中、%s を導入済み"
     ok: "最新のカーネル %s で実行中"
+    kernel_packages: "新カーネルとパッケージは再起動後に有効: %s で実行中、%s を導入済み、他 %d 件"
+    packages: "パッケージの更新は再起動後に有効: %s"
+    since: "再起動の要求: %s から (%d 日目)"
+    kernel_running: "(実行中)"
+    kernel_running_since: "(実行中、%s に起動)"
+    evidence_request: "要求"
+    evidence_kernels: "インストール済みのカーネル"
+    evidence_packages: "パッケージ"
   group:
     summary: "ホスト %d 台、点検 %d 台、結果なし %d 台 · FAIL ホスト %d 台、WARN ホスト %d 台"
     col:

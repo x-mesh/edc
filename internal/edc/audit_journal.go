@@ -9,6 +9,8 @@ import (
 	"io"
 	"maps"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,7 +77,7 @@ func parseAuditJournal(reader io.Reader) ([]auditJournalEntry, error) {
 }
 
 func collectAuditJournal(ctx context.Context, sources auditSources, facts *auditFacts) {
-	if sources.journal == nil || facts.LoginErr != nil {
+	if sources.journal == nil {
 		return
 	}
 	if !facts.Root {
@@ -83,17 +85,24 @@ func collectAuditJournal(ctx context.Context, sources auditSources, facts *audit
 		return
 	}
 	since := facts.Now.Add(-auditJournalWindow)
-	if facts.Logins.Since.After(since) {
+	if facts.LoginErr == nil && facts.Logins.Since.After(since) {
 		since = facts.Logins.Since
 	}
 	facts.Journal, facts.JournalLimited, facts.JournalErr = sources.journal(ctx, since)
 	if facts.JournalErr != nil {
 		return
 	}
+	facts.JournalRead = true
+	facts.JournalSince = auditJournalCoverage(facts.Journal, since)
 	accepted := auditSSHDAcceptedLogins(facts.Journal)
+	facts.Accepted = accepted
+	// wtmp를 읽지 못하면 짝지을 로그인이 없다. login.local_source만 이 journal을 쓴다.
+	if facts.LoginErr != nil {
+		return
+	}
 	if len(accepted) == 0 {
 		// Accepted가 없으면 범위 안의 원격 pty 로그인은 모두 sshd 기록이 없는 것이다. 범위는 journal이 실제로 가진 첫 기록부터다.
-		facts.AcceptedSince = auditJournalCoverage(facts.Journal, since)
+		facts.AcceptedSince = facts.JournalSince
 		facts.Joined = true
 		applyAuditJournalEnds(&facts.Logins, facts.Journal)
 		return
@@ -101,11 +110,21 @@ func collectAuditJournal(ctx context.Context, sources auditSources, facts *audit
 	facts.AcceptedSince = accepted[0].Time
 	consumed := map[int]bool{}
 	recorded, byPID := joinAuditLoginsByPID(&facts.Logins, accepted, auditSSHDOpenedEarlier(facts.Journal), facts.AcceptedSince, consumed)
-	byTime := 0
+	byTime, byParent := 0, 0
 	if byPID < recorded {
 		byTime = joinAuditLoginsByTime(&facts.Logins, accepted, facts.AcceptedSince, consumed)
 	}
-	if recorded > 0 && byPID+byTime == 0 {
+	if byPID+byTime < recorded {
+		byParent = joinAuditLoginsByParent(&facts.Logins, accepted, sources.file("/proc"), facts.AcceptedSince, consumed)
+	}
+	// 9.8부터는 wtmp에도 sshd의 PID가 남아 PID로 짝지어지므로, 연결로 짝짓기는 9.8 미만의 연결에만 쓴다(auditAccepted.Legacy).
+	// journal 범위 안에서 업그레이드했으면 두 버전의 연결이 섞여 있다.
+	byConnection := 0
+	if byPID+byTime+byParent < recorded {
+		byConnection = joinAuditLoginsByConnection(&facts.Logins, accepted, facts.AcceptedSince, consumed)
+	}
+	facts.JoinedByConnection = byConnection
+	if recorded > 0 && byPID+byTime+byParent+byConnection == 0 {
 		facts.Unjoinable = true
 		return
 	}
@@ -143,9 +162,13 @@ const auditJoinSkew = 2 * time.Second
 type auditAccepted struct {
 	PID                int
 	User, Host, Method string
-	Time               time.Time
+	// Port는 출발지 포트다. 줄에 없거나 숫자가 아니면 0이다.
+	Port int
+	Time time.Time
 	// Until은 이 접속이 끝난 시각이다. 같은 PID의 "session closed"나 그 PID의 다음 Accepted다. 0이면 범위 안에서 끝나지 않았다.
 	Until time.Time
+	// Legacy는 9.8 미만 sshd의 기록이다. 9.8부터는 접속마다 뜨는 sshd-session이 Accepted를 남긴다.
+	Legacy bool
 }
 
 // auditSSHDSessionClosed는 sshd 접속 하나가 끝날 때 PAM이 남기는 기록이다. UsePAM no면 없고, 그때는 같은 PID의 다음 Accepted로 끝을 정한다.
@@ -167,7 +190,13 @@ func auditSSHDAcceptedLogins(entries []auditJournalEntry) []auditAccepted {
 		if len(fields) < 6 || fields[0] != "Accepted" || fields[2] != "for" || fields[4] != "from" {
 			continue
 		}
-		accepted = append(accepted, auditAccepted{PID: entry.PID, User: fields[3], Host: fields[5], Method: fields[1], Time: entry.Time})
+		login := auditAccepted{PID: entry.PID, User: fields[3], Host: fields[5], Method: fields[1], Time: entry.Time, Legacy: entry.Identifier == "sshd"}
+		if len(fields) >= 8 && fields[6] == "port" {
+			if port, err := strconv.ParseUint(fields[7], 10, 16); err == nil {
+				login.Port = int(port)
+			}
+		}
+		accepted = append(accepted, login)
 	}
 	slices.SortStableFunc(accepted, func(a, b auditAccepted) int { return a.Time.Compare(b.Time) })
 	for index := range accepted {
@@ -305,6 +334,76 @@ func joinAuditLoginsByTime(records *auditLoginRecords, accepted []auditAccepted,
 		joined++
 	}
 	return joined
+}
+
+// auditParentDepth는 shell에서 sshd까지 올라갈 부모 수다. OpenSSH 9.6은 shell의 부모가 바로 Accepted를 남긴 sshd이고,
+// 9.8부터는 sshd-session 사이에 하나가 더 있다.
+const auditParentDepth = 4
+
+// joinAuditLoginsByParent는 9.8 미만에서 연결 하나에 터미널을 더 연 로그인(ControlMaster)을 짝짓는다. 그 터미널에는 새 Accepted가 없고
+// wtmp에는 shell의 PID가 남아 PID로도 시각으로도 짝지을 수 없다. 아직 열린 로그인이면 shell의 조상에 그 연결의 sshd가 있다.
+// 끝난 로그인은 shell PID가 재사용됐을 수 있어 보지 않는다. 사용자와 출발지가 같고 연결이 끝나지 않은 Accepted만 짝짓는다.
+func joinAuditLoginsByParent(records *auditLoginRecords, accepted []auditAccepted, procRoot string, since time.Time, consumed map[int]bool) int {
+	joined := 0
+	for index := range records.Sessions {
+		session := &records.Sessions[index]
+		if !auditRemotePTY(*session) || session.Start.Before(since) || session.SSHD != 0 || !session.End.IsZero() || session.PID <= 0 {
+			continue
+		}
+		pid := session.PID
+		for range auditParentDepth {
+			pid = auditParentPID(procRoot, pid)
+			if pid <= 1 {
+				break
+			}
+			number := slices.IndexFunc(accepted, func(login auditAccepted) bool {
+				return login.PID == pid && login.Until.IsZero() && login.User == session.User && auditSameSource(session.Host, login.Host) && !login.Time.After(session.Start.Add(auditJoinSkew))
+			})
+			if number >= 0 {
+				session.SSHD = pid
+				consumed[number] = true
+				joined++
+				break
+			}
+		}
+	}
+	return joined
+}
+
+// joinAuditLoginsByConnection은 9.8 미만에서 이미 닫힌, 연결 하나 위의 다른 터미널을 짝짓는다. shell이 끝나 부모를 따라갈 수 없다.
+// 같은 사용자와 출발지의 연결이 그 로그인이 시작할 때 열려 있었으면 그 연결에서 연 터미널로 본다. 어느 터미널인지는 모르므로
+// 세션의 끝은 붙이지 않는다(auditSSHDAmbiguous). okrr-intranet-1(OpenSSH 8.9)에서 Accepted 하나 위에 터미널이 셋 열렸다.
+func joinAuditLoginsByConnection(records *auditLoginRecords, accepted []auditAccepted, since time.Time, consumed map[int]bool) int {
+	joined := 0
+	for index := range records.Sessions {
+		session := &records.Sessions[index]
+		if !auditRemotePTY(*session) || session.Start.Before(since) || session.SSHD != 0 {
+			continue
+		}
+		number := slices.IndexFunc(accepted, func(login auditAccepted) bool {
+			return login.Legacy && login.User == session.User && auditSameSource(session.Host, login.Host) && !login.Time.After(session.Start.Add(auditJoinSkew)) &&
+				(login.Until.IsZero() || !session.Start.After(login.Until.Add(auditJoinSkew)))
+		})
+		if number >= 0 {
+			session.SSHD = auditSSHDAmbiguous
+			consumed[number] = true
+			joined++
+		}
+	}
+	return joined
+}
+
+// auditParentPID는 /proc/<pid>/stat의 부모 PID다. 읽지 못하면 0이다.
+func auditParentPID(procRoot string, pid int) int {
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0
+	}
+	stat, ok := parseLinuxProcessStat(pid, string(data))
+	if !ok {
+		return 0
+	}
+	return stat.PPID
 }
 
 // applyAuditJournalEnds는 로그아웃 레코드가 없는 wtmp 세션에 logind의 세션 끝을 채운다. 끝은 sshd가 끝난 "logged out" 시각이다.

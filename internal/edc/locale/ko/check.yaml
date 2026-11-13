@@ -98,8 +98,16 @@ check:
   reboot:
     flag: "재부팅 필요: %s"
     none: "비교할 설치 커널이 없습니다"
-    kernel: "커널 %s가 설치되어 있고 %s로 실행 중입니다"
+    kernel: "재부팅해야 새 커널이 적용됩니다: %s 실행 중, %s 설치됨"
     ok: "가장 새 커널 %s로 실행 중"
+    kernel_packages: "재부팅해야 새 커널과 패키지가 적용됩니다: %s 실행 중, %s 설치됨, 다른 패키지 %d개"
+    packages: "재부팅해야 패키지 업데이트가 적용됩니다: %s"
+    since: "재부팅 요청: %s부터 (%d일째)"
+    kernel_running: "(실행 중)"
+    kernel_running_since: "(실행 중, %s 부팅)"
+    evidence_request: "요청"
+    evidence_kernels: "설치된 커널"
+    evidence_packages: "패키지"
   group:
     summary: "호스트 %d개, 점검 %d개, 결과 없음 %d개 · FAIL 호스트 %d개, WARN 호스트 %d개"
     col:

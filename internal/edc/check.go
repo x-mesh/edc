@@ -139,6 +139,8 @@ type checkReboot struct {
 	Packages []string
 	Running  string
 	Kernels  []string
+	// Since는 /var/run/reboot-required가 생긴 시각이고, 그때부터 재부팅을 기다렸다. Boot는 마지막 부팅 시각이다.
+	Since, Boot time.Time
 }
 
 // checkSources는 점검이 읽는 원천이다. 테스트는 함수들을 가짜로 넣는다.
@@ -966,34 +968,93 @@ func checkFileHandles(facts checkFacts, policy checkPolicy) Result {
 	return issues.result(id, text, "edc info -v")
 }
 
-// checkRebootResult는 audit의 patch.reboot와 같은 기준이다. audit는 보안 점검에서, check는 지금 상태 점검에서 같은 사실을 본다.
+// checkRebootShown은 요약 줄에 적는 패키지 수다. 커널을 여러 번 올리면 수십 개가 쌓여 줄이 잘린다.
+const checkRebootShown = 3
+
+func init() { warnEvidenceProbes["check.reboot"] = true }
+
+// checkKernelPackage는 커널 패키지다. 이 패키지는 재부팅해야 새 커널이 돈다. 나머지는 라이브러리나 서비스라 재시작으로 끝날 수도 있다.
+func checkKernelPackage(name string) bool {
+	return strings.HasPrefix(name, "linux-") || name == "kernel" || strings.HasPrefix(name, "kernel-")
+}
+
+func checkShortList(items []string) string {
+	text := strings.Join(items[:min(len(items), checkRebootShown)], ", ")
+	if len(items) > checkRebootShown {
+		text += fmt.Sprintf(" (+%d)", len(items)-checkRebootShown)
+	}
+	return text
+}
+
+// checkRebootResult는 재부팅해야 적용되는 업데이트를 원인별로 알린다. 요약은 결과 줄에서 160 byte로 잘리므로 언제부터 기다렸는지는 근거에 둔다.
 func checkRebootResult(facts checkFacts) Result {
 	const id = "reboot"
 	reboot := facts.Reboot
 	if reboot.Err != nil {
 		return checkSkip(id, "/var/run/reboot-required", reboot.Err)
 	}
-	if reboot.Flag {
-		packages := "/var/run/reboot-required"
-		if len(reboot.Packages) > 0 {
-			packages = checkNames(reboot.Packages)
-		}
-		return checkResult(id, StatusWarn, T("check.reboot.flag", packages))
-	}
 	// 실행 중인 커널이 /boot에 없으면 직접 넣은 커널이나 container다. 설치된 커널과 비교할 기준이 없다.
-	if reboot.Running == "" || !slices.Contains(reboot.Kernels, reboot.Running) {
-		return checkResult(id, StatusPass, T("check.reboot.none"))
-	}
-	newest := reboot.Running
-	for _, release := range reboot.Kernels {
-		if compareKernelReleases(release, newest) > 0 {
-			newest = release
+	newest := ""
+	if reboot.Running != "" && slices.Contains(reboot.Kernels, reboot.Running) {
+		newest = reboot.Running
+		for _, release := range reboot.Kernels {
+			if compareKernelReleases(release, newest) > 0 {
+				newest = release
+			}
 		}
 	}
-	if newest != reboot.Running {
-		return checkResult(id, StatusWarn, T("check.reboot.kernel", newest, reboot.Running))
+	kernelPending := newest != "" && newest != reboot.Running
+	if !reboot.Flag && !kernelPending {
+		if newest == "" {
+			return checkResult(id, StatusPass, T("check.reboot.none"))
+		}
+		return checkResult(id, StatusPass, T("check.reboot.ok", reboot.Running))
 	}
-	return checkResult(id, StatusPass, T("check.reboot.ok", reboot.Running))
+	var others []string
+	for _, name := range reboot.Packages {
+		if !checkKernelPackage(name) {
+			others = append(others, name)
+		}
+	}
+	var summary string
+	switch {
+	case kernelPending && len(others) > 0:
+		summary = T("check.reboot.kernel_packages", reboot.Running, newest, len(others))
+	case kernelPending:
+		summary = T("check.reboot.kernel", reboot.Running, newest)
+	case len(others) > 0:
+		summary = T("check.reboot.packages", checkShortList(others))
+	case len(reboot.Packages) > 0:
+		summary = T("check.reboot.flag", checkShortList(reboot.Packages))
+	default:
+		summary = T("check.reboot.flag", "/var/run/reboot-required")
+	}
+	result := checkResult(id, StatusWarn, summary)
+	if reboot.Flag && !reboot.Since.IsZero() {
+		now := facts.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		days := int(now.Sub(reboot.Since) / (24 * time.Hour))
+		result.Evidence = append(result.Evidence, Evidence{Label: T("check.reboot.evidence_request"), Value: T("check.reboot.since", auditLoginTime(reboot.Since), days)})
+	}
+	if len(reboot.Kernels) > 0 {
+		kernels := slices.Clone(reboot.Kernels)
+		slices.SortFunc(kernels, func(a, b string) int { return compareKernelReleases(b, a) })
+		for index, release := range kernels {
+			switch {
+			case release == reboot.Running && !reboot.Boot.IsZero():
+				kernels[index] += "  " + T("check.reboot.kernel_running_since", auditLoginTime(reboot.Boot))
+			case release == reboot.Running:
+				kernels[index] += "  " + T("check.reboot.kernel_running")
+			}
+		}
+		result.Evidence = append(result.Evidence, Evidence{Label: T("check.reboot.evidence_kernels"), Value: strings.Join(kernels, "\n")})
+	}
+	if len(reboot.Packages) > 0 {
+		result.Evidence = append(result.Evidence, Evidence{Label: T("check.reboot.evidence_packages"), Value: strings.Join(reboot.Packages, "\n")})
+	}
+	return result
 }
 
 // checkThermal은 macOS의 thermal pressure다. heavy부터 CPU 속도를 크게 낮추고, trapping부터는 장치를 보호하려고 일을 멈춘다.

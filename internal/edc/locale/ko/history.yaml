@@ -131,7 +131,7 @@ history:
     from: "시작 시각 포함(RFC3339)"
     to: "종료 시각 제외(RFC3339)"
     limit: "최대 결과 수, 기본 200; 0은 전체"
-    json: "결과당 JSON 한 줄, stdout은 -"
+    json: "결과당 JSON 한 줄, stdout은 -나 값 생략"
     metric: "검색할 숫자 지표 이름"
     min: "최솟값 포함; --metric 필요"
     max: "최댓값 포함; --metric 필요"

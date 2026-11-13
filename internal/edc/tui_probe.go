@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -174,6 +175,41 @@ func (progress *probeProgress) snapshot() string {
 	progress.mu.Lock()
 	defer progress.mu.Unlock()
 	return progress.latest
+}
+
+// startPendingLine은 결과가 여럿인 명령이 원천을 모으는 동안 대기 줄 하나를 그린다. delay 안에 끝나면 아무것도 그리지 않는다.
+// bubbletea를 띄우지 않고 \r로 다시 그려 terminal 질의를 보내지 않는다. 돌려준 함수는 대기 줄을 지우고 그리기가 끝날 때까지 기다린다.
+func startPendingLine(writer io.Writer, name string, color bool, delay time.Duration) func() {
+	started := time.Now()
+	done, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-done:
+			return
+		case <-time.After(delay):
+		}
+		ticker := time.NewTicker(liveSpinnerFPS)
+		defer ticker.Stop()
+		for frame := 0; ; frame++ {
+			spinner := liveSpinnerFrames[frame%len(liveSpinnerFrames)]
+			if color {
+				spinner = richPaint(spinner, richMagenta, false)
+			}
+			elapsed := time.Since(started).Round(liveElapsedPrecision).String()
+			fmt.Fprint(writer, "\r\033[K"+strings.TrimSuffix(fmt.Sprintf(resultLineFormat, resultPendingStatus(spinner, color), name, elapsed), "\n"))
+			select {
+			case <-done:
+				fmt.Fprint(writer, "\r\033[K")
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
 }
 
 // runProbeLive는 probe 하나를 한 줄로 보여 준다. probeLiveDelay 안에 끝나면 화면 없이 결과만 출력한다.

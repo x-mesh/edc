@@ -51,6 +51,78 @@ func packDirectory(ctx context.Context, dir string, options packOptions) (string
 	} else if inside {
 		return "", errPackInside
 	}
+	label := viewSanitize(strings.TrimSuffix(dir, "/")) + "/"
+	return packWriteArchive(ctx, []packRoot{{path: dir, base: base}}, target, label, started, options)
+}
+
+// packRoot는 tar의 최상위 항목 하나다. path를 걸어 base 아래 이름으로 담는다.
+type packRoot struct {
+	path, base string
+}
+
+// packBundle은 -o와 함께 받은 여러 경로를 tar 하나로 묶는다. 각 경로의 base 이름이 최상위가 되고, 인자 순서대로 담는다.
+// 압축 파일도 풀지 않고 그대로 담는다. 임시 출력을 만들기 전에 모든 경로를 확인해, 하나라도 맞지 않으면 아무것도 쓰지 않는다.
+func packBundle(ctx context.Context, paths []string, options packOptions) (string, error) {
+	started := time.Now()
+	roots := make([]packRoot, 0, len(paths))
+	seen := map[string]string{}
+	for _, name := range paths {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		info, err := os.Lstat(name)
+		if err != nil {
+			return "", packBundleError{path: name, err: err}
+		}
+		absolute, err := filepath.Abs(name)
+		if err != nil {
+			return "", packBundleError{path: name, err: err}
+		}
+		if absolute == string(filepath.Separator) {
+			return "", packBundleError{path: name, err: errPackRoot}
+		}
+		base := filepath.Base(absolute)
+		// 같은 최상위 이름이 둘이면 풀 때 뒤의 것이 앞의 것을 덮거나 두 디렉터리가 섞인다.
+		if first, ok := seen[base]; ok {
+			return "", packSameNameError{name: base, first: first, second: name}
+		}
+		seen[base] = name
+		if info.IsDir() {
+			if inside, err := packInside(absolute, options.output); err != nil {
+				return "", packBundleError{path: name, err: err}
+			} else if inside {
+				return "", packBundleError{path: name, err: errPackInside}
+			}
+		}
+		roots = append(roots, packRoot{path: name, base: base})
+	}
+	label := T("pack.paths", len(paths))
+	options.report.line(T("pack.verbose.decision", label, T("pack.verbose.kind_bundle"), T("pack.verbose.action_pack")))
+	return packWriteArchive(ctx, roots, options.output, label, started, options)
+}
+
+// packBundleError는 묶을 경로 가운데 하나 때문에 실패한 경우다. 실패 줄에 출력 대신 그 경로를 적는다.
+type packBundleError struct {
+	path string
+	err  error
+}
+
+func (err packBundleError) Error() string { return err.path + ": " + err.err.Error() }
+
+func (err packBundleError) Unwrap() error { return err.err }
+
+// packSameNameError는 묶을 두 경로의 base 이름이 같은 경우다.
+type packSameNameError struct {
+	name, first, second string
+}
+
+func (err packSameNameError) Error() string {
+	return fmt.Sprintf("%s and %s have the same name in the archive: %s", err.first, err.second, err.name)
+}
+
+// packWriteArchive는 roots를 target에 .tar.gz나 .tar.zst로 쓴다. 옆에 만든 임시 파일에 다 쓰고 fsync한 뒤 링크로 옮기므로,
+// 실패하거나 취소되면 반쯤 쓴 출력이 남지 않고 그사이 생긴 같은 이름의 파일도 덮지 않는다.
+func packWriteArchive(ctx context.Context, roots []packRoot, target, label string, started time.Time, options packOptions) (string, error) {
 	if _, err := os.Lstat(target); err == nil {
 		return "", fmt.Errorf("%s: %w", target, errCodecExists)
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -62,8 +134,8 @@ func packDirectory(ctx context.Context, dir string, options packOptions) (string
 	}
 	written := &codecWriteCounter{writer: out}
 	var tally packTally
-	stop := options.report.track(viewSanitize(strings.TrimSuffix(dir, "/"))+"/", 0, &tally.read, &tally.files)
-	files, read, skipped, err := packWriteTar(ctx, dir, base, written, options, &tally)
+	stop := options.report.track(label, 0, &tally.read, &tally.files)
+	files, read, skipped, err := packWriteTar(ctx, roots, written, options, &tally)
 	stop()
 	if err == nil {
 		err = out.Sync()
@@ -80,7 +152,7 @@ func packDirectory(ctx context.Context, dir string, options packOptions) (string
 	if err != nil {
 		return "", err
 	}
-	line := T("pack.packed", viewSanitize(strings.TrimSuffix(dir, "/"))+"/", viewSanitize(target), files, formatSizeShort(uint64(read)), formatSizeShort(uint64(written.count)), packRatio(written.count, read), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
+	line := T("pack.packed", label, viewSanitize(target), files, formatSizeShort(uint64(read)), formatSizeShort(uint64(written.count)), packRatio(written.count, read), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
 	if skipped > 0 {
 		line += T("pack.skipped", skipped)
 	}
@@ -94,13 +166,14 @@ func packRatio(packed, plain int64) string {
 	return fmt.Sprintf("%.1f%%", float64(packed)*100/float64(plain))
 }
 
-// packWriteTar는 dir을 base 아래의 tar 항목으로 dst에 압축해 쓴다. 파일 수, 읽은 파일 바이트, 건너뛴 특수 파일 수를 돌려준다.
+// packWriteTar는 roots를 차례로 걸어 각자의 base 아래 tar 항목으로 dst에 압축해 쓴다. 최상위가 파일이나 symlink여도 같은
+// 규칙(symlink는 링크로, 특수 파일은 건너뜀)을 따른다. 파일 수, 읽은 파일 바이트, 건너뛴 특수 파일 수를 돌려준다.
 // packTally는 -v의 진행 줄이 읽는 수다. 진행 줄은 다른 goroutine이 그리므로 원자적으로 센다.
 type packTally struct {
 	read, files atomic.Int64
 }
 
-func packWriteTar(ctx context.Context, dir, base string, dst io.Writer, options packOptions, tally *packTally) (files int, read int64, skipped int, err error) {
+func packWriteTar(ctx context.Context, roots []packRoot, dst io.Writer, options packOptions, tally *packTally) (files int, read int64, skipped int, err error) {
 	var compressor io.WriteCloser
 	if options.useZstd {
 		compressor = newZstdWriter(dst, options.level)
@@ -109,7 +182,25 @@ func packWriteTar(ctx context.Context, dir, base string, dst io.Writer, options 
 	}
 	archive := tar.NewWriter(compressor)
 	buffer := make([]byte, codecBufferSize)
-	err = filepath.WalkDir(dir, func(name string, entry fs.DirEntry, walkErr error) error {
+	for _, root := range roots {
+		if err = packWalkRoot(ctx, root, archive, buffer, options, tally, &files, &read, &skipped); err != nil {
+			break
+		}
+	}
+	if err == nil {
+		err = archive.Close()
+	}
+	if closeErr := compressor.Close(); err == nil {
+		err = closeErr
+	}
+	return files, read, skipped, err
+}
+
+// packWalkRoot는 최상위 하나를 이름순으로 걸어 archive에 담는다. filepath.WalkDir는 최상위도 Lstat으로 보므로, 최상위
+// symlink는 따라가지 않고 링크로 담는다.
+func packWalkRoot(ctx context.Context, root packRoot, archive *tar.Writer, buffer []byte, options packOptions, tally *packTally, files *int, read *int64, skipped *int) error {
+	dir, base := root.path, root.base
+	return filepath.WalkDir(dir, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -144,12 +235,12 @@ func packWriteTar(ctx context.Context, dir, base string, dst io.Writer, options 
 				return err
 			}
 			header.Name = entryName
-			files++
+			*files++
 			tally.files.Add(1)
 			options.report.line("+ " + viewSanitize(entryName) + " -> " + viewSanitize(link))
 			return archive.WriteHeader(header)
 		case !info.Mode().IsRegular():
-			skipped++
+			*skipped++
 			options.report.line("- " + viewSanitize(entryName) + " (" + packSpecialText(info.Mode()) + ")")
 			return nil
 		}
@@ -171,21 +262,14 @@ func packWriteTar(ctx context.Context, dir, base string, dst io.Writer, options 
 		if err == nil && copied != header.Size {
 			err = fmt.Errorf("%s: %w", name, errCodecChanged)
 		}
-		files++
+		*files++
 		tally.files.Add(1)
-		read += copied
+		*read += copied
 		if err == nil {
 			options.report.line("+ " + viewSanitize(entryName) + "  " + formatSizeShort(uint64(copied)))
 		}
 		return err
 	})
-	if err == nil {
-		err = archive.Close()
-	}
-	if closeErr := compressor.Close(); err == nil {
-		err = closeErr
-	}
-	return files, read, skipped, err
 }
 
 // packExtractTar는 tar(압축했든 안 했든)를 푼다. 출력 옆에 만든 임시 디렉터리에 os.Root로 풀어서, symlink를 거쳐도 그 밖에는

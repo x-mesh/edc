@@ -108,9 +108,12 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	options.report = report
 	paths := set.Args()
+	// -o와 여러 경로는 묶음 하나를 만든다. 묶음은 늘 압축하는 쪽이라 -x와 맞지 않고, 여러 입력을 한꺼번에 지우는 --rm은
+	// 받지 않는다.
+	bundle := options.output != "" && len(paths) > 1
 	switch {
 	case *compress && *extract, options.list && (*compress || options.output != "" || options.remove),
-		len(paths) == 0, options.output != "" && len(paths) > 1:
+		len(paths) == 0, bundle && (*extract || options.remove):
 		fmt.Fprintln(stderr, T("cli.usage", packUsage))
 		return 2
 	case *compress:
@@ -122,12 +125,19 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if options.useZstd {
 		options.level = compressZstdLevel
 	}
+	if bundle {
+		return packRunBundle(ctx, paths, options)
+	}
 	failed := false
+	compressed := 0
 	for _, path := range paths {
 		if ctx.Err() != nil {
 			break
 		}
-		line, err := packPath(ctx, path, options)
+		line, packed, err := packPath(ctx, path, options)
+		if packed {
+			compressed++
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				break
@@ -144,9 +154,36 @@ func packRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, T("pack.cancelled"))
 		return 4
 	}
+	// 셸이 *를 펼치면 경로마다 따로 압축된다. 묶음 하나를 바랐을 사용자에게 -o로 묶는 방법을 알린다.
+	if len(paths) > 1 && compressed > 0 {
+		hint := "edc pack -o NAME.tar.gz <paths>"
+		if options.useZstd {
+			hint = "edc pack --zstd -o NAME.tar.zst <paths>"
+		}
+		fmt.Fprintln(stderr, T("pack.hint_bundle", hint))
+	}
 	if failed {
 		return 1
 	}
+	return 0
+}
+
+func packRunBundle(ctx context.Context, paths []string, options packOptions) int {
+	line, err := packBundle(ctx, paths, options)
+	if ctx.Err() != nil {
+		fmt.Fprintln(options.stderr, T("pack.cancelled"))
+		return 4
+	}
+	if err != nil {
+		name := options.output
+		var input packBundleError
+		if errors.As(err, &input) {
+			name = input.path
+		}
+		fmt.Fprintln(options.stderr, T("compress.failed", "pack", viewSanitize(name), packErrorText(err)))
+		return 1
+	}
+	fmt.Fprintln(options.stderr, line)
 	return 0
 }
 
@@ -154,6 +191,10 @@ func packErrorText(err error) string {
 	var kept packKeptError
 	if errors.As(err, &kept) {
 		return T("pack.error.kept", kept.skipped)
+	}
+	var same packSameNameError
+	if errors.As(err, &same) {
+		return T("pack.error.same_name", viewSanitize(same.first), viewSanitize(same.second), viewSanitize(same.name))
 	}
 	var unsafe packUnsafeError
 	if errors.As(err, &unsafe) {
@@ -188,31 +229,32 @@ func packErrorText(err error) string {
 	return viewSanitize(codecErrorText(err))
 }
 
-// packPath는 입력 하나를 처리하고 결과 줄을 돌려준다. 이름이 아니라 내용으로 형식을 본다. 자동이면 압축 파일과 tar는 풀고
+// packPath는 입력 하나를 처리하고 결과 줄과 압축했는지를 돌려준다. 이름이 아니라 내용으로 형식을 본다. 자동이면 압축 파일과 tar는 풀고
 // 나머지는 압축한다. -z는 무엇이든 압축하고, -x는 무엇이든 풀되 압축 형식이 아니면 실패한다.
-func packPath(ctx context.Context, path string, options packOptions) (string, error) {
+func packPath(ctx context.Context, path string, options packOptions) (string, bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if info.IsDir() {
 		switch {
 		case options.list:
-			return "", errPackListDir
+			return "", false, errPackListDir
 		case options.mode == packExtract:
-			return "", errPackDirectory
+			return "", false, errPackDirectory
 		case options.remove:
-			return "", errPackRemoveDir
+			return "", false, errPackRemoveDir
 		}
 		options.report.line(T("pack.verbose.decision", viewSanitize(path), T("pack.verbose.kind_directory"), T("pack.verbose.action_pack")))
-		return packDirectory(ctx, path, options)
+		line, err := packDirectory(ctx, path, options)
+		return line, err == nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return "", errCodecNotRegular
+		return "", false, errCodecNotRegular
 	}
 	kind, err := packDetect(path)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	action := "pack.verbose.action_extract"
 	switch {
@@ -228,15 +270,18 @@ func packPath(ctx context.Context, path string, options packOptions) (string, er
 	options.report.line(T("pack.verbose.decision", viewSanitize(path), packKindText(kind), decided))
 	switch {
 	case options.list:
-		return "", packList(path, kind, options.stdout)
+		return "", false, packList(path, kind, options.stdout)
 	case options.mode == packCompress || options.mode == packAuto && !kind.archive():
-		return packCompressFile(ctx, path, info.Size(), options)
+		line, err := packCompressFile(ctx, path, info.Size(), options)
+		return line, err == nil, err
 	case !kind.archive():
-		return "", errPackUnknown
+		return "", false, errPackUnknown
 	case kind.tar:
-		return packExtractTar(ctx, path, kind, options)
+		line, err := packExtractTar(ctx, path, kind, options)
+		return line, false, err
 	}
-	return packDecompressFile(ctx, path, info.Size(), options)
+	line, err := packDecompressFile(ctx, path, info.Size(), options)
+	return line, false, err
 }
 
 // packDetect는 파일 앞부분으로 형식을 본다. gzip이나 zstd면 앞 블록을 풀어 tar인지도 본다. tar의 첫 블록 257번째 바이트에는

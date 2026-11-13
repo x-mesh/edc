@@ -6,6 +6,8 @@ pack:
   list_single: "%s: %s, 파일 하나, 풀면 %s"
   list_summary: "파일 %d개, 디렉터리 %d개, %s"
   cancelled: "edc pack: 취소했습니다. 반쯤 쓴 출력은 지웠습니다"
+  paths: "경로 %d개"
+  hint_bundle: "묶음 하나로 만들려면: %s"
   error:
     unknown: "gzip, zstd, tar 데이터가 아닙니다"
     directory_extract: "디렉터리는 압축 파일이 아닙니다. 묶으려면 -x 없이 edc pack을 실행합니다"
@@ -17,6 +19,7 @@ pack:
     exists_named: "%s이(가) 이미 있습니다. 지우거나 -o를 줍니다"
     kept: "항목 %d개를 건너뛰어 압축 파일을 남겼습니다. 필요 없으면 직접 지웁니다"
     no_replace: "이 파일 시스템은 이미 있는 디렉터리를 덮지 않고 옮기는 기능이 없어 여기에는 풀지 않습니다. -o로 다른 파일 시스템의 디렉터리를 줍니다"
+    same_name: "%s와(과) %s은(는) 묶음 안의 이름이 같습니다: %s. 하나의 이름을 바꾸거나 따로 묶습니다"
     unsafe_path: "압축 파일에 출력 디렉터리 밖의 항목이 있습니다: %s"
     unsafe_link: "압축 파일에 출력 디렉터리 밖을 가리키는 링크가 있습니다: %s"
   verbose:

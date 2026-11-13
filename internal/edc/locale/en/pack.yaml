@@ -6,6 +6,8 @@ pack:
   list_single: "%s: %s, one file, %s unpacked"
   list_summary: "%d files, %d directories, %s"
   cancelled: "edc pack: cancelled; edc deleted the partial output"
+  paths: "%d paths"
+  hint_bundle: "to make one archive: %s"
   error:
     unknown: "not gzip, zstd, or tar data"
     directory_extract: "a directory is not an archive; run edc pack without -x to pack it"
@@ -17,6 +19,7 @@ pack:
     exists_named: "%s exists; delete it or give -o"
     kept: "%d entries were skipped, so edc kept the archive; delete it yourself"
     no_replace: "this file system cannot move a directory without replacing one that exists, so edc does not extract here; give -o a directory on another file system"
+    same_name: "%s and %s have the same name in the archive: %s; rename one or pack them apart"
     unsafe_path: "the archive has an entry outside the output directory: %s"
     unsafe_link: "the archive has a link that points outside the output directory: %s"
   verbose:

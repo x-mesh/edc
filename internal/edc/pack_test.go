@@ -718,3 +718,125 @@ func TestPackDetectsASignedChecksum(t *testing.T) {
 		t.Fatal("a wrong checksum is not")
 	}
 }
+
+// -o와 여러 경로는 tar 하나가 된다. 각 경로의 base 이름이 최상위이고 인자 순서대로 담는다. 압축 파일은 풀지 않고, 최상위
+// symlink는 링크로 담고, 최상위 FIFO는 건너뛴다. 묶음은 edc pack으로 묶음 이름의 디렉터리에 다시 풀린다.
+func TestPackBundlesSeveralPaths(t *testing.T) {
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "a.txt"), "a")
+	packWrite(t, filepath.Join(dir, "logs", "x.log"), "x")
+	packWrite(t, filepath.Join(dir, "logs", "sub", "y"), "y")
+	var gz bytes.Buffer
+	writer := gzip.NewWriter(&gz)
+	writer.Write([]byte("old"))
+	writer.Close()
+	packWrite(t, filepath.Join(dir, "other", "app.log.gz"), gz.String())
+	if err := os.Symlink("a.txt", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := packTest(t, dir, "-o", "all.tar.gz", "logs/", "a.txt", "other/app.log.gz", "link", "pipe")
+	if code != 0 || !strings.Contains(stderr, "5 paths → all.tar.gz  5 files") || !strings.Contains(stderr, "1 special files skipped") || strings.Contains(stderr, "one archive") {
+		t.Fatalf("bundle: %d %s", code, stderr)
+	}
+	want := []string{"logs/", "logs/sub/", "logs/sub/y", "logs/x.log", "a.txt", "app.log.gz", "link"}
+	if got := packTarNames(t, filepath.Join(dir, "all.tar.gz")); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("entries %v, want %v", got, want)
+	}
+	if packExists(filepath.Join(dir, "other", "app.log")) || len(packLeftovers(t, dir)) != 0 {
+		t.Fatal("the bundle extracted an input or left a temporary file")
+	}
+	out := t.TempDir()
+	if err := os.Rename(filepath.Join(dir, "all.tar.gz"), filepath.Join(out, "all.tar.gz")); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := packTest(t, out, "all.tar.gz"); code != 0 {
+		t.Fatalf("unpack: %d %s", code, stderr)
+	}
+	if packRead(t, filepath.Join(out, "all", "logs", "sub", "y")) != "y" || packRead(t, filepath.Join(out, "all", "app.log.gz")) != gz.String() || packRead(t, filepath.Join(out, "all", "link")) != "a" {
+		t.Fatal("the round trip lost content")
+	}
+	if link, err := os.Readlink(filepath.Join(out, "all", "link")); err != nil || link != "a.txt" {
+		t.Fatalf("link %q %v", link, err)
+	}
+	if code, _, stderr := packTest(t, dir, "--zstd", "-o", "all.tar.zst", "a.txt", "logs"); code != 0 {
+		t.Fatalf("zstd bundle: %d %s", code, stderr)
+	}
+	if kind, err := packDetect(filepath.Join(dir, "all.tar.zst")); err != nil || kind.format != "zstd" || !kind.tar {
+		t.Fatalf("zstd kind %+v %v", kind, err)
+	}
+}
+
+// 묶을 수 없는 경로가 하나라도 있으면 출력을 만들지 않는다. 같은 base 이름, 묶는 디렉터리 안의 출력, 없는 경로, 이미 있는
+// 출력이 그렇다. -x와 --rm은 묶음과 함께 쓰지 못한다.
+func TestPackBundleRefusesBeforeItWrites(t *testing.T) {
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "x", "a"), "1")
+	packWrite(t, filepath.Join(dir, "y", "a"), "2")
+	packWrite(t, filepath.Join(dir, "b.txt"), "b")
+	cases := []struct {
+		args    []string
+		code    int
+		message string
+	}{
+		{[]string{"-o", "out.tar.gz", "x/a", "y/a"}, 1, "x/a and y/a have the same name in the archive: a"},
+		{[]string{"-o", "out.tar.gz", "b.txt", "./b.txt"}, 1, "same name in the archive: b.txt"},
+		{[]string{"-o", "x/out.tar.gz", "b.txt", "x"}, 1, "edc pack: x: the output is inside the directory"},
+		{[]string{"-o", "out.tar.gz", "b.txt", "missing"}, 1, "edc pack: missing:"},
+		{[]string{"-o", "b.txt", "x", "y"}, 1, "edc pack: b.txt: b.txt exists"},
+		{[]string{"-x", "-o", "out.tar.gz", "x", "y"}, 2, "usage"},
+		{[]string{"--rm", "-o", "out.tar.gz", "x", "y"}, 2, "usage"},
+	}
+	for _, test := range cases {
+		code, _, stderr := packTest(t, dir, test.args...)
+		if code != test.code || !strings.Contains(strings.ToLower(stderr), strings.ToLower(test.message)) {
+			t.Errorf("%v: %d %s", test.args, code, stderr)
+		}
+		if packExists(filepath.Join(dir, "out.tar.gz")) || packExists(filepath.Join(dir, "x", "out.tar.gz")) || len(packLeftovers(t, dir)) != 0 || len(packLeftovers(t, filepath.Join(dir, "x"))) != 0 {
+			t.Fatalf("%v wrote an output", test.args)
+		}
+	}
+}
+
+// -o 없이 여러 경로를 각각 압축하면 묶는 방법을 한 줄 알린다. 모두 풀었거나, 경로가 하나거나, -l이면 알리지 않는다.
+func TestPackHintsAtOneArchive(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
+		packWrite(t, filepath.Join(dir, name), name)
+	}
+	if code, _, stderr := packTest(t, dir, "--rm", "a.txt", "b.txt"); code != 0 || !strings.Contains(stderr, "to make one archive: edc pack -o NAME.tar.gz <paths>") {
+		t.Fatalf("gzip hint: %d %s", code, stderr)
+	}
+	if code, _, stderr := packTest(t, dir, "--zstd", "c.txt", "d.txt"); code != 0 || !strings.Contains(stderr, "edc pack --zstd -o NAME.tar.zst <paths>") {
+		t.Fatalf("zstd hint: %d %s", code, stderr)
+	}
+	for _, args := range [][]string{{"a.txt.gz", "b.txt.gz"}, {"-l", "c.txt.zst", "d.txt.zst"}, {"-z", "c.txt"}} {
+		if code, _, stderr := packTest(t, dir, args...); code != 0 || strings.Contains(stderr, "one archive") {
+			t.Fatalf("%v: %d %s", args, code, stderr)
+		}
+	}
+}
+
+// 묶는 도중 취소하면 4로 끝나고 임시 출력을 지운다.
+func TestPackBundleCancelDeletesThePartialOutput(t *testing.T) {
+	defer func() { packReadHook = nil }()
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "big", "a"), strings.Repeat("x", 4<<20))
+	packWrite(t, filepath.Join(dir, "b.txt"), "b")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reads := 0
+	packReadHook = func() {
+		if reads++; reads == 2 {
+			cancel()
+		}
+	}
+	if code, _, stderr := packTestContext(t, ctx, dir, "-o", "all.tar.gz", "b.txt", "big"); code != 4 || reads < 2 || !strings.Contains(stderr, "cancelled") {
+		t.Fatalf("cancel: %d reads %d %s", code, reads, stderr)
+	}
+	if left := packLeftovers(t, dir); len(left) != 0 || packExists(filepath.Join(dir, "all.tar.gz")) {
+		t.Fatalf("left %v", left)
+	}
+}

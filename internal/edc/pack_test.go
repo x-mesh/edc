@@ -806,7 +806,7 @@ func TestPackBundleRefusesBeforeItWrites(t *testing.T) {
 func TestPackHintsAtOneArchive(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
-		packWrite(t, filepath.Join(dir, name), strings.Repeat(name, 200))
+		packWrite(t, filepath.Join(dir, name), name)
 	}
 	if code, _, stderr := packTest(t, dir, "--rm", "a.txt", "b.txt"); code != 0 || !strings.Contains(stderr, "to make one archive: edc pack -o NAME.tar.gz <paths>") {
 		t.Fatalf("gzip hint: %d %s", code, stderr)

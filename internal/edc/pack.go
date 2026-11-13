@@ -500,8 +500,11 @@ func packCompressFile(ctx context.Context, path string, size int64, options pack
 	return line, nil
 }
 
-// packNotSmaller는 압축한 결과가 원본보다 작지 않은지 본다. 빈 파일은 비교하지 않는다.
-func packNotSmaller(read, written int64) bool { return read > 0 && written >= read }
+// packSmallInput보다 작은 파일은 gzip 머리말(약 20바이트)만으로도 커지므로 비교하지 않고, --rm은 전처럼 지운다.
+const packSmallInput = 1024
+
+// packNotSmaller는 압축한 결과가 원본보다 작지 않은지 본다.
+func packNotSmaller(read, written int64) bool { return read >= packSmallInput && written >= read }
 
 // packDecompressFile은 tar가 아닌 압축 파일 하나를 푼다. 이름이 압축 확장자로 끝나면 떼고, 아니면 .out을 붙인다.
 func packDecompressFile(ctx context.Context, path string, size int64, format string, options packOptions) (string, error) {

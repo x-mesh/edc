@@ -109,10 +109,10 @@ func packRulesBelow(rules []packRule, prefix []string) []gitignore.Pattern {
 	return kept
 }
 
-// packNameRule은 go-git처럼 끝의 /를 떼고도 /가 남지 않는 규칙, 또는 **/로 시작해 어느 깊이에나 맞는 규칙이다.
+// packNameRule은 go-git처럼 끝의 /를 떼고도 /가 남지 않는 규칙, 또는 **/나 /**/로 시작해 어느 깊이에나 맞는 규칙이다.
 func packNameRule(line string) bool {
 	body := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(line), "!"), "/")
-	return !strings.Contains(body, "/") || strings.HasPrefix(body, "**/")
+	return !strings.Contains(body, "/") || strings.HasPrefix(strings.TrimPrefix(body, "/"), "**/")
 }
 
 // enter는 디렉터리 하나에 들어갈 때 그 .gitignore를 읽는다. 그 규칙은 디렉터리 안의 항목에만 쓰인다.

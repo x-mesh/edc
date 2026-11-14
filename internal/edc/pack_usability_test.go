@@ -269,3 +269,19 @@ func TestPackGitignoreKeepsNameRulesInsideANamedIgnoredDirectory(t *testing.T) {
 		t.Fatalf("names %v", names)
 	}
 }
+
+// /**/cache/처럼 /로 시작해 어느 깊이에나 맞는 규칙도 지정한 디렉터리 안에 다시 쓴다. 바깥 cache는 묶고 안의 cache는 뺀다.
+func TestPackGitignoreKeepsAnchoredDeepRulesInsideANamedIgnoredDirectory(t *testing.T) {
+	repo := t.TempDir()
+	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "/**/cache/\n")
+	packWrite(t, filepath.Join(repo, "cache", "ok.txt"), "ok")
+	packWrite(t, filepath.Join(repo, "cache", "cache", "token"), "secret")
+	if code, _, stderr := packTest(t, repo, "--gitignore", "cache"); code != 0 {
+		t.Fatalf("cache: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, repo, "cache.tar.gz")
+	if !packHasName(names, "cache/ok.txt") || packHasName(names, "cache/cache/token") {
+		t.Fatalf("names %v", names)
+	}
+}

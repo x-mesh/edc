@@ -334,3 +334,17 @@ func TestPackZipRemoveKeepsAZipChangedAfterExtraction(t *testing.T) {
 		t.Fatal("the extracted file is not from the bytes that were read")
 	}
 }
+
+// --rm이어도 zip이 아닌 .zip은 지울 때 비교할 hash를 만들려고 끝까지 읽기 전에 실패한다.
+func TestPackZipRemoveRejectsABrokenZipBeforeItReadsAll(t *testing.T) {
+	defer func() { packReadHook = nil }()
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "bad.zip"), "PK\x03\x04"+strings.Repeat("x", 4<<20))
+	_, _, plain := packTest(t, dir, "bad.zip")
+	reads := 0
+	packReadHook = func() { reads++ }
+	code, _, stderr := packTest(t, dir, "--rm", "bad.zip")
+	if code != 1 || stderr != plain || reads > 8 || !packExists(filepath.Join(dir, "bad.zip")) {
+		t.Fatalf("--rm: %d reads %d %q, without --rm %q", code, reads, stderr, plain)
+	}
+}

@@ -2,6 +2,7 @@ package edc
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -334,6 +335,10 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 		// zip은 offset으로 읽어 TeeReader를 거치지 않는다. --rm이 지우기 전에 비교할 hash는 푸는 데 쓰는 바이트보다 먼저 만든다.
 		// 다 푼 뒤에 만들면 그사이 제자리에서 바뀐 zip이 기준이 되어, 푼 결과와 다른 zip을 지운다.
 		if options.remove {
+			// 끝의 목록만 읽어 zip이 아닌 큰 입력을 다 읽기 전에 실패한다.
+			if _, err := zip.NewReader(io.NewSectionReader(input, 0, info.Size()), info.Size()); err != nil && !errors.Is(err, zip.ErrInsecurePath) {
+				return "", err
+			}
 			if _, err := io.Copy(io.Discard, packContextReader{ctx: ctx, reader: counted}); err != nil {
 				return "", err
 			}

@@ -251,3 +251,21 @@ func TestPackGitignoreKeepsANamedIgnoredDirectory(t *testing.T) {
 		t.Fatalf("names %v", names)
 	}
 }
+
+// 지정한 디렉터리에 맞는 위의 규칙이 이름만 보는 규칙이면, 그 디렉터리 안의 항목에도 그대로 쓴다. *.env가 dist.env를 무시해도
+// dist.env/private.env는 빠진다.
+func TestPackGitignoreKeepsNameRulesInsideANamedIgnoredDirectory(t *testing.T) {
+	repo := t.TempDir()
+	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "*.env\n**/*.key\n/dist.env\n")
+	packWrite(t, filepath.Join(repo, "dist.env", "ok.txt"), "ok")
+	packWrite(t, filepath.Join(repo, "dist.env", "private.env"), "secret")
+	packWrite(t, filepath.Join(repo, "dist.env", "deep", "a.key"), "key")
+	if code, _, stderr := packTest(t, repo, "--gitignore", "dist.env"); code != 0 {
+		t.Fatalf("dist.env: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, repo, "dist.env.tar.gz")
+	if !packHasName(names, "dist.env/ok.txt") || packHasName(names, "dist.env/private.env") || packHasName(names, "dist.env/deep/a.key") {
+		t.Fatalf("names %v", names)
+	}
+}

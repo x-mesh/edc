@@ -63,17 +63,56 @@ func newPackFilter(dir string, options packOptions) (*packFilter, error) {
 	if absolute == base {
 		ancestors = nil
 	}
+	var rules []packRule
 	for index := len(ancestors) - 1; index >= 0; index-- {
-		if err := grepReadIgnore(ancestors[index], grepIgnoreDomain(base, ancestors[index]), &filter.patterns); err != nil {
+		domain := grepIgnoreDomain(base, ancestors[index])
+		lines, err := grepIgnoreLines(ancestors[index])
+		if err != nil {
 			return nil, err
+		}
+		for _, line := range lines {
+			pattern := gitignore.ParsePattern(line, domain)
+			rules = append(rules, packRule{line: line, pattern: pattern})
+			filter.patterns = append(filter.patterns, pattern)
 		}
 	}
 	// 위의 규칙이 지정한 디렉터리 자체를 무시하면(dist/를 무시하는 저장소에서 edc pack --gitignore dist), 그 아래가 모두
-	// 빠져 빈 묶음이 된다. 직접 준 경로는 묶는다는 약속을 지키려고 위의 규칙을 쓰지 않고 그 디렉터리 안의 .gitignore만 읽는다.
+	// 빠져 빈 묶음이 된다. 직접 준 경로는 묶는다는 약속을 지키려고 그 디렉터리나 그 위에 맞는 규칙을 고친다.
 	if len(filter.patterns) > 0 && gitignore.NewMatcher(filter.patterns).Match(filter.prefix, true) {
-		filter.patterns = nil
+		filter.patterns = packRulesBelow(rules, filter.prefix)
 	}
 	return filter, nil
+}
+
+type packRule struct {
+	line    string
+	pattern gitignore.Pattern
+}
+
+// packRulesBelow는 지정한 디렉터리나 그 위에 맞는 규칙을 안의 항목에만 쓰이게 바꾼다. 이름만 보는 규칙(*.env, dist/, **/x)은
+// 안의 항목에도 맞을 수 있으므로 버리지 않고 그 디렉터리를 기준으로 다시 읽는다. 그러면 *.env가 dist.env를 무시해도
+// dist.env/private.env는 빠진다. 경로를 정한 규칙(/dist, a/dist)은 그 디렉터리나 그 위만 가리키므로 버린다.
+func packRulesBelow(rules []packRule, prefix []string) []gitignore.Pattern {
+	var kept []gitignore.Pattern
+	for _, rule := range rules {
+		above := false
+		for depth := 1; depth <= len(prefix) && !above; depth++ {
+			above = rule.pattern.Match(prefix[:depth], true) == gitignore.Exclude
+		}
+		switch {
+		case !above:
+			kept = append(kept, rule.pattern)
+		case packNameRule(rule.line):
+			kept = append(kept, gitignore.ParsePattern(rule.line, prefix))
+		}
+	}
+	return kept
+}
+
+// packNameRule은 go-git처럼 끝의 /를 떼고도 /가 남지 않는 규칙, 또는 **/나 /**/로 시작해 어느 깊이에나 맞는 규칙이다.
+func packNameRule(line string) bool {
+	body := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(line), "!"), "/")
+	return !strings.Contains(body, "/") || strings.HasPrefix(strings.TrimPrefix(body, "/"), "**/")
 }
 
 // enter는 디렉터리 하나에 들어갈 때 그 .gitignore를 읽는다. 그 규칙은 디렉터리 안의 항목에만 쓰인다.

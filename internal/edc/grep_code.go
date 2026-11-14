@@ -220,25 +220,35 @@ func grepIgnoreDomain(base, dir string) []string {
 }
 
 func grepReadIgnore(dir string, domain []string, patterns *[]gitignore.Pattern) error {
+	lines, err := grepIgnoreLines(dir)
+	for _, line := range lines {
+		*patterns = append(*patterns, gitignore.ParsePattern(line, domain))
+	}
+	return err
+}
+
+// grepIgnoreLines는 dir/.gitignore의 규칙 줄이다. 빈 줄과 주석은 뺀다.
+func grepIgnoreLines(dir string) ([]string, error) {
 	path := filepath.Join(dir, ".gitignore")
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	defer f.Close()
+	var lines []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		*patterns = append(*patterns, gitignore.ParsePattern(line, domain))
+		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return nil
+	return lines, nil
 }

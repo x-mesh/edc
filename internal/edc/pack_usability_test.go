@@ -115,8 +115,10 @@ func TestPackLevel(t *testing.T) {
 	if fast == nil || small == nil || small.Size() >= fast.Size() {
 		t.Fatalf("level 9 is not smaller than level 1: %v %v", fast, small)
 	}
-	if code, _, stderr := packTest(t, dir, "--level", "10", "a.log"); code != 2 || !strings.Contains(stderr, "--level takes 1 to 9: 10") {
-		t.Fatalf("level 10: %d %s", code, stderr)
+	for _, level := range []string{"0", "10"} {
+		if code, _, stderr := packTest(t, dir, "--level", level, "a.log"); code != 2 || !strings.Contains(stderr, "--level takes 1 to 9: "+level) {
+			t.Fatalf("level %s: %d %s", level, code, stderr)
+		}
 	}
 	for _, args := range [][]string{{"--level", "3", "-x", "fast.gz"}, {"--level", "3", "-l", "fast.gz"}} {
 		if code, _, _ := packTest(t, dir, args...); code != 2 {
@@ -236,15 +238,50 @@ func TestPackExtractExistsDoesNotSuggestForce(t *testing.T) {
 func TestPackGitignoreKeepsANamedIgnoredDirectory(t *testing.T) {
 	repo := t.TempDir()
 	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
-	packWrite(t, filepath.Join(repo, ".gitignore"), "dist/\n")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "dist/\n*.env\n")
 	packWrite(t, filepath.Join(repo, "dist", "app.js"), "js")
+	packWrite(t, filepath.Join(repo, "dist", ".env"), "secret")
 	packWrite(t, filepath.Join(repo, "dist", ".gitignore"), "*.map\n")
 	packWrite(t, filepath.Join(repo, "dist", "app.js.map"), "map")
 	if code, _, stderr := packTest(t, repo, "--gitignore", "dist"); code != 0 {
 		t.Fatalf("dist: %d %s", code, stderr)
 	}
 	names := packArchiveNames(t, repo, "dist.tar.gz")
-	if !packHasName(names, "dist/app.js") || packHasName(names, "dist/app.js.map") {
+	if !packHasName(names, "dist/app.js") || packHasName(names, "dist/app.js.map") || packHasName(names, "dist/.env") {
+		t.Fatalf("names %v", names)
+	}
+}
+
+// 지정한 디렉터리에 맞는 위의 규칙이 이름만 보는 규칙이면, 그 디렉터리 안의 항목에도 그대로 쓴다. *.env가 dist.env를 무시해도
+// dist.env/private.env는 빠진다.
+func TestPackGitignoreKeepsNameRulesInsideANamedIgnoredDirectory(t *testing.T) {
+	repo := t.TempDir()
+	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "*.env\n**/*.key\n/dist.env\n")
+	packWrite(t, filepath.Join(repo, "dist.env", "ok.txt"), "ok")
+	packWrite(t, filepath.Join(repo, "dist.env", "private.env"), "secret")
+	packWrite(t, filepath.Join(repo, "dist.env", "deep", "a.key"), "key")
+	if code, _, stderr := packTest(t, repo, "--gitignore", "dist.env"); code != 0 {
+		t.Fatalf("dist.env: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, repo, "dist.env.tar.gz")
+	if !packHasName(names, "dist.env/ok.txt") || packHasName(names, "dist.env/private.env") || packHasName(names, "dist.env/deep/a.key") {
+		t.Fatalf("names %v", names)
+	}
+}
+
+// /**/cache/처럼 /로 시작해 어느 깊이에나 맞는 규칙도 지정한 디렉터리 안에 다시 쓴다. 바깥 cache는 묶고 안의 cache는 뺀다.
+func TestPackGitignoreKeepsAnchoredDeepRulesInsideANamedIgnoredDirectory(t *testing.T) {
+	repo := t.TempDir()
+	packWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	packWrite(t, filepath.Join(repo, ".gitignore"), "/**/cache/\n")
+	packWrite(t, filepath.Join(repo, "cache", "ok.txt"), "ok")
+	packWrite(t, filepath.Join(repo, "cache", "cache", "token"), "secret")
+	if code, _, stderr := packTest(t, repo, "--gitignore", "cache"); code != 0 {
+		t.Fatalf("cache: %d %s", code, stderr)
+	}
+	names := packArchiveNames(t, repo, "cache.tar.gz")
+	if !packHasName(names, "cache/ok.txt") || packHasName(names, "cache/cache/token") {
 		t.Fatalf("names %v", names)
 	}
 }

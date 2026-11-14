@@ -297,3 +297,54 @@ func TestPackZipRemoveStopsOnCancelWhileItRereads(t *testing.T) {
 		t.Fatalf("leftovers %v", left)
 	}
 }
+
+// --rm은 푸는 데 쓴 zip 바이트와 지울 때의 zip이 같을 때만 지운다. 다 푼 뒤에 같은 크기와 수정 시각으로 제자리에서 바뀐 zip은 남긴다.
+func TestPackZipRemoveKeepsAZipChangedAfterExtraction(t *testing.T) {
+	defer func() { packZipExtractedHook = nil }()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.zip")
+	packZip(t, path, packZipItem{name: "a/one.txt", body: "first", stored: true})
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packZipExtractedHook = func() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := bytes.Replace(data, []byte("first"), []byte("again"), 1)
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteAt(changed, 0); err != nil {
+			t.Fatal(err)
+		}
+		file.Close()
+		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, _, stderr := packTest(t, dir, "--rm", "a.zip")
+	if code == 0 || !packExists(path) {
+		t.Fatalf("a zip changed after extraction is deleted: %d %s", code, stderr)
+	}
+	if packRead(t, filepath.Join(dir, "a", "one.txt")) != "first" {
+		t.Fatal("the extracted file is not from the bytes that were read")
+	}
+}
+
+// --rm이어도 zip이 아닌 .zip은 지울 때 비교할 hash를 만들려고 끝까지 읽기 전에 실패한다.
+func TestPackZipRemoveRejectsABrokenZipBeforeItReadsAll(t *testing.T) {
+	defer func() { packReadHook = nil }()
+	dir := t.TempDir()
+	packWrite(t, filepath.Join(dir, "bad.zip"), "PK\x03\x04"+strings.Repeat("x", 4<<20))
+	_, _, plain := packTest(t, dir, "bad.zip")
+	reads := 0
+	packReadHook = func() { reads++ }
+	code, _, stderr := packTest(t, dir, "--rm", "bad.zip")
+	if code != 1 || stderr != plain || reads > 8 || !packExists(filepath.Join(dir, "bad.zip")) {
+		t.Fatalf("--rm: %d reads %d %q, without --rm %q", code, reads, stderr, plain)
+	}
+}

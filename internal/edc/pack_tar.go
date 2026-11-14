@@ -2,6 +2,7 @@ package edc
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -123,8 +124,16 @@ func (err packSameNameError) Error() string {
 // packWriteArchive는 roots를 target에 .tar.gz나 .tar.zst로 쓴다. 옆에 만든 임시 파일에 다 쓰고 fsync한 뒤 링크로 옮기므로,
 // 실패하거나 취소되면 반쯤 쓴 출력이 남지 않고 그사이 생긴 같은 이름의 파일도 덮지 않는다.
 func packWriteArchive(ctx context.Context, roots []packRoot, target, label string, started time.Time, options packOptions) (string, error) {
-	if _, err := os.Lstat(target); err == nil {
-		return "", fmt.Errorf("%s: %w", target, errCodecExists)
+	if existing, err := os.Lstat(target); err == nil {
+		if !options.force || existing.IsDir() {
+			return "", fmt.Errorf("%s: %w", target, errCodecExists)
+		}
+		// 묶을 파일 가운데 하나를 출력으로 바꾸면 그 파일의 원래 내용을 잃는다.
+		for _, root := range roots {
+			if input, err := os.Lstat(root.path); err == nil && os.SameFile(input, existing) {
+				return "", fmt.Errorf("%s: %w", target, errCodecSameFile)
+			}
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
@@ -143,7 +152,9 @@ func packWriteArchive(ctx context.Context, roots []packRoot, target, label strin
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
+	if err == nil && options.force {
+		err = os.Rename(temp, target)
+	} else if err == nil {
 		if err = os.Link(temp, target); errors.Is(err, fs.ErrExist) {
 			err = fmt.Errorf("%s: %w", target, errCodecExists)
 		}
@@ -155,6 +166,9 @@ func packWriteArchive(ctx context.Context, roots []packRoot, target, label strin
 	line := T("pack.packed", label, viewSanitize(target), files, formatSizeShort(uint64(read)), formatSizeShort(uint64(written.count)), packRatio(written.count, read), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
 	if skipped > 0 {
 		line += T("pack.skipped", skipped)
+	}
+	if tally.excluded > 0 {
+		line += T("pack.excluded", tally.excluded)
 	}
 	return line, nil
 }
@@ -171,6 +185,8 @@ func packRatio(packed, plain int64) string {
 // packTally는 -v의 진행 줄이 읽는 수다. 진행 줄은 다른 goroutine이 그리므로 원자적으로 센다.
 type packTally struct {
 	read, files atomic.Int64
+	// excluded는 --exclude와 --gitignore로 뺀 항목 수다. 걷는 goroutine만 쓴다.
+	excluded int
 }
 
 func packWriteTar(ctx context.Context, roots []packRoot, dst io.Writer, options packOptions, tally *packTally) (files int, read int64, skipped int, err error) {
@@ -200,6 +216,10 @@ func packWriteTar(ctx context.Context, roots []packRoot, dst io.Writer, options 
 // symlink는 따라가지 않고 링크로 담는다.
 func packWalkRoot(ctx context.Context, root packRoot, archive *tar.Writer, buffer []byte, options packOptions, tally *packTally, files *int, read *int64, skipped *int) error {
 	dir, base := root.path, root.base
+	filter, err := newPackFilter(dir, options)
+	if err != nil {
+		return err
+	}
 	return filepath.WalkDir(dir, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -212,12 +232,28 @@ func packWalkRoot(ctx context.Context, root packRoot, archive *tar.Writer, buffe
 			return err
 		}
 		entryName := path.Join(base, filepath.ToSlash(relative))
+		var parts []string
+		if relative != "." {
+			parts = strings.Split(filepath.ToSlash(relative), "/")
+		}
+		if filter.skip(parts, entry.IsDir()) {
+			tally.excluded++
+			if entry.IsDir() {
+				options.report.line("- " + viewSanitize(entryName) + "/ (" + T("pack.verbose.excluded") + ")")
+				return filepath.SkipDir
+			}
+			options.report.line("- " + viewSanitize(entryName) + " (" + T("pack.verbose.excluded") + ")")
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		switch {
 		case info.IsDir():
+			if err := filter.enter(name, parts); err != nil {
+				return err
+			}
 			header, err := tar.FileInfoHeader(info, "")
 			if err != nil {
 				return err
@@ -292,8 +328,26 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	stop := options.report.track(viewSanitize(archivePath), info.Size(), &progress, nil)
 	defer stop()
 	var stream io.Reader = packContextReader{ctx: ctx, reader: counted}
-	if kind.format != "" {
-		reader, err := codecOpenStream(stream)
+	var zipped *packZipStream
+	switch kind.format {
+	case "":
+	case packFormatZip:
+		// zip은 offset으로 읽어 TeeReader를 거치지 않는다. --rm이 지우기 전에 비교할 hash는 푸는 데 쓰는 바이트보다 먼저 만든다.
+		// 다 푼 뒤에 만들면 그사이 제자리에서 바뀐 zip이 기준이 되어, 푼 결과와 다른 zip을 지운다.
+		if options.remove {
+			// 끝의 목록만 읽어 zip이 아닌 큰 입력을 다 읽기 전에 실패한다.
+			if _, err := zip.NewReader(io.NewSectionReader(input, 0, info.Size()), info.Size()); err != nil && !errors.Is(err, zip.ErrInsecurePath) {
+				return "", err
+			}
+			if _, err := io.Copy(io.Discard, packContextReader{ctx: ctx, reader: counted}); err != nil {
+				return "", err
+			}
+		}
+		zipped = newPackZipStream(ctx, input, info.Size(), &progress)
+		defer zipped.Close()
+		stream = packContextReader{ctx: ctx, reader: zipped}
+	default:
+		reader, err := packOpenStream(stream, kind.format)
 		if err != nil {
 			return "", err
 		}
@@ -329,10 +383,21 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 	if _, err := io.Copy(io.Discard, stream); err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(io.Discard, counted); err != nil {
-		return "", err
+	if zipped != nil {
+		counts.skipped += int(zipped.skipped.Load())
+		if packZipExtractedHook != nil {
+			packZipExtractedHook()
+		}
+	}
+	if zipped == nil {
+		if _, err := io.Copy(io.Discard, packContextReader{ctx: ctx, reader: counted}); err != nil {
+			return "", err
+		}
 	}
 	final, err := packPlace(temp, archivePath, options.output, counts.crossTop)
+	if errors.Is(err, errCodecExists) {
+		return "", packDirExistsError{err: err}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -349,12 +414,28 @@ func packExtractTar(ctx context.Context, archivePath string, kind packKind, opti
 			return "", err
 		}
 	}
-	line := T("pack.unpacked", viewSanitize(archivePath), viewSanitize(final)+"/", counts.files, counts.dirs, formatSizeShort(uint64(counted.count)), formatSizeShort(uint64(counts.bytes)), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
+	packed := counted.count
+	// zip은 offset으로 읽어 counted를 거치지 않으므로 파일 크기를 쓴다.
+	if zipped != nil {
+		packed = info.Size()
+	}
+	line := T("pack.unpacked", viewSanitize(archivePath), viewSanitize(final)+"/", counts.files, counts.dirs, formatSizeShort(uint64(packed)), formatSizeShort(uint64(counts.bytes)), fmt.Sprintf("%.1fs", time.Since(started).Seconds()))
 	if counts.skipped > 0 {
 		line += T("pack.skipped", counts.skipped)
 	}
 	return line, nil
 }
+
+// packZipExtractedHook은 시험만 쓴다. zip을 다 푼 뒤 옮기기 전에 불려, 푼 뒤에 zip이 제자리에서 바뀌는 경우를 만든다.
+var packZipExtractedHook func()
+
+// packDirExistsError는 풀어 놓을 디렉터리 이름이 이미 있는 경우다. --force는 디렉터리를 바꾸지 않고, 최상위가 하나인 tar에
+// -o를 주면 그 안에 한 단계 더 들어가므로 다른 이름을 권하지 않는다.
+type packDirExistsError struct{ err error }
+
+func (err packDirExistsError) Error() string { return err.err.Error() }
+
+func (err packDirExistsError) Unwrap() error { return err.err }
 
 type packUntarCounts struct {
 	files, dirs, skipped int
@@ -657,15 +738,26 @@ func packList(archivePath string, kind packKind, stdout io.Writer) error {
 	}
 	defer input.Close()
 	var stream io.Reader = input
-	if kind.format != "" {
-		reader, err := codecOpenStream(input)
+	switch kind.format {
+	case "":
+	case packFormatZip:
+		info, err := input.Stat()
+		if err != nil {
+			return err
+		}
+		var read atomic.Int64
+		zipped := newPackZipStream(context.Background(), input, info.Size(), &read)
+		defer zipped.Close()
+		stream = zipped
+	default:
+		reader, err := packOpenStream(input, kind.format)
 		if err != nil {
 			return err
 		}
 		defer reader.Close()
 		stream = reader
 	}
-	if !kind.tar {
+	if !kind.many() {
 		size, err := io.Copy(io.Discard, stream)
 		if err != nil {
 			return err

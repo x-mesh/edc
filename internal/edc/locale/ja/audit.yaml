@@ -108,7 +108,7 @@ audit:
     sensitive_ok: "重要ファイル %d 個の権限は正常"
     sensitive_bad: "他のユーザーに開いている重要ファイル %d 個"
     path_ok: "他のユーザーが書き込める PATH ディレクトリなし (%d 個確認)"
-    path_bad: "他のユーザーが変更できる PATH の項目: %s"
+    path_bad: "他のユーザーやカレントディレクトリによって変わり得る PATH の項目: %s"
   login:
     peer: "相手の process"
     mismatch_bad: "%d 個のアカウントの lastlog が wtmp か sshd journal と食い違います (wtmp は %s から)"

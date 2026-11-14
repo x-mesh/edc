@@ -108,7 +108,7 @@ audit:
     sensitive_ok: "%d sensitive files have safe modes"
     sensitive_bad: "%d sensitive files are open to other users"
     path_ok: "no PATH directory is writable by other users (%d checked)"
-    path_bad: "PATH entries that other users can change: %s"
+    path_bad: "PATH entries that other users or the current directory can change: %s"
   login:
     peer: "peer process"
     mismatch_bad: "%d accounts have a lastlog login that disagrees with wtmp or the sshd journal (wtmp from %s)"

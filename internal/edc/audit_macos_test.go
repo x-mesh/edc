@@ -301,8 +301,12 @@ func TestDarwinFirewallJudgesPastQualifiedAnchorRules(t *testing.T) {
 	if firewall.PFUnknown {
 		t.Fatal("조건이 붙은 anchor 규칙 때문에 pf를 판정하지 않았다")
 	}
-	if result := auditFirewallResult(auditFacts{Firewall: firewall}); result.Status != StatusWarn || result.Summary != T("audit.net.firewall_mac_open") {
+	result := auditFirewallResult(auditFacts{Firewall: firewall})
+	if result.Status != StatusWarn || result.Summary != T("audit.net.firewall_mac_open") {
 		t.Fatalf("got %s %q", result.Status, result.Summary)
+	}
+	if result.Next != "sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on" {
+		t.Fatalf("열린 방화벽의 next가 방화벽을 켜지 않는다: %q", result.Next)
 	}
 	sockets := []listenSocket{{Proto: "tcp", Address: "*", Port: 5900, Process: "launchd"}}
 	if result := auditExposure(auditFacts{Listen: sockets, Firewall: firewall}); result.Status != StatusFail {

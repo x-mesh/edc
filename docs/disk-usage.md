@@ -384,27 +384,34 @@ The time limit is 60 seconds by default, and all candidates and sections share i
 
 ## Pack and unpack with one command
 
-`edc pack` compresses or extracts a file or a directory. It reads the first bytes, not the name, to choose the direction. gzip, zstd, and tar data are extracted. Other files are compressed to `.gz`, and a directory becomes a `.tar.gz`. Add `--zstd` for `.zst` and `.tar.zst`.
+`edc pack` compresses or extracts a file or a directory. It reads the first bytes, not the name, to choose the direction. gzip, zstd, xz, bzip2, and tar data are extracted, and a `.zip` file is extracted too. Other files are compressed to `.gz`, and a directory becomes a `.tar.gz`. Add `--zstd` for `.zst` and `.tar.zst`.
 
 ```bash
 edc pack app.log          # app.log.gz
 edc pack app.log.gz       # app.log
 edc pack logs/            # logs.tar.gz
 edc pack logs.tar.gz      # logs/
+edc pack site.zip         # site/
 edc pack -x backup.bin    # extract, whatever the name is
 edc pack -z app.log.gz    # compress again: app.log.gz.gz
 edc pack -l logs.tar.gz   # list the files
 edc pack -v logs/         # show the decision, each entry, and the progress
 edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, app/
+edc pack --gitignore --exclude '*.log' project/  # leave out ignored files, .git, and logs
 ```
 
 `-v` writes one line with what edc found and what it does, for example `app.log.gz: gzip, one file → extract`. With `-o` and several paths, the line is `3 paths: one archive → pack`. For a tar, it writes one line for each entry: `+` for an entry that it packs, `x` for an entry that it extracts, and `-` with the reason for an entry that it skips. In a terminal, a last line shows the bytes that edc read, the percent of the input, and the speed. edc rewrites this line and deletes it at the end. In a pipe, edc does not write this line.
 
-- `-z` always compresses, and `-x` always extracts. `-x` fails when the data is not gzip, zstd, or tar. Use them when the content decides the wrong way, for example to compress a plain `.tar`.
-- An extracted file loses `.gz` or `.zst` from its name. Another name gets `.out`, so `backup.bin` becomes `backup.bin.out`. Give `-o` to choose the name.
+- `-z` always compresses, and `-x` always extracts. `-x` fails when the data is not gzip, zstd, xz, bzip2, zip, or tar. Use them when the content decides the wrong way, for example to compress a plain `.tar`.
+- An extracted file loses `.gz`, `.zst`, `.xz`, or `.bz2` from its name. Another name gets `.out`, so `backup.bin` becomes `backup.bin.out`. Give `-o` to choose the name.
 - A tar with one top-level directory extracts to that directory. A tar with several entries extracts to a directory named after the archive, so `many.tgz` becomes `many/`. If a link in the top-level directory points outside it, edc also uses the archive name, so that the link points inside the result. With `-o`, the entries go into that directory.
-- edc extracts into a temporary directory beside the output, and moves it into place at the end. If edc fails or you press Ctrl-C, it deletes the temporary directory and exits with code 1 or 4. edc does not overwrite a file or a directory that exists. Some file systems, for example some NFS and SMB mounts, cannot move a directory without replacing an empty one that exists. On them, edc does not extract and asks you to give `-o` a directory on another file system.
+- edc extracts into a temporary directory beside the output, and moves it into place at the end. If edc fails or you press Ctrl-C, it deletes the temporary directory and exits with code 1 or 4. edc does not overwrite a file or a directory that exists. If an output file exists, the error suggests a free name for `-o`, for example `d-1.tar.gz`. Some file systems, for example some NFS and SMB mounts, cannot move a directory without replacing an empty one that exists. On them, edc does not extract and asks you to give `-o` a directory on another file system.
+- `--force` replaces an output file that exists, for example `app.log.gz` or `logs.tar.gz`. It does not replace the input itself, and it never replaces a directory, so an extracted directory stays as it is.
 - edc refuses an archive with an entry or a link that points outside the output directory. This includes an absolute path, `..`, and a symlink chain such as `d/a -> ..` with `b -> d/a/..`. edc drops setuid and setgid. As root, edc keeps the owner.
+- edc extracts zip data only when the name ends in `.zip`. Documents such as `.docx`, `.xlsx`, and `.jar` are zip data too. Without `-x` or `-z`, edc does not extract or compress them, and it exits with code 1. A zip extracts like a tar, with the same checks for names and links.
+- edc skips the `__MACOSX/` entries of a zip and counts them with the skipped entries. Zip entries lose group and other write permission, because many zip tools store `0666`. edc does not read an encrypted zip entry, or an entry with a method other than store and deflate.
+- edc does not compress 7z, rar, or lz4 data again, because that data does not get smaller. Give `-z` to compress it anyway.
+- If a compressed file of 1 KB or more is not smaller than the input, the result line says so. The data is then likely compressed already, for example a JPEG or a video. Without `-z`, `--rm` keeps the input in this case, and edc exits with code 0. A smaller file always gets larger from the gzip header, so edc does not compare it, and `--rm` deletes it.
 - macOS `tar` adds `._name` entries for extended attributes. edc skips them and counts them with the skipped special files. A GNU sparse file extracts with its holes written as zeros, so it uses its full size on disk.
 - Without `-o`, edc handles each path on its own. Thus `edc pack *` writes one `.gz` for each file, and edc prints the command that makes one archive.
 - With `-o` and two or more paths, edc packs all of them into one `.tar.gz`, or `.tar.zst` with `--zstd`. Each path becomes a top-level entry with its base name, for example `/var/app` becomes `app/`. edc keeps the order of the paths. When edc extracts the result, it uses the archive name, so `all.tar.gz` becomes `all/`.
@@ -412,8 +419,12 @@ edc pack -o all.tar.gz app.log conf/ /var/app   # one archive: app.log, conf/, a
 - edc refuses two paths with the same base name, and an output inside a directory of the list. In these cases, edc writes no output. `-x` and `--rm` do not work with `-o` and two or more paths.
 - If you ran `edc pack *` before, the directory holds the files and their `.gz` copies. Then `edc pack -o NAME.tar.gz *` packs both.
 - A packed directory keeps symlinks as links. edc skips sockets, devices, and FIFOs and counts them. A file that edc cannot read stops the pack.
+- `--exclude PATTERN` leaves out the paths inside a packed directory that match the pattern. The pattern uses the `.gitignore` syntax, so `node_modules` matches at every depth and `/build` matches only at the top. Give `--exclude` again for more patterns.
+- `--gitignore` leaves out what the `.gitignore` files ignore, and it leaves out `.git`. If the directory is in a git work tree, edc also reads the `.gitignore` files above it, up to the top of the work tree. edc does not read `.git/info/exclude` or the global ignore file.
+- A path that you name on the command line is always packed. The result line counts the entries that edc left out, and `-v` shows each one.
 - A file goes through the same steps as `edc compress` and `edc decompress`: the temporary file, the sync, `--rm`, and the kept modification time. `--rm` deletes an input file only. It does not delete a directory. If edc skipped an entry of an archive, `--rm` keeps the archive and exits with code 1.
-- Use `edc compress` and `edc decompress` for stdin, stdout, `-l N`, and `-j N`. `edc alias` adds `ep` for `edc pack`.
+- `--level N` sets the compression level from 1 to 9. The default is 6 for gzip and 3 for zstd. A higher level makes a smaller file and takes more time. `-l` lists an archive in `edc pack`, so the level has a long name.
+- Use `edc compress` and `edc decompress` for stdin, stdout, and `-j N`. `edc alias` adds `ep` for `edc pack`.
 
 ## Compress and decompress files
 

@@ -313,7 +313,7 @@ func auditDarwinFirewallResult(facts auditFacts) Result {
 	default:
 		result = auditResult(id, StatusWarn, T("audit.net.firewall_mac_open"))
 		result.Warnings = []string{T("audit.net.cloud_note")}
-		result.Next = "/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate"
+		result.Next = "sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on"
 	}
 	result.Evidence = []Evidence{{Label: T("audit.evidence.values"), Value: firewall.Detail}}
 	return result

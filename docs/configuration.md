@@ -127,6 +127,9 @@ parallel = 0
 [defaults.du]
 workers = 4
 
+[defaults.clean]
+projects = ["/home/me/work"]
+
 [defaults.history]
 limit = 200
 
@@ -160,7 +163,7 @@ kill_after = "5s"
 history_limit = 20
 ```
 
-Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths must be absolute. Empty path values disable that default.
+Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths and the `defaults.clean.projects` roots must be absolute. Empty path values disable that default.
 
 The setup wizard recommends automatic files for `edc log`.
 

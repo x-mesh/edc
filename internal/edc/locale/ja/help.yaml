@@ -344,7 +344,7 @@ command:
       progress: "段階・対象・経過時間をstderrへ表示、--progress=falseで無効"
       workers: "サイズ測定ごとに並列で読むディレクトリ数"
       timeout: "制限時間、過ぎると残りは未測定と表示"
-      project: "ビルドフォルダを探すルート、複数指定可"
+      project: "ビルドフォルダを探すルート、複数指定可、既定値 defaults.clean.projects"
       group: "edc remote グループの各ホストで clean を実行"
       inventory: "--group のインベントリファイル"
       verbose: "すべての候補、より多くのグループ、理由、整理コマンドを表示"

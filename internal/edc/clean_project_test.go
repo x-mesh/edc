@@ -868,3 +868,52 @@ func TestCleanProjectSkipsARootThatStopsAnswering(t *testing.T) {
 		t.Fatalf("root = %+v items = %v", got, section.Items)
 	}
 }
+
+// --project를 주지 않으면 defaults.clean.projects의 폴더를 찾는다. --project를 주면 설정 대신 그 값만 쓴다.
+func TestCleanProjectsComeFromConfigWithoutTheFlag(t *testing.T) {
+	previous := activeConfig
+	defer func() { activeConfig = previous }()
+	home := cleanTestHome(t)
+	configured, given := filepath.Join(home, "work"), filepath.Join(home, "other")
+	for _, dir := range []string{configured, given} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activeConfig.Defaults.Clean.Projects = []string{configured}
+	roots := func(args ...string) []string {
+		path := filepath.Join(t.TempDir(), "out.json")
+		if code := runCleanWith(append(args, "--json", path), "test", cleanRunDeps(t, home), true, nil, &bytes.Buffer{}); code != 0 {
+			t.Fatalf("%v: exit code = %d", args, code)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report struct {
+			Results []struct {
+				Metrics struct {
+					Project struct {
+						Roots []struct {
+							Path string `json:"path"`
+						} `json:"roots"`
+					} `json:"project_build_dirs"`
+				} `json:"metrics"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(data, &report); err != nil {
+			t.Fatal(err)
+		}
+		var paths []string
+		for _, root := range report.Results[0].Metrics.Project.Roots {
+			paths = append(paths, root.Path)
+		}
+		return paths
+	}
+	if got := roots(); len(got) != 1 || got[0] != configured {
+		t.Fatalf("roots from config = %v", got)
+	}
+	if got := roots("--project", given); len(got) != 1 || got[0] != given {
+		t.Fatalf("roots with --project = %v", got)
+	}
+}

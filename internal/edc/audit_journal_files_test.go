@@ -13,6 +13,7 @@ func testJournalHeader(state byte, entries uint64, tail time.Time) []byte {
 	header := make([]byte, 256)
 	copy(header, auditJournalSignature)
 	header[auditJournalHeaderState] = state
+	binary.LittleEndian.PutUint64(header[auditJournalHeaderHeaderSize:], uint64(len(header)))
 	binary.LittleEndian.PutUint64(header[auditJournalHeaderEntries:], entries)
 	if !tail.IsZero() {
 		binary.LittleEndian.PutUint64(header[auditJournalHeaderTailRealtime:], uint64(tail.UnixMicro()))
@@ -24,8 +25,6 @@ func testJournalHeader(state byte, entries uint64, tail time.Time) []byte {
 func TestAuditJournalArchivedBefore(t *testing.T) {
 	since := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	old, recent := since.Add(-time.Hour), since.Add(time.Hour)
-	wrongSignature := testJournalHeader(auditJournalStateArchived, 10, old)
-	copy(wrongSignature, "XXXXXXXX")
 	for _, test := range []struct {
 		name   string
 		header []byte
@@ -38,10 +37,38 @@ func TestAuditJournalArchivedBefore(t *testing.T) {
 		{"offline old", testJournalHeader(0, 10, old), false},
 		{"no entries", testJournalHeader(auditJournalStateArchived, 0, old), false},
 		{"no tail time", testJournalHeader(auditJournalStateArchived, 10, time.Time{}), false},
-		{"wrong signature", wrongSignature, false},
-		{"short", testJournalHeader(auditJournalStateArchived, 10, old)[:auditJournalHeaderSize-1], false},
 	} {
 		if got := auditJournalArchivedBefore(test.header, since); got != test.want {
+			t.Errorf("%s = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+// journalctl의 기본 탐색이 건너뛰는 header다. --file로 넘기면 journalctl 전체가 실패한다.
+func TestAuditJournalHeaderValid(t *testing.T) {
+	valid := func() []byte { return testJournalHeader(auditJournalStateArchived, 10, time.Now()) }
+	edit := func(change func([]byte)) []byte { header := valid(); change(header); return header }
+	put := func(offset int, value uint64) []byte {
+		return edit(func(header []byte) { binary.LittleEndian.PutUint64(header[offset:], value) })
+	}
+	for _, test := range []struct {
+		name   string
+		header []byte
+		size   int64
+		want   bool
+	}{
+		{"valid", valid(), 256, true},
+		{"arena inside the file", put(auditJournalHeaderArenaSize, 64), 320, true},
+		{"short", valid()[:auditJournalHeaderSize-1], 256, false},
+		{"wrong signature", edit(func(header []byte) { copy(header, "XXXXXXXX") }), 256, false},
+		{"unknown state", edit(func(header []byte) { header[auditJournalHeaderState] = auditJournalStateMax }), 256, false},
+		{"header size too small", put(auditJournalHeaderHeaderSize, auditJournalHeaderSize-8), 256, false},
+		{"truncated", put(auditJournalHeaderArenaSize, 64), 300, false},
+		{"arena overflow", put(auditJournalHeaderArenaSize, ^uint64(0)), 256, false},
+		{"tail object past the arena", put(auditJournalHeaderTailObject, 264), 256, false},
+		{"unaligned offset", put(104, 7), 256, false},
+	} {
+		if got := auditJournalHeaderValid(test.header, test.size); got != test.want {
 			t.Errorf("%s = %v, want %v", test.name, got, test.want)
 		}
 	}
@@ -86,6 +113,7 @@ func TestAuditJournalFiles(t *testing.T) {
 		"system.journal":              testJournalHeader(1, 10, since.Add(-time.Hour)),
 		"system@b-1.journal~":         old,
 		"broken.journal":              []byte("short"),
+		"zero.journal":                make([]byte, 4096),
 		"system@a-1.journal.download": old,
 	}
 	for name, data := range files {
@@ -100,7 +128,7 @@ func TestAuditJournalFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		filepath.Join(dir, "broken.journal"), filepath.Join(dir, "system.journal"), filepath.Join(dir, "system@a-2.journal"),
+		filepath.Join(dir, "system.journal"), filepath.Join(dir, "system@a-2.journal"),
 		filepath.Join(dir, "system@b-1.journal~"), filepath.Join(runtime, "system.journal"),
 	}
 	got := auditJournalFiles([]string{dir, filepath.Join(dir, "missing"), runtime}, since)

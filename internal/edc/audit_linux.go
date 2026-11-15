@@ -115,7 +115,12 @@ func readHostAuditJournal(ctx context.Context, since time.Time) ([]auditJournalE
 	if err == nil && slices.Equal(auditJournalFiles(dirs, since), files) {
 		return entries, limited, nil
 	}
-	return readHostAuditJournalFiles(ctx, since, nil)
+	entries, limited, fullErr := readHostAuditJournalFiles(ctx, since, nil)
+	if fullErr != nil && err != nil {
+		// 전체를 다시 읽은 까닭이 SKIP 사유에 남아야 느려진 원인을 찾을 수 있다.
+		return nil, false, fmt.Errorf("%w (after reading the selected journal files failed: %v)", fullErr, err)
+	}
+	return entries, limited, fullErr
 }
 
 // readHostAuditJournalFiles는 logind와 sshd를 따로 동시에 읽는다. 한 번에 읽으면 journalctl이 두 원천을 섞어 정렬해 바쁜 호스트에서 audit의 1초를 넘긴다.

@@ -210,7 +210,7 @@ The cache stage still took roughly 13–14 seconds and the project stage roughly
 
 ### Project build folders
 
-`--project DIR` names a root to search. Repeat the option for more roots. Without `--project`, edc searches the roots in `defaults.clean.projects`. If that list is empty, edc does not search, and `project_build_dirs` has the status `no_project_root`. This state is normal. An explicit `--project` replaces the configured roots for that run.
+`--project DIR` names a root to search. Repeat the option for more roots. Without `--project`, edc searches the roots in `defaults.clean.projects`. If that list is empty, edc does not search, and `project_build_dirs` has the status `no_project_root`. This state is normal. An explicit `--project` replaces the configured roots for that run. `--group` does not use them, because each host searches only its own folders.
 
 ```toml
 [defaults.clean]

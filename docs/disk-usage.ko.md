@@ -205,7 +205,7 @@ macOS 호스트 한 대에서 `clean --project ~/work -w 10 --progress --json re
 
 ### 프로젝트 빌드 폴더
 
-`--project DIR`은 찾을 루트를 지정합니다. 루트를 더 지정하려면 옵션을 반복합니다. `--project`가 없으면 `defaults.clean.projects`에 적은 루트를 찾습니다. 이 목록도 비어 있으면 찾지 않고 `project_build_dirs`의 상태는 `no_project_root`입니다. 이 상태는 정상입니다. `--project`를 직접 주면 그 실행에서는 설정한 루트 대신 그 값만 씁니다.
+`--project DIR`은 찾을 루트를 지정합니다. 루트를 더 지정하려면 옵션을 반복합니다. `--project`가 없으면 `defaults.clean.projects`에 적은 루트를 찾습니다. 이 목록도 비어 있으면 찾지 않고 `project_build_dirs`의 상태는 `no_project_root`입니다. 이 상태는 정상입니다. `--project`를 직접 주면 그 실행에서는 설정한 루트 대신 그 값만 씁니다. `--group`은 각 호스트가 자기 폴더만 찾으므로 이 설정을 쓰지 않습니다.
 
 ```toml
 [defaults.clean]

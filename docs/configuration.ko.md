@@ -93,6 +93,20 @@ EDC_LANG=ja edc where
 
 terminal에서 `edc setup`을 실행하면 file을 만들거나 수정하는 wizard가 열립니다. section별로 설정하고 Enter로 기존 값을 유지하며, optional 값은 `!clear`로 제거합니다. 전체 config를 미리 보여 준 뒤 확인을 받아 mode `0600`으로 atomic 저장합니다. config directory는 mode `0700`이며 취소하면 exit code `4`입니다.
 
+terminal 없이 값 하나만 바꾸려면 `defaults` 아래의 `section.field` 또는 `lang`을 키로 줍니다. 값을 주지 않으면 현재 값을 출력하고, 설정이 없으면 exit code `1`로 끝납니다.
+
+```sh
+edc setup clean.projects ~/work ~/src     # 목록 바꾸기
+edc setup clean.projects --add ~/oss      # 목록에 추가
+edc setup clean.projects --remove ~/oss   # 목록에서 제거
+edc setup clean.projects --clear          # 키 삭제
+edc setup clean.projects                  # 값 출력
+edc setup du.workers 8
+edc setup top.interval 2s
+```
+
+값은 wizard와 같은 방식으로 검증하고 저장합니다. 지금 file이 잘못되었으면 file을 바꾸지 않고 멈춥니다. 경로를 따옴표 없이 쓰면 셸이 `~`를 절대 경로로 바꿉니다. 저장한 file에는 주석이 남지 않습니다.
+
 아래 TOML 예시는 Linux와 macOS에 공통으로 적용됩니다.
 
 ```toml

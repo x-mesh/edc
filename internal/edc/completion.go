@@ -316,7 +316,7 @@ _edc() {
           _arguments '1:shell:(zsh bash groups)'
           ;;
         setup)
-          _arguments '1::subcommand:(remote --list @@SETUP_KEYS@@)' '--inventory[인벤토리 파일]:path:_files' '--recipe[레시피 파일]:path:_files' '(--clear)--add[목록에 추가]' '(--clear)--remove[목록에서 제거]' '(- *)--clear[키 삭제]' '*::value:_files'
+          _arguments '1::subcommand:(remote --list @@SETUP_KEYS@@)' '--inventory[인벤토리 파일]:path:_files' '--recipe[레시피 파일]:path:_files' '(--clear)--add[목록에 추가]' '(--clear)--remove[목록에서 제거]' '(--add --remove)--clear[키 삭제]' '*:value:{ (( ${words[(I)--clear]} )) || _files }'
           ;;
       esac
       ;;

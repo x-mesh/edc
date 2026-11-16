@@ -11,9 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pelletier/go-toml/v2"
-	"gopkg.in/yaml.v3"
 )
 
 var errSetupCancelled = errors.New("setup cancelled")
@@ -21,6 +18,12 @@ var errSetupCancelled = errors.New("setup cancelled")
 func runSetup(args []string) int {
 	if len(args) > 0 && args[0] == "remote" {
 		return runRemoteSetup(args[1:])
+	}
+	if len(args) == 1 && args[0] == "--list" {
+		return runSetupList(os.Stdout, os.Stderr, configPath())
+	}
+	if len(args) > 0 && setupKeyArgument(args[0]) {
+		return runSetupSet(args, os.Stdout, os.Stderr, configPath())
 	}
 	return runSetupWithIO(args, os.Stdin, os.Stdout, os.Stderr, isTerminal(os.Stdin) && isTerminal(os.Stdout), configPath())
 }
@@ -162,12 +165,7 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 		fmt.Fprintln(stderr, T("cli.config.invalid", err))
 		return 2
 	}
-	var data []byte
-	if filepath.Ext(path) == ".toml" {
-		data, err = toml.Marshal(config)
-	} else {
-		data, err = yaml.Marshal(config)
-	}
+	data, err := marshalConfigFor(path, config)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2

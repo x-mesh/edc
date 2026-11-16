@@ -308,7 +308,7 @@ clean:
     panel: "Project build folders"
     note: "only recreatable ones are added to the file system sum"
     state: "Project build folders: %s"
-    fold_none: "project build folders: not searched, add --project DIR to search"
+    fold_none: "project build folders: not searched, add --project DIR or set defaults.clean.projects to search"
     root: "%s  %d folders searched, %d name matches without a marker file not measured"
     root_state: "%s  %s"
     none: "no build folders found"

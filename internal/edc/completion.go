@@ -47,7 +47,8 @@ func runCompletion(args []string) int {
 // renderCompletion은 script의 명령 목록 자리를 commandDocs에서 만든 목록으로 채운다.
 // help 출력과 completion이 같은 표를 읽으므로 설명이 서로 어긋나지 않는다.
 func renderCompletion(script, commands string) string {
-	return strings.Replace(script, "@@COMMANDS@@", commands, 1)
+	script = strings.Replace(script, "@@COMMANDS@@", commands, 1)
+	return strings.ReplaceAll(script, "@@SETUP_KEYS@@", strings.Join(setupSetKeyNames(), " "))
 }
 
 func zshCommandList() string {
@@ -315,7 +316,7 @@ _edc() {
           _arguments '1:shell:(zsh bash groups)'
           ;;
         setup)
-          _arguments '1::subcommand:(remote)' '--inventory[인벤토리 파일]:path:_files' '--recipe[레시피 파일]:path:_files'
+          _arguments '1::subcommand:(remote --list @@SETUP_KEYS@@)' '--inventory[인벤토리 파일]:path:_files' '--recipe[레시피 파일]:path:_files' '(--clear)--add[목록에 추가]' '(--clear)--remove[목록에서 제거]' '(--add --remove)--clear[키 삭제]' '*:value:{ (( ${words[(I)--clear]} )) || _files }'
           ;;
       esac
       ;;
@@ -535,7 +536,10 @@ _edc() {
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
     setup)
       if [[ $prev == --inventory || $prev == --recipe ]]; then COMPREPLY=($(compgen -f -- "$cur"))
-      elif [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "remote" -- "$cur"))
+      elif [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "remote --list @@SETUP_KEYS@@" -- "$cur"))
+      elif [[ ${COMP_WORDS[2]} == *.* || ${COMP_WORDS[2]} == lang ]]; then
+        if [[ " ${COMP_WORDS[*]:3:COMP_CWORD-3} " == *" --clear "* ]]; then COMPREPLY=()
+        elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--add --remove --clear" -- "$cur")); else COMPREPLY=($(compgen -f -- "$cur")); fi
       else COMPREPLY=($(compgen -W "--inventory --recipe" -- "$cur")); fi ;;
   esac
 }

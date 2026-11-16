@@ -603,3 +603,20 @@ func TestConfigAuditAcceptKeepsAMovedCheck(t *testing.T) {
 		t.Fatal("patch.reboot is still an audit check")
 	}
 }
+
+func TestConfigCleanProjects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[defaults.clean]\nprojects = [\"/srv/work\", \"/home/me/src\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadConfigAt(path)
+	if err != nil || len(config.Defaults.Clean.Projects) != 2 || config.Defaults.Clean.Projects[1] != "/home/me/src" {
+		t.Fatalf("config %+v, err %v", config.Defaults.Clean, err)
+	}
+	for _, value := range []string{"work", "~/work", ""} {
+		config := edcConfig{Defaults: configDefaults{Clean: cleanConfig{Projects: []string{value}}}}
+		if err := validateConfig(config); err == nil || !strings.Contains(err.Error(), "defaults.clean.projects") {
+			t.Fatalf("%q: err = %v", value, err)
+		}
+	}
+}

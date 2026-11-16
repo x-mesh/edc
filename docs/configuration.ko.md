@@ -93,6 +93,23 @@ EDC_LANG=ja edc where
 
 terminal에서 `edc setup`을 실행하면 file을 만들거나 수정하는 wizard가 열립니다. section별로 설정하고 Enter로 기존 값을 유지하며, optional 값은 `!clear`로 제거합니다. 전체 config를 미리 보여 준 뒤 확인을 받아 mode `0600`으로 atomic 저장합니다. config directory는 mode `0700`이며 취소하면 exit code `4`입니다.
 
+terminal 없이 값 하나만 바꾸려면 키를 줍니다. `defaults` 아래의 키는 `du.workers`처럼 `defaults.`를 떼고 씁니다. `lang`, `audit.*`, `check.*` 키도 쓸 수 있으며, 예를 들어 `audit.allow_ports`와 `check.limits.disk`가 있습니다. `edc setup --list`는 값 하나로 쓸 수 있는 모든 키를 형식, 현재 값과 함께 보여 줍니다. 값을 주지 않으면 현재 값을 출력하고, 설정이 없으면 exit code `1`로 끝납니다.
+
+```sh
+edc setup clean.projects ~/work ~/src     # 목록 바꾸기
+edc setup clean.projects --add ~/oss      # 목록에 추가
+edc setup clean.projects --remove ~/oss   # 목록에서 제거
+edc setup clean.projects --clear          # 키 삭제
+edc setup clean.projects                  # 값 출력
+edc setup du.workers 8
+edc setup top.interval 2s
+edc setup audit.accept --add net.exposed
+edc setup check.limits.disk 80 95
+edc setup --list                          # 모든 키, 형식, 값
+```
+
+값은 wizard와 같은 방식으로 검증하고 저장합니다. 지금 file이 잘못되었으면 file을 바꾸지 않고 멈춥니다. `clean.projects`나 `remote.inventory` 같은 경로 키는 `~`와 상대 경로를 절대 경로로 바꿔 저장합니다. `check.routines`와 `notify.webhooks`는 항목마다 여러 필드가 있으므로 file에서 고칩니다. 저장한 file에는 주석이 남지 않습니다.
+
 아래 TOML 예시는 Linux와 macOS에 공통으로 적용됩니다.
 
 ```toml
@@ -120,6 +137,9 @@ parallel = 0
 
 [defaults.du]
 workers = 4
+
+[defaults.clean]
+projects = ["/home/me/work"]
 
 [defaults.history]
 limit = 200
@@ -154,7 +174,7 @@ kill_after = "5s"
 history_limit = 20
 ```
 
-command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.
+command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe, `defaults.clean.projects`의 루트는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.
 
 Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 자동 생성하도록 추천합니다. 직접 지정한 경로의 상위 디렉터리는 이미 있어야 합니다. 이전 추천값인 `edc.log` 경로는 상위 디렉터리 자동 생성을 계속 지원합니다.
 

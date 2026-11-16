@@ -150,6 +150,7 @@ type configDefaults struct {
 	Quality  qualityConfig  `yaml:"quality,omitempty" toml:"quality,omitempty"`
 	Log      logConfig      `yaml:"log,omitempty" toml:"log,omitempty"`
 	Du       duConfig       `yaml:"du,omitempty" toml:"du,omitempty"`
+	Clean    cleanConfig    `yaml:"clean,omitempty" toml:"clean,omitempty"`
 	History  historyConfig  `yaml:"history,omitempty" toml:"history,omitempty"`
 	Changes  changesConfig  `yaml:"changes,omitempty" toml:"changes,omitempty"`
 	Snapshot snapshotConfig `yaml:"snapshot,omitempty" toml:"snapshot,omitempty"`
@@ -219,6 +220,11 @@ type updateConfig struct {
 // duConfig의 workers는 du와 clean이 함께 읽는다. 둘 다 같은 스캐너로 크기를 잰다.
 type duConfig struct {
 	Workers *int `yaml:"workers,omitempty" toml:"workers,omitempty"`
+}
+
+// cleanConfig의 Projects는 --project를 주지 않은 edc clean이 빌드 폴더를 찾을 루트다.
+type cleanConfig struct {
+	Projects []string `yaml:"projects,omitempty" toml:"projects,omitempty"`
 }
 type historyConfig struct {
 	Limit *int `yaml:"limit,omitempty" toml:"limit,omitempty"`
@@ -512,6 +518,12 @@ func validateConfig(config edcConfig) error {
 	} {
 		if value != nil && *value != "" && !filepath.IsAbs(*value) {
 			return invalidConfig(field, "must be an absolute path")
+		}
+	}
+	for _, project := range d.Clean.Projects {
+		// 상대 경로는 edc clean을 실행한 폴더에 따라 다른 곳을 가리키고, 설정 파일은 ~를 풀지 않는다.
+		if !filepath.IsAbs(project) {
+			return invalidConfig("defaults.clean.projects", fmt.Sprintf("%q is not an absolute path", project))
 		}
 	}
 	if d.Common.Timeout != nil && d.Common.Timeout.Duration <= 0 {

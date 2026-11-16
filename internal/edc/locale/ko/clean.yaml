@@ -308,7 +308,7 @@ clean:
     panel: "프로젝트 빌드 폴더"
     note: "다시 만들 수 있는 폴더만 파일 시스템 합계에 더함"
     state: "프로젝트 빌드 폴더: %s"
-    fold_none: "프로젝트 빌드 폴더: 찾지 않음, --project DIR로 지정하면 찾음"
+    fold_none: "프로젝트 빌드 폴더: 찾지 않음, --project DIR이나 defaults.clean.projects로 지정하면 찾음"
     root: "%s  폴더 %d개 탐색, 표지 파일이 없는 같은 이름의 폴더 %d개는 재지 않음"
     root_state: "%s  %s"
     none: "빌드 폴더를 찾지 못함"

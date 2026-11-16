@@ -202,6 +202,11 @@ cli:
     clear_hint: "Enter keeps, !clear removes"
     recovering: "the current config is invalid; setup will replace it: %v"
     config_changed: "config changed in another process; run edc setup again"
+    set:
+      unknown_key: "unknown setting: %s; edc setup --list shows the keys"
+      unset: "%s is not set"
+      not_list: "%s is not a list; --add and --remove need a list"
+      not_in_list: "%s does not have %s"
     section:
       common: "Configure common defaults?"
       log: "Configure log defaults?"

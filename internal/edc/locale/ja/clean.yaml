@@ -308,7 +308,7 @@ clean:
     panel: "プロジェクトのビルドフォルダ"
     note: "再作成できるものだけをファイルシステムの合計に含めます"
     state: "プロジェクトのビルドフォルダ: %s"
-    fold_none: "プロジェクトのビルドフォルダ: 探していません、--project DIR で指定します"
+    fold_none: "プロジェクトのビルドフォルダ: 探していません、--project DIR か defaults.clean.projects で指定します"
     root: "%s  フォルダ %d 個を探索、目印ファイルのない同名フォルダ %d 個は測りません"
     root_state: "%s  %s"
     none: "ビルドフォルダが見つかりません"

@@ -19,6 +19,9 @@ func runSetup(args []string) int {
 	if len(args) > 0 && args[0] == "remote" {
 		return runRemoteSetup(args[1:])
 	}
+	if len(args) == 1 && args[0] == "--list" {
+		return runSetupList(os.Stdout, os.Stderr, configPath())
+	}
 	if len(args) > 0 && setupKeyArgument(args[0]) {
 		return runSetupSet(args, os.Stdout, os.Stderr, configPath())
 	}

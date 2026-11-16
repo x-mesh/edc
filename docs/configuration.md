@@ -99,7 +99,7 @@ The same config file can hold repeat-safe command defaults. Precedence is built-
 
 Run `edc setup` in a terminal to create or update the file. The wizard configures one section at a time, keeps existing values on Enter, removes an optional value with `!clear`, previews the complete config, and asks before an atomic mode `0600` save. The config directory is mode `0700`; cancel returns exit code `4`.
 
-To set one value without a terminal, give the key as `section.field` under `defaults`, or `lang`. Without a value, the command prints the current value. If the key is not set, it exits 1.
+To set one value without a terminal, give the key. A key under `defaults` drops `defaults.`, as in `du.workers`. The `lang`, `audit.*`, and `check.*` keys work too, for example `audit.allow_ports` and `check.limits.disk`. `edc setup --list` shows every key with its type and current value. Without a value, the command prints the current value. If the key is not set, it exits 1.
 
 ```sh
 edc setup clean.projects ~/work ~/src     # replace the list
@@ -109,9 +109,12 @@ edc setup clean.projects --clear          # remove the key
 edc setup clean.projects                  # print the value
 edc setup du.workers 8
 edc setup top.interval 2s
+edc setup audit.accept --add net.exposed
+edc setup check.limits.disk 80 95
+edc setup --list                          # every key, type, and value
 ```
 
-The command checks the value like the wizard and saves the file the same way. If the current file is not valid, the command stops and does not replace the file. Write a path without quotes, so that the shell changes `~` to an absolute path. The saved file does not keep comments.
+The command checks the value like the wizard and saves the file the same way. If the current file is not valid, the command stops and does not replace the file. A path key, such as `clean.projects` or `remote.inventory`, stores `~` and a relative path as an absolute path. `check.routines` and `notify.webhooks` hold several fields for each item, so edit them in the file. The saved file does not keep comments.
 
 The following TOML example applies to both Linux and macOS.
 

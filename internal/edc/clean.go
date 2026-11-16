@@ -1153,6 +1153,9 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		}
 		return runCleanGroup(options, *group, *inventory, version, deps.remote, stdout)
 	}
+	if len(projects) == 0 {
+		projects = append(projects, activeConfig.Defaults.Clean.Projects...)
+	}
 	deps.workers = *workers
 	started := time.Now()
 	target := map[string]interface{}{"goos": runtime.GOOS}

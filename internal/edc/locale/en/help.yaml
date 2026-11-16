@@ -344,7 +344,7 @@ command:
       progress: "show timed progress on stderr; --progress=false disables it"
       workers: "parallel directories per size scan"
       timeout: "time limit, after it edc marks the rest not scanned"
-      project: "root to search for marked build folders, repeat for more"
+      project: "root to search for marked build folders, repeat for more; default defaults.clean.projects"
       group: "run clean on each host of an edc remote group"
       inventory: "inventory file for --group"
       verbose: "show every candidate, more groups, reasons, cleanup commands"

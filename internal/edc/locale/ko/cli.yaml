@@ -203,7 +203,7 @@ cli:
     recovering: "현재 config가 잘못되어 setup이 새 config로 교체합니다: %v"
     config_changed: "다른 process가 config를 변경했습니다. edc setup을 다시 실행하십시오"
     set:
-      unknown_key: "모르는 설정: %s"
+      unknown_key: "모르는 설정: %s, 키 목록은 edc setup --list"
       unset: "%s 설정 없음"
       not_list: "%s는 목록이 아니므로 --add와 --remove를 쓸 수 없음"
       not_in_list: "%s에 %s 없음"

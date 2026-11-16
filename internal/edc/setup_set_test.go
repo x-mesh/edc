@@ -158,6 +158,18 @@ func TestSetupSetReachesAuditAndCheck(t *testing.T) {
 	if code, _, _ := setupSetRun(t, path, "audit.allow_ports", "--remove", "5432"); code != 0 {
 		t.Fatal("remove port")
 	}
+	for _, args := range [][]string{{"check.limits.usage", "70", "95.5"}, {"check.limits.usage", "--add", "70"}} {
+		if code, _, stderr := setupSetRun(t, path, args...); code != 0 {
+			t.Fatalf("%v: %d %s", args, code, stderr)
+		}
+	}
+	// limits는 [warn, fail] 두 값이어야 한다. 찾은 값을 빼면 검증이 거부하고(2), 찾지 못하면 1이다.
+	if code, _, stderr := setupSetRun(t, path, "check.limits.usage", "--remove", "95.5"); code != 2 || !strings.Contains(stderr, "check.limits.usage: must be [warn, fail]") {
+		t.Fatalf("remove from a number list: %d %q", code, stderr)
+	}
+	if code, stdout, _ := setupSetRun(t, path, "check.limits.usage"); code != 0 || stdout != "70\n95.5\n" {
+		t.Fatalf("number list: %d %q", code, stdout)
+	}
 	for _, tc := range []struct {
 		args []string
 		text string
@@ -202,6 +214,10 @@ func TestSetupSetResolvesPathValues(t *testing.T) {
 	}
 	if code, _, _ := setupSetRun(t, path, "clean.projects", "--remove", "sub"); code != 0 {
 		t.Fatal("--remove resolves the path like --add")
+	}
+	config, err = loadConfigAt(path)
+	if err != nil || strings.Join(config.Defaults.Clean.Projects, ",") != strings.Join(want[:2], ",") {
+		t.Fatalf("after --remove: %v %v", config.Defaults.Clean.Projects, err)
 	}
 }
 

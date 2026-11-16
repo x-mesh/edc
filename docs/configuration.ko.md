@@ -93,7 +93,7 @@ EDC_LANG=ja edc where
 
 terminal에서 `edc setup`을 실행하면 file을 만들거나 수정하는 wizard가 열립니다. section별로 설정하고 Enter로 기존 값을 유지하며, optional 값은 `!clear`로 제거합니다. 전체 config를 미리 보여 준 뒤 확인을 받아 mode `0600`으로 atomic 저장합니다. config directory는 mode `0700`이며 취소하면 exit code `4`입니다.
 
-terminal 없이 값 하나만 바꾸려면 키를 줍니다. `defaults` 아래의 키는 `du.workers`처럼 `defaults.`를 떼고 씁니다. `lang`, `audit.*`, `check.*` 키도 쓸 수 있으며, 예를 들어 `audit.allow_ports`와 `check.limits.disk`가 있습니다. `edc setup --list`는 모든 키를 형식, 현재 값과 함께 보여 줍니다. 값을 주지 않으면 현재 값을 출력하고, 설정이 없으면 exit code `1`로 끝납니다.
+terminal 없이 값 하나만 바꾸려면 키를 줍니다. `defaults` 아래의 키는 `du.workers`처럼 `defaults.`를 떼고 씁니다. `lang`, `audit.*`, `check.*` 키도 쓸 수 있으며, 예를 들어 `audit.allow_ports`와 `check.limits.disk`가 있습니다. `edc setup --list`는 값 하나로 쓸 수 있는 모든 키를 형식, 현재 값과 함께 보여 줍니다. 값을 주지 않으면 현재 값을 출력하고, 설정이 없으면 exit code `1`로 끝납니다.
 
 ```sh
 edc setup clean.projects ~/work ~/src     # 목록 바꾸기

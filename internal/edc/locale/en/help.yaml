@@ -805,7 +805,7 @@ command:
       - "The wizard keeps existing values and edits selected sections."
       - "Give a key such as clean.projects or du.workers to set one value without a terminal. With no value, it prints the current value; an unset key exits 1."
       - "A list key takes several values. --add and --remove change one list, and --clear removes any key."
-      - "Keys under defaults drop defaults., and audit.* and check.* keys work too. edc setup --list shows every key with its type and value."
+      - "Keys under defaults drop defaults., and audit.* and check.* keys work too. edc setup --list shows every key that holds one value, with its type and value."
       - "A path key such as clean.projects or remote.inventory stores ~ and a relative path as an absolute path."
       - "It previews the config before an atomic save."
       - "The wizard needs a terminal; cancel returns exit code 4."

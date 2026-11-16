@@ -803,8 +803,11 @@ command:
       recipe: "recipe file to edit, default is the one edc remote finds"
     notes:
       - "The wizard keeps existing values and edits selected sections."
+      - "Give a key such as clean.projects or du.workers to set one value without a terminal. With no value, it prints the current value; an unset key exits 1."
+      - "A list key takes several values. --add and --remove change one list, and --clear removes any key."
+      - "Write a path without quotes, as in edc setup clean.projects ~/work, so the shell gives an absolute path."
       - "It previews the config before an atomic save."
-      - "Setup needs a terminal; cancel returns exit code 4."
+      - "The wizard needs a terminal; cancel returns exit code 4."
       - "edc setup remote edits the inventory of edc remote in a terminal screen."
       - "It keeps the comments of the file and replaces it atomically, with mode 0600 for a new file."
       - "It does not store passwords or keys. Use an SSH alias as the target."

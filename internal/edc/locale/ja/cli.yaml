@@ -202,6 +202,11 @@ cli:
     clear_hint: "Enter は維持、!clear は削除"
     recovering: "現在の config が不正なため、setup が新しい config に置き換えます: %v"
     config_changed: "別の process が config を変更しました。edc setup をもう一度実行してください"
+    set:
+      unknown_key: "不明な設定: %s"
+      unset: "%s は未設定"
+      not_list: "%s はリストではないため --add と --remove は使えません"
+      not_in_list: "%s に %s はありません"
     section:
       common: "共通デフォルトを設定しますか?"
       log: "log デフォルトを設定しますか?"

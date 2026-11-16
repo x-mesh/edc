@@ -803,8 +803,11 @@ command:
       recipe: "編集するレシピファイル、既定は edc remote が見つけるファイル"
     notes:
       - "wizard は既存値を保ち、選択した section だけを変更します。"
+      - "clean.projects や du.workers のようなキーを指定すると、端末なしで値を 1 つ変更します。値がなければ現在の値を表示し、未設定なら 1 で終了します。"
+      - "リストのキーは複数の値を受け取ります。--add と --remove はリストを変更し、--clear はどのキーも削除します。"
+      - "パスは edc setup clean.projects ~/work のように引用符なしで書くと、シェルが絶対パスに変えます。"
       - "設定全体を表示してから atomic に保存します。"
-      - "terminal が必要で、取消は exit code 4 です。"
+      - "wizard は terminal が必要で、取消は exit code 4 です。"
       - "edc setup remote は edc remote のインベントリを端末画面で編集します。"
       - "ファイルのコメントを保ち、原子的に置き換えます。新しいファイルの権限は 0600 です。"
       - "パスワードや鍵は保存しません。接続先には SSH alias を使います。"

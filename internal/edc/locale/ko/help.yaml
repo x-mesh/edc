@@ -803,8 +803,11 @@ command:
       recipe: "편집할 레시피 파일, 기본은 edc remote가 찾는 파일"
     notes:
       - "wizard는 기존 값을 유지하며 선택한 section만 수정합니다."
+      - "clean.projects나 du.workers 같은 키를 주면 터미널 없이 값 하나를 바꿉니다. 값을 주지 않으면 현재 값을 출력하고, 설정이 없으면 1로 끝납니다."
+      - "목록 키는 값을 여러 개 받습니다. --add와 --remove는 목록을 고치고, --clear는 어느 키든 지웁니다."
+      - "경로는 edc setup clean.projects ~/work처럼 따옴표 없이 쓰면 셸이 절대 경로로 바꿔 줍니다."
       - "config 전체를 보여 준 뒤 atomic하게 저장합니다."
-      - "terminal이 필요하며 취소하면 exit code 4입니다."
+      - "wizard는 terminal이 필요하며 취소하면 exit code 4입니다."
       - "edc setup remote는 edc remote의 인벤토리를 터미널 화면에서 편집합니다."
       - "파일의 주석을 보존하고 원자적으로 교체하며, 새 파일은 권한 0600으로 만듭니다."
       - "비밀번호나 키는 저장하지 않습니다. 대상에는 SSH alias를 쓰십시오."

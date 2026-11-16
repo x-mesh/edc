@@ -807,7 +807,7 @@ command:
       - "목록 키는 값을 여러 개 받습니다. --add와 --remove는 목록을 고치고, --clear는 어느 키든 지웁니다."
       - "경로는 edc setup clean.projects ~/work처럼 따옴표 없이 쓰면 셸이 절대 경로로 바꿔 줍니다."
       - "config 전체를 보여 준 뒤 atomic하게 저장합니다."
-      - "terminal이 필요하며 취소하면 exit code 4입니다."
+      - "wizard는 terminal이 필요하며 취소하면 exit code 4입니다."
       - "edc setup remote는 edc remote의 인벤토리를 터미널 화면에서 편집합니다."
       - "파일의 주석을 보존하고 원자적으로 교체하며, 새 파일은 권한 0600으로 만듭니다."
       - "비밀번호나 키는 저장하지 않습니다. 대상에는 SSH alias를 쓰십시오."

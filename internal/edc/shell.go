@@ -6,8 +6,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+const shellPIDEnv = "EDC_SHELL_PID"
+
+var otherShells = map[string]bool{
+	"sh": true, "dash": true, "ksh": true, "mksh": true, "csh": true, "tcsh": true,
+	"fish": true, "nu": true, "pwsh": true, "elvish": true, "xonsh": true,
+}
 
 func runShell(args []string) int {
 	return runShellWithIO(args, os.Getenv("SHELL"), os.Stdout, os.Stderr)
@@ -30,11 +38,20 @@ func runShellWithIO(args []string, shellEnv string, stdout, stderr io.Writer) in
 			shell = arg
 		}
 	}
-	if shell == "" {
+	explicit := shell != ""
+	if !explicit {
 		shell = filepath.Base(shellEnv)
 	}
 	if shell != "zsh" && shell != "bash" {
-		fmt.Fprintln(stderr, T("command.shell.unsupported_shell", shell))
+		key := "command.shell.unsupported_shell"
+		if explicit && !otherShells[shell] {
+			key = "command.shell.not_shell"
+		}
+		fmt.Fprintln(stderr, T(key, shell))
+		if key == "command.shell.not_shell" {
+			printShellSessionStatus(stderr, filepath.Base(shellEnv))
+			printShellStartupStatus(stderr, filepath.Base(shellEnv))
+		}
 		return 2
 	}
 	_, err := io.WriteString(stdout, renderShell(shell, aliases))
@@ -43,6 +60,56 @@ func runShellWithIO(args []string, shellEnv string, stdout, stderr io.Writer) in
 		return 2
 	}
 	return 0
+}
+
+// 셸 함수는 하위 프로세스에 보이지 않으므로, 스크립트가 export한 셸 PID가 edc의 부모 PID와 같은지로 판단한다.
+// 변수만 물려받은 중첩 셸은 PID가 달라 적용되지 않은 것으로 본다.
+func shellLoadedInParent() bool {
+	return os.Getenv(shellPIDEnv) == strconv.Itoa(os.Getppid())
+}
+
+func printShellSessionStatus(w io.Writer, shell string) {
+	if shellLoadedInParent() {
+		fmt.Fprintln(w, T("command.shell.loaded"))
+		return
+	}
+	if shell == "zsh" || shell == "bash" {
+		fmt.Fprintln(w, T("command.shell.current_session", "source <(edc shell)"))
+	}
+}
+
+func printShellStartupStatus(w io.Writer, shell string) {
+	if shell != "zsh" && shell != "bash" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	dir := home
+	if zdot := os.Getenv("ZDOTDIR"); shell == "zsh" && zdot != "" {
+		dir = zdot
+	}
+	path := filepath.Join(dir, "."+shell+"rc")
+	shown := path
+	if rel, err := filepath.Rel(home, path); err == nil && !strings.HasPrefix(rel, "..") {
+		shown = "~/" + filepath.ToSlash(rel)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintln(w, err)
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") && strings.Contains(line, "edc shell") {
+			fmt.Fprintln(w, T("command.shell.installed", shown))
+			return
+		}
+	}
+	fmt.Fprintln(w, T("command.shell.startup", shown))
+	fmt.Fprintln(w, "  source <(edc shell "+shell+")")
 }
 
 func renderShell(shell string, aliases bool) string {
@@ -56,6 +123,7 @@ func renderShell(shell string, aliases bool) string {
 	fmt.Fprintln(&out, "# "+T("command.shell.startup", "~/."+shell+"rc"))
 	fmt.Fprintln(&out, "#   "+invocation)
 	fmt.Fprintln(&out, "# "+T("command.shell.read_only"))
+	fmt.Fprintln(&out, "export "+shellPIDEnv+"=$$")
 	if shell == "zsh" {
 		out.WriteString("if (( ! $+functions[compdef] )); then\n  autoload -Uz compinit\n  compinit -D || return\nfi\n")
 		out.WriteString(renderCompletion(zshCompletion, zshCommandList()))

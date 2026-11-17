@@ -1,7 +1,10 @@
 package edc
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -51,6 +54,100 @@ func TestShellArgumentsAndGuidance(t *testing.T) {
 	}
 }
 
+func TestShellRejectsNonShellArgument(t *testing.T) {
+	t.Setenv(shellPIDEnv, "")
+	for _, tc := range []struct {
+		args []string
+		env  string
+		key  string
+		name string
+	}{
+		{[]string{"install"}, "/usr/bin/fish", "command.shell.not_shell", "install"},
+		{[]string{"fish"}, "/bin/zsh", "command.shell.unsupported_shell", "fish"},
+		{nil, "/usr/bin/fish", "command.shell.unsupported_shell", "fish"},
+	} {
+		var out, err strings.Builder
+		if code := runShellWithIO(tc.args, tc.env, &out, &err); code != 2 {
+			t.Fatalf("%v: code %d", tc.args, code)
+		}
+		if want := T(tc.key, tc.name) + "\n"; err.String() != want {
+			t.Fatalf("%v: stderr %q, want %q", tc.args, err.String(), want)
+		}
+	}
+}
+
+func TestShellNonShellArgumentReportsCurrentSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZDOTDIR", "")
+	run := func(env string) string {
+		var out, err strings.Builder
+		runShellWithIO([]string{"install"}, env, &out, &err)
+		return err.String()
+	}
+	guide := T("command.shell.current_session", "source <(edc shell)") + "\n"
+	t.Setenv(shellPIDEnv, "")
+	if got := run("/bin/zsh"); !strings.Contains(got, guide) || strings.Contains(got, T("command.shell.loaded")) {
+		t.Fatalf("unset: %q", got)
+	}
+	t.Setenv(shellPIDEnv, strconv.Itoa(os.Getppid()+1))
+	if got := run("/bin/zsh"); !strings.Contains(got, guide) {
+		t.Fatalf("inherited from another shell: %q", got)
+	}
+	t.Setenv(shellPIDEnv, strconv.Itoa(os.Getppid()))
+	if got := run("/bin/zsh"); !strings.Contains(got, T("command.shell.loaded")+"\n") || strings.Contains(got, guide) {
+		t.Fatalf("loaded: %q", got)
+	}
+	if got := run("/usr/bin/fish"); !strings.Contains(got, T("command.shell.loaded")+"\n") {
+		t.Fatalf("loaded under fish $SHELL: %q", got)
+	}
+}
+
+func TestShellNonShellArgumentReportsStartupFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZDOTDIR", "")
+	t.Setenv(shellPIDEnv, "")
+	run := func(env string) string {
+		var out, err strings.Builder
+		if code := runShellWithIO([]string{"install"}, env, &out, &err); code != 2 || out.Len() != 0 {
+			t.Fatalf("code %d stdout %q", code, &out)
+		}
+		return err.String()
+	}
+	missing := T("command.shell.startup", "~/.zshrc") + "\n  source <(edc shell zsh)\n"
+	if got := run("/bin/zsh"); !strings.HasSuffix(got, missing) {
+		t.Fatalf("no rc file: %q", got)
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".zshrc", "# source <(edc shell zsh)\n")
+	if got := run("/bin/zsh"); !strings.HasSuffix(got, missing) {
+		t.Fatalf("commented line counted: %q", got)
+	}
+	write(".zshrc", "export X=1\n  source <(edc shell zsh)\n")
+	if got := run("/bin/zsh"); !strings.HasSuffix(got, T("command.shell.installed", "~/.zshrc")+"\n") {
+		t.Fatalf("installed zsh: %q", got)
+	}
+	write(".bashrc", "source <(edc shell bash --no-alias)\n")
+	if got := run("/bin/bash"); !strings.HasSuffix(got, T("command.shell.installed", "~/.bashrc")+"\n") {
+		t.Fatalf("installed bash: %q", got)
+	}
+	zdot := filepath.Join(home, "zdot")
+	if err := os.Mkdir(zdot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZDOTDIR", zdot)
+	if got := run("/bin/zsh"); !strings.HasSuffix(got, T("command.shell.startup", "~/zdot/.zshrc")+"\n  source <(edc shell zsh)\n") {
+		t.Fatalf("ZDOTDIR ignored: %q", got)
+	}
+	if got := run("/usr/bin/fish"); got != T("command.shell.not_shell", "install")+"\n" {
+		t.Fatalf("fish: %q", got)
+	}
+}
+
 func TestShellScriptsRegisterInRealShells(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh"} {
 		t.Run(shell, func(t *testing.T) {
@@ -59,9 +156,9 @@ func TestShellScriptsRegisterInRealShells(t *testing.T) {
 				t.Skip(err)
 			}
 			for _, aliases := range []bool{true, false} {
-				verify := "complete -p edc; declare -F _edc"
+				verify := `[ "$EDC_SHELL_PID" = "$$" ] || exit 3; sh -c '[ "$EDC_SHELL_PID" = "$PPID" ]' || exit 4; complete -p edc; declare -F _edc`
 				if shell == "zsh" {
-					verify = "print -r -- ${_comps[edc]}; whence -w _edc"
+					verify = `[ "$EDC_SHELL_PID" = "$$" ] || exit 3; sh -c '[ "$EDC_SHELL_PID" = "$PPID" ]' || exit 4; print -r -- ${_comps[edc]}; whence -w _edc`
 				}
 				if aliases {
 					verify += "; alias ev"

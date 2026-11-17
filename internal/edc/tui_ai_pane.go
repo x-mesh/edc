@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,9 +18,12 @@ const (
 )
 
 // aiSessionFeed는 edc ai 대시보드가 세션을 읽는 통로다. edc ai sessions와 같은 증분 읽기와 활동 캐시를 쓴다.
+// tasks는 세션 아래에 붙일 agent, shell, monitor를 읽는다. 앞선 읽기가 끝난 뒤에만 다음 읽기를 걸어 한 goroutine만 고친다.
 type aiSessionFeed struct {
 	tail       *aiEventTail
 	activities aiActivityReader
+	tasks      *aiTaskReader
+	claudeDir  string
 }
 
 type aiSessionFeedMsg struct {
@@ -33,7 +37,8 @@ func newAISessionFeed() *aiSessionFeed {
 	if err != nil {
 		return nil
 	}
-	return &aiSessionFeed{tail: &aiEventTail{path: path}, activities: aiActivityReader{}}
+	home, _ := os.UserHomeDir()
+	return &aiSessionFeed{tail: &aiEventTail{path: path}, activities: aiActivityReader{}, tasks: newAITaskReader(), claudeDir: aiClaudeDir(home)}
 }
 
 func (feed *aiSessionFeed) read(now time.Time) aiSessionFeedMsg {
@@ -42,6 +47,11 @@ func (feed *aiSessionFeed) read(now time.Time) aiSessionFeedMsg {
 	}
 	sessions := selectAISessions(foldAIHookEvents(feed.tail.events), now, false, false, aiProcessAlive, aiFileModified)
 	feed.activities.annotate(sessions, now)
+	if feed.tasks != nil {
+		// Claude Code를 쓰지 않는 host에는 projects 디렉터리가 없다. 세션 목록은 그대로 보인다.
+		running, _ := feed.tasks.list(feed.claudeDir, now)
+		attachAITasks(sessions, running)
+	}
 	return aiSessionFeedMsg{sessions: sessions, hasEvents: len(feed.tail.events) > 0}
 }
 
@@ -100,6 +110,12 @@ func (model aiModel) sessionPane(width, height int) []string {
 			break
 		}
 		lines = append(lines, aiPaneLine(session, model.now, width))
+		for _, task := range session.Tasks {
+			if len(lines) == height {
+				break
+			}
+			lines = append(lines, aiChildRow(task, model.now, width, true))
+		}
 	}
 	return lines
 }

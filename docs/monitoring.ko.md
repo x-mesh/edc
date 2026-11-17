@@ -384,7 +384,7 @@ edc ai sessions --needs         # 입력이 필요하거나 실패한 세션만
 edc ai sessions --json -        # script나 상태 줄에 쓸 JSON
 ```
 
-terminal에서 `edc ai sessions`는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. `↑`와 `↓`로 세션을 고르면 목록 아래에 디렉터리, terminal, process ID와 설명 전체가 나옵니다. `n`은 입력이 필요한 세션만, `a`는 종료한 세션까지 보입니다. `--bell`을 주면 세션이 입력을 요청할 때 터미널 벨을 울립니다. terminal이 아니거나 `--json`을 주면 한 번만 출력하고, `--count N`은 2초마다 N번 출력합니다. Claude Code 세션 줄 아래에는 그 세션에서 지금 도는 subagent와 백그라운드 shell이 들여 쓴 줄로 붙습니다. 판정은 `edc ai agents`와 같고, `--json`에서는 `tasks`에 들어갑니다.
+terminal에서 `edc ai sessions`는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. `↑`와 `↓`로 세션을 고르면 목록 아래에 디렉터리, terminal, process ID와 설명 전체가 나옵니다. `n`은 입력이 필요한 세션만, `a`는 종료한 세션까지 보입니다. `--bell`을 주면 세션이 입력을 요청할 때 터미널 벨을 울립니다. terminal이 아니거나 `--json`을 주면 한 번만 출력하고, `--count N`은 2초마다 N번 출력합니다. Claude Code 세션 줄 아래에는 그 세션에서 지금 도는 subagent, 백그라운드 shell, monitor가 들여 쓴 줄로 붙습니다. 판정은 `edc ai agents`와 같고, `--json`에서는 `tasks`에 들어갑니다. 이 줄도 고를 수 있고, 고른 세션이나 줄에서 Enter를 누르면 활동 화면이 열립니다. `Esc`로 돌아옵니다. `edc ai`의 오른쪽 세션 칸에도 같은 줄이 붙습니다.
 
 값은 hook에서 옵니다. `edc ai hooks install`은 `~/.claude/settings.json`에 `edc ai hook claude`를, `~/.codex/hooks.json`에 `edc ai hook codex`를 추가합니다. 다른 hook은 그대로 둡니다. 원래 파일은 `settings.json.edc-hooks-backup`과 `hooks.json.edc-hooks-backup`에 남습니다. edc 항목만 빼려면 `edc ai hooks uninstall`을 실행합니다.
 

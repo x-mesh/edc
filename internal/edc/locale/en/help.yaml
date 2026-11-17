@@ -643,7 +643,7 @@ command:
       - "edc ai hooks install adds edc ai hook to Claude Code settings.json and Codex hooks.json."
       - "Each hook appends one line to ai-events.jsonl next to the history DB. uninstall removes only edc entries."
       - "edc ai sessions shows each session: needs you, failed, working, waiting. --needs lists only the first two."
-      - "In a terminal, edc ai sessions stays open and reads new events every 2 seconds. n needs only, a ended, q quit."
+      - "In a terminal, edc ai sessions stays open and reads new events every 2 seconds. enter activity, n needs only, a ended, q quit."
       - "Codex runs hooks only when config.toml sets hooks = true. Sessions started before install have no start event."
       - "edc ai agents lists the running Claude Code sessions, subagents, and background shells. It needs no hook."
       - "edc ai agents <id> prints the activity of one item, or the output of a shell. -f follows new lines."

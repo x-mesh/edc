@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,10 @@ type aiSessionsModel struct {
 	tasks     *aiTaskReader
 	claudeDir string
 	running   []aiTask
+	// activity는 Enter로 연 활동 화면이다. edc ai agents와 같은 화면을 쓴다. activityGen은 연 순서이고, 닫은 화면이 건
+	// 읽기의 결과는 세대가 달라 버린다. 버린 결과는 다음 읽기를 걸지 않으므로 읽기가 쌓이지 않는다.
+	activity    *aiAgentsModel
+	activityGen int
 }
 
 type aiSessionsReadMsg struct {
@@ -76,6 +81,14 @@ func (model aiSessionsModel) readCmd(delay time.Duration) tea.Cmd {
 
 func (model aiSessionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
+	case aiAgentsReadMsg:
+		if model.activity == nil || value.generation != model.activity.generation {
+			return model, nil
+		}
+		next, cmd := model.activity.Update(value)
+		activity := next.(aiAgentsModel)
+		model.activity = &activity
+		return model, cmd
 	case aiSessionsReadMsg:
 		model.events, model.err, model.now, model.running = value.events, value.err, value.at, value.tasks
 		fresh := model.refresh()
@@ -87,10 +100,28 @@ func (model aiSessionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return model, next
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
+		if model.activity != nil {
+			model.activity.width, model.activity.height = value.Width, value.Height
+		}
 	case tea.KeyPressMsg:
+		if model.activity != nil {
+			switch value.String() {
+			case "esc", "left", "h", "backspace":
+				model.activity = nil
+				return model, nil
+			case "q", "ctrl+c":
+				return model, tea.Quit
+			}
+			next, cmd := model.activity.Update(value)
+			activity := next.(aiAgentsModel)
+			model.activity = &activity
+			return model, cmd
+		}
 		switch value.String() {
 		case "q", "esc", "ctrl+c":
 			return model, tea.Quit
+		case "enter", "right", "l":
+			return model.openActivity()
 		case "up", "k":
 			model.move(-1)
 		case "down", "j":
@@ -125,10 +156,58 @@ func (model *aiSessionsModel) refresh() bool {
 			model.alerted[key] = session.Since
 		}
 	}
-	if model.index() < 0 && len(model.sessions) > 0 {
+	if !slices.Contains(model.rowKeys(), model.selected) && len(model.sessions) > 0 {
 		model.selected = aiSessionKey(model.sessions[0])
 	}
 	return fresh
+}
+
+// aiChildKey는 세션 아래 줄의 키다. 세션 키와 겹치지 않는다.
+func aiChildKey(task aiTask) string { return "task/" + aiTaskKey(task) }
+
+// rowKeys는 화면에 그린 순서대로의 줄 키다. 세션 줄 바로 뒤에 그 세션의 agent, shell, monitor 줄이 온다.
+func (model aiSessionsModel) rowKeys() []string {
+	var keys []string
+	for _, session := range model.sessions {
+		keys = append(keys, aiSessionKey(session))
+		for _, task := range session.Tasks {
+			keys = append(keys, aiChildKey(task))
+		}
+	}
+	return keys
+}
+
+// selectedTask는 고른 하위 줄의 작업이다. 세션 줄을 골랐으면 false다.
+func (model aiSessionsModel) selectedTask() (aiTask, bool) {
+	for _, session := range model.sessions {
+		for _, task := range session.Tasks {
+			if aiChildKey(task) == model.selected {
+				return task, true
+			}
+		}
+	}
+	return aiTask{}, false
+}
+
+// openActivity는 고른 줄의 활동 화면을 연다. 세션 줄은 Claude 세션의 본 대화를 연다. Codex 세션과 기록 경로를 모르는 세션은 열지 않는다.
+func (model aiSessionsModel) openActivity() (tea.Model, tea.Cmd) {
+	target, ok := model.selectedTask()
+	if !ok {
+		index := model.index()
+		if index < 0 {
+			return model, nil
+		}
+		session := model.sessions[index]
+		if session.Tool != "claude" || session.Transcript == "" {
+			return model, nil
+		}
+		target = aiTask{Kind: "session", ID: session.Session, Session: session.Session, Cwd: session.Cwd, Transcript: session.Transcript}
+	}
+	model.activityGen++
+	activity := aiAgentsModel{feed: &aiAgentsFeed{claudeDir: model.claudeDir, reader: newAITaskReader()}, width: model.width, height: model.height,
+		target: &target, generation: model.activityGen}
+	model.activity = &activity
+	return model, activity.readCmd(0)
 }
 
 func aiBell() tea.Msg {
@@ -138,24 +217,35 @@ func aiBell() tea.Msg {
 
 func aiSessionKey(session aiSession) string { return session.Tool + "/" + session.Session }
 
+// index는 고른 줄의 세션이다. 하위 줄을 골랐으면 그 줄이 속한 세션이다.
 func (model aiSessionsModel) index() int {
 	for index, session := range model.sessions {
 		if aiSessionKey(session) == model.selected {
 			return index
 		}
+		for _, task := range session.Tasks {
+			if aiChildKey(task) == model.selected {
+				return index
+			}
+		}
 	}
 	return -1
 }
 
+// move는 세션 줄과 하위 줄을 화면 순서대로 오간다.
 func (model *aiSessionsModel) move(step int) {
-	if len(model.sessions) == 0 {
+	keys := model.rowKeys()
+	if len(keys) == 0 {
 		return
 	}
-	index := min(max(model.index()+step, 0), len(model.sessions)-1)
-	model.selected = aiSessionKey(model.sessions[index])
+	index := slices.Index(keys, model.selected)
+	model.selected = keys[min(max(index+step, 0), len(keys)-1)]
 }
 
 func (model aiSessionsModel) View() tea.View {
+	if model.activity != nil {
+		return model.activity.View()
+	}
 	width := model.width
 	if width <= 0 {
 		width = 100
@@ -176,7 +266,7 @@ func (model aiSessionsModel) View() tea.View {
 		lines = append(aiFillHeight(lines, model.height-1-len(footer)), footer...)
 	}
 	lines = aiFillHeight(lines, model.height-1)
-	lines = append(lines, liveKeyHints("↑↓ select · n needs only · a ended · q quit", true,
+	lines = append(lines, liveKeyHints("↑↓ select · enter activity · n needs only · a ended · q quit", true,
 		liveHintItem{key: "n", on: model.needs}, liveHintItem{key: "a", on: model.all}))
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], width, "")
@@ -248,7 +338,13 @@ func (model aiSessionsModel) rows(limit int) []string {
 			lines = append(lines, " "+line)
 		}
 		for _, task := range session.Tasks {
-			lines = append(lines, " "+aiChildRow(task, model.now, model.lineWidth()-1, true))
+			line := aiChildRow(task, model.now, model.lineWidth()-1, true)
+			if aiChildKey(task) == model.selected {
+				selected = len(lines)
+				lines = append(lines, liveSelected(liveSelectedBar+line, true))
+				continue
+			}
+			lines = append(lines, " "+line)
 		}
 	}
 	first := 0
@@ -333,6 +429,9 @@ func aiPaintSession(state aiSessionState, line string) string {
 
 // detail은 목록에서 잘린 설명과 세션을 찾는 데 필요한 값을 보인다. 이름표는 회색으로 두고, 값은 종류마다 색을 달리해 훑어보기 쉽게 한다.
 func (model aiSessionsModel) detail(width int) []string {
+	if task, ok := model.selectedTask(); ok {
+		return aiTaskInfoLines(task)
+	}
 	index := model.index()
 	if index < 0 {
 		return nil

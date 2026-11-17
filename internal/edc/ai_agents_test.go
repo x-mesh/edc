@@ -799,3 +799,45 @@ func TestAITaskReaderMonitorsAndTaskStop(t *testing.T) {
 		t.Fatalf("after the deadline = %+v done=%v", steps, log.done)
 	}
 }
+
+// edc ai sessions에서는 하위 줄도 고를 수 있고, Enter로 그 작업의 활동 화면을 연다. Esc로 닫은 화면이 건 읽기는
+// 결과가 와도 다음 읽기를 걸지 않는다.
+func TestAISessionsOpensChildActivity(t *testing.T) {
+	claudeDir := t.TempDir()
+	now := time.Now()
+	testSessionFile(t, claudeDir, "s1", []string{testAgentLines[0], testAgentLines[len(testAgentLines)-1]}, now)
+	agent := testAgentFile(t, claudeDir, "s1", "a111", testAgentLines[:8], "", now)
+	child := aiTask{Kind: "agent", ID: "a111", Session: "s1", Depth: 1, Transcript: agent, Started: now}
+	sessions := []aiSession{{Tool: "claude", Session: "s1", State: aiStateWorking, Since: now, Tasks: []aiTask{child}}, {Tool: "claude", Session: "s2", Since: now}}
+	model := aiSessionsModel{sessions: sessions, now: now, width: 120, height: 30, claudeDir: claudeDir, selected: aiSessionKey(sessions[0])}
+	model.move(1)
+	if task, ok := model.selectedTask(); !ok || task.ID != "a111" || model.index() != 0 {
+		t.Fatalf("selected = %q", model.selected)
+	}
+	if detail := ansi.Strip(strings.Join(model.detail(120), "\n")); !strings.Contains(detail, "a111") || !strings.Contains(detail, "agent") {
+		t.Fatalf("detail of the child row =\n%s", detail)
+	}
+	next, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(aiSessionsModel)
+	if model.activity == nil || cmd == nil || model.activity.target.ID != "a111" {
+		t.Fatalf("enter did not open the activity: %+v", model.activity)
+	}
+	opened := model.activity.feed.read(now, model.activity.target, model.activity.generation)
+	next, cmd = model.Update(opened)
+	model = next.(aiSessionsModel)
+	if cmd == nil || len(model.activity.steps) != 5 || !strings.Contains(ansi.Strip(model.View().Content), "✗ Read File does not exist.") {
+		t.Fatalf("activity steps = %d, cmd = %v", len(model.activity.steps), cmd)
+	}
+	next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	model = next.(aiSessionsModel)
+	if model.activity != nil {
+		t.Fatal("esc did not close the activity")
+	}
+	if _, cmd := model.Update(opened); cmd != nil {
+		t.Fatal("a read from the closed activity scheduled another read")
+	}
+	model.move(1)
+	if model.selected != aiSessionKey(sessions[1]) {
+		t.Fatalf("down from the child row selected %q", model.selected)
+	}
+}

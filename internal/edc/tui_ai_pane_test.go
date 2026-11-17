@@ -47,3 +47,18 @@ func TestAIDashboardShowsOnlyACountWhenNarrow(t *testing.T) {
 		t.Fatalf("a narrow screen keeps the table and counts the waiting sessions in the title:\n%s", view)
 	}
 }
+
+// 세션 칸도 세션 줄 아래에 그 세션에서 도는 작업을 들여 쓴다.
+func TestAIDashboardPaneShowsRunningChildren(t *testing.T) {
+	model := aiPaneTestModel(150)
+	model.sessions[0].Tasks = []aiTask{{Kind: "shell", ID: "bjk7nsvut", Depth: 1, Description: "full test run", Started: model.now.Add(-3 * time.Minute)}}
+	view := ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "└ $ shell") || !strings.Contains(view, "full test run") {
+		t.Fatalf("the pane must show the running shell under its session:\n%s", view)
+	}
+	for index, line := range strings.Split(view, "\n") {
+		if width := ansi.StringWidth(line); width > 150 {
+			t.Fatalf("line %d is %d wide", index, width)
+		}
+	}
+}

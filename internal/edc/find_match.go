@@ -60,6 +60,21 @@ func newFindMatcher(query string, regex bool) (matcher findMatcher, truncated bo
 	return newFindFuzzy(query), truncated, nil
 }
 
+// findNarrows는 query의 일치가 모두 previous의 일치 안에 드는지 본다. 그러면 previous의 결과 안에서만 찾아도 된다.
+// 글자를 덧붙이면 보통 좁아지지만, 마지막 단어가 =로 시작하면 그 단어를 늘린 질의는 앞 결과 밖의 이름과 맞는다.
+func findNarrows(previous, query string) bool {
+	if !strings.HasPrefix(query, previous) {
+		return false
+	}
+	words := strings.Fields(previous)
+	if len(words) == 0 || words[len(words)-1][0] != findNamePrefix {
+		return true
+	}
+	last, _ := utf8.DecodeLastRuneInString(previous)
+	next, _ := utf8.DecodeRuneInString(query[len(previous):])
+	return query == previous || unicode.IsSpace(last) || unicode.IsSpace(next)
+}
+
 func findHasUpper(text string) bool {
 	for _, r := range text {
 		if unicode.IsUpper(r) {
@@ -101,6 +116,24 @@ type findFuzzy struct {
 	exact bool
 	// folds는 terms와 같은 차례로, 대소문자를 무시하는 ASCII 단어를 runes로 다시 견줄 때 쓴다. 없으면 nil이다.
 	folds []findFold
+	// names는 terms와 같은 차례로, =로 시작한 단어인지를 담는다. 그 단어는 파일 이름 전체와 같아야 맞는다. 없으면 nil이다.
+	names []bool
+}
+
+// findNamePrefix는 파일 이름 전체와 견줄 단어의 앞 글자다.
+const findNamePrefix = '='
+
+func (fuzzy findFuzzy) name(i int) bool {
+	return fuzzy.names != nil && fuzzy.names[i]
+}
+
+// nameEqual은 i번째 단어가 파일 이름 전체와 같은지 본다. 접기로 다시 견줄 경로면 접은 단어로도 견준다.
+func (fuzzy findFuzzy) nameEqual(i int, path string, base int) bool {
+	if fuzzy.equal(path[base:], fuzzy.terms[i]) {
+		return true
+	}
+	folded, retry := fuzzy.retry(i, path)
+	return retry && fuzzy.equal(path[base:], folded)
 }
 
 // findFold는 ASCII 단어를 접기로 다시 견주는 방법이다. Kelvin sign(U+212A)과 k, ſ(U+017F)와 s, İ(U+0130)와 i처럼 ASCII가
@@ -129,8 +162,15 @@ func (fuzzy findFuzzy) retry(i int, path string) (findTerm, bool) {
 func newFindFuzzy(query string) findFuzzy {
 	fuzzy := findFuzzy{exact: findHasUpper(query)}
 	var folds []findFold
-	retries := false
+	var names []bool
+	retries, named := false, false
 	for _, word := range strings.Fields(query) {
+		// = 하나만 친 단어는 아직 이름을 치기 전이므로 = 글자를 찾는다.
+		name := len(word) > 1 && word[0] == findNamePrefix
+		if name {
+			word, named = word[1:], true
+		}
+		names = append(names, name)
 		if !fuzzy.exact {
 			word = findLowerASCII(word)
 		}
@@ -165,6 +205,9 @@ func newFindFuzzy(query string) findFuzzy {
 	if retries {
 		fuzzy.folds = folds
 	}
+	if named {
+		fuzzy.names = names
+	}
 	return fuzzy
 }
 
@@ -188,6 +231,9 @@ func (fuzzy findFuzzy) ranked() bool { return len(fuzzy.terms) > 0 }
 func (fuzzy findFuzzy) score(path string, base int) (int, bool) {
 	total := 0
 	for i, term := range fuzzy.terms {
+		if fuzzy.name(i) && !fuzzy.nameEqual(i, path, base) {
+			return 0, false
+		}
 		score, ok := fuzzy.termScore(path, base, term)
 		if !ok {
 			if folded, retry := fuzzy.retry(i, path); retry {
@@ -408,7 +454,7 @@ func (fuzzy findFuzzy) spans(path string, base int) [][2]int {
 		best := fuzzy.windowScore(path, base, start, end, term, nil)
 		if base > 0 && start < base {
 			if nameStart, nameEnd, inName := fuzzy.window(path, base, term); inName {
-				if fuzzy.windowScore(path, base, nameStart, nameEnd, term, nil) > best {
+				if fuzzy.name(i) || fuzzy.windowScore(path, base, nameStart, nameEnd, term, nil) > best {
 					start, end = nameStart, nameEnd
 				}
 			}

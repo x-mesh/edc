@@ -37,7 +37,7 @@ find:
     open_pipe: "stdout が端末ではないため、enter でパスの出力のみ"
     view_dir: "edc view はファイルだけを開けます"
     grep_prompt: "%s 内で grep:"
-    hint: "enter 出力 · esc 取り消し · ↑↓ 移動 · tab プレビュー · ctrl+o 編集 · ctrl+v 表示 · ctrl+g grep"
+    hint: "enter 出力 · esc 取り消し · ↑↓ 移動 · tab プレビュー · ctrl+o 編集 · ctrl+v 表示 · ctrl+f grep"
     hint_pipe: "enter 出力 · esc 取り消し · ↑↓ 移動 · tab プレビュー"
     grep_hint: "enter 検索 · esc 戻る"
   preview:

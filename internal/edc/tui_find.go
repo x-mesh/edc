@@ -90,7 +90,7 @@ type findModel struct {
 
 	grepMode    bool
 	grepPattern string
-	// grepPath는 ctrl+g를 누를 때 고른 경로다. 패턴을 치는 동안 계산이 끝나 선택이 바뀌어도 대상은 그대로다.
+	// grepPath는 ctrl+f를 누를 때 고른 경로다. 패턴을 치는 동안 계산이 끝나 선택이 바뀌어도 대상은 그대로다.
 	grepPath string
 
 	chosen    string
@@ -355,7 +355,7 @@ func (model findModel) key(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return model.open(model.editCommand, "editor")
 	case "ctrl+v":
 		return model.open(model.viewCommand, "view")
-	case "ctrl+g":
+	case "ctrl+f":
 		if !model.config.stdoutTerminal {
 			model.status = T("find.picker.open_pipe")
 			return model, nil
@@ -508,7 +508,7 @@ func (model findModel) setQuery(query string) (tea.Model, tea.Cmd) {
 	model.generation++
 	model.pending = model.generation
 	var candidates []int32
-	if !model.options.regex && model.resultQuery != "" && model.all != nil && strings.HasPrefix(query, model.resultQuery) && model.covered == len(model.paths) {
+	if !model.options.regex && model.resultQuery != "" && model.all != nil && findNarrows(model.resultQuery, query) && model.covered == len(model.paths) {
 		candidates = model.all
 	}
 	generation, paths, mtimes, covered := model.generation, model.paths, model.mtimes, len(model.paths)

@@ -37,7 +37,7 @@ find:
     open_pipe: "stdout is not a terminal, so enter only prints the path"
     view_dir: "edc view opens files, not directories"
     grep_prompt: "grep in %s:"
-    hint: "enter print · esc cancel · ↑↓ move · tab preview · ctrl+o edit · ctrl+v view · ctrl+g grep"
+    hint: "enter print · esc cancel · ↑↓ move · tab preview · ctrl+o edit · ctrl+v view · ctrl+f grep"
     hint_pipe: "enter print · esc cancel · ↑↓ move · tab preview"
     grep_hint: "enter search · esc back"
   preview:

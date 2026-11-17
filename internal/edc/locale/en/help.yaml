@@ -297,8 +297,8 @@ command:
     notes:
       - "Without a pattern in a terminal, edc find opens a picker. Type to filter, Enter prints the path, Esc cancels."
       - "The picker draws on the terminal, not on stdout, so vim \"$(edc find)\" and cd \"$(edc find -t d)\" work."
-      - "In the picker, Tab shows a preview, ctrl+o opens $EDITOR, ctrl+v opens edc view, and ctrl+g searches the selection with edc grep."
-      - "With a pattern, it prints the matches, best first. The letters must appear in order, so adjrn finds audit_journal.go. Words separated by spaces must all match."
+      - "In the picker, Tab shows a preview, ctrl+o opens $EDITOR, ctrl+v opens edc view, and ctrl+f searches the selection with edc grep."
+      - "With a pattern, it prints the matches, best first. The letters must appear in order, so adjrn finds audit_journal.go. Words separated by spaces must all match. A word that starts with = must equal the whole file name: =nginx.conf."
       - "It includes hidden files and skips .git. It applies .gitignore only when the search starts inside a git work tree."
       - "It stays on one file system and skips kernel file systems and container image layers. stderr names what it skipped."
       - "A directory that does not answer for 5 seconds is named on stderr and not read."

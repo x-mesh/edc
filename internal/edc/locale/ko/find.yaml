@@ -37,7 +37,7 @@ find:
     open_pipe: "stdout이 터미널이 아니라 enter로 경로 출력만 가능"
     view_dir: "edc view는 파일만 열 수 있음"
     grep_prompt: "%s 안에서 grep:"
-    hint: "enter 출력 · esc 취소 · ↑↓ 이동 · tab 미리보기 · ctrl+o 편집 · ctrl+v 보기 · ctrl+g grep"
+    hint: "enter 출력 · esc 취소 · ↑↓ 이동 · tab 미리보기 · ctrl+o 편집 · ctrl+v 보기 · ctrl+f grep"
     hint_pipe: "enter 출력 · esc 취소 · ↑↓ 이동 · tab 미리보기"
     grep_hint: "enter 검색 · esc 돌아가기"
   preview:

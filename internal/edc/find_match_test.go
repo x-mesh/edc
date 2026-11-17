@@ -135,6 +135,57 @@ func TestFindRegexMatcher(t *testing.T) {
 	}
 }
 
+func TestFindFuzzyMatchesWholeNames(t *testing.T) {
+	paths := []string{"etc/nginx/nginx.conf", "etc/nginx/nginx.conf.bak", "etc/nginx/conf.d/nginx.conf.default", "nginx.conf/readme", "srv/nginx.conf"}
+	for _, tc := range []struct {
+		query string
+		paths []string
+		want  []string
+	}{
+		{"=nginx.conf", paths, []string{"srv/nginx.conf", "etc/nginx/nginx.conf"}},
+		// 다른 단어는 그대로 fuzzy로 맞는다.
+		{"etc =nginx.conf", paths, []string{"etc/nginx/nginx.conf"}},
+		{"=readme", paths, []string{"nginx.conf/readme"}},
+		// 대문자가 있을 때만 대소문자를 가린다.
+		{"=makefile", []string{"src/Makefile", "src/makefile.old"}, []string{"src/Makefile"}},
+		{"=Makefile", []string{"src/makefile", "src/Makefile"}, []string{"src/Makefile"}},
+		{"=한글.md", []string{"docs/한글.md", "docs/한글.md.bak"}, []string{"docs/한글.md"}},
+		// k는 Kelvin sign(U+212A)과 접기가 같다.
+		{"=k.txt", []string{"docs/K.txt", "docs/kk.txt"}, []string{"docs/K.txt"}},
+		// = 하나는 = 글자를 찾는다.
+		{"=", []string{"a=b", "ab"}, []string{"a=b"}},
+	} {
+		if ranked := findRank(t, tc.query, tc.paths); !reflect.DeepEqual(ranked, tc.want) {
+			t.Errorf("%q: ranked = %v", tc.query, ranked)
+		}
+	}
+	matcher, _, _ := newFindMatcher("=nginx.conf", false)
+	path := "etc/nginx/nginx.conf"
+	if spans := matcher.spans(path, findBase(path)); !reflect.DeepEqual(spans, [][2]int{{10, 20}}) {
+		t.Errorf("spans = %v", spans)
+	}
+}
+
+func TestFindNarrows(t *testing.T) {
+	for _, tc := range []struct {
+		previous, query string
+		want            bool
+	}{
+		{"ng", "ngx", true},
+		{"ng", "x", false},
+		{"=ng", "=ng", true},
+		{"=ng", "=ngx", false},
+		{"=", "=n", false},
+		{"=ng", "=ng conf", true},
+		{"=ng ", "=ng c", true},
+		{"a =ng x", "a =ng xy", true},
+	} {
+		if got := findNarrows(tc.previous, tc.query); got != tc.want {
+			t.Errorf("findNarrows(%q, %q) = %v", tc.previous, tc.query, got)
+		}
+	}
+}
+
 func TestFindMatcherCutsALongQuery(t *testing.T) {
 	query := strings.Repeat("가", 100)
 	matcher, truncated, err := newFindMatcher(query, false)

@@ -460,6 +460,7 @@ systemctl enable --now edc-watch-myapp
 journalctl -u edc-watch-myapp -f
 ```
 
+- Without `User=`, the service and its actions run as root. A user who can change `watch.yaml`, `compose.yaml`, or their directory can then make root run another command or apply another Compose configuration. Let only root write these files and the directory, for example with `chown root:root` and `chmod go-w`. Or set `User=` to an account with only the access that the action needs. An account in the `docker` group also has root access to the host through the Docker daemon.
 - Write the absolute path of `edc` in `ExecStart`. `command -v edc` shows it. `install.sh` uses `/usr/local/bin` on Linux by default.
 - systemd does not read your shell startup files. The default `PATH` is `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`. For a command in another directory, write its absolute path or add an `Environment=PATH=...` line.
 - `systemctl stop` sends SIGTERM. `edc` then stops as it does for Ctrl-C: it ends the active action, prints the summary, and exits.

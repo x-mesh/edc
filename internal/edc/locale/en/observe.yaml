@@ -127,6 +127,7 @@ observe:
         completed: "completed"
         failed: "failed"
         killed: "killed"
+        expired: "expired"
 
   watch:
     no_samples_duration: "No sample completed before the duration ended; target health is unknown."

@@ -292,13 +292,18 @@ func (model aiAgentsModel) rows(limit int) []string {
 	return lines
 }
 
-// detail은 목록에서 잘린 설명과 작업을 찾는 데 필요한 값이다. 이름표는 회색, 값은 edc ai sessions와 같은 색 규칙을 따른다.
+// detail은 목록에서 잘린 설명과 작업을 찾는 데 필요한 값이다.
 func (model aiAgentsModel) detail() []string {
 	index := model.index()
 	if index < 0 {
 		return nil
 	}
-	task := model.tasks[index]
+	return aiTaskInfoLines(model.tasks[index])
+}
+
+// aiTaskInfoLines는 작업 하나의 상세 칸이다. 이름표는 회색, 값은 edc ai sessions와 같은 색 규칙을 따른다.
+// edc ai sessions에서 하위 줄을 골랐을 때도 쓴다.
+func aiTaskInfoLines(task aiTask) []string {
 	label := func(name string) string { return richDim(padRight(name, 9)) }
 	kind := richPaint(task.Kind, richCyan, true)
 	if task.Type != "" {

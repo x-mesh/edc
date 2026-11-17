@@ -384,7 +384,7 @@ edc ai sessions --needs         # 입력이 필요하거나 실패한 세션만
 edc ai sessions --json -        # script나 상태 줄에 쓸 JSON
 ```
 
-terminal에서 `edc ai sessions`는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. `↑`와 `↓`로 세션을 고르면 목록 아래에 디렉터리, terminal, process ID와 설명 전체가 나옵니다. `n`은 입력이 필요한 세션만, `a`는 종료한 세션까지 보입니다. `--bell`을 주면 세션이 입력을 요청할 때 터미널 벨을 울립니다. terminal이 아니거나 `--json`을 주면 한 번만 출력하고, `--count N`은 2초마다 N번 출력합니다. Claude Code 세션 줄 아래에는 그 세션에서 지금 도는 subagent와 백그라운드 shell이 들여 쓴 줄로 붙습니다. 판정은 `edc ai agents`와 같고, `--json`에서는 `tasks`에 들어갑니다.
+terminal에서 `edc ai sessions`는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. `↑`와 `↓`로 세션을 고르면 목록 아래에 디렉터리, terminal, process ID와 설명 전체가 나옵니다. `n`은 입력이 필요한 세션만, `a`는 종료한 세션까지 보입니다. `--bell`을 주면 세션이 입력을 요청할 때 터미널 벨을 울립니다. terminal이 아니거나 `--json`을 주면 한 번만 출력하고, `--count N`은 2초마다 N번 출력합니다. Claude Code 세션 줄 아래에는 그 세션에서 지금 도는 subagent, 백그라운드 shell, monitor가 들여 쓴 줄로 붙습니다. 판정은 `edc ai agents`와 같고, `--json`에서는 `tasks`에 들어갑니다. 이 줄도 고를 수 있고, 고른 세션이나 줄에서 Enter를 누르면 활동 화면이 열립니다. `Esc`로 돌아옵니다. `edc ai`의 오른쪽 세션 칸에도 같은 줄이 붙습니다.
 
 값은 hook에서 옵니다. `edc ai hooks install`은 `~/.claude/settings.json`에 `edc ai hook claude`를, `~/.codex/hooks.json`에 `edc ai hook codex`를 추가합니다. 다른 hook은 그대로 둡니다. 원래 파일은 `settings.json.edc-hooks-backup`과 `hooks.json.edc-hooks-backup`에 남습니다. edc 항목만 빼려면 `edc ai hooks uninstall`을 실행합니다.
 
@@ -431,10 +431,11 @@ edc는 `~/.claude/projects/`의 대화 기록을 읽습니다. `CLAUDE_CONFIG_DI
 | `● 세션` | 본 대화가 턴 중간입니다. `AskUserQuestion`의 답을 기다리면 실행 중이 아닙니다. 본 대화는 쉬고 agent나 shell만 돌면 `대기`로 보입니다. |
 | `◆ agent` | 마지막 응답이 도구를 호출했거나, agent가 띄운 백그라운드 shell이 아직 돕니다. `killed` 알림을 받으면 멈춘 것으로 봅니다. |
 | `$ shell` | 대화 기록에 시작이 남았고, 출력이 `[exited with code N]`이나 `[killed]`로 끝나지 않았습니다. 완료 알림을 받아도 끝난 것으로 봅니다. |
+| `◷ monitor` | Claude Code가 `Monitor` 감시를 걸었고, 끝 알림이나 `[Monitor expired …]` 이벤트가 아직 없습니다. `timeout_ms`가 지나도 끝난 것으로 봅니다. 남은 시간과 마지막 이벤트가 함께 나옵니다. |
 
-마지막으로 기록한 시각으로 짐작하지 않습니다. shell은 출력 없이 몇 분씩 돌 수 있기 때문입니다. `edc ai hooks`를 설치했으면 process가 끝난 세션의 작업도 뺍니다. hook이 없으면 Claude Code가 정상으로 닫히지 않은 세션의 작업이 24시간 동안 목록에 남을 수 있습니다.
+`TaskStop` 결과가 가리키는 shell과 monitor는 바로 끝난 것으로 봅니다. 마지막으로 기록한 시각으로 짐작하지 않습니다. shell은 출력 없이 몇 분씩 돌 수 있기 때문입니다. `edc ai hooks`를 설치했으면 process가 끝난 세션의 작업도 뺍니다. hook이 없으면 Claude Code가 정상으로 닫히지 않은 세션의 작업이 24시간 동안 목록에 남을 수 있습니다.
 
-ID 인자에는 agent나 shell ID의 일부, 세션 ID, Claude Code의 `tasks/<id>.output` 경로를 줄 수 있고, 끝난 작업도 찾습니다. 인자가 여럿에 맞으면 앞의 10개를 보이고 상태 2로 끝납니다.
+ID 인자에는 agent, shell, monitor ID의 일부, 세션 ID, Claude Code의 `tasks/<id>.output` 경로를 줄 수 있고, 끝난 작업도 찾습니다. 인자가 여럿에 맞으면 앞의 10개를 보이고 상태 2로 끝납니다.
 
 활동 한 줄은 시각으로 시작합니다. `▶`는 지시, `·`는 응답, `✗`는 실패한 도구 호출, `│`는 shell 출력 한 줄, `■`는 멈췄다는 뜻입니다. 도구 줄에는 도구와 대상이 나오고, Bash는 명령 앞에 설명이 옵니다. 한 줄은 160자까지만 남기고, `✗` 줄에는 실패한 결과의 앞부분이 나옵니다. thinking 내용과 도구 입력 전체, 성공한 도구 호출의 출력은 보이지 않습니다. 세션은 대화 기록의 마지막 256 KiB부터, shell은 출력의 마지막 64 KiB부터 읽고 escape 문자를 지웁니다. `-f`는 새 줄을 따라갑니다. shell은 종료 줄에서 멈추고, 세션과 agent는 다시 시작할 수 있어 Ctrl-C를 누를 때까지 따라갑니다.
 

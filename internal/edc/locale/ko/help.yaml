@@ -643,7 +643,7 @@ command:
       - "edc ai hooks install은 Claude Code settings.json과 Codex hooks.json에 edc ai hook을 추가합니다."
       - "hook은 기록 DB 옆 ai-events.jsonl에 한 줄씩 남깁니다. uninstall은 edc 항목만 뺍니다."
       - "edc ai sessions는 세션마다 입력 필요, 실패, 작업 중, 대기를 보입니다. --needs는 앞의 둘만 보입니다."
-      - "terminal에서는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. n 입력 필요만, a 종료 포함, q 종료."
+      - "terminal에서는 화면을 열어 둔 채 2초마다 새 이벤트를 읽습니다. enter 활동, n 입력 필요만, a 종료 포함, q 종료."
       - "Codex는 config.toml에 hooks = true가 있어야 hook을 실행합니다. 설치 전에 시작한 세션은 시작 이벤트가 없습니다."
       - "edc ai agents는 실행 중인 Claude Code 세션, subagent, 백그라운드 shell을 보입니다. hook이 필요 없습니다."
       - "edc ai agents <id>는 항목 하나의 활동이나 shell의 출력을 보입니다. -f는 새 줄을 따라갑니다."

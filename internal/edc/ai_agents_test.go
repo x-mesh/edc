@@ -725,3 +725,235 @@ func TestAIAgentsModelReopensWithHistory(t *testing.T) {
 		model = next.(aiAgentsModel)
 	}
 }
+
+func testMonitorLaunch(id, toolUse, description string, timeout time.Duration, at time.Time) []string {
+	stamp := at.UTC().Format(time.RFC3339)
+	return []string{
+		fmt.Sprintf(`{"parentUuid":"p","type":"assistant","timestamp":%q,"message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":%q,"name":"Monitor","input":{"command":"for i in 1 2; do echo tick; done","description":%q,"timeout_ms":%d}}]}}`, stamp, toolUse, description, timeout.Milliseconds()),
+		fmt.Sprintf(`{"parentUuid":"p","type":"user","timestamp":%q,"message":{"content":[{"tool_use_id":%q,"type":"tool_result","content":"Monitor started (task %s, expires in 2m unless the source ends first). Events may arrive in the background."}]},"toolUseResult":{"taskId":%q,"timeoutMs":%d,"persistent":false}}`, stamp, toolUse, id, id, timeout.Milliseconds()),
+	}
+}
+
+func testMonitorEvent(id, event string, at time.Time) string {
+	return fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>%s</task-id>\n<summary>Monitor event: \"x\"</summary>\n<event>%s</event>\n</task-notification>"}`, at.UTC().Format(time.RFC3339), id, event)
+}
+
+// Monitor는 시작 결과의 taskId와 timeoutMs로 찾는다. 상태 없는 이벤트 알림은 마지막 이벤트가 되고, 끝 알림, 만료 이벤트,
+// TaskStop, timeoutMs 가운데 먼저 오는 것에서 끝난다. TaskStop은 shell도 바로 끝낸다.
+func TestAITaskReaderMonitorsAndTaskStop(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now().Truncate(time.Second)
+	start := now.Add(-time.Minute)
+	output := filepath.Join(outputs, "b5.output")
+	testWrite(t, output, "still running\n")
+	session := "66666666-0000-0000-0000-000000000000"
+	stop := fmt.Sprintf(`{"parentUuid":"p","type":"user","timestamp":%q,"message":{"content":[{"tool_use_id":"s1","type":"tool_result","content":"Successfully stopped task: b5 (sleep 600 in the background)"}]},"toolUseResult":{"message":"Successfully stopped task: b5 (sleep 600)","task_id":"b5","task_type":"local_bash"}}`, now.UTC().Format(time.RFC3339))
+	lines := []string{testAgentLines[0]}
+	lines = append(lines, testMonitorLaunch("m1", "u1", "watch CI", 10*time.Minute, start)...)
+	lines = append(lines, testMonitorEvent("m1", "build: queued", start.Add(10*time.Second)), testMonitorEvent("m1", "build: running", start.Add(20*time.Second)))
+	lines = append(lines, testMonitorLaunch("m2", "u2", "finished watch", 10*time.Minute, start)...)
+	lines = append(lines, fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>m2</task-id>\n<status>completed</status>\n<summary>Monitor \"finished watch\" stream ended</summary>\n</task-notification>"}`, start.Add(30*time.Second).UTC().Format(time.RFC3339)))
+	lines = append(lines, testMonitorLaunch("m3", "u3", "expired watch", 10*time.Minute, start)...)
+	lines = append(lines, testMonitorEvent("m3", "[Monitor expired after 15m with no events delivered.]", start.Add(30*time.Second)))
+	lines = append(lines, testMonitorLaunch("m4", "u4", "past its deadline", 30*time.Second, start)...)
+	lines = append(lines, testShellLaunch("b5", "u5", "sleep", output, start)...)
+	lines = append(lines, stop, testAgentLines[len(testAgentLines)-1])
+	path := testSessionFile(t, claudeDir, session, lines, now)
+	tasks, err := newAITaskReaderWithout().list(claudeDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[1].Kind != "monitor" || tasks[1].ID != "m1" {
+		t.Fatalf("tasks = %+v, want the session and monitor m1", tasks)
+	}
+	monitor := tasks[1]
+	if monitor.Description != "watch CI" || monitor.Step == nil || monitor.Step.Text != "build: running" || !monitor.Expires.Equal(start.Add(10*time.Minute)) || monitor.Transcript != path {
+		t.Fatalf("monitor = %+v step = %+v", monitor, monitor.Step)
+	}
+	if got := aiChildRow(monitor, now, 0, false); !strings.Contains(got, "◷ monitor") || !strings.Contains(got, "watch CI") || !strings.Contains(got, " left") || !strings.Contains(got, "◷ build: running") {
+		t.Fatalf("child row = %q", got)
+	}
+	states := map[string]aiTaskState{}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "m", now) {
+		states[task.ID] = task.State
+	}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "b5", now) {
+		states[task.ID] = task.State
+	}
+	want := map[string]aiTaskState{"m1": aiTaskRunning, "m2": "completed", "m3": aiTaskExpired, "m4": aiTaskExpired, "b5": aiTaskKilled}
+	for id, state := range want {
+		if states[id] != state {
+			t.Errorf("%s state = %q, want %q", id, states[id], state)
+		}
+	}
+	log := newAITaskLog(monitor)
+	steps, _ := log.read(newAITaskReaderWithout(), claudeDir, now)
+	var got []string
+	for _, step := range steps {
+		got = append(got, aiAgentStepText(step))
+	}
+	if want := []string{"◷ build: queued", "◷ build: running"}; !slices.Equal(got, want) || log.done {
+		t.Fatalf("monitor activity = %q done=%v, want %q", got, log.done, want)
+	}
+	if steps, _ := log.read(newAITaskReaderWithout(), claudeDir, start.Add(11*time.Minute)); len(steps) != 1 || steps[0].Kind != "stopped" || !log.done {
+		t.Fatalf("after the deadline = %+v done=%v", steps, log.done)
+	}
+}
+
+// edc ai sessions에서는 하위 줄도 고를 수 있고, Enter로 그 작업의 활동 화면을 연다. Esc로 닫은 화면이 건 읽기는
+// 결과가 와도 다음 읽기를 걸지 않는다.
+func TestAISessionsOpensChildActivity(t *testing.T) {
+	claudeDir := t.TempDir()
+	now := time.Now()
+	testSessionFile(t, claudeDir, "s1", []string{testAgentLines[0], testAgentLines[len(testAgentLines)-1]}, now)
+	agent := testAgentFile(t, claudeDir, "s1", "a111", testAgentLines[:8], "", now)
+	child := aiTask{Kind: "agent", ID: "a111", Session: "s1", Depth: 1, Transcript: agent, Started: now}
+	sessions := []aiSession{{Tool: "claude", Session: "s1", State: aiStateWorking, Since: now, Tasks: []aiTask{child}}, {Tool: "claude", Session: "s2", Since: now}}
+	model := aiSessionsModel{sessions: sessions, now: now, width: 120, height: 30, claudeDir: claudeDir, selected: aiSessionKey(sessions[0])}
+	model.move(1)
+	if task, ok := model.selectedTask(); !ok || task.ID != "a111" || model.index() != 0 {
+		t.Fatalf("selected = %q", model.selected)
+	}
+	if detail := ansi.Strip(strings.Join(model.detail(120), "\n")); !strings.Contains(detail, "a111") || !strings.Contains(detail, "agent") {
+		t.Fatalf("detail of the child row =\n%s", detail)
+	}
+	next, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(aiSessionsModel)
+	if model.activity == nil || cmd == nil || model.activity.target.ID != "a111" {
+		t.Fatalf("enter did not open the activity: %+v", model.activity)
+	}
+	opened := model.activity.feed.read(now, model.activity.target, model.activity.generation)
+	next, cmd = model.Update(opened)
+	model = next.(aiSessionsModel)
+	if cmd == nil || len(model.activity.steps) != 5 || !strings.Contains(ansi.Strip(model.View().Content), "✗ Read File does not exist.") {
+		t.Fatalf("activity steps = %d, cmd = %v", len(model.activity.steps), cmd)
+	}
+	next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	model = next.(aiSessionsModel)
+	if model.activity != nil {
+		t.Fatal("esc did not close the activity")
+	}
+	if _, cmd := model.Update(opened); cmd != nil {
+		t.Fatal("a read from the closed activity scheduled another read")
+	}
+	model.move(1)
+	if model.selected != aiSessionKey(sessions[1]) {
+		t.Fatalf("down from the child row selected %q", model.selected)
+	}
+}
+
+// 줄 종류는 앞뒤의 짧은 구간만 보고 짐작한다. 짐작하지 못한 줄은 모든 문구를 찾는다.
+// message 뒤의 다른 객체에 있는 attachment 키는 attachment 줄로 보지 않는다.
+func TestClassifyAILine(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		line string
+		want aiLineKind
+	}{
+		{"api request copy", `{"type":"api-request-blob","message":{"content":"<task-notification>"}}`, aiLineSkip},
+		{"queue operation", `{"type":"queue-operation","content":"<task-notification>"}`, aiLineQueue},
+		{"attachment", `{"parentUuid":"p","isSidechain":false,"attachment":{"type":"hook_success"},"type":"attachment"}`, aiLineSkip},
+		{"agent attachment", `{"parentUuid":"p","isSidechain":true,"agentId":"a1","attachment":{"type":"queued_command"},"type":"attachment"}`, aiLineSkip},
+		{"user", `{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","message":{"content":"hi"}}`, aiLineUser},
+		{"user with an attachment key after message", `{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","message":{"content":"hi"},"toolUseResult":{"attachment":{"x":1}}}`, aiLineUser},
+		{"assistant", `{"parentUuid":"p","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash"}]},"type":"assistant","uuid":"u"}`, aiLineAssistant},
+		{"unknown", `{"parentUuid":"p","message":{"content":"` + strings.Repeat("x", aiLineTail) + `"},"type":"assistant"` + strings.Repeat(" ", aiLineTail) + `}`, aiLineUnknown},
+	} {
+		if got := classifyAILine([]byte(test.line)); got != test.want {
+			t.Errorf("%s = %d, want %d", test.name, got, test.want)
+		}
+	}
+}
+
+func testTaskStop(id string, at time.Time) string {
+	return fmt.Sprintf(`{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","timestamp":%q,"message":{"content":[{"tool_use_id":"s","type":"tool_result","content":"Successfully stopped task: %s"}]},"toolUseResult":{"message":"Successfully stopped task: %s (cmd)","task_id":%q,"task_type":"local_bash"}}`, at.UTC().Format(time.RFC3339), id, id, id)
+}
+
+func testMonitorActivity(t *testing.T, claudeDir string, task aiTask, now time.Time) ([]string, bool) {
+	t.Helper()
+	log := newAITaskLog(task)
+	steps, err := log.read(newAITaskReaderWithout(), claudeDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, step := range steps {
+		got = append(got, aiAgentStepText(step))
+	}
+	return got, log.done
+}
+
+// Monitor 활동은 같은 기록의 TaskStop, 다른 기록(agent)의 TaskStop, 만료 시각 뒤의 끝 알림, 정확한 만료 시각에서 멈춘다.
+// 같은 알림의 user 사본은 건너뛰고, 내용이 같아도 따로 온 이벤트는 모두 남긴다. ID 검색의 상태도 같은 규칙을 따른다.
+func TestAITaskMonitorEndings(t *testing.T) {
+	claudeDir := t.TempDir()
+	start := time.Now().Truncate(time.Second).Add(-10 * time.Minute)
+	deadline := start.Add(5 * time.Minute)
+	session := "77777777-0000-0000-0000-000000000000"
+	userCopy := func(id, event string, at time.Time) string {
+		return fmt.Sprintf(`{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","timestamp":%q,"message":{"content":"[SYSTEM NOTIFICATION]\n<task-notification>\n<task-id>%s</task-id>\n<event>%s</event>\n</task-notification>"}}`, at.UTC().Format(time.RFC3339), id, event)
+	}
+	lines := []string{testAgentLines[0]}
+	for _, id := range []string{"same", "other", "late", "edge", "events"} {
+		lines = append(lines, testMonitorLaunch(id, "u-"+id, id, 5*time.Minute, start)...)
+	}
+	lines = append(lines, testTaskStop("same", start.Add(time.Minute)))
+	lines = append(lines, fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>late</task-id>\n<status>completed</status>\n<summary>stream ended</summary>\n</task-notification>"}`, deadline.Add(time.Minute).UTC().Format(time.RFC3339)))
+	lines = append(lines, testMonitorEvent("events", "ci: pending", start.Add(30*time.Second)), userCopy("events", "ci: pending", start.Add(33*time.Second)),
+		testMonitorEvent("events", "ci: pending", start.Add(60*time.Second)), userCopy("events", "ci: pending", start.Add(63*time.Second)))
+	lines = append(lines, testAgentLines[len(testAgentLines)-1])
+	path := testSessionFile(t, claudeDir, session, lines, time.Now())
+	testAgentFile(t, claudeDir, session, "a999", append(slices.Clone(testAgentLines), testTaskStop("other", start.Add(2*time.Minute))), "", time.Now())
+
+	states := map[string]aiTaskState{}
+	for _, id := range []string{"same", "other", "late", "edge", "events"} {
+		for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, id, start.Add(3*time.Minute)) {
+			states[task.ID] = task.State
+		}
+	}
+	want := map[string]aiTaskState{"same": aiTaskKilled, "other": aiTaskKilled, "late": aiTaskExpired, "edge": aiTaskRunning, "events": aiTaskRunning}
+	for id, state := range want {
+		if states[id] != state {
+			t.Errorf("%s state = %q, want %q", id, states[id], state)
+		}
+	}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "edge", deadline) {
+		if task.State != aiTaskExpired {
+			t.Errorf("edge at its deadline = %q, want expired", task.State)
+		}
+	}
+
+	monitor := func(id string) aiTask {
+		return aiTask{Kind: "monitor", ID: id, Transcript: path, Expires: deadline}
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("same"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ killed"}) {
+		t.Errorf("same transcript TaskStop: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("other"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ killed"}) {
+		t.Errorf("agent transcript TaskStop: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("late"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ expired"}) {
+		t.Errorf("completion after the deadline: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("edge"), deadline); !done || !slices.Equal(got, []string{"■ expired"}) {
+		t.Errorf("at the deadline: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("events"), start.Add(3*time.Minute)); done || !slices.Equal(got, []string{"◷ ci: pending", "◷ ci: pending"}) {
+		t.Errorf("repeated events: %q done=%v", got, done)
+	}
+}
+
+// edc completion ai-tasks는 도는 agent, shell, monitor를 "ID:종류 설명"으로 한 줄씩 쓰고 세션은 쓰지 않는다.
+func TestWriteCompletionAITasksListsRunningWork(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	output := filepath.Join(outputs, "b1.output")
+	testWrite(t, output, "")
+	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "run the\ttests", output, now)...)
+	testSessionFile(t, claudeDir, "88888888-0000-0000-0000-000000000000", append(lines, testAgentLines[len(testAgentLines)-1]), now)
+	var buffer strings.Builder
+	writeCompletionAITasks(&buffer, claudeDir, now)
+	if got := buffer.String(); got != "b1:shell run the tests\n" {
+		t.Fatalf("ai-tasks = %q", got)
+	}
+}

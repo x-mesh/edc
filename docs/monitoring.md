@@ -660,7 +660,7 @@ When the editor or `edc view` exits, the picker comes back. If stdout is not a t
 
 The letters of the pattern must appear in the path in the same order, so `adjrn` finds `audit_journal.go`. If you separate words with spaces, all words must match. A match in the file name, at the start of a word, or in consecutive letters gets a higher score. A skipped `_`, `-`, `.`, or `/` does not break consecutive letters, so `sshdconfig` finds `sshd_config` first. If two scores are equal, the shorter path comes first. If the pattern has no capital letter, case does not matter.
 
-To match a full file name, put `=` before the word. `=nginx.conf` finds `/etc/nginx/nginx.conf`, but not `nginx.conf.bak` or `conf.d/nginx.conf.default`. You can mix this word with fuzzy words: `etc =nginx.conf`. The case rule stays the same.
+To match a full file name, put `=` before the word. `=nginx.conf` finds `/etc/nginx/nginx.conf`, but not `nginx.conf.bak` or `conf.d/nginx.conf.default`. You can mix this word with fuzzy words: `etc =nginx.conf`. The case rule stays the same. If you use `--group`, the edc on each remote host must know this syntax. An older edc reads `=` as a normal letter and does not compare the full name. Run `edc update` on that host.
 
 `-E` makes the pattern a regular expression over the path. Then the matches go out in path order.
 

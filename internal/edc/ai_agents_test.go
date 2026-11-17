@@ -1,7 +1,9 @@
 package edc
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -969,5 +971,71 @@ func TestAITaskMonitorEndings(t *testing.T) {
 	}
 	if got, done := testMonitorActivity(t, claudeDir, monitor("events"), start.Add(3*time.Minute)); done || !slices.Equal(got, []string{"◷ ci: pending", "◷ ci: pending"}) {
 		t.Errorf("repeated events: %q done=%v", got, done)
+	}
+}
+
+// 같은 끝 알림은 queue-operation 줄과 user 줄에 겹쳐 온다. 만료 시각 뒤에 온 user 사본이 만료 전의 끝을 덮지 않는다.
+func TestAITaskDuplicateEndNoticeKeepsTheFirstTime(t *testing.T) {
+	claudeDir := t.TempDir()
+	start := time.Now().Add(-20 * time.Minute).Truncate(time.Second)
+	deadline := start.Add(5 * time.Minute)
+	userCopy := fmt.Sprintf(`{"parentUuid":"p","isSidechain":false,"type":"user","timestamp":%q,"message":{"content":"<task-notification>\n<task-id>m1</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"}}`,
+		deadline.Add(10*time.Second).UTC().Format(time.RFC3339))
+	lines := append([]string{testAgentLines[0]}, testMonitorLaunch("m1", "u-m1", "watch ci", 5*time.Minute, start)...)
+	lines = append(lines, testNotification("m1", "completed", start.Add(4*time.Minute)), userCopy, testAgentLines[len(testAgentLines)-1])
+	testSessionFile(t, claudeDir, "77777777-0000-0000-0000-000000000000", lines, time.Now())
+	tasks := findAITasks(newAITaskReaderWithout(), claudeDir, "m1", deadline.Add(time.Minute))
+	if len(tasks) != 1 || tasks[0].State != aiTaskState("completed") {
+		t.Fatalf("tasks = %+v, want m1 completed", tasks)
+	}
+}
+
+// agent 기록이 하루 넘게 늘지 않아도 그 agent가 띄운 shell이 돌면 목록과 ID 검색에 나온다. 도구 호출에서 멈춘 채 남은 오래된
+// agent 기록은 도는 것으로 보지 않는다.
+func TestAITaskListShowsWorkOfOldAgents(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	old := now.Add(-aiTaskWindow - 6*time.Hour)
+	session := "88888888-0000-0000-0000-000000000000"
+	launch := func(id string) string {
+		return fmt.Sprintf(`{"parentUuid":"p","type":"user","timestamp":%q,"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":%q,"description":"scan"},"message":{"content":[{"tool_use_id":"x","type":"tool_result","content":"Async agent launched successfully."}]}}`,
+			old.UTC().Format(time.RFC3339), id)
+	}
+	testSessionFile(t, claudeDir, session, []string{testAgentLines[0], launch("a777"), launch("a778"), testAgentLines[len(testAgentLines)-1]}, now)
+	output := filepath.Join(outputs, "b7.output")
+	testWrite(t, output, "serving\n")
+	agentLines := append(slices.Clone(testAgentLines), testShellLaunch("b7", "u-b7", "dev server", output, old)...)
+	testAgentFile(t, claudeDir, session, "a777", append(agentLines, testAgentLines[len(testAgentLines)-1]), "", old)
+	testAgentFile(t, claudeDir, session, "a778", testAgentLines[:8], "", old)
+	tasks, err := newAITaskReaderWithout().list(claudeDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	if !slices.Equal(ids, []string{session, "a777", "b7"}) {
+		t.Fatalf("listed = %q, want the session, a777 and its shell b7", ids)
+	}
+	if found := findAITasks(newAITaskReaderWithout(), claudeDir, "b7", now); len(found) != 1 || found[0].State != aiTaskRunning {
+		t.Fatalf("lookup of b7 = %+v", found)
+	}
+}
+
+type aiFailingWriter struct{}
+
+func (aiFailingWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// --json 활동을 쓰지 못하면 성공으로 끝나지 않는다.
+func TestRunAIAgentLogReportsJSONWriteErrors(t *testing.T) {
+	claudeDir := t.TempDir()
+	session := "99999999-0000-0000-0000-000000000000"
+	testSessionFile(t, claudeDir, session, testAgentLines, time.Now())
+	if code := runAIAgentLog(io.Discard, claudeDir, session, false, true); code != 0 {
+		t.Fatalf("a writable output returned %d", code)
+	}
+	if code := runAIAgentLog(aiFailingWriter{}, claudeDir, session, false, true); code != 1 {
+		t.Fatalf("a failing output returned %d, want 1", code)
 	}
 }

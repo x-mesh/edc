@@ -578,6 +578,9 @@ func (transcript *aiTranscript) indexNotification(line []byte) {
 		task := transcript.tasks[fields["task-id"]]
 		switch {
 		case task == nil:
+		case fields["status"] != "" && task.status == fields["status"] && !task.ended.IsZero() && notification.at.After(task.ended):
+			// 같은 알림이 queue-operation 줄과 user 줄에 몇 초 간격으로 겹쳐 온다. 늦은 사본이 끝난 시각을 늦추면 만료 전에 끝난
+			// monitor가 만료로 보인다.
 		case fields["status"] != "":
 			task.status, task.ended, task.summary = fields["status"], notification.at, fields["summary"]
 		case fields["event"] != "":
@@ -856,9 +859,10 @@ func (reader *aiTaskReader) sessionFiles(claudeDir string, now time.Time) []aiTa
 	return files
 }
 
-// agentFiles는 sessions의 subagents 디렉터리에서 aiTaskWindow 안에 기록이 늘어난 agent 기록이다.
-// agent가 도는 동안 그 세션도 시작과 완료를 기록하므로, 창 밖의 세션 아래는 보지 않는다.
-func agentFiles(sessions []aiTaskFile, now time.Time) []aiTaskFile {
+// agentFiles는 sessions의 subagents 디렉터리에 있는 agent 기록이다. agent가 도는 동안 그 세션도 시작과 완료를 기록하므로,
+// 창 밖의 세션 아래는 보지 않는다. 창 안의 세션 아래에서는 오래된 기록도 읽는다. agent는 끝났어도 그 agent가 띄운 shell이나
+// monitor는 하루 넘게 돌 수 있다.
+func agentFiles(sessions []aiTaskFile) []aiTaskFile {
 	var files []aiTaskFile
 	for _, session := range sessions {
 		dir := filepath.Join(strings.TrimSuffix(session.path, ".jsonl"), "subagents")
@@ -871,7 +875,7 @@ func agentFiles(sessions []aiTaskFile, now time.Time) []aiTaskFile {
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			if stat, err := os.Stat(path); err == nil && now.Sub(stat.ModTime()) <= aiTaskWindow {
+			if stat, err := os.Stat(path); err == nil {
 				files = append(files, aiTaskFile{path, stat})
 			}
 		}
@@ -945,7 +949,7 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 			entry.shells = append(entry.shells, task)
 		}
 	}
-	agentFiles := agentFiles(sessionFiles, now)
+	agentFiles := agentFiles(sessionFiles)
 	reader.prepare(agentFiles)
 	agents := map[string]*aiTranscript{}
 	for _, file := range agentFiles {
@@ -1001,6 +1005,10 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 		}
 		// 부모 세션의 본 대화처럼 턴 중간에 Claude Code가 끝나면 알림이 없다.
 		if running && len(shells) == 0 && now.Sub(transcript.modified) > aiAgentStale && launched[agent.ID] == nil {
+			running = false
+		}
+		// 창보다 오래 기록이 없는 agent는 띄운 작업이 돌 때만 보인다. 도구 호출에서 멈춘 채 남은 기록을 도는 것으로 보지 않는다.
+		if running && len(shells) == 0 && now.Sub(transcript.modified) > aiTaskWindow {
 			running = false
 		}
 		if !running {
@@ -1190,8 +1198,16 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 	for _, path := range agentPaths {
 		candidates = append(candidates, aiAgentAt(path))
 	}
-	files := append(aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*.jsonl"), now),
-		aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*", "subagents", "agent-*.jsonl"), now)...)
+	// agent 기록은 목록처럼 창 안의 세션 아래 것을 모두 읽는다. 그래야 목록에 나온 오래된 agent의 shell도 찾는다.
+	sessions := aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*.jsonl"), now)
+	files := append([]aiTaskFile{}, sessions...)
+	seen := map[string]bool{}
+	for _, file := range append(agentFiles(sessions), aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*", "subagents", "agent-*.jsonl"), now)...) {
+		if !seen[file.path] {
+			seen[file.path] = true
+			files = append(files, file)
+		}
+	}
 	reader.prepare(files)
 	// TaskStop은 다른 기록이 띄운 작업도 멈출 수 있다. 목록과 같이 모든 기록의 결과를 모은다.
 	halted := map[string]time.Time{}
@@ -1406,7 +1422,7 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 // 이미 색인한 기록을 그대로 쓰므로 거의 비용이 없다.
 func (reader *aiTaskReader) haltedTasks(claudeDir string, now time.Time) map[string]time.Time {
 	sessions := reader.sessionFiles(claudeDir, now)
-	files := append(sessions, agentFiles(sessions, now)...)
+	files := append(sessions, agentFiles(sessions)...)
 	reader.prepare(files)
 	halted := map[string]time.Time{}
 	for _, file := range files {
@@ -1609,12 +1625,12 @@ func runAIAgentLog(writer io.Writer, claudeDir, query string, follow, jsonOutput
 		}
 	}
 	encoder := json.NewEncoder(writer)
-	emit := func(step aiAgentStep) {
+	emit := func(step aiAgentStep) error {
 		if jsonOutput {
-			_ = encoder.Encode(step)
-			return
+			return encoder.Encode(step)
 		}
 		fmt.Fprintln(writer, aiAgentStepLine(step))
+		return nil
 	}
 	if !jsonOutput {
 		fmt.Fprintln(writer, aiTaskTitle(task))
@@ -1623,7 +1639,10 @@ func runAIAgentLog(writer io.Writer, claudeDir, query string, follow, jsonOutput
 	for {
 		steps, err := log.read(reader, claudeDir, time.Now())
 		for _, step := range steps {
-			emit(step)
+			if err := emit(step); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

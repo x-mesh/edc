@@ -594,7 +594,7 @@ git ls-files | edc find
 
 패턴의 글자가 경로에 같은 순서로 있으면 일치합니다. 그래서 `adjrn`으로 `audit_journal.go`를 찾습니다. 공백으로 나눈 단어는 모두 맞아야 합니다. 파일 이름 안, 단어의 시작, 이어진 글자에서 맞으면 점수가 높습니다. `_`, `-`, `.`, `/`를 건너뛴 것은 이어진 것으로 보므로 `sshdconfig`로 찾으면 `sshd_config`가 먼저 나옵니다. 점수가 같으면 짧은 경로가 먼저입니다. 패턴에 대문자가 없으면 대소문자를 가리지 않습니다.
 
-파일 이름 전체가 같은 것만 찾으려면 단어 앞에 `=`를 붙입니다. `=nginx.conf`는 `/etc/nginx/nginx.conf`를 찾고, `nginx.conf.bak`이나 `conf.d/nginx.conf.default`는 찾지 않습니다. `etc =nginx.conf`처럼 다른 단어와 섞어 쓸 수 있고, 대소문자 규칙은 같습니다.
+파일 이름 전체가 같은 것만 찾으려면 단어 앞에 `=`를 붙입니다. `=nginx.conf`는 `/etc/nginx/nginx.conf`를 찾고, `nginx.conf.bak`이나 `conf.d/nginx.conf.default`는 찾지 않습니다. `etc =nginx.conf`처럼 다른 단어와 섞어 쓸 수 있고, 대소문자 규칙은 같습니다. `--group`으로 찾을 때는 원격 호스트의 edc도 이 문법을 알아야 합니다. 이전 버전은 `=`를 일반 글자로 찾고 파일 이름 전체와 비교하지 않으므로, 그 호스트에서 `edc update`를 실행하세요.
 
 `-E`를 주면 패턴을 경로에 대한 정규식으로 보고, 결과는 경로순으로 씁니다.
 

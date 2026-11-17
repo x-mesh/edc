@@ -48,12 +48,15 @@ const (
 	aiTaskStopped aiTaskState = "stopped"
 	aiTaskKilled  aiTaskState = "killed"
 	aiTaskFailed  aiTaskState = "failed"
+	// aiTaskExpired는 monitor가 timeoutMs가 지나 스스로 끝난 상태다.
+	aiTaskExpired aiTaskState = "expired"
 )
 
 // aiTaskMarks는 색 없이도 종류를 가르는 기호다.
-var aiTaskMarks = map[string]string{"session": "●", "agent": "◆", "shell": "$"}
+var aiTaskMarks = map[string]string{"session": "●", "agent": "◆", "shell": "$", "monitor": "◷"}
 
-// aiTask는 지금 도는 Claude Code 작업 하나다. Kind는 session(본 대화), agent(subagent), shell(run_in_background로 띄운 Bash)이다.
+// aiTask는 지금 도는 Claude Code 작업 하나다. Kind는 session(본 대화), agent(subagent), shell(run_in_background로 띄운 Bash),
+// monitor(Monitor 도구로 건 감시)다. Expires는 monitor가 스스로 끝나는 시각이다.
 // Parent는 shell을 띄운 agent의 ID다. 세션이 직접 띄웠으면 비어 있다.
 type aiTask struct {
 	Kind        string       `json:"kind"`
@@ -70,6 +73,7 @@ type aiTask struct {
 	Last        time.Time    `json:"last"`
 	Transcript  string       `json:"transcript,omitempty"`
 	Output      string       `json:"output,omitempty"`
+	Expires     time.Time    `json:"expires,omitzero"`
 	Summary     string       `json:"summary,omitempty"`
 	Step        *aiAgentStep `json:"step,omitempty"`
 }
@@ -287,6 +291,11 @@ type aiBackground struct {
 	ended       time.Time
 	status      string
 	summary     string
+	// deadline은 monitor가 timeoutMs 뒤에 스스로 끝나는 시각이다. persistent monitor는 비어 있다.
+	deadline time.Time
+	// event는 monitor의 마지막 이벤트다. 상태 없는 알림으로 온다.
+	event   string
+	eventAt time.Time
 }
 
 // aiTranscript는 대화 기록 하나를 읽은 상태다. 백그라운드 작업의 시작과 완료는 처음부터 이어 읽고, 멈춤 여부와 마지막 활동은 끝부분에서 얻는다.
@@ -298,11 +307,13 @@ type aiTranscript struct {
 	launches map[string]string
 	tasks    map[string]*aiBackground
 	order    []string
-	stopped  bool
-	cwd      string
-	started  time.Time
-	step     *aiAgentStep
-	meta     aiAgentMeta
+	// halted는 이 기록의 TaskStop 호출이 멈춘 작업 ID다. 다른 기록이 띄운 작업을 멈출 수도 있어 목록에서 모아 쓴다.
+	halted  map[string]time.Time
+	stopped bool
+	cwd     string
+	started time.Time
+	step    *aiAgentStep
+	meta    aiAgentMeta
 }
 
 type aiAgentMeta struct {
@@ -318,7 +329,7 @@ var (
 	// aiShellEndLine은 shell이 끝나면 Claude Code가 출력 끝에 붙이는 줄이다. 띄운 agent가 먼저 멈췄거나 강제로 멈춘 shell은
 	// 완료 알림이 기록에 남지 않으므로 이 줄을 먼저 본다.
 	aiShellEndLine    = regexp.MustCompile(`^\[(?:exited with code (-?\d+)|(killed))\]$`)
-	aiNotificationTag = regexp.MustCompile(`(?s)<(task-id|status|summary)>(.*?)</(?:task-id|status|summary)>`)
+	aiNotificationTag = regexp.MustCompile(`(?s)<(task-id|status|summary|event)>(.*?)</(?:task-id|status|summary|event)>`)
 )
 
 // index는 지난번 뒤에 끝난 줄에서 백그라운드 작업의 시작과 완료 알림을 찾는다. 대부분의 줄은 문자열 검사만으로 건너뛴다.
@@ -329,24 +340,51 @@ func (transcript *aiTranscript) index(path string) {
 		if bytes.HasPrefix(line, []byte(`{"type":"api-request`)) {
 			return
 		}
-		switch {
-		case bytes.Contains(line, []byte("ackground")):
-			// run_in_background와 backgroundTaskId는 이 글자를 함께 가진다. 한 번 찾아 대부분의 줄을 거른다.
-			// agent 시작 결과도 "working in the background"라는 안내를 담아 이 분기로 온다.
-			if bytes.Contains(line, []byte(`"run_in_background":true`)) {
-				transcript.indexLaunch(line)
-			} else if bytes.Contains(line, []byte(`"backgroundTaskId"`)) || bytes.Contains(line, []byte(`"async_launched"`)) {
-				transcript.indexStarted(line)
+		// 도구 결과 줄은 끝의 toolUseResult만 보고 백그라운드 작업의 시작과 TaskStop을 가른다. 결과 문구에 "background" 같은
+		// 글자가 섞여 들어와도 다른 분기로 새지 않는다. 그 밖의 줄에서는 시작 호출을 찾는다.
+		// 명령에 "toolUseResult" 글자가 든 시작 호출도 있으므로, 결과 줄로 색인하지 못하면 시작 호출을 찾는다.
+		indexed := false
+		// 처음 나온 자리부터 줄 끝까지 보면 실제 toolUseResult 키가 늘 들어 있다. bytes.LastIndex는 bytes.Index보다 훨씬 느려
+		// 처음 읽기를 두 배로 늘렸다.
+		if index := bytes.Index(line, []byte(`"toolUseResult":`)); index >= 0 {
+			switch result := line[index:]; {
+			case bytes.Contains(result, []byte(`"backgroundTaskId"`)), bytes.Contains(result, []byte(`"async_launched"`)), bytes.Contains(result, []byte(`"timeoutMs"`)):
+				indexed = transcript.indexStarted(line)
+			case bytes.Contains(result, []byte(`"task_type"`)):
+				indexed = transcript.indexStopped(line)
 			}
-			if bytes.Contains(line, []byte("<task-notification>")) {
-				transcript.indexNotification(line)
-			}
-		case bytes.Contains(line, []byte(`"async_launched"`)):
-			transcript.indexStarted(line)
-		case bytes.Contains(line, []byte("<task-notification>")):
+		}
+		if !indexed && (bytes.Contains(line, []byte(`"run_in_background":true`)) || bytes.Contains(line, []byte(`"name":"Monitor"`))) {
+			transcript.indexLaunch(line)
+		}
+		if bytes.Contains(line, []byte("<task-notification>")) {
 			transcript.indexNotification(line)
 		}
 	})
+}
+
+// indexStopped는 TaskStop 호출의 결과다. 멈춘 shell은 출력 끝에 [killed]가 붙지만 monitor는 그런 줄이 없다.
+func (transcript *aiTranscript) indexStopped(line []byte) bool {
+	var entry struct {
+		Type      string    `json:"type"`
+		Timestamp time.Time `json:"timestamp"`
+		Result    struct {
+			Message string `json:"message"`
+			TaskID  string `json:"task_id"`
+		} `json:"toolUseResult"`
+	}
+	if json.Unmarshal(line, &entry) != nil || entry.Type != "user" || entry.Result.TaskID == "" ||
+		!strings.HasPrefix(entry.Result.Message, "Successfully stopped task") {
+		return false
+	}
+	if transcript.halted == nil {
+		transcript.halted = map[string]time.Time{}
+	}
+	transcript.halted[entry.Result.TaskID] = entry.Timestamp
+	if task := transcript.tasks[entry.Result.TaskID]; task != nil && task.status == "" {
+		task.status, task.ended = "killed", entry.Timestamp
+	}
+	return true
 }
 
 func (transcript *aiTranscript) indexLaunch(line []byte) {
@@ -356,6 +394,7 @@ func (transcript *aiTranscript) indexLaunch(line []byte) {
 			Content []struct {
 				Type  string `json:"type"`
 				ID    string `json:"id"`
+				Name  string `json:"name"`
 				Input struct {
 					Description string `json:"description"`
 					Command     string `json:"command"`
@@ -368,7 +407,7 @@ func (transcript *aiTranscript) indexLaunch(line []byte) {
 		return
 	}
 	for _, part := range entry.Message.Content {
-		if part.Type == "tool_use" && part.Input.Background {
+		if part.Type == "tool_use" && (part.Input.Background || part.Name == "Monitor") {
 			description := part.Input.Description
 			if description == "" {
 				description = part.Input.Command
@@ -379,12 +418,15 @@ func (transcript *aiTranscript) indexLaunch(line []byte) {
 }
 
 // indexStarted는 백그라운드 작업이 시작됐다는 도구 결과다. Bash는 toolUseResult.backgroundTaskId, agent는 status async_launched를 남긴다.
-func (transcript *aiTranscript) indexStarted(line []byte) {
+func (transcript *aiTranscript) indexStarted(line []byte) bool {
 	var entry struct {
 		Type      string    `json:"type"`
 		Timestamp time.Time `json:"timestamp"`
 		Result    struct {
 			BackgroundTaskID string `json:"backgroundTaskId"`
+			TaskID           string `json:"taskId"`
+			TimeoutMs        int64  `json:"timeoutMs"`
+			Persistent       bool   `json:"persistent"`
 			Status           string `json:"status"`
 			AgentID          string `json:"agentId"`
 			Description      string `json:"description"`
@@ -398,7 +440,7 @@ func (transcript *aiTranscript) indexStarted(line []byte) {
 		} `json:"message"`
 	}
 	if json.Unmarshal(line, &entry) != nil || entry.Type != "user" {
-		return
+		return false
 	}
 	task := &aiBackground{started: entry.Timestamp}
 	switch {
@@ -411,20 +453,37 @@ func (transcript *aiTranscript) indexStarted(line []byte) {
 				task.output = match[1]
 			}
 		}
+	case entry.Result.TaskID != "" && (entry.Result.TimeoutMs > 0 || entry.Result.Persistent):
+		// Monitor 도구의 결과다. 시작 결과에는 출력 경로가 없다.
+		task.kind, task.id = "monitor", entry.Result.TaskID
+		for _, part := range entry.Message.Content {
+			task.description = transcript.launches[part.ToolUseID]
+			delete(transcript.launches, part.ToolUseID)
+		}
+		if !entry.Result.Persistent {
+			task.deadline = entry.Timestamp.Add(time.Duration(entry.Result.TimeoutMs) * time.Millisecond)
+		}
 	case entry.Result.Status == "async_launched" && entry.Result.AgentID != "":
 		task.kind, task.id, task.description, task.output = "agent", entry.Result.AgentID, entry.Result.Description, entry.Result.OutputFile
 	default:
-		return
+		return false
 	}
 	if transcript.tasks[task.id] == nil {
 		transcript.order = append(transcript.order, task.id)
 	}
 	transcript.tasks[task.id] = task
+	return true
 }
 
-// indexNotification은 완료 알림을 이 기록이 띄운 작업에 붙인다. 알림은 queue-operation 줄과 user 줄에 함께 오고,
-// user 줄은 안내 문구 뒤에 붙어 온다. 대화에 인용한 알림이 섞여도 이 기록이 띄운 작업 ID에만 붙인다.
-func (transcript *aiTranscript) indexNotification(line []byte) {
+// aiNotification은 알림 한 블록이다. block은 같은 알림이 queue-operation 줄과 user 줄에 겹쳐 올 때 하나만 쓰려고 남긴다.
+type aiNotification struct {
+	at     time.Time
+	block  string
+	fields map[string]string
+}
+
+// aiNotifications는 한 줄에 든 알림이다. 알림은 queue-operation 줄과 user 줄에 함께 오고, user 줄은 안내 문구 뒤에 붙어 온다.
+func aiNotifications(line []byte) []aiNotification {
 	var entry struct {
 		Type      string          `json:"type"`
 		Timestamp time.Time       `json:"timestamp"`
@@ -432,7 +491,7 @@ func (transcript *aiTranscript) indexNotification(line []byte) {
 		Message   json.RawMessage `json:"message"`
 	}
 	if json.Unmarshal(line, &entry) != nil {
-		return
+		return nil
 	}
 	text := entry.Content
 	if entry.Type == "user" {
@@ -440,19 +499,41 @@ func (transcript *aiTranscript) indexNotification(line []byte) {
 			Content string `json:"content"`
 		}
 		if json.Unmarshal(entry.Message, &message) != nil {
-			return
+			return nil
 		}
 		text = message.Content
 	} else if entry.Type != "queue-operation" {
-		return
+		return nil
 	}
+	var notifications []aiNotification
 	for _, block := range aiTaskNotification.FindAllString(text, -1) {
 		fields := map[string]string{}
 		for _, match := range aiNotificationTag.FindAllStringSubmatch(block, -1) {
-			fields[match[1]] = strings.TrimSpace(match[2])
+			fields[match[1]] = html.UnescapeString(strings.TrimSpace(match[2]))
 		}
-		if task := transcript.tasks[fields["task-id"]]; task != nil && fields["status"] != "" {
-			task.status, task.ended, task.summary = fields["status"], entry.Timestamp, fields["summary"]
+		notifications = append(notifications, aiNotification{at: entry.Timestamp, block: block, fields: fields})
+	}
+	return notifications
+}
+
+// aiMonitorExpired는 monitor가 만료됐다는 이벤트다. 만료 알림에는 상태가 없다.
+func aiMonitorExpired(event string) bool { return strings.HasPrefix(event, "[Monitor expired") }
+
+// indexNotification은 알림을 이 기록이 띄운 작업에 붙인다. 대화에 인용한 알림이 섞여도 이 기록이 띄운 작업 ID에만 붙인다.
+// 상태가 있으면 끝났다는 뜻이다. monitor는 이벤트마다 상태 없는 알림을 받는다.
+func (transcript *aiTranscript) indexNotification(line []byte) {
+	for _, notification := range aiNotifications(line) {
+		fields := notification.fields
+		task := transcript.tasks[fields["task-id"]]
+		switch {
+		case task == nil:
+		case fields["status"] != "":
+			task.status, task.ended, task.summary = fields["status"], notification.at, fields["summary"]
+		case fields["event"] != "":
+			task.event, task.eventAt = aiHookClip(fields["event"], false), notification.at
+			if aiMonitorExpired(fields["event"]) && task.status == "" {
+				task.status, task.ended, task.summary = string(aiTaskExpired), notification.at, fields["summary"]
+			}
 		}
 	}
 }
@@ -774,13 +855,39 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 			}
 		}
 	}
+	// TaskStop은 다른 기록이 띄운 작업도 멈출 수 있다. 이번에 읽은 모든 기록의 결과를 모은다.
+	halted := map[string]bool{}
+	for _, transcript := range sessions {
+		for id := range transcript.halted {
+			halted[id] = true
+		}
+	}
+	for _, transcript := range agents {
+		for id := range transcript.halted {
+			halted[id] = true
+		}
+	}
+	for id, entry := range groups {
+		kept := entry.shells[:0]
+		for _, task := range entry.shells {
+			if !halted[task.ID] {
+				kept = append(kept, task)
+			}
+		}
+		groups[id].shells = kept
+	}
 	for _, file := range agentFiles {
 		transcript := agents[file.path]
 		if transcript == nil {
 			continue
 		}
 		agent := aiAgentAt(file.path)
-		shells := runningAIShells(transcript, file.path, agent.ID, agent.Session, 2, transcript.cwd)
+		var shells []aiTask
+		for _, task := range runningAIShells(transcript, file.path, agent.ID, agent.Session, 2, transcript.cwd) {
+			if !halted[task.ID] {
+				shells = append(shells, task)
+			}
+		}
 		running := !transcript.stopped || len(shells) > 0
 		// 강제로 멈춘 agent는 마지막 응답이 도구 호출이어도 killed 알림이 온다. 알림 뒤에 기록이 늘었으면 다시 시작한 것이다.
 		if task := launched[agent.ID]; task != nil && (task.status == "killed" || task.status == "failed") && !transcript.modified.After(task.ended) && len(shells) == 0 {
@@ -836,12 +943,22 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 	return tasks, nil
 }
 
-// runningAIShells는 기록이 띄운 shell 가운데 완료 알림이 아직 없는 것이다. 마지막 출력 줄을 활동으로 붙인다.
-// path는 shell을 띄운 기록이다. shell의 Transcript에 넣어, 따라갈 때 그 기록 하나에서 완료 알림을 찾는다.
+// runningAIShells는 기록이 띄운 shell과 monitor 가운데 끝나지 않은 것이다. shell은 마지막 출력 줄을, monitor는 마지막 이벤트를
+// 활동으로 붙인다. path는 띄운 기록이다. Transcript에 넣어, 따라갈 때 그 기록 하나에서 완료 알림을 찾는다.
+// monitor는 완료 알림이나 만료 이벤트가 없어도 deadline이 지나면 끝났다고 본다.
 func runningAIShells(transcript *aiTranscript, path, parent, session string, depth int, cwd string) []aiTask {
 	var shells []aiTask
 	for _, id := range transcript.order {
 		task := transcript.tasks[id]
+		if task.kind == "monitor" && task.status == "" && (task.deadline.IsZero() || time.Now().Before(task.deadline)) {
+			monitor := aiTask{Kind: "monitor", ID: task.id, Session: session, Parent: parent, Depth: depth, Cwd: cwd, Description: task.description,
+				State: aiTaskRunning, Started: task.started, Last: task.started, Transcript: path, Expires: task.deadline}
+			if task.event != "" {
+				monitor.Last, monitor.Step = task.eventAt, &aiAgentStep{At: task.eventAt, Kind: "event", Text: task.event}
+			}
+			shells = append(shells, monitor)
+			continue
+		}
 		if task.kind != "shell" || task.status != "" {
 			continue
 		}
@@ -978,17 +1095,20 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 		}
 		for _, id := range transcript.order {
 			task := transcript.tasks[id]
-			if task.kind != "shell" {
+			if task.kind != "shell" && task.kind != "monitor" {
 				continue
 			}
 			state := aiTaskRunning
-			if ended, ok := aiShellEnd(task.output); ok {
+			if ended, ok := aiShellEnd(task.output); task.kind == "shell" && ok {
 				state = ended
 			} else if task.status != "" {
 				state = aiTaskState(task.status)
+			} else if task.kind == "monitor" && !task.deadline.IsZero() && now.After(task.deadline) {
+				state = aiTaskExpired
 			}
-			candidates = append(candidates, aiTask{Kind: "shell", ID: task.id, Session: session, Parent: parent, Cwd: transcript.cwd,
-				Description: task.description, State: state, Started: task.started, Transcript: file.path, Output: task.output, Summary: task.summary})
+			candidates = append(candidates, aiTask{Kind: task.kind, ID: task.id, Session: session, Parent: parent, Cwd: transcript.cwd,
+				Description: task.description, State: state, Started: task.started, Transcript: file.path, Output: task.output,
+				Expires: task.deadline, Summary: task.summary})
 		}
 	}
 	return matchAITasks(candidates, query)
@@ -1102,8 +1222,10 @@ type aiTaskLog struct {
 	offset int64
 	// pending은 shell 출력에서 아직 줄바꿈이 오지 않은 끝부분이다.
 	pending []byte
-	stopped bool
-	done    bool
+	// lastBlock은 monitor 활동에서 마지막으로 쓴 알림이다.
+	lastBlock string
+	stopped   bool
+	done      bool
 }
 
 func newAITaskLog(task aiTask) *aiTaskLog {
@@ -1129,6 +1251,9 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 	if log.done {
 		return nil, nil
 	}
+	if log.task.Kind == "monitor" {
+		return log.readMonitor(now)
+	}
 	if log.task.Kind != "shell" {
 		stopped := log.stopped
 		offset, err := readAIAgentLines(log.task.Transcript, log.offset, log.parser, func(step aiAgentStep) { steps = append(steps, step) })
@@ -1149,6 +1274,53 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 		steps = append(steps, aiAgentStep{At: now, Kind: "stopped", Text: strings.TrimSpace(string(state) + " " + summary)})
 	}
 	return steps, nil
+}
+
+// readMonitor는 monitor를 띄운 기록에서 그 monitor의 이벤트를 읽는다. 같은 알림이 queue-operation 줄과 user 줄에 겹쳐 오므로
+// 바로 앞 블록과 같으면 건너뛴다. 끝 알림, 만료 이벤트, TaskStop, deadline 가운데 먼저 오는 것에서 멈춘다.
+func (log *aiTaskLog) readMonitor(now time.Time) ([]aiAgentStep, error) {
+	var steps []aiAgentStep
+	stop := func(at time.Time, text string) {
+		if !log.done {
+			log.done = true
+			steps = append(steps, aiAgentStep{At: at, Kind: "stopped", Text: text})
+		}
+	}
+	id := []byte(log.task.ID)
+	offset, err := readAITranscriptLines(log.task.Transcript, log.offset, func(line []byte) {
+		if log.done || !bytes.Contains(line, id) {
+			return
+		}
+		if bytes.Contains(line, []byte(`"task_type"`)) {
+			stopped := &aiTranscript{tasks: map[string]*aiBackground{}}
+			stopped.indexStopped(line)
+			if at, ok := stopped.halted[log.task.ID]; ok {
+				stop(at, string(aiTaskKilled))
+			}
+			return
+		}
+		for _, notification := range aiNotifications(line) {
+			fields := notification.fields
+			if fields["task-id"] != log.task.ID || notification.block == log.lastBlock {
+				continue
+			}
+			log.lastBlock = notification.block
+			switch {
+			case fields["status"] != "":
+				stop(notification.at, strings.TrimSpace(fields["status"]+" "+fields["summary"]))
+			case fields["event"] != "":
+				steps = append(steps, aiAgentStep{At: notification.at, Kind: "event", Text: aiHookClip(fields["event"], false)})
+				if aiMonitorExpired(fields["event"]) {
+					stop(notification.at, string(aiTaskExpired))
+				}
+			}
+		}
+	})
+	log.offset = offset
+	if !log.task.Expires.IsZero() && now.After(log.task.Expires) {
+		stop(log.task.Expires, string(aiTaskExpired))
+	}
+	return steps, err
 }
 
 // readOutput은 shell 출력에서 새로 끝난 줄이다. 한 번에 aiTaskOutputTail까지만 읽는다. 그보다 많이 늘었으면 앞부분을 건너뛰고
@@ -1327,7 +1499,10 @@ func aiChildRow(task aiTask, now time.Time, width int, color bool) string {
 	}
 	head := aiTaskMarks[task.Kind] + " " + padRight(truncateName(kind, 14), 14) + " " + padRight(task.ID[:min(len(task.ID), aiAgentIDWidth)], aiAgentIDWidth) +
 		" " + padLeft(formatTopEventDuration(now.Sub(task.Started)), 6)
-	detail := task.Description
+	// 설명 칸은 목록과 같다. monitor는 남은 시간이 붙는다. 활동은 칠하려고 따로 붙인다.
+	plain := task
+	plain.Step = nil
+	detail := aiTaskDetail(plain)
 	step := ""
 	if task.Step != nil {
 		step = aiAgentStepText(*task.Step)
@@ -1358,8 +1533,8 @@ func aiTaskHead(task aiTask, now time.Time) string {
 			padRight(aiTaskStateText(task.State), 9), padLeft(formatTopEventDuration(now.Sub(task.Last)), 6)}, " ")
 	}
 	kind := task.Type
-	if task.Kind == "shell" {
-		kind = "shell"
+	if task.Kind == "shell" || task.Kind == "monitor" {
+		kind = task.Kind
 	}
 	if kind == "" {
 		kind = "-"
@@ -1369,11 +1544,18 @@ func aiTaskHead(task aiTask, now time.Time) string {
 	return head + " " + padLeft(formatTopEventDuration(now.Sub(task.Started)), 6)
 }
 
-// aiTaskDetail은 작업 설명과 마지막 활동이다.
+// aiTaskDetail은 작업 설명과 마지막 활동이다. monitor는 스스로 끝날 때까지 남은 시간을 붙인다.
 func aiTaskDetail(task aiTask) string {
 	var parts []string
 	if task.Description != "" {
 		parts = append(parts, task.Description)
+	}
+	if task.Kind == "monitor" && !task.Expires.IsZero() {
+		left := time.Until(task.Expires)
+		if left < 0 {
+			left = 0
+		}
+		parts = append(parts, formatTopEventDuration(left)+" left")
 	}
 	if task.Step != nil {
 		parts = append(parts, aiAgentStepText(*task.Step))
@@ -1407,6 +1589,8 @@ func aiAgentStepText(step aiAgentStep) string {
 		return strings.TrimRight("✗ "+step.Tool+" "+step.Text, " ")
 	case "output":
 		return "│ " + step.Text
+	case "event":
+		return "◷ " + step.Text
 	case "stopped":
 		if step.Text != "" {
 			return "■ " + step.Text

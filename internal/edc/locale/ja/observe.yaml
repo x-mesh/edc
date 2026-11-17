@@ -127,6 +127,7 @@ observe:
         completed: "完了"
         failed: "失敗"
         killed: "中断"
+        expired: "期限切れ"
 
   watch:
     no_samples_duration: "観測時間が終了するまでに完了したサンプルがないため、対象の状態は不明です。"

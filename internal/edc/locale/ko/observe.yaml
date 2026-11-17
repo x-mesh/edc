@@ -127,6 +127,7 @@ observe:
         completed: "완료"
         failed: "실패"
         killed: "중단"
+        expired: "만료"
 
   watch:
     no_samples_duration: "관측 시간이 끝날 때까지 완료한 표본이 없어 대상의 상태를 판단할 수 없습니다."

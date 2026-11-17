@@ -725,3 +725,77 @@ func TestAIAgentsModelReopensWithHistory(t *testing.T) {
 		model = next.(aiAgentsModel)
 	}
 }
+
+func testMonitorLaunch(id, toolUse, description string, timeout time.Duration, at time.Time) []string {
+	stamp := at.UTC().Format(time.RFC3339)
+	return []string{
+		fmt.Sprintf(`{"parentUuid":"p","type":"assistant","timestamp":%q,"message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":%q,"name":"Monitor","input":{"command":"for i in 1 2; do echo tick; done","description":%q,"timeout_ms":%d}}]}}`, stamp, toolUse, description, timeout.Milliseconds()),
+		fmt.Sprintf(`{"parentUuid":"p","type":"user","timestamp":%q,"message":{"content":[{"tool_use_id":%q,"type":"tool_result","content":"Monitor started (task %s, expires in 2m unless the source ends first). Events may arrive in the background."}]},"toolUseResult":{"taskId":%q,"timeoutMs":%d,"persistent":false}}`, stamp, toolUse, id, id, timeout.Milliseconds()),
+	}
+}
+
+func testMonitorEvent(id, event string, at time.Time) string {
+	return fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>%s</task-id>\n<summary>Monitor event: \"x\"</summary>\n<event>%s</event>\n</task-notification>"}`, at.UTC().Format(time.RFC3339), id, event)
+}
+
+// Monitor는 시작 결과의 taskId와 timeoutMs로 찾는다. 상태 없는 이벤트 알림은 마지막 이벤트가 되고, 끝 알림, 만료 이벤트,
+// TaskStop, timeoutMs 가운데 먼저 오는 것에서 끝난다. TaskStop은 shell도 바로 끝낸다.
+func TestAITaskReaderMonitorsAndTaskStop(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now().Truncate(time.Second)
+	start := now.Add(-time.Minute)
+	output := filepath.Join(outputs, "b5.output")
+	testWrite(t, output, "still running\n")
+	session := "66666666-0000-0000-0000-000000000000"
+	stop := fmt.Sprintf(`{"parentUuid":"p","type":"user","timestamp":%q,"message":{"content":[{"tool_use_id":"s1","type":"tool_result","content":"Successfully stopped task: b5 (sleep 600 in the background)"}]},"toolUseResult":{"message":"Successfully stopped task: b5 (sleep 600)","task_id":"b5","task_type":"local_bash"}}`, now.UTC().Format(time.RFC3339))
+	lines := []string{testAgentLines[0]}
+	lines = append(lines, testMonitorLaunch("m1", "u1", "watch CI", 10*time.Minute, start)...)
+	lines = append(lines, testMonitorEvent("m1", "build: queued", start.Add(10*time.Second)), testMonitorEvent("m1", "build: running", start.Add(20*time.Second)))
+	lines = append(lines, testMonitorLaunch("m2", "u2", "finished watch", 10*time.Minute, start)...)
+	lines = append(lines, fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>m2</task-id>\n<status>completed</status>\n<summary>Monitor \"finished watch\" stream ended</summary>\n</task-notification>"}`, start.Add(30*time.Second).UTC().Format(time.RFC3339)))
+	lines = append(lines, testMonitorLaunch("m3", "u3", "expired watch", 10*time.Minute, start)...)
+	lines = append(lines, testMonitorEvent("m3", "[Monitor expired after 15m with no events delivered.]", start.Add(30*time.Second)))
+	lines = append(lines, testMonitorLaunch("m4", "u4", "past its deadline", 30*time.Second, start)...)
+	lines = append(lines, testShellLaunch("b5", "u5", "sleep", output, start)...)
+	lines = append(lines, stop, testAgentLines[len(testAgentLines)-1])
+	path := testSessionFile(t, claudeDir, session, lines, now)
+	tasks, err := newAITaskReaderWithout().list(claudeDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[1].Kind != "monitor" || tasks[1].ID != "m1" {
+		t.Fatalf("tasks = %+v, want the session and monitor m1", tasks)
+	}
+	monitor := tasks[1]
+	if monitor.Description != "watch CI" || monitor.Step == nil || monitor.Step.Text != "build: running" || !monitor.Expires.Equal(start.Add(10*time.Minute)) || monitor.Transcript != path {
+		t.Fatalf("monitor = %+v step = %+v", monitor, monitor.Step)
+	}
+	if got := aiChildRow(monitor, now, 0, false); !strings.Contains(got, "◷ monitor") || !strings.Contains(got, "watch CI") || !strings.Contains(got, " left") || !strings.Contains(got, "◷ build: running") {
+		t.Fatalf("child row = %q", got)
+	}
+	states := map[string]aiTaskState{}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "m", now) {
+		states[task.ID] = task.State
+	}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "b5", now) {
+		states[task.ID] = task.State
+	}
+	want := map[string]aiTaskState{"m1": aiTaskRunning, "m2": "completed", "m3": aiTaskExpired, "m4": aiTaskExpired, "b5": aiTaskKilled}
+	for id, state := range want {
+		if states[id] != state {
+			t.Errorf("%s state = %q, want %q", id, states[id], state)
+		}
+	}
+	log := newAITaskLog(monitor)
+	steps, _ := log.read(newAITaskReaderWithout(), claudeDir, now)
+	var got []string
+	for _, step := range steps {
+		got = append(got, aiAgentStepText(step))
+	}
+	if want := []string{"◷ build: queued", "◷ build: running"}; !slices.Equal(got, want) || log.done {
+		t.Fatalf("monitor activity = %q done=%v, want %q", got, log.done, want)
+	}
+	if steps, _ := log.read(newAITaskReaderWithout(), claudeDir, start.Add(11*time.Minute)); len(steps) != 1 || steps[0].Kind != "stopped" || !log.done {
+		t.Fatalf("after the deadline = %+v done=%v", steps, log.done)
+	}
+}

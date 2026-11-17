@@ -382,6 +382,21 @@ rules:
 edc watch fs --rules watch.yaml
 ```
 
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `directory` | The current directory | The watch root. A relative path starts at the directory of the rules file. A directory argument on the command line overrides it. |
+| `recursive` | `false` | Watch subdirectories. `-r` or `--recursive` on the command line overrides it. |
+| `exclude` | None | Globs to exclude. They add to the default exclusions and to `--exclude`. |
+| `rules[].name` | `rule-N` | The rule name in the output and in `EDC_WATCH_RULE`. Each name must be unique. |
+| `rules[].events` | All four events | The events that start the action. |
+| `rules[].match` | `**` | A glob relative to the watch root. |
+| `rules[].command` | None, required | The argv of the action. |
+| `rules[].cwd` | The watch root | The directory of the action. A relative path starts at the watch root. The directory must exist. |
+| `rules[].debounce` | `--debounce`, else `200ms` | A Go duration, for example `500ms`. |
+| `rules[].timeout` | `--timeout`, else `30s` | A Go duration, for example `5m`. |
+
+A rules file holds at most 128 rules and 1 MiB. You cannot use `--rules` together with `--exec`. If the file has an unknown key, `edc` stops with an error before the watch starts.
+
 `--exec` uses `/bin/sh -c`; YAML `command` executes argv directly. Shell aliases are not loaded. File paths are not interpolated into commands. Actions receive `EDC_WATCH_ROOT` (absolute), `EDC_WATCH_PATH` (relative), `EDC_WATCH_EVENT`, and `EDC_WATCH_RULE`. Quote shell variables such as `"$EDC_WATCH_PATH"`.
 
 Actions run serially across all rules. The default debounce is 200ms, coalescing each rule's events to its latest event. Events during an action are coalesced into one pending action per rule and run after the active action ends. `--dry-run` reports matches without execution. Actions that change matching files can trigger themselves again; narrow the match or exclude generated paths.
@@ -389,6 +404,70 @@ Actions run serially across all rules. The default debounce is 200ms, coalescing
 Actions receive no stdin. Their default timeout is 30s. `--debounce` and `--timeout` supply defaults for rules without their own values. Combined stdout/stderr is capped at 64 KiB. Failures and timeouts do not stop watching, but produce final exit code `1`. `Ctrl-C` or the watch duration ends the active action's process group and discards pending actions. A normal observation with no events exits `0`; option/output errors exit `2`. Removing or renaming the root and watcher errors stop observation with an error. An event overflow does not stop it: the watch continues, and the `summary` record reports the loss.
 
 JSON Lines uses `ready`, `event`, `action_start`, `action_result`, and `summary`. The `summary` record has `incomplete`. It is `true` when the watch lost events, and the record then has the counts `overflows` (kernel queue overflows), `dropped` (events that `edc` dropped), and `rescans` (directories that `edc` read again on macOS). The text summary line shows the same counts after `incomplete:`. The exit code does not change. Child output stays inside `action_result.output`. This watches local filesystems; save operations can coalesce or generate multiple events. It is not a filesystem audit log.
+
+#### Example: update Docker Compose after a change
+
+Put `watch.yaml` in the directory of the Compose project:
+
+```yaml
+directory: .
+rules:
+  - name: compose-up
+    events: [create, modify]
+    match: compose.yaml
+    command: [docker, compose, up, -d]
+    debounce: 1s
+    timeout: 5m
+```
+
+```bash
+edc watch fs --rules /srv/myapp/watch.yaml --dry-run
+edc watch fs --rules /srv/myapp/watch.yaml
+```
+
+`directory: .` is the directory of the rules file. Thus the watch root does not change with the current directory. The action also runs in that directory.
+
+Include `create` in `events`. Many editors write a temporary file and then rename it to the target name. This save gives a `create` event for the target and no `modify` event. A rule with only `modify` does not run for this save.
+
+Set a `timeout` that is longer than the command needs. The default is 30s, and an image pull or a build can take longer. A timeout stops the command, and the watch continues.
+
+#### Run the watch as a service
+
+`edc watch fs` has no background mode. It stops at Ctrl-C, at SIGTERM, or at the end of `--duration`. To keep the watch active after logout and reboot, run it as a systemd service on Linux.
+
+Create `/etc/systemd/system/edc-watch-myapp.service`:
+
+```ini
+[Unit]
+Description=edc watch fs for myapp
+After=docker.service
+Wants=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/edc watch fs --rules /srv/myapp/watch.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then start the service and read its output:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now edc-watch-myapp
+journalctl -u edc-watch-myapp -f
+```
+
+- Without `User=`, the service and its actions run as root. A user who can change `watch.yaml`, `compose.yaml`, or their directory can then make root run another command or apply another Compose configuration. Let only root write these files, their directory, and each parent directory up to `/`, for example with `chown root:root` and `chmod go-w`. If a user can write a parent directory, that user can replace the whole project directory. Thus keep the project under a root-owned path such as `/srv`, not under a home directory. Or set `User=` to an account with only the access that the action needs. An account in the `docker` group also has root access to the host through the Docker daemon.
+- Write the absolute path of `edc` in `ExecStart`. `command -v edc` shows it. `install.sh` uses `/usr/local/bin` on Linux by default.
+- systemd does not read your shell startup files. The default `PATH` is `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`. For a command in another directory, write its absolute path or add an `Environment=PATH=...` line.
+- `systemctl stop` sends SIGTERM. `edc` then stops as it does for Ctrl-C: it ends the active action, prints the summary, and exits.
+- If the watch root is removed or renamed, `edc` stops with exit code `1`. `Restart=always` starts the watch again after `RestartSec`.
+- Without a terminal, `edc` writes one line for each event, also for events that no rule matches. journald keeps these lines. Use `--exclude` or a smaller watch root to keep the journal small. Use `--json <file>` to keep JSON Lines in a file.
+
+On macOS, use a launchd agent with the same command.
 
 ### Route and interfaces
 

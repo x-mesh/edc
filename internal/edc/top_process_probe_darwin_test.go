@@ -126,11 +126,19 @@ func TestDarwinRusageV4FillsRunnableTime(t *testing.T) {
 	deadline := time.Now().Add(50 * time.Millisecond)
 	for time.Now().Before(deadline) {
 	}
+	spun, err := readDarwinProcessRusage(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// macOS 27은 실행 중인 구간을 문맥 전환 때 runnable에 더한다. 읽는 스레드는 읽는 동안에도 실행 중이라, 같은 시점의
+	// runnable이 CPU보다 몇 % 작을 수 있다. 잠들어 전환된 뒤의 runnable은 그 전까지의 CPU를 거의 모두 포함하지만, 그동안 계속
+	// 돈 runtime 스레드의 구간은 빠질 수 있어 1%를 허용한다. flavor를 잘못 넘기면 runnable은 0이다.
+	time.Sleep(20 * time.Millisecond)
 	info, err := readDarwinProcessRusage(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cpu := info.UserTime + info.SystemTime; cpu == 0 || info.RunnableTime < cpu {
+	if cpu := spun.UserTime + spun.SystemTime; cpu == 0 || info.RunnableTime < cpu-cpu/100 {
 		t.Fatalf("runnable %d must include cpu %d", info.RunnableTime, cpu)
 	}
 }

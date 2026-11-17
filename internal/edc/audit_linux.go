@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -102,8 +103,29 @@ func readHostIP6Tables(ctx context.Context, firewall *auditFirewall) {
 	firewall.V6Known, firewall.V6Chains, firewall.V6Rules, firewall.V6Drops = true, v6.Chains, v6.Rules, v6.Drops
 }
 
-// readHostAuditJournal은 logind와 sshd를 따로 동시에 읽는다. 한 번에 읽으면 journalctl이 두 원천을 섞어 정렬해 바쁜 호스트에서 audit의 1초를 넘긴다.
+// readHostAuditJournal은 since 뒤의 기록이 있을 수 있는 파일만 journalctl에 넘긴다.
+// 읽는 동안 journal이 회전하거나 파일이 지워지면 고른 목록이 달라지므로, 그때는 기본 위치 전체를 다시 읽는다.
 func readHostAuditJournal(ctx context.Context, since time.Time) ([]auditJournalEntry, bool, error) {
+	dirs := auditJournalDirs("/")
+	files := auditJournalFiles(dirs, since)
+	entries, limited, err := readHostAuditJournalFiles(ctx, since, files)
+	if files == nil || ctx.Err() != nil {
+		return entries, limited, err
+	}
+	if err == nil && slices.Equal(auditJournalFiles(dirs, since), files) {
+		return entries, limited, nil
+	}
+	entries, limited, fullErr := readHostAuditJournalFiles(ctx, since, nil)
+	if fullErr != nil && err != nil {
+		// 전체를 다시 읽은 까닭이 SKIP 사유에 남아야 느려진 원인을 찾을 수 있다.
+		return nil, false, fmt.Errorf("%w (after reading the selected journal files failed: %v)", fullErr, err)
+	}
+	return entries, limited, fullErr
+}
+
+// readHostAuditJournalFiles는 logind와 sshd를 따로 동시에 읽는다. 한 번에 읽으면 journalctl이 두 원천을 섞어 정렬해 바쁜 호스트에서 audit의 1초를 넘긴다.
+// files가 nil이면 journalctl의 기본 위치를 모두 읽는다.
+func readHostAuditJournalFiles(ctx context.Context, since time.Time, files []string) ([]auditJournalEntry, bool, error) {
 	groups := [][]string{{"systemd-logind"}, auditSSHDIdentifiers}
 	type part struct {
 		entries []auditJournalEntry
@@ -117,6 +139,9 @@ func readHostAuditJournal(ctx context.Context, since time.Time) ([]auditJournalE
 			defer wait.Done()
 			args := []string{"-o", "json", "--no-pager", "--since", fmt.Sprintf("@%d", since.Unix()), "-n", fmt.Sprint(auditJournalMaxEntries),
 				"--output-fields=SYSLOG_IDENTIFIER,MESSAGE_ID,MESSAGE,_PID,LEADER,SESSION_ID"}
+			for _, file := range files {
+				args = append(args, "--file="+file)
+			}
 			for _, identifier := range identifiers {
 				args = append(args, "-t", identifier)
 			}

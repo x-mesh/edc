@@ -112,7 +112,7 @@ By default, `edc ctr` uses Docker Engine API data only. See the [container guide
 
 ## Live monitoring
 
-Follow host resources and the busiest processes in `top`. Switch views to inspect CPU, memory, disk, or network activity; use process filters to focus on a service. `ai` shows local Claude Code and Codex token usage and account limits. `ai sessions` shows which sessions need you.
+Follow host resources and the busiest processes in `top`. Switch views to inspect CPU, memory, disk, or network activity; use process filters to focus on a service. `ai` shows local Claude Code and Codex token usage and account limits. `ai sessions` shows which sessions need you, and `ai agents` shows the Claude Code sessions, subagents, and background shells that run now.
 
 ```bash
 edc top --process postgres
@@ -222,7 +222,6 @@ Configure an inventory and recipe before running these examples. The demo shows 
 
 <a id="name-lookup"></a>
 <a id="connection-check"></a>
-<a id="file-watching-and-actions-linux-and-macos"></a>
 <a id="route-and-interfaces"></a>
 <a id="where-am-i"></a>
 <a id="probe-thresholds"></a>
@@ -242,6 +241,19 @@ edc doctor https://example.com
 ```
 
 [DNS, TCP, TLS, HTTP, doctor, quality, and file watching details →](docs/network.md)
+
+## File watching and actions (Linux and macOS)
+
+Watch a directory and run a command when a file changes:
+
+```bash
+edc watch fs ./src -r --event create,modify --match '**/*.go' --exec 'go test ./...'
+edc watch fs --rules watch.yaml --dry-run
+```
+
+`--rules` reads the rules from a YAML file. To keep the watch active after logout, run it as a systemd service.
+
+**[File watching, rules files, and service setup →](docs/network.md#file-watching-and-actions-linux-and-macos)**
 
 <a id="route-switching"></a>
 <a id="exit-list"></a>

@@ -351,6 +351,21 @@ rules:
 edc watch fs --rules watch.yaml
 ```
 
+| Key | 기본값 | 뜻 |
+| --- | --- | --- |
+| `directory` | 현재 디렉터리 | 감시 루트입니다. 상대 경로는 rule 파일이 있는 디렉터리 기준이며, 명령줄의 directory 인자가 우선합니다. |
+| `recursive` | `false` | 하위 디렉터리까지 감시합니다. 명령줄에 `-r`이나 `--recursive`를 주면 그 값이 우선합니다. |
+| `exclude` | 없음 | 제외할 glob입니다. 기본 제외 목록과 `--exclude`에 더해집니다. |
+| `rules[].name` | `rule-N` | 출력과 `EDC_WATCH_RULE`에 쓰는 rule 이름입니다. 이름은 서로 달라야 합니다. |
+| `rules[].events` | 네 가지 이벤트 모두 | action을 실행할 이벤트입니다. |
+| `rules[].match` | `**` | 감시 루트 기준 glob입니다. |
+| `rules[].command` | 없음, 필수 | action으로 실행할 argv입니다. |
+| `rules[].cwd` | 감시 루트 | action을 실행할 디렉터리입니다. 상대 경로는 감시 루트 기준이고, 디렉터리가 있어야 합니다. |
+| `rules[].debounce` | `--debounce`, 없으면 `200ms` | `500ms` 같은 Go duration입니다. |
+| `rules[].timeout` | `--timeout`, 없으면 `30s` | `5m` 같은 Go duration입니다. |
+
+rule 파일에는 rule을 최대 128개, 크기는 최대 1 MiB까지 둘 수 있습니다. `--rules`와 `--exec`는 함께 쓸 수 없습니다. 알 수 없는 key가 있으면 감시를 시작하기 전에 오류로 멈춥니다.
+
 `--exec`는 `/bin/sh -c`로 실행하고 YAML의 `command`는 shell 없이 argv 그대로 실행합니다. shell alias는 불러오지 않으므로 실행 가능한 command 이름을 사용합니다. 파일명은 command 문자열에 자동 삽입하지 않으며 `EDC_WATCH_ROOT`(절대 경로), `EDC_WATCH_PATH`(상대 경로), `EDC_WATCH_EVENT`, `EDC_WATCH_RULE` 환경변수로 전달합니다. shell에서 파일명을 사용할 때는 `"$EDC_WATCH_PATH"`처럼 인용합니다.
 
 전체 action은 한 번에 하나씩 실행합니다. 기본 debounce는 200ms이며 rule별 마지막 이벤트를 기준으로 연속 이벤트를 묶습니다. 실행 중 추가 이벤트는 rule당 한 건으로 묶어서 실행 종료 후 다시 실행합니다. `--dry-run`은 일치한 action을 표시하되 실행하지 않습니다. 커맨드가 감시 대상 파일을 변경하면 다시 조건에 맞을 수 있으므로 출력 경로를 제외하거나 match 범위를 좁힙니다.
@@ -358,6 +373,70 @@ edc watch fs --rules watch.yaml
 action의 stdin은 연결하지 않습니다. 기본 timeout은 30s이며 `--debounce`와 `--timeout`은 rule에 값이 없을 때의 기본값입니다. stdout·stderr를 합쳐 최대 64 KiB까지 결과에 표시합니다. 실패나 timeout 뒤에도 감시는 계속하며, 실패한 action이 있으면 감시 종료 코드가 `1`입니다. `Ctrl-C`나 `--duration` 만료 시 실행 중인 action의 process group을 종료하고 대기 중인 action은 실행하지 않습니다. 변경이 없는 정상 감시는 종료 코드 `0`, 옵션·출력 오류는 `2`입니다. 감시 루트 삭제·이름 변경과 watcher 오류는 오류로 종료합니다. 이벤트 overflow는 감시를 멈추지 않고, `summary`가 잃은 수를 알립니다.
 
 `--json`은 `ready`, `event`, `action_start`, `action_result`, `summary`를 JSON Lines로 씁니다. `summary`에는 `incomplete`가 있습니다. 감시가 이벤트를 놓쳤으면 `true`이고, 그때 `overflows`(커널 큐가 넘친 횟수), `dropped`(`edc`가 버린 이벤트 수), `rescans`(macOS에서 다시 훑은 디렉터리 수)가 함께 나옵니다. 텍스트 요약 줄도 `불완전:` 뒤에 같은 수를 보입니다. 종료 코드는 바뀌지 않습니다. action 출력은 `action_result.output` 안에 있어 JSON stream을 섞지 않습니다. 감시는 로컬 filesystem을 대상으로 하며 저장 방식에 따라 이벤트가 합쳐지거나 여러 번 발생할 수 있습니다. 모든 파일 작업을 기록하는 audit 기능은 아닙니다.
+
+#### 예시: 변경되면 Docker Compose 다시 적용
+
+Compose 프로젝트 디렉터리에 `watch.yaml`을 둡니다.
+
+```yaml
+directory: .
+rules:
+  - name: compose-up
+    events: [create, modify]
+    match: compose.yaml
+    command: [docker, compose, up, -d]
+    debounce: 1s
+    timeout: 5m
+```
+
+```bash
+edc watch fs --rules /srv/myapp/watch.yaml --dry-run
+edc watch fs --rules /srv/myapp/watch.yaml
+```
+
+`directory: .`는 rule 파일이 있는 디렉터리를 뜻하므로, 어느 디렉터리에서 실행해도 같은 곳을 감시합니다. action도 그 디렉터리에서 실행합니다.
+
+`events`에는 `create`를 넣습니다. 편집기 중에는 임시 파일에 쓴 뒤 대상 이름으로 바꿔 저장하는 것이 많습니다. 이렇게 저장하면 대상 파일에 `modify` 없이 `create` 이벤트만 생기므로, `modify`만 지정한 rule은 실행되지 않습니다.
+
+`timeout`은 명령에 필요한 시간보다 길게 잡습니다. 기본값은 30초인데, 이미지를 받거나 빌드하면 그보다 오래 걸릴 수 있습니다. 시간을 넘기면 명령을 멈추고 감시는 계속합니다.
+
+#### 서비스로 계속 실행하기
+
+`edc watch fs`에는 백그라운드 실행 옵션이 없습니다. Ctrl-C나 SIGTERM을 받거나 `--duration`이 끝나면 멈춥니다. 로그아웃이나 재부팅 뒤에도 감시를 이어 가려면 Linux에서는 systemd 서비스로 실행합니다.
+
+`/etc/systemd/system/edc-watch-myapp.service`를 만듭니다.
+
+```ini
+[Unit]
+Description=edc watch fs for myapp
+After=docker.service
+Wants=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/edc watch fs --rules /srv/myapp/watch.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+서비스를 켜고 출력을 확인합니다.
+
+```bash
+systemctl daemon-reload
+systemctl enable --now edc-watch-myapp
+journalctl -u edc-watch-myapp -f
+```
+
+- `User=`가 없으면 서비스와 action이 root로 실행됩니다. 그러면 `watch.yaml`, `compose.yaml`이나 그 디렉터리를 바꿀 수 있는 사용자가 root로 다른 명령을 실행하거나 다른 Compose 구성을 적용하게 할 수 있습니다. 이 파일과 그 디렉터리, `/`까지의 모든 상위 디렉터리는 `chown root:root`와 `chmod go-w`처럼 root만 쓸 수 있게 합니다. 상위 디렉터리에 쓸 수 있는 사용자는 프로젝트 디렉터리를 통째로 바꿔 놓을 수 있기 때문입니다. 그러므로 프로젝트는 홈 디렉터리가 아니라 `/srv`처럼 root가 소유한 경로에 둡니다. 또는 `User=`로 action에 필요한 권한만 가진 계정을 지정합니다. `docker` 그룹에 속한 계정도 Docker daemon을 거쳐 호스트의 root 권한을 얻습니다.
+- `ExecStart`에는 `edc`의 절대 경로를 씁니다. `command -v edc`로 확인할 수 있고, `install.sh`는 Linux에서 기본으로 `/usr/local/bin`에 설치합니다.
+- systemd는 셸 시작 파일을 읽지 않습니다. 기본 `PATH`는 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`이므로, 다른 디렉터리에 있는 명령은 절대 경로로 쓰거나 `Environment=PATH=...` 줄을 추가합니다.
+- `systemctl stop`은 SIGTERM을 보냅니다. 이때 `edc`는 Ctrl-C와 같이 실행 중인 action을 끝내고 요약을 출력한 뒤 종료합니다.
+- 감시 루트가 지워지거나 이름이 바뀌면 `edc`는 종료 코드 `1`로 멈춥니다. `Restart=always`가 `RestartSec` 뒤에 감시를 다시 시작합니다.
+- 터미널이 없으면 `edc`는 rule에 맞지 않는 이벤트도 한 줄씩 출력하고, journald가 이 줄을 모두 보관합니다. journal이 커지지 않게 하려면 `--exclude`나 더 좁은 감시 루트를 씁니다. JSON Lines를 파일로 남기려면 `--json <file>`을 씁니다.
+
+macOS에서는 같은 명령을 launchd agent로 실행합니다.
 
 ### 경로와 interface
 

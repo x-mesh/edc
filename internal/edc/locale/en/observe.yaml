@@ -102,7 +102,7 @@ observe:
         waiting: "waiting"
         ended: "ended"
       reason:
-        permission: "permission"
+        permission: "approval"
         input: "input"
         question: "question"
         ask: "question"
@@ -110,8 +110,24 @@ observe:
         started: "started"
         done: "done"
         idle: "idle"
+        background: "bg"
         exited: "exited"
         stale: "stale"
+    agents:
+      usage: "usage: edc ai agents [<id>] [-f] [--count N] [--json <path|->]"
+      none: "No Claude Code session, agent, or background shell is running now."
+      no_activity: "No activity yet."
+      not_found: "No session, agent, or shell in %[2]s matches %[1]q."
+      ambiguous: "%q matches %d items. Give more of the ID:"
+      follow_needs_id: "-f/--follow needs an ID: edc ai agents <id> -f"
+      state:
+        running: "running"
+        idle: "idle"
+        stopped: "stopped"
+        completed: "completed"
+        failed: "failed"
+        killed: "killed"
+        expired: "expired"
 
   watch:
     no_samples_duration: "No sample completed before the duration ended; target health is unknown."

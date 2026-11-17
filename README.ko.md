@@ -112,7 +112,7 @@ edc changes --since 2h
 
 ## 실시간 관측
 
-`top`에서 호스트 자원과 바쁜 프로세스를 관측합니다. CPU·메모리·디스크·네트워크 보기로 전환하고, process 필터로 서비스 하나에 집중합니다. `ai`에서는 로컬 Claude Code·Codex의 token 사용량과 계정 한도를 확인합니다. `ai sessions`는 입력이 필요한 세션을 보여 줍니다.
+`top`에서 호스트 자원과 바쁜 프로세스를 관측합니다. CPU·메모리·디스크·네트워크 보기로 전환하고, process 필터로 서비스 하나에 집중합니다. `ai`에서는 로컬 Claude Code·Codex의 token 사용량과 계정 한도를 확인합니다. `ai sessions`는 입력이 필요한 세션을, `ai agents`는 지금 도는 Claude Code 세션, subagent, 백그라운드 shell을 보여 줍니다.
 
 ```bash
 edc top --process postgres
@@ -222,7 +222,6 @@ edc remote --dry-run --group <group> --recipe <recipe.yaml>
 
 <a id="이름-조회"></a>
 <a id="연결-확인"></a>
-<a id="파일-감시와-action-linuxmacos"></a>
 <a id="경로와-interface"></a>
 <a id="어디에-있는가"></a>
 <a id="probe-임계값"></a>
@@ -242,6 +241,19 @@ edc doctor https://example.com
 ```
 
 [DNS·TCP·TLS·HTTP·doctor·quality·파일 감시 자세히 보기 →](docs/network.ko.md)
+
+## 파일 감시와 action (Linux·macOS)
+
+디렉터리를 감시하다가 파일이 바뀌면 명령을 실행합니다.
+
+```bash
+edc watch fs ./src -r --event create,modify --match '**/*.go' --exec 'go test ./...'
+edc watch fs --rules watch.yaml --dry-run
+```
+
+`--rules`는 YAML 파일에서 rule을 읽습니다. 로그아웃한 뒤에도 감시를 이어 가려면 systemd 서비스로 실행합니다.
+
+**[파일 감시·rule 파일·서비스 설정 자세히 보기 →](docs/network.ko.md#파일-감시와-action-linuxmacos)**
 
 <a id="route-전환"></a>
 <a id="출구-목록"></a>

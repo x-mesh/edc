@@ -625,6 +625,7 @@ command:
       all: "終了したセッションも含める"
       bell: "セッションが入力を求めたら端末のベルを鳴らす"
       sessions_count: "2 秒ごとに表示するスナップショット数。0 は端末でライブ画面を開く"
+      follow: "新しい活動を出し続ける。shell は終わると止まる"
     notes:
       - "terminal ではこの host の区間別 token 表をダッシュボードで開きます。"
       - "端末の幅が 131 列以上なら、右側に edc ai sessions のセッション一覧を表示します。"
@@ -642,8 +643,10 @@ command:
       - "edc ai hooks install は Claude Code の settings.json と Codex の hooks.json に edc ai hook を追加します。"
       - "hook は履歴 DB の隣の ai-events.jsonl に 1 行ずつ記録します。uninstall は edc の項目だけを外します。"
       - "edc ai sessions はセッションごとに入力待ち、失敗、作業中、待機を表示します。--needs は前の二つだけです。"
-      - "端末では画面を開いたまま 2 秒ごとに新しいイベントを読みます。n 入力待ちのみ、a 終了を含む、q 終了。"
+      - "端末では画面を開いたまま 2 秒ごとに新しいイベントを読みます。enter 活動、n 入力待ちのみ、a 終了を含む、q 終了。"
       - "Codex は config.toml に hooks = true があるときだけ hook を実行します。install 前に始めたセッションには開始イベントがありません。"
+      - "edc ai agents は実行中の Claude Code セッション、subagent、バックグラウンド shell を表示します。hook は不要です。"
+      - "edc ai agents <id> は項目一つの活動か shell の出力を表示します。-f は新しい行を追跡します。"
   snapshot:
     summary: "report diff で比べる host の状態を 1 つの report に保存"
     option:

@@ -1,10 +1,12 @@
 package edc
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
@@ -196,5 +198,58 @@ func TestCompletionOffersSmartForWatchFS(t *testing.T) {
 				t.Errorf("%s watch fs completion line misses %s", name, option)
 			}
 		}
+	}
+}
+
+// edc ai는 하위 명령과 옵션을 보이고, agents 뒤에서는 지금 도는 작업의 ID를 edc completion ai-tasks에서 받는다.
+func TestCompletionOffersAISubcommands(t *testing.T) {
+	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
+		for _, expected := range []string{"sessions agents hooks statusline", "edc completion ai-tasks", "--follow", "--needs", "install uninstall"} {
+			if !strings.Contains(script, expected) {
+				t.Errorf("%s completion does not mention %q", name, expected)
+			}
+		}
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "edc")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\n[ \"$1 $2\" = \"completion ai-tasks\" ] && printf 'b1zokyalg:shell logs\\na6a7881dd:agent review\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ words, want string }{
+		{`(edc ai "")`, "agents"},
+		{`(edc ai ag)`, "agents"},
+		{`(edc ai agents b1)`, "b1zokyalg"},
+		{`(edc ai agents a6 -)`, "--follow"},
+		{`(edc ai hooks "")`, "install"},
+		{`(edc ai sessions --)`, "--needs"},
+	} {
+		command := "PATH=" + dir + ":$PATH\n" + bashCompletion + "\nCOMP_WORDS=" + row.words + "\nCOMP_CWORD=$((${#COMP_WORDS[@]}-1))\n_edc\nprintf '%s\\n' \"${COMPREPLY[@]}\"\n"
+		output, err := exec.Command("bash", "-c", command).CombinedOutput()
+		if err != nil {
+			t.Fatalf("completion error for %s: %v: %s", row.words, err, output)
+		}
+		if !strings.Contains(string(output), row.want) {
+			t.Errorf("bash completion for %s = %q, want %q", row.words, output, row.want)
+		}
+	}
+	var buffer strings.Builder
+	writeCompletionAITasks(&buffer, t.TempDir(), time.Now())
+	if buffer.Len() != 0 {
+		t.Fatalf("ai-tasks without transcripts = %q", buffer.String())
+	}
+}
+
+// edc completion ai-tasks는 도는 agent, shell, monitor를 "ID:종류 설명"으로 한 줄씩 쓰고 세션은 쓰지 않는다.
+func TestWriteCompletionAITasksListsRunningWork(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	output := filepath.Join(outputs, "b1.output")
+	testWrite(t, output, "")
+	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "run the\ttests", output, now)...)
+	testSessionFile(t, claudeDir, "88888888-0000-0000-0000-000000000000", append(lines, testAgentLines[len(testAgentLines)-1]), now)
+	var buffer strings.Builder
+	writeCompletionAITasks(&buffer, claudeDir, now)
+	if got := buffer.String(); got != "b1:shell run the tests\n" {
+		t.Fatalf("ai-tasks = %q", got)
 	}
 }

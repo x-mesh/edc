@@ -97,7 +97,7 @@ func darwinGoTLSProbeScript(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read probe Go build info: %w", err)
 	}
-	if !traceTLSGoVersions[info.GoVersion] {
+	if !darwinTLSGoVersions[info.GoVersion] {
 		return "", fmt.Errorf("probe requires a validated Go ABI: %s", info.GoVersion)
 	}
 	file, err := macho.Open(path)

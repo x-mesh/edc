@@ -222,7 +222,6 @@ edc remote --dry-run --group <group> --recipe <recipe.yaml>
 
 <a id="이름-조회"></a>
 <a id="연결-확인"></a>
-<a id="파일-감시와-action-linuxmacos"></a>
 <a id="경로와-interface"></a>
 <a id="어디에-있는가"></a>
 <a id="probe-임계값"></a>
@@ -242,6 +241,19 @@ edc doctor https://example.com
 ```
 
 [DNS·TCP·TLS·HTTP·doctor·quality·파일 감시 자세히 보기 →](docs/network.ko.md)
+
+## 파일 감시와 action (Linux·macOS)
+
+디렉터리를 감시하다가 파일이 바뀌면 명령을 실행합니다.
+
+```bash
+edc watch fs ./src -r --event create,modify --match '**/*.go' --exec 'go test ./...'
+edc watch fs --rules watch.yaml --dry-run
+```
+
+`--rules`는 YAML 파일에서 rule을 읽습니다. 로그아웃한 뒤에도 감시를 이어 가려면 systemd 서비스로 실행합니다.
+
+**[파일 감시·rule 파일·서비스 설정 자세히 보기 →](docs/network.ko.md#파일-감시와-action-linuxmacos)**
 
 <a id="route-전환"></a>
 <a id="출구-목록"></a>

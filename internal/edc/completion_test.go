@@ -238,3 +238,18 @@ func TestCompletionOffersAISubcommands(t *testing.T) {
 		t.Fatalf("ai-tasks without transcripts = %q", buffer.String())
 	}
 }
+
+// edc completion ai-tasks는 도는 agent, shell, monitor를 "ID:종류 설명"으로 한 줄씩 쓰고 세션은 쓰지 않는다.
+func TestWriteCompletionAITasksListsRunningWork(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	output := filepath.Join(outputs, "b1.output")
+	testWrite(t, output, "")
+	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "run the\ttests", output, now)...)
+	testSessionFile(t, claudeDir, "88888888-0000-0000-0000-000000000000", append(lines, testAgentLines[len(testAgentLines)-1]), now)
+	var buffer strings.Builder
+	writeCompletionAITasks(&buffer, claudeDir, now)
+	if got := buffer.String(); got != "b1:shell run the tests\n" {
+		t.Fatalf("ai-tasks = %q", got)
+	}
+}

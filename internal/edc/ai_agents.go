@@ -1479,8 +1479,15 @@ func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now ti
 		end.offer(log.task.Expires, string(aiTaskExpired))
 	}
 	if !end.at.IsZero() {
+		// 끝 시각보다 늦게 기록된 이벤트는 끝난 뒤의 것이라 쓰지 않는다.
+		kept := steps[:0]
+		for _, step := range steps {
+			if !step.At.After(end.at) {
+				kept = append(kept, step)
+			}
+		}
 		log.done = true
-		steps = append(steps, aiAgentStep{At: end.at, Kind: "stopped", Text: end.state})
+		steps = append(kept, aiAgentStep{At: end.at, Kind: "stopped", Text: end.state})
 	}
 	return steps, err
 }

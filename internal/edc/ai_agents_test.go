@@ -897,7 +897,7 @@ func TestAITaskMonitorEndings(t *testing.T) {
 	for _, id := range []string{"same", "other", "late", "edge", "events", "stopped-late", "stopped-twice", "stopped-in-agents"} {
 		lines = append(lines, testMonitorLaunch(id, "u-"+id, id, 5*time.Minute, start)...)
 	}
-	lines = append(lines, testTaskStop("same", start.Add(time.Minute)))
+	lines = append(lines, testTaskStop("same", start.Add(time.Minute)), testMonitorEvent("same", "after the stop", start.Add(90*time.Second)))
 	lines = append(lines, fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>late</task-id>\n<status>completed</status>\n<summary>stream ended</summary>\n</task-notification>"}`, deadline.Add(time.Minute).UTC().Format(time.RFC3339)))
 	lines = append(lines, testMonitorEvent("events", "ci: pending", start.Add(30*time.Second)), userCopy("events", "ci: pending", start.Add(33*time.Second)),
 		testMonitorEvent("events", "ci: pending", start.Add(60*time.Second)), userCopy("events", "ci: pending", start.Add(63*time.Second)))
@@ -939,6 +939,7 @@ func TestAITaskMonitorEndings(t *testing.T) {
 	monitor := func(id string) aiTask {
 		return aiTask{Kind: "monitor", ID: id, Transcript: path, Expires: deadline}
 	}
+	// TaskStop 뒤에 기록된 이벤트는 활동에 넣지 않는다.
 	if got, done := testMonitorActivity(t, claudeDir, monitor("same"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ killed"}) {
 		t.Errorf("same transcript TaskStop: %q done=%v", got, done)
 	}

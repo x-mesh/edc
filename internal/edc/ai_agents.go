@@ -525,10 +525,11 @@ func (transcript *aiTranscript) indexStarted(line []byte) bool {
 	return true
 }
 
-// aiNotification은 알림 한 블록이다. block은 같은 알림이 queue-operation 줄과 user 줄에 겹쳐 올 때 하나만 쓰려고 남긴다.
+// aiNotification은 알림 한 블록이다.
+// source는 알림이 온 줄의 type이다. 세션 기록은 같은 알림을 queue-operation 줄과 user 줄에 겹쳐 받고, agent 기록은 user 줄로만 받는다.
 type aiNotification struct {
 	at     time.Time
-	block  string
+	source string
 	fields map[string]string
 }
 
@@ -561,7 +562,7 @@ func aiNotifications(line []byte) []aiNotification {
 		for _, match := range aiNotificationTag.FindAllStringSubmatch(block, -1) {
 			fields[match[1]] = html.UnescapeString(strings.TrimSpace(match[2]))
 		}
-		notifications = append(notifications, aiNotification{at: entry.Timestamp, block: block, fields: fields})
+		notifications = append(notifications, aiNotification{at: entry.Timestamp, source: entry.Type, fields: fields})
 	}
 	return notifications
 }
@@ -1192,6 +1193,13 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 	files := append(aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*.jsonl"), now),
 		aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*", "subagents", "agent-*.jsonl"), now)...)
 	reader.prepare(files)
+	// TaskStop은 다른 기록이 띄운 작업도 멈출 수 있다. 목록과 같이 모든 기록의 결과를 모은다.
+	halted := map[string]bool{}
+	for _, file := range files {
+		for id := range reader.read(file.path, file.stat).halted {
+			halted[id] = true
+		}
+	}
 	for _, file := range files {
 		transcript := reader.read(file.path, file.stat)
 		session := strings.TrimSuffix(filepath.Base(file.path), ".jsonl")
@@ -1206,11 +1214,18 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 				continue
 			}
 			state := aiTaskRunning
-			if ended, ok := aiShellEnd(task.output); task.kind == "shell" && ok {
+			expired := task.kind == "monitor" && !task.deadline.IsZero()
+			switch ended, ok := aiShellEnd(task.output); {
+			case task.kind == "shell" && ok:
 				state = ended
-			} else if task.status != "" {
+			case task.status != "" && expired && task.ended.After(task.deadline):
+				// 만료 시각 뒤에 기록된 끝 알림보다 만료가 먼저다.
+				state = aiTaskExpired
+			case task.status != "":
 				state = aiTaskState(task.status)
-			} else if task.kind == "monitor" && !task.deadline.IsZero() && now.After(task.deadline) {
+			case halted[task.id]:
+				state = aiTaskKilled
+			case expired && !now.Before(task.deadline):
 				state = aiTaskExpired
 			}
 			candidates = append(candidates, aiTask{Kind: task.kind, ID: task.id, Session: session, Parent: parent, Cwd: transcript.cwd,
@@ -1329,10 +1344,10 @@ type aiTaskLog struct {
 	offset int64
 	// pending은 shell 출력에서 아직 줄바꿈이 오지 않은 끝부분이다.
 	pending []byte
-	// lastBlock은 monitor 활동에서 마지막으로 쓴 알림이다.
-	lastBlock string
-	stopped   bool
-	done      bool
+	// queued는 monitor 활동에서 queue-operation 사본을 본 적이 있는지다. 그 뒤로는 user 사본을 건너뛴다.
+	queued  bool
+	stopped bool
+	done    bool
 }
 
 func newAITaskLog(task aiTask) *aiTaskLog {
@@ -1359,7 +1374,7 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 		return nil, nil
 	}
 	if log.task.Kind == "monitor" {
-		return log.readMonitor(now)
+		return log.readMonitor(reader, claudeDir, now)
 	}
 	if log.task.Kind != "shell" {
 		stopped := log.stopped
@@ -1383,9 +1398,25 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 	return steps, nil
 }
 
+// haltedTasks는 aiTaskWindow 안의 세션과 agent 기록에서 TaskStop으로 멈춘 작업 ID와 그 시각이다. 실시간 화면은 목록을 읽을 때
+// 이미 색인한 기록을 그대로 쓰므로 거의 비용이 없다.
+func (reader *aiTaskReader) haltedTasks(claudeDir string, now time.Time) map[string]time.Time {
+	sessions := reader.sessionFiles(claudeDir, now)
+	files := append(sessions, agentFiles(sessions, now)...)
+	reader.prepare(files)
+	halted := map[string]time.Time{}
+	for _, file := range files {
+		for id, at := range reader.read(file.path, file.stat).halted {
+			halted[id] = at
+		}
+	}
+	return halted
+}
+
 // readMonitor는 monitor를 띄운 기록에서 그 monitor의 이벤트를 읽는다. 같은 알림이 queue-operation 줄과 user 줄에 겹쳐 오므로
-// 바로 앞 블록과 같으면 건너뛴다. 끝 알림, 만료 이벤트, TaskStop, deadline 가운데 먼저 오는 것에서 멈춘다.
-func (log *aiTaskLog) readMonitor(now time.Time) ([]aiAgentStep, error) {
+// queue-operation 사본을 본 기록에서는 user 사본을 건너뛴다. 두 사본의 시각은 몇 초씩 달라 시각으로는 가를 수 없다.
+// 끝 알림, 만료 이벤트, TaskStop, deadline 가운데 먼저 오는 것에서 멈춘다. 다른 기록의 TaskStop도 본다.
+func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now time.Time) ([]aiAgentStep, error) {
 	var steps []aiAgentStep
 	stop := func(at time.Time, text string) {
 		if !log.done {
@@ -1408,11 +1439,18 @@ func (log *aiTaskLog) readMonitor(now time.Time) ([]aiAgentStep, error) {
 		}
 		for _, notification := range aiNotifications(line) {
 			fields := notification.fields
-			if fields["task-id"] != log.task.ID || notification.block == log.lastBlock {
+			if fields["task-id"] != log.task.ID {
 				continue
 			}
-			log.lastBlock = notification.block
+			if notification.source == "queue-operation" {
+				log.queued = true
+			} else if log.queued {
+				continue
+			}
 			switch {
+			case fields["status"] != "" && !log.task.Expires.IsZero() && notification.at.After(log.task.Expires):
+				// 만료 시각 뒤에 기록된 끝 알림보다 만료가 먼저다.
+				stop(log.task.Expires, string(aiTaskExpired))
 			case fields["status"] != "":
 				stop(notification.at, strings.TrimSpace(fields["status"]+" "+fields["summary"]))
 			case fields["event"] != "":
@@ -1424,7 +1462,13 @@ func (log *aiTaskLog) readMonitor(now time.Time) ([]aiAgentStep, error) {
 		}
 	})
 	log.offset = offset
-	if !log.task.Expires.IsZero() && now.After(log.task.Expires) {
+	if !log.done && reader != nil {
+		if at, ok := reader.haltedTasks(claudeDir, now)[log.task.ID]; ok {
+			stop(at, string(aiTaskKilled))
+		}
+	}
+	// 정확히 만료 시각부터 끝난 것으로 본다. 목록도 그 시각부터 monitor를 뺀다.
+	if !log.task.Expires.IsZero() && !now.Before(log.task.Expires) {
 		stop(log.task.Expires, string(aiTaskExpired))
 	}
 	return steps, err

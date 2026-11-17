@@ -864,3 +864,96 @@ func TestClassifyAILine(t *testing.T) {
 		}
 	}
 }
+
+func testTaskStop(id string, at time.Time) string {
+	return fmt.Sprintf(`{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","timestamp":%q,"message":{"content":[{"tool_use_id":"s","type":"tool_result","content":"Successfully stopped task: %s"}]},"toolUseResult":{"message":"Successfully stopped task: %s (cmd)","task_id":%q,"task_type":"local_bash"}}`, at.UTC().Format(time.RFC3339), id, id, id)
+}
+
+func testMonitorActivity(t *testing.T, claudeDir string, task aiTask, now time.Time) ([]string, bool) {
+	t.Helper()
+	log := newAITaskLog(task)
+	steps, err := log.read(newAITaskReaderWithout(), claudeDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, step := range steps {
+		got = append(got, aiAgentStepText(step))
+	}
+	return got, log.done
+}
+
+// Monitor 활동은 같은 기록의 TaskStop, 다른 기록(agent)의 TaskStop, 만료 시각 뒤의 끝 알림, 정확한 만료 시각에서 멈춘다.
+// 같은 알림의 user 사본은 건너뛰고, 내용이 같아도 따로 온 이벤트는 모두 남긴다. ID 검색의 상태도 같은 규칙을 따른다.
+func TestAITaskMonitorEndings(t *testing.T) {
+	claudeDir := t.TempDir()
+	start := time.Now().Truncate(time.Second).Add(-10 * time.Minute)
+	deadline := start.Add(5 * time.Minute)
+	session := "77777777-0000-0000-0000-000000000000"
+	userCopy := func(id, event string, at time.Time) string {
+		return fmt.Sprintf(`{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","timestamp":%q,"message":{"content":"[SYSTEM NOTIFICATION]\n<task-notification>\n<task-id>%s</task-id>\n<event>%s</event>\n</task-notification>"}}`, at.UTC().Format(time.RFC3339), id, event)
+	}
+	lines := []string{testAgentLines[0]}
+	for _, id := range []string{"same", "other", "late", "edge", "events"} {
+		lines = append(lines, testMonitorLaunch(id, "u-"+id, id, 5*time.Minute, start)...)
+	}
+	lines = append(lines, testTaskStop("same", start.Add(time.Minute)))
+	lines = append(lines, fmt.Sprintf(`{"type":"queue-operation","timestamp":%q,"content":"<task-notification>\n<task-id>late</task-id>\n<status>completed</status>\n<summary>stream ended</summary>\n</task-notification>"}`, deadline.Add(time.Minute).UTC().Format(time.RFC3339)))
+	lines = append(lines, testMonitorEvent("events", "ci: pending", start.Add(30*time.Second)), userCopy("events", "ci: pending", start.Add(33*time.Second)),
+		testMonitorEvent("events", "ci: pending", start.Add(60*time.Second)), userCopy("events", "ci: pending", start.Add(63*time.Second)))
+	lines = append(lines, testAgentLines[len(testAgentLines)-1])
+	path := testSessionFile(t, claudeDir, session, lines, time.Now())
+	testAgentFile(t, claudeDir, session, "a999", append(slices.Clone(testAgentLines), testTaskStop("other", start.Add(2*time.Minute))), "", time.Now())
+
+	states := map[string]aiTaskState{}
+	for _, id := range []string{"same", "other", "late", "edge", "events"} {
+		for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, id, start.Add(3*time.Minute)) {
+			states[task.ID] = task.State
+		}
+	}
+	want := map[string]aiTaskState{"same": aiTaskKilled, "other": aiTaskKilled, "late": aiTaskExpired, "edge": aiTaskRunning, "events": aiTaskRunning}
+	for id, state := range want {
+		if states[id] != state {
+			t.Errorf("%s state = %q, want %q", id, states[id], state)
+		}
+	}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "edge", deadline) {
+		if task.State != aiTaskExpired {
+			t.Errorf("edge at its deadline = %q, want expired", task.State)
+		}
+	}
+
+	monitor := func(id string) aiTask {
+		return aiTask{Kind: "monitor", ID: id, Transcript: path, Expires: deadline}
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("same"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ killed"}) {
+		t.Errorf("same transcript TaskStop: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("other"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ killed"}) {
+		t.Errorf("agent transcript TaskStop: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("late"), start.Add(3*time.Minute)); !done || !slices.Equal(got, []string{"■ expired"}) {
+		t.Errorf("completion after the deadline: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("edge"), deadline); !done || !slices.Equal(got, []string{"■ expired"}) {
+		t.Errorf("at the deadline: %q done=%v", got, done)
+	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("events"), start.Add(3*time.Minute)); done || !slices.Equal(got, []string{"◷ ci: pending", "◷ ci: pending"}) {
+		t.Errorf("repeated events: %q done=%v", got, done)
+	}
+}
+
+// edc completion ai-tasks는 도는 agent, shell, monitor를 "ID:종류 설명"으로 한 줄씩 쓰고 세션은 쓰지 않는다.
+func TestWriteCompletionAITasksListsRunningWork(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	output := filepath.Join(outputs, "b1.output")
+	testWrite(t, output, "")
+	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "run the\ttests", output, now)...)
+	testSessionFile(t, claudeDir, "88888888-0000-0000-0000-000000000000", append(lines, testAgentLines[len(testAgentLines)-1]), now)
+	var buffer strings.Builder
+	writeCompletionAITasks(&buffer, claudeDir, now)
+	if got := buffer.String(); got != "b1:shell run the tests\n" {
+		t.Fatalf("ai-tasks = %q", got)
+	}
+}

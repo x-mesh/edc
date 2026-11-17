@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 func runCompletion(args []string) int {
@@ -37,9 +38,30 @@ func runCompletion(args []string) int {
 			configDir = ""
 		}
 		return writeCompletionGroupsWithPath(os.Stdout, cwd, configDir, configuredString(activeConfig.Defaults.Remote.Inventory, ""))
+	case "ai-tasks":
+		// 완성 script만 부르는 내부 하위 명령이다. usage 문구는 script가 읽으므로 고정해 두고 여기에 넣지 않는다.
+		home, _ := os.UserHomeDir()
+		return writeCompletionAITasks(os.Stdout, aiClaudeDir(home), time.Now())
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
+	}
+	return 0
+}
+
+// writeCompletionAITasks는 지금 도는 agent, shell, monitor를 "ID:설명" 한 줄씩 쓴다. zsh는 _describe로 설명을 보이고
+// bash는 ID만 잘라 쓴다. 세션은 ID가 길고 edc ai sessions에서 고르므로 넣지 않는다.
+func writeCompletionAITasks(writer io.Writer, claudeDir string, now time.Time) int {
+	tasks, err := newAITaskReader().list(claudeDir, now)
+	if err != nil {
+		return 0
+	}
+	for _, task := range tasks {
+		if task.Kind == "session" {
+			continue
+		}
+		description := strings.Join(strings.Fields(task.Kind+" "+task.Description), " ")
+		fmt.Fprintf(writer, "%s:%s\n", task.ID, description)
 	}
 	return 0
 }
@@ -99,6 +121,12 @@ _edc_remote_groups() {
   local -a groups
   groups=(${(f)"$(edc completion groups 2>/dev/null)"})
   (( ${#groups} )) && _describe -t groups 'inventory group' groups
+}
+
+_edc_ai_tasks() {
+  local -a tasks
+  tasks=(${(f)"$(edc completion ai-tasks 2>/dev/null)"})
+  (( ${#tasks} )) && _describe -t tasks 'running agent, shell, or monitor' tasks
 }
 
 # exits.yaml은 로그인마다 바뀌지 않는 로컬 파일이라, remote group처럼 edc를 부르지 않고 grep으로
@@ -311,6 +339,22 @@ _edc() {
             '--connect-timeout[SSH 연결 제한 시간]:duration' \
             '--ttl[자동 종료까지의 시간]:duration' \
             '1::subcommand:(list up test down)'
+          ;;
+        ai)
+          case $words[2] in
+            sessions)
+              _arguments '--needs[입력이 필요하거나 실패한 세션만]' '--all[종료된 세션도 포함]' '--bell[입력 요청 때 터미널 벨]' '--count[2초마다 출력할 표본 수]:count' '--json[JSON 출력 경로, stdout은 -]:path:_files'
+              ;;
+            agents)
+              _arguments '(-f --follow)'{-f,--follow}'[새 활동을 계속 출력]' '--count[2초마다 출력할 표본 수]:count' '--json[JSON 출력 경로, stdout은 -]:path:_files' '2::agent, shell, or monitor:_edc_ai_tasks'
+              ;;
+            hooks|statusline)
+              _arguments '2:action:(install uninstall)'
+              ;;
+            *)
+              _arguments '1:subcommand:(sessions agents hooks statusline)' '--poll[한도 조회 간격]:duration' '--count[출력할 표본 수]:count' '--json[JSON 출력 경로, stdout은 -]:path:_files'
+              ;;
+          esac
           ;;
         completion)
           _arguments '1:shell:(zsh bash groups)'
@@ -532,6 +576,20 @@ _edc() {
       esac
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "$common --file --name -L -R -D --save --all --connect-timeout --ttl" -- "$cur"))
       elif [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list up test down" -- "$cur")); fi ;;
+    ai)
+      if [[ $prev == --json ]]; then COMPREPLY=($(compgen -f -- "$cur")); return; fi
+      if [[ $COMP_CWORD -eq 2 ]]; then
+        if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--poll --count --json" -- "$cur")); else COMPREPLY=($(compgen -W "sessions agents hooks statusline" -- "$cur")); fi
+        return
+      fi
+      case "${COMP_WORDS[2]}" in
+        sessions) COMPREPLY=($(compgen -W "--needs --all --bell --count --json" -- "$cur")) ;;
+        agents)
+          if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-f --follow --count --json" -- "$cur"))
+          else COMPREPLY=($(compgen -W "$(edc completion ai-tasks 2>/dev/null | cut -d: -f1)" -- "$cur")); fi ;;
+        hooks|statusline) if [[ $COMP_CWORD -eq 3 ]]; then COMPREPLY=($(compgen -W "install uninstall" -- "$cur")); fi ;;
+        *) COMPREPLY=($(compgen -W "--poll --count --json" -- "$cur")) ;;
+      esac ;;
     shell) COMPREPLY=($(compgen -W "zsh bash --no-alias" -- "$cur")) ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
     setup)

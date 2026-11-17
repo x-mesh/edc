@@ -17,6 +17,7 @@ import (
 // auditJournalHeaderSize는 systemd의 HEADER_SIZE_MIN이다. 이보다 작은 파일은 journalctl도 열지 않는다.
 const (
 	auditJournalHeaderSize         = 208
+	auditJournalHeaderCompatible   = 8
 	auditJournalHeaderState        = 16
 	auditJournalHeaderHeaderSize   = 88
 	auditJournalHeaderArenaSize    = 96
@@ -24,8 +25,10 @@ const (
 	auditJournalHeaderEntries      = 152
 	auditJournalHeaderTailRealtime = 192
 	auditJournalStateArchived      = 2
-	auditJournalStateMax           = 3
-	auditJournalSignature          = "LPKSHHRH"
+	// auditJournalCompatibleTailBootID는 HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID다. systemd v254부터 새로 만드는 모든 journal 파일에 세운다.
+	auditJournalCompatibleTailBootID = 1 << 1
+	auditJournalStateMax             = 3
+	auditJournalSignature            = "LPKSHHRH"
 )
 
 // auditJournalHeaderOffsets는 systemd가 8의 배수인지 보는 header의 offset 칸이다(data와 field hash table, 마지막 object, entry array).
@@ -137,12 +140,16 @@ func auditJournalHeaderValid(header []byte, fileSize int64) bool {
 
 // auditJournalArchivedBefore는 검증한 header가 보관이 끝난 파일이고 그 마지막 기록이 since 앞인지다.
 // online이나 offline 파일은 아직 쓰이거나 비정상 종료로 남은 것이라 header의 시각을 믿지 않는다. 판정할 수 없으면 false다.
+// 마지막 기록의 시각이 파일 전체의 상한이려면 기록 시각이 파일 안에서 거꾸로 가지 않아야 한다. journald는 v253부터 시각이 거꾸로 가면 파일을 회전하지만
+// header에는 이를 남기지 않으므로, v254부터 세우는 TAIL_ENTRY_BOOT_ID flag가 없는 파일은 빼지 않는다.
 func auditJournalArchivedBefore(header []byte, since time.Time) bool {
 	if header[auditJournalHeaderState] != auditJournalStateArchived ||
+		binary.LittleEndian.Uint32(header[auditJournalHeaderCompatible:])&auditJournalCompatibleTailBootID == 0 ||
 		binary.LittleEndian.Uint64(header[auditJournalHeaderEntries:]) == 0 {
 		return false
 	}
 	tail := binary.LittleEndian.Uint64(header[auditJournalHeaderTailRealtime:])
-	limit := since.UnixMicro()
+	// readHostAuditJournalFiles가 --since에 초 단위로 넘기므로 같은 기준으로 자른다.
+	limit := since.Unix() * int64(time.Second/time.Microsecond)
 	return tail != 0 && limit > 0 && tail < uint64(limit)
 }

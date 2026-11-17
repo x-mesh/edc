@@ -13,6 +13,7 @@ func testJournalHeader(state byte, entries uint64, tail time.Time) []byte {
 	header := make([]byte, 256)
 	copy(header, auditJournalSignature)
 	header[auditJournalHeaderState] = state
+	binary.LittleEndian.PutUint32(header[auditJournalHeaderCompatible:], auditJournalCompatibleTailBootID)
 	binary.LittleEndian.PutUint64(header[auditJournalHeaderHeaderSize:], uint64(len(header)))
 	binary.LittleEndian.PutUint64(header[auditJournalHeaderEntries:], entries)
 	if !tail.IsZero() {
@@ -25,6 +26,8 @@ func testJournalHeader(state byte, entries uint64, tail time.Time) []byte {
 func TestAuditJournalArchivedBefore(t *testing.T) {
 	since := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	old, recent := since.Add(-time.Hour), since.Add(time.Hour)
+	beforeV254 := testJournalHeader(auditJournalStateArchived, 10, old)
+	binary.LittleEndian.PutUint32(beforeV254[auditJournalHeaderCompatible:], 0)
 	for _, test := range []struct {
 		name   string
 		header []byte
@@ -37,8 +40,24 @@ func TestAuditJournalArchivedBefore(t *testing.T) {
 		{"offline old", testJournalHeader(0, 10, old), false},
 		{"no entries", testJournalHeader(auditJournalStateArchived, 0, old), false},
 		{"no tail time", testJournalHeader(auditJournalStateArchived, 10, time.Time{}), false},
+		// v254 전 systemd가 쓴 파일은 시각이 거꾸로 간 기록을 같은 파일에 이어 썼을 수 있다.
+		{"archived old before v254", beforeV254, false},
 	} {
 		if got := auditJournalArchivedBefore(test.header, since); got != test.want {
+			t.Errorf("%s = %v, want %v", test.name, got, test.want)
+		}
+	}
+	// journalctl은 --since @초로 읽어 since의 초 아래를 버린다. 같은 초 안의 기록이 있는 파일은 남긴다.
+	sinceInSecond := since.Add(900 * time.Millisecond)
+	for _, test := range []struct {
+		name string
+		tail time.Time
+		want bool
+	}{
+		{"tail in the same second", since.Add(500 * time.Millisecond), false},
+		{"tail just before the second", since.Add(-time.Microsecond), true},
+	} {
+		if got := auditJournalArchivedBefore(testJournalHeader(auditJournalStateArchived, 10, test.tail), sinceInSecond); got != test.want {
 			t.Errorf("%s = %v, want %v", test.name, got, test.want)
 		}
 	}

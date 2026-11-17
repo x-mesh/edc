@@ -68,6 +68,9 @@ func testJournalCursors(t *testing.T, args []string) []string {
 		}
 		cursors = append(cursors, entry.Cursor)
 	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("journalctl %q output: %v", args, err)
+	}
 	slices.Sort(cursors)
 	return cursors
 }

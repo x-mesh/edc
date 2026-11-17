@@ -573,3 +573,79 @@ func TestAITranscriptIndexFindsAgentLaunchesAndSkipsRequestCopies(t *testing.T) 
 		t.Fatalf("agent = %+v", task)
 	}
 }
+
+// 따라가는 shell의 출력이 한 번에 많이 늘어도 aiTaskOutputTail까지만 읽고 건너뛴 크기를 알린다.
+// 줄바꿈 없이 쌓이는 출력은 한 줄로 내보내 pending이 커지지 않는다.
+func TestAITaskLogBoundsShellOutput(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "b1.output")
+	testWrite(t, output, "start\n")
+	log := newAITaskLog(aiTask{Kind: "shell", ID: "b1", Output: output, Transcript: filepath.Join(t.TempDir(), "missing.jsonl")})
+	reader := newAITaskReaderWithout()
+	if steps, _ := log.read(reader, "", time.Now()); len(steps) != 1 || steps[0].Text != "start" {
+		t.Fatalf("first read = %+v", steps)
+	}
+	file, err := os.OpenFile(output, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.WriteString(strings.Repeat(strings.Repeat("x", 1023)+"\n", 1024) + "last line\n")
+	steps, _ := log.read(reader, "", time.Now())
+	if len(steps) == 0 || !strings.HasSuffix(steps[0].Text, "bytes skipped") || steps[len(steps)-1].Text != "last line" || len(steps) > int(aiTaskOutputTail/1024)+2 {
+		t.Fatalf("after 1 MiB: %d steps, first %q, last %q", len(steps), steps[0].Text, steps[len(steps)-1].Text)
+	}
+	_, _ = file.WriteString(strings.Repeat("y", int(aiTaskOutputTail)+1))
+	steps, _ = log.read(reader, "", time.Now())
+	if int64(len(log.pending)) > aiTaskOutputTail {
+		t.Fatalf("pending after a long line without newline = %d bytes", len(log.pending))
+	}
+	_, _ = file.WriteString(strings.Repeat("y", 10))
+	file.Close()
+	steps, _ = log.read(reader, "", time.Now())
+	if len(steps) != 1 || len(log.pending) != 0 || len([]rune(steps[0].Text)) != aiShellLineLimit {
+		t.Fatalf("after the line grew past the limit: %d steps, pending %d, line %d runes", len(steps), len(log.pending), len([]rune(steps[0].Text)))
+	}
+}
+
+// 마지막 응답 한 줄이 aiActivityTail보다 길어도 그 줄의 stop_reason을 읽어 끝난 세션으로 본다.
+func TestAITaskReaderReadsAFinalLineLongerThanTheTail(t *testing.T) {
+	claudeDir := t.TempDir()
+	now := time.Now()
+	long := `{"type":"assistant","timestamp":"2026-11-17T00:39:10Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"` + strings.Repeat("r", int(aiActivityTail)+150<<10) + `"}]}}`
+	testSessionFile(t, claudeDir, "s1", []string{testAgentLines[0], long}, now)
+	tasks, err := newAITaskReaderWithout().list(claudeDir, now)
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("tasks = %+v, %v; want none", tasks, err)
+	}
+}
+
+// hook이 끝났다고 기록한 세션은 띄운 shell도 목록에서 뺀다. edc ai sessions도 그 세션에 붙일 작업이 없다.
+func TestAITaskReaderSkipsWorkOfEndedSessions(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	output := filepath.Join(outputs, "b1.output")
+	testWrite(t, output, "")
+	session := "44444444-0000-0000-0000-000000000000"
+	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "tests", output, now)...)
+	testSessionFile(t, claudeDir, session, append(lines, testAgentLines[len(testAgentLines)-1]), now)
+	events := filepath.Join(t.TempDir(), "ai-events.jsonl")
+	for _, event := range []aiHookEvent{{At: now.Add(-time.Minute), Tool: "claude", Event: "SessionStart", Session: session}, {At: now, Tool: "claude", Event: "SessionEnd", Session: session}} {
+		if err := appendAIHookEvent(events, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := newAITaskReaderWithout()
+	if tasks, _ := reader.list(claudeDir, now); len(tasks) != 2 {
+		t.Fatalf("without hooks tasks = %+v, want the session and its shell", tasks)
+	}
+	reader = newAITaskReaderWithout()
+	reader.hooks = &aiEventTail{path: events}
+	tasks, _ := reader.list(claudeDir, now)
+	if len(tasks) != 0 {
+		t.Fatalf("tasks of an ended session = %+v", tasks)
+	}
+	sessions := []aiSession{{Tool: "claude", Session: session, State: aiStateEnded}}
+	attachAITasks(sessions, tasks)
+	if sessions[0].State != aiStateEnded || sessions[0].Tasks != nil {
+		t.Fatalf("ended session = %+v", sessions[0])
+	}
+}

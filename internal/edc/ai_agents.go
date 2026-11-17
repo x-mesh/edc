@@ -29,8 +29,14 @@ const (
 	aiAgentIDWidth = 9
 	// aiAgentCandidates는 인자가 여러 항목에 맞을 때 보이는 후보 수다.
 	aiAgentCandidates = 10
-	// aiTaskOutputTail은 백그라운드 shell 출력에서 읽는 끝부분이다. 출력 파일은 수 GB까지 커질 수 있다.
+	// aiTaskOutputTail은 백그라운드 shell 출력에서 한 번에 읽는 상한이다. 출력 파일은 수 GB까지 커질 수 있다.
+	// 따라가는 동안 한 번에 이보다 많이 늘면 앞부분을 건너뛰고, 줄바꿈 없이 이보다 많이 쌓이면 한 줄로 내보낸다.
 	aiTaskOutputTail int64 = 64 << 10
+	// aiShellLineLimit는 shell 출력 한 줄로 남기는 글자 수다. 활동 화면은 aiAgentsLogLimit줄을 들고 있다.
+	aiShellLineLimit = 1000
+	// aiTranscriptTailLimit는 끝부분에서 완전한 줄을 찾으려고 넓혀 읽는 상한이다. 마지막 응답이나 도구 결과 한 줄이
+	// aiActivityTail보다 길면 그 창 안에는 완전한 줄이 없어 멈춤 여부를 알 수 없다.
+	aiTranscriptTailLimit int64 = 16 << 20
 )
 
 type aiTaskState string
@@ -481,18 +487,25 @@ func (transcript *aiTranscript) tail(path string) {
 			}
 		}
 	}
-	start := transcript.size - aiActivityTail
-	if start < 0 {
-		start = 0
-	}
-	data := make([]byte, transcript.size-start)
-	if _, err := file.ReadAt(data, start); err != nil && err != io.EOF {
-		return
-	}
-	if start > 0 {
-		// 중간에서 시작한 첫 줄은 잘린 JSON이다.
-		if cut := bytes.IndexByte(data, '\n'); cut >= 0 {
-			data = data[cut+1:]
+	var data []byte
+	for window := aiActivityTail; ; window *= 4 {
+		start := transcript.size - window
+		if start < 0 {
+			start = 0
+		}
+		data = make([]byte, transcript.size-start)
+		if _, err := file.ReadAt(data, start); err != nil && err != io.EOF {
+			return
+		}
+		if start > 0 {
+			// 중간에서 시작한 첫 줄은 잘린 JSON이다.
+			if cut := bytes.IndexByte(data, '\n'); cut >= 0 {
+				data = data[cut+1:]
+			}
+		}
+		// 창 안에 끝난 줄이 하나도 없으면 마지막 줄이 창보다 길다. 넓혀 읽어야 그 줄의 stop_reason을 본다.
+		if start == 0 || bytes.IndexByte(data, '\n') >= 0 || window >= aiTranscriptTailLimit {
+			break
 		}
 	}
 	parser := newAIAgentParser()
@@ -836,7 +849,11 @@ func aiShellLines(data []byte) []string {
 		if cut := strings.LastIndexByte(strings.TrimRight(line, "\r"), '\r'); cut >= 0 {
 			line = line[cut+1:]
 		}
-		lines = append(lines, viewSanitize(strings.TrimRight(line, "\r")))
+		line = viewSanitize(strings.TrimRight(line, "\r"))
+		if runes := []rune(line); len(runes) > aiShellLineLimit {
+			line = string(runes[:aiShellLineLimit-1]) + "…"
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }
@@ -1098,19 +1115,7 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 		}
 		return steps, err
 	}
-	if file, err := os.Open(log.task.Output); err == nil {
-		data, _ := io.ReadAll(io.NewSectionReader(file, log.offset, 1<<40))
-		file.Close()
-		log.offset += int64(len(data))
-		data = append(log.pending, data...)
-		cut := bytes.LastIndexByte(data, '\n')
-		log.pending = append([]byte(nil), data[cut+1:]...)
-		if cut >= 0 {
-			for _, line := range aiShellLines(data[:cut]) {
-				steps = append(steps, aiAgentStep{At: now, Kind: "output", Text: line})
-			}
-		}
-	}
+	steps = append(steps, log.readOutput(now)...)
 	// 끝난 shell은 출력 끝에 종료 줄이 붙고, 완료 알림은 shell을 띄운 기록에 온다. 그 뒤에는 출력이 더 늘지 않는다.
 	if state, summary, ended := log.shellEnd(reader, claudeDir, now); ended {
 		if len(log.pending) > 0 {
@@ -1121,6 +1126,48 @@ func (log *aiTaskLog) read(reader *aiTaskReader, claudeDir string, now time.Time
 		steps = append(steps, aiAgentStep{At: now, Kind: "stopped", Text: strings.TrimSpace(string(state) + " " + summary)})
 	}
 	return steps, nil
+}
+
+// readOutput은 shell 출력에서 새로 끝난 줄이다. 한 번에 aiTaskOutputTail까지만 읽는다. 그보다 많이 늘었으면 앞부분을 건너뛰고
+// 건너뛴 크기를 한 줄로 알린다. 줄바꿈 없이 aiTaskOutputTail을 넘게 쌓인 출력은 한 줄로 내보내 pending이 커지지 않게 한다.
+func (log *aiTaskLog) readOutput(now time.Time) []aiAgentStep {
+	stat, err := os.Stat(log.task.Output)
+	if err != nil {
+		return nil
+	}
+	size := stat.Size()
+	// shell이 출력 파일을 다시 썼다.
+	if size < log.offset {
+		log.offset, log.pending = 0, nil
+	}
+	var steps []aiAgentStep
+	if grown := size - log.offset; grown > aiTaskOutputTail {
+		start := aiLineStart(log.task.Output, size-aiTaskOutputTail)
+		skipped := start - log.offset + int64(len(log.pending))
+		steps = append(steps, aiAgentStep{At: now, Kind: "output", Text: fmt.Sprintf("… %d bytes skipped", skipped)})
+		log.offset, log.pending = start, nil
+	}
+	file, err := os.Open(log.task.Output)
+	if err != nil {
+		return steps
+	}
+	data := make([]byte, size-log.offset)
+	read, _ := file.ReadAt(data, log.offset)
+	file.Close()
+	log.offset += int64(read)
+	data = append(log.pending, data[:read]...)
+	cut := bytes.LastIndexByte(data, '\n')
+	log.pending = append([]byte(nil), data[cut+1:]...)
+	if cut >= 0 {
+		for _, line := range aiShellLines(data[:cut]) {
+			steps = append(steps, aiAgentStep{At: now, Kind: "output", Text: line})
+		}
+	}
+	if int64(len(log.pending)) > aiTaskOutputTail {
+		steps = append(steps, aiAgentStep{At: now, Kind: "output", Text: aiShellLines(log.pending)[0]})
+		log.pending = nil
+	}
+	return steps
 }
 
 // shellEnd는 따라가는 shell이 끝났는지다. 출력 끝의 종료 줄과, shell을 띄운 기록 하나의 완료 알림을 본다.

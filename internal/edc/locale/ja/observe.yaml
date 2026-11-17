@@ -110,8 +110,23 @@ observe:
         started: "開始"
         done: "完了"
         idle: "アイドル"
+        background: "bg"
         exited: "プロセス終了"
         stale: "古い"
+    agents:
+      usage: "使い方: edc ai agents [<id>] [-f] [--count N] [--json <path|->]"
+      none: "実行中の Claude Code セッション、agent、バックグラウンド shell はありません。"
+      no_activity: "まだ活動がありません。"
+      not_found: "%[2]s に %[1]q に合うセッション、agent、shell はありません。"
+      ambiguous: "%q に合う項目が %d 件あります。ID をもっと長く指定してください:"
+      follow_needs_id: "-f/--follow には ID が必要です: edc ai agents <id> -f"
+      state:
+        running: "実行中"
+        idle: "待機"
+        stopped: "停止"
+        completed: "完了"
+        failed: "失敗"
+        killed: "中断"
 
   watch:
     no_samples_duration: "観測時間が終了するまでに完了したサンプルがないため、対象の状態は不明です。"

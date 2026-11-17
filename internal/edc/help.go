@@ -587,6 +587,7 @@ var commandDocs = []commandDoc{
 			"edc ai statusline [-- <command> [args...]]",
 			"edc ai statusline install|uninstall",
 			"edc ai sessions [--needs] [--all] [--bell] [--count N] [--json <path|->]",
+			"edc ai agents [<id>] [-f] [--count N] [--json <path|->]",
 			"edc ai hooks install|uninstall",
 		},
 		options: []optionDoc{
@@ -595,6 +596,7 @@ var commandDocs = []commandDoc{
 			{"--needs", "command.ai.option.needs"},
 			{"--all", "command.ai.option.all"},
 			{"--bell", "command.ai.option.bell"},
+			{"-f, --follow", "command.ai.option.follow"},
 			{"--json <path|->", "option.json"},
 		},
 	},

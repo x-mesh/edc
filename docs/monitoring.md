@@ -450,7 +450,7 @@ edc ai sessions --needs         # only the sessions that need you or failed
 edc ai sessions --json -        # JSON for a script or a status line
 ```
 
-In a terminal, `edc ai sessions` stays open. It reads the new events every 2 seconds. Use `↑` and `↓` to select a session. The lines under the list show its directory, terminal, process ID, and full detail. Press `n` to show only the sessions that need you. Press `a` to show the ended sessions. If you add `--bell`, edc rings the terminal bell when a session starts to need you. Outside a terminal, or with `--json`, edc prints one snapshot. `--count N` prints N snapshots, one every 2 seconds.
+In a terminal, `edc ai sessions` stays open. It reads the new events every 2 seconds. Use `↑` and `↓` to select a session. The lines under the list show its directory, terminal, process ID, and full detail. Press `n` to show only the sessions that need you. Press `a` to show the ended sessions. If you add `--bell`, edc rings the terminal bell when a session starts to need you. Outside a terminal, or with `--json`, edc prints one snapshot. `--count N` prints N snapshots, one every 2 seconds. Under each Claude Code session, indented rows show the subagents and background shells that run now in that session. They use the same rules as `edc ai agents`. With `--json`, they are in `tasks`.
 
 The data comes from hooks. `edc ai hooks install` adds `edc ai hook claude` to `~/.claude/settings.json` and `edc ai hook codex` to `~/.codex/hooks.json`. The command keeps the other hooks. The old files stay in `settings.json.edc-hooks-backup` and `hooks.json.edc-hooks-backup`. To remove only the edc entries, run `edc ai hooks uninstall`.
 
@@ -460,11 +460,12 @@ Each hook appends one line to `ai-events.jsonl` next to the history DB. The line
 
 | State | Cause |
 | --- | --- |
-| `! needs you · permission` | The agent asks for permission to use a tool. The detail shows the tool and the command. |
+| `! needs you · approval` | The agent asks for permission to use a tool. The detail shows the tool and the command. |
 | `! needs you · question` | The last response ends with a question, or Claude Code shows a choice (`AskUserQuestion`). The detail shows the question. |
 | `! needs you · input` | An MCP server asks for input. |
 | `× failed · error` | The turn stopped because of an API error. |
 | `▸ working` | The agent works on a prompt. The detail shows the current tool and its run time, or the last response text. |
+| `▸ working · bg` | The main conversation waits, but a subagent or a background shell of the session still runs. The detail shows the last response. The rows under the session show the running work. |
 | `· waiting` | The turn ended, or the agent waits for a prompt. |
 
 The last column shows the context of the last request and its percentage of the context window. In `edc ai sessions`, a bar of 5 cells comes before it. At 80% or more, the column is yellow. At 90% or more, the column is red, because the tool will compact the context soon. Codex records the context window. Claude Code does not record it, so edc uses 1M when the context is more than 200K. For a smaller Claude context, edc shows only the size. The right side of `edc ai` shows only the percentage.
@@ -476,6 +477,34 @@ For a working session, edc reads the last 256 KiB of the transcript. It finds th
 After you approve a request, no hook event comes until the turn ends. Thus edc shows `working` when the transcript changes after the request. When the agent process stops without a `SessionEnd` event, edc shows the session as ended. edc knows the process only from the `SessionStart` event. A session that started before the install shows `-` in the terminal column. edc hides it after 12 hours without events.
 
 Codex runs hooks only when `config.toml` sets `hooks = true` in `[features]`. Codex also asks you to trust each new hook. edc does not install a Codex permission hook, so a Codex session shows `needs you` only for a question.
+
+## AI agents
+
+`edc ai agents` shows the Claude Code work that runs now on this host. Each running session comes first, then the subagents and background shells that it started. A background shell is a Bash command that Claude Code runs with `run_in_background`.
+
+```sh
+edc ai agents                   # live screen in a terminal (press q to quit)
+edc ai agents --count 1         # one snapshot
+edc ai agents a5f19b            # the activity of one session, agent, or shell
+edc ai agents bjfk162ua -f      # follow the output of a shell until it ends
+edc ai agents a5f19b --json -   # one JSON object for each activity line
+```
+
+edc reads the transcripts in `~/.claude/projects/`. If you set `CLAUDE_CONFIG_DIR`, edc reads that directory. You do not need a hook. The list shows only running work. A finished agent or shell leaves the list.
+
+| Row | Running when |
+| --- | --- |
+| `● session` | The main conversation is in a turn. If it waits for an `AskUserQuestion` answer, it is not running. The row also shows as `idle` when only its agents or shells run. |
+| `◆ agent` | The last response called a tool, or a background shell that the agent started still runs. A `killed` notification stops it. |
+| `$ shell` | The transcript recorded the start, and the output does not end with `[exited with code N]` or `[killed]`. The completion notification also ends it. |
+
+edc does not guess from the time of the last write, because a shell can run for many minutes without output. If you installed `edc ai hooks`, edc also removes the work of a session whose process stopped. Without the hooks, the work of a session that Claude Code did not close normally can stay in the list for 24 hours.
+
+The ID argument can be a part of an agent or shell ID, a session ID, or the path of a `tasks/<id>.output` file of Claude Code. This also finds finished work. If the argument matches more than one item, edc shows the first 10 matches and exits with status 2.
+
+Each activity line starts with the time. `▶` is a prompt, `·` is a response, `✗` is a failed tool call, `│` is a line of shell output, and `■` shows that the item stopped. A tool line shows the tool and its target. For Bash, the description comes before the command. edc keeps 160 characters or less of each line. A `✗` line shows the start of the failed result. edc does not show thinking, the full tool input, or the output of a successful tool call. For a session, edc starts at the last 256 KiB of the transcript. For a shell, edc starts at the last 64 KiB of the output and removes escape sequences. With `-f`, edc follows new lines. A shell stops at its end line. A session or an agent can start again, so edc follows it until you press Ctrl-C.
+
+In the live screen, use `↑` and `↓` to select a row. To open its activity, press Enter. The activity screen stays open after the item finishes. To read older lines, press `↑`, `PgUp`, or `Home`. To follow again, press `End`. To go back to the list, press `Esc`.
 
 ## Read logs
 

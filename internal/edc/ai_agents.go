@@ -1194,10 +1194,10 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 		aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*", "subagents", "agent-*.jsonl"), now)...)
 	reader.prepare(files)
 	// TaskStop은 다른 기록이 띄운 작업도 멈출 수 있다. 목록과 같이 모든 기록의 결과를 모은다.
-	halted := map[string]bool{}
+	halted := map[string]time.Time{}
 	for _, file := range files {
-		for id := range reader.read(file.path, file.stat).halted {
-			halted[id] = true
+		for id, at := range reader.read(file.path, file.stat).halted {
+			halted[id] = at
 		}
 	}
 	for _, file := range files {
@@ -1223,7 +1223,10 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 				state = aiTaskExpired
 			case task.status != "":
 				state = aiTaskState(task.status)
-			case halted[task.id]:
+			case !halted[task.id].IsZero() && expired && halted[task.id].After(task.deadline):
+				// 만료 시각 뒤의 TaskStop보다 만료가 먼저다.
+				state = aiTaskExpired
+			case !halted[task.id].IsZero():
 				state = aiTaskKilled
 			case expired && !now.Before(task.deadline):
 				state = aiTaskExpired
@@ -1433,7 +1436,7 @@ func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now ti
 			stopped := &aiTranscript{tasks: map[string]*aiBackground{}}
 			stopped.indexStopped(line)
 			if at, ok := stopped.halted[log.task.ID]; ok {
-				stop(at, string(aiTaskKilled))
+				log.stopAt(stop, at)
 			}
 			return
 		}
@@ -1464,7 +1467,7 @@ func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now ti
 	log.offset = offset
 	if !log.done && reader != nil {
 		if at, ok := reader.haltedTasks(claudeDir, now)[log.task.ID]; ok {
-			stop(at, string(aiTaskKilled))
+			log.stopAt(stop, at)
 		}
 	}
 	// 정확히 만료 시각부터 끝난 것으로 본다. 목록도 그 시각부터 monitor를 뺀다.
@@ -1472,6 +1475,15 @@ func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now ti
 		stop(log.task.Expires, string(aiTaskExpired))
 	}
 	return steps, err
+}
+
+// stopAt은 at에 TaskStop으로 멈춘 monitor를 끝낸다. 만료 시각 뒤의 TaskStop보다 만료가 먼저다.
+func (log *aiTaskLog) stopAt(stop func(time.Time, string), at time.Time) {
+	if !log.task.Expires.IsZero() && at.After(log.task.Expires) {
+		stop(log.task.Expires, string(aiTaskExpired))
+		return
+	}
+	stop(at, string(aiTaskKilled))
 }
 
 // readOutput은 shell 출력에서 새로 끝난 줄이다. 한 번에 aiTaskOutputTail까지만 읽는다. 그보다 많이 늘었으면 앞부분을 건너뛰고

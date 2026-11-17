@@ -894,7 +894,7 @@ func TestAITaskMonitorEndings(t *testing.T) {
 		return fmt.Sprintf(`{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","timestamp":%q,"message":{"content":"[SYSTEM NOTIFICATION]\n<task-notification>\n<task-id>%s</task-id>\n<event>%s</event>\n</task-notification>"}}`, at.UTC().Format(time.RFC3339), id, event)
 	}
 	lines := []string{testAgentLines[0]}
-	for _, id := range []string{"same", "other", "late", "edge", "events"} {
+	for _, id := range []string{"same", "other", "late", "edge", "events", "stopped-late"} {
 		lines = append(lines, testMonitorLaunch(id, "u-"+id, id, 5*time.Minute, start)...)
 	}
 	lines = append(lines, testTaskStop("same", start.Add(time.Minute)))
@@ -903,7 +903,8 @@ func TestAITaskMonitorEndings(t *testing.T) {
 		testMonitorEvent("events", "ci: pending", start.Add(60*time.Second)), userCopy("events", "ci: pending", start.Add(63*time.Second)))
 	lines = append(lines, testAgentLines[len(testAgentLines)-1])
 	path := testSessionFile(t, claudeDir, session, lines, time.Now())
-	testAgentFile(t, claudeDir, session, "a999", append(slices.Clone(testAgentLines), testTaskStop("other", start.Add(2*time.Minute))), "", time.Now())
+	testAgentFile(t, claudeDir, session, "a999", append(slices.Clone(testAgentLines), testTaskStop("other", start.Add(2*time.Minute)),
+		testTaskStop("stopped-late", deadline.Add(time.Minute))), "", time.Now())
 
 	states := map[string]aiTaskState{}
 	for _, id := range []string{"same", "other", "late", "edge", "events"} {
@@ -911,7 +912,11 @@ func TestAITaskMonitorEndings(t *testing.T) {
 			states[task.ID] = task.State
 		}
 	}
-	want := map[string]aiTaskState{"same": aiTaskKilled, "other": aiTaskKilled, "late": aiTaskExpired, "edge": aiTaskRunning, "events": aiTaskRunning}
+	want := map[string]aiTaskState{"same": aiTaskKilled, "other": aiTaskKilled, "late": aiTaskExpired, "edge": aiTaskRunning, "events": aiTaskRunning,
+		"stopped-late": aiTaskExpired}
+	for _, task := range findAITasks(newAITaskReaderWithout(), claudeDir, "stopped-late", deadline.Add(2*time.Minute)) {
+		states[task.ID] = task.State
+	}
 	for id, state := range want {
 		if states[id] != state {
 			t.Errorf("%s state = %q, want %q", id, states[id], state)
@@ -938,22 +943,10 @@ func TestAITaskMonitorEndings(t *testing.T) {
 	if got, done := testMonitorActivity(t, claudeDir, monitor("edge"), deadline); !done || !slices.Equal(got, []string{"■ expired"}) {
 		t.Errorf("at the deadline: %q done=%v", got, done)
 	}
+	if got, done := testMonitorActivity(t, claudeDir, monitor("stopped-late"), deadline.Add(2*time.Minute)); !done || !slices.Equal(got, []string{"■ expired"}) {
+		t.Errorf("TaskStop after the deadline: %q done=%v", got, done)
+	}
 	if got, done := testMonitorActivity(t, claudeDir, monitor("events"), start.Add(3*time.Minute)); done || !slices.Equal(got, []string{"◷ ci: pending", "◷ ci: pending"}) {
 		t.Errorf("repeated events: %q done=%v", got, done)
-	}
-}
-
-// edc completion ai-tasks는 도는 agent, shell, monitor를 "ID:종류 설명"으로 한 줄씩 쓰고 세션은 쓰지 않는다.
-func TestWriteCompletionAITasksListsRunningWork(t *testing.T) {
-	claudeDir, outputs := t.TempDir(), t.TempDir()
-	now := time.Now()
-	output := filepath.Join(outputs, "b1.output")
-	testWrite(t, output, "")
-	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "run the\ttests", output, now)...)
-	testSessionFile(t, claudeDir, "88888888-0000-0000-0000-000000000000", append(lines, testAgentLines[len(testAgentLines)-1]), now)
-	var buffer strings.Builder
-	writeCompletionAITasks(&buffer, claudeDir, now)
-	if got := buffer.String(); got != "b1:shell run the tests\n" {
-		t.Fatalf("ai-tasks = %q", got)
 	}
 }

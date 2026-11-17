@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
@@ -333,31 +335,79 @@ var (
 )
 
 // index는 지난번 뒤에 끝난 줄에서 백그라운드 작업의 시작과 완료 알림을 찾는다. 대부분의 줄은 문자열 검사만으로 건너뛴다.
+// aiLineKind는 색인이 줄마다 할 검색을 고르려고 짐작한 줄 종류다. 줄 전체를 해석하지 않고 앞뒤의 짧은 구간만 본다.
+type aiLineKind int
+
+const (
+	// aiLineUnknown은 종류를 가르지 못한 줄이다. 모든 표시 문구를 찾는다. Claude Code가 키 순서를 바꾸면 느려질 뿐 놓치지 않는다.
+	aiLineUnknown aiLineKind = iota
+	aiLineSkip
+	aiLineUser
+	aiLineAssistant
+	aiLineQueue
+)
+
+const (
+	// aiLineHead는 user와 attachment 줄의 최상위 키를 보는 앞부분이다. 두 줄은 parentUuid, isSidechain 다음에 그 키가 온다.
+	aiLineHead = 256
+	// aiLineTail은 assistant 줄의 type 키를 보는 끝부분이다. assistant 줄은 message가 먼저 오고 type은 끝에서 2 KiB 안에 있었다.
+	aiLineTail = 4 << 10
+)
+
+// classifyAILine은 줄 종류를 짐작한다. 검색 비용의 대부분은 줄마다 문구를 찾는 데서 나와서, 필요한 검색만 하면 처음 읽기가 줄어든다.
+// api-request 계열은 API에 보낸 요청의 사본이고 attachment는 hook 결과나 알림의 사본이라 건너뛴다.
+func classifyAILine(line []byte) aiLineKind {
+	switch {
+	case bytes.HasPrefix(line, []byte(`{"type":"api-request`)):
+		return aiLineSkip
+	case bytes.HasPrefix(line, []byte(`{"type":"queue-operation"`)):
+		return aiLineQueue
+	}
+	head := line[:min(len(line), aiLineHead)]
+	// message 뒤의 내용에 같은 글자가 인용돼도 attachment로 보지 않도록 message 키보다 앞에 있을 때만 쓴다.
+	if attachment := bytes.Index(head, []byte(`"attachment":{`)); attachment >= 0 {
+		if message := bytes.Index(head, []byte(`"message":`)); message < 0 || attachment < message {
+			return aiLineSkip
+		}
+	}
+	if bytes.Contains(head, []byte(`"type":"user"`)) {
+		return aiLineUser
+	}
+	if bytes.Contains(line[max(0, len(line)-aiLineTail):], []byte(`"type":"assistant"`)) {
+		return aiLineAssistant
+	}
+	return aiLineUnknown
+}
+
+// index는 지난번 뒤에 끝난 줄에서 백그라운드 작업의 시작과 완료 알림을 찾는다. 시작 호출은 assistant 줄에, 시작 결과와
+// TaskStop은 user 줄의 toolUseResult에, 알림은 queue-operation 줄과 user 줄에 있다.
 func (transcript *aiTranscript) index(path string) {
 	transcript.offset, _ = readAITranscriptLines(path, transcript.offset, func(line []byte) {
-		// api-request, api-request-blob, api-request-shape 줄은 API에 보낸 요청의 사본이다. 대화의 표시 문구를 다시 담고 있어도
-		// 활동이 아니다. 처음 읽을 때 바이트의 3분의 1 가까이를 검색 없이 건너뛴다.
-		if bytes.HasPrefix(line, []byte(`{"type":"api-request`)) {
+		kind := classifyAILine(line)
+		if kind == aiLineSkip {
 			return
 		}
-		// 도구 결과 줄은 끝의 toolUseResult만 보고 백그라운드 작업의 시작과 TaskStop을 가른다. 결과 문구에 "background" 같은
-		// 글자가 섞여 들어와도 다른 분기로 새지 않는다. 그 밖의 줄에서는 시작 호출을 찾는다.
-		// 명령에 "toolUseResult" 글자가 든 시작 호출도 있으므로, 결과 줄로 색인하지 못하면 시작 호출을 찾는다.
-		indexed := false
-		// 처음 나온 자리부터 줄 끝까지 보면 실제 toolUseResult 키가 늘 들어 있다. bytes.LastIndex는 bytes.Index보다 훨씬 느려
-		// 처음 읽기를 두 배로 늘렸다.
-		if index := bytes.Index(line, []byte(`"toolUseResult":`)); index >= 0 {
-			switch result := line[index:]; {
-			case bytes.Contains(result, []byte(`"backgroundTaskId"`)), bytes.Contains(result, []byte(`"async_launched"`)), bytes.Contains(result, []byte(`"timeoutMs"`)):
-				indexed = transcript.indexStarted(line)
-			case bytes.Contains(result, []byte(`"task_type"`)):
-				indexed = transcript.indexStopped(line)
+		if kind == aiLineUser || kind == aiLineUnknown {
+			// 처음 나온 자리부터 줄 끝까지 보면 실제 toolUseResult 키가 늘 들어 있다. bytes.LastIndex는 bytes.Index보다 훨씬 느려
+			// 처음 읽기를 두 배로 늘렸다. 결과 문구에 "background" 같은 글자가 섞여도 결과 부분만 보므로 다른 분기로 새지 않는다.
+			// 찾는 문구는 흔하지 않은 글자로 시작하게 자른다. JSON에 흔한 "로 시작하면 bytes.Contains가 3배 느렸다.
+			if index := bytes.Index(line, []byte(`UseResult":`)); index >= 0 {
+				switch result := line[index:]; {
+				case bytes.Contains(result, []byte(`"backgroundTaskId"`)), bytes.Contains(result, []byte(`"async_launched"`)), bytes.Contains(result, []byte(`"timeoutMs"`)):
+					transcript.indexStarted(line)
+				case bytes.Contains(result, []byte(`"task_type"`)):
+					transcript.indexStopped(line)
+				}
 			}
 		}
-		if !indexed && (bytes.Contains(line, []byte(`"run_in_background":true`)) || bytes.Contains(line, []byte(`"name":"Monitor"`))) {
-			transcript.indexLaunch(line)
+		if kind == aiLineAssistant || kind == aiLineUnknown {
+			// Monitor 호출은 tool_use 블록에서 name 바로 뒤에 input이 왔다. 도구 정의 목록의 "name":"Monitor","description"은
+			// 거른다. 순서가 바뀌어 놓쳐도 monitor 설명만 빠지고, 작업은 시작 결과로 찾는다.
+			if bytes.Contains(line, []byte(`_in_background":true`)) || bytes.Contains(line, []byte(`Monitor","input"`)) {
+				transcript.indexLaunch(line)
+			}
 		}
-		if bytes.Contains(line, []byte("<task-notification>")) {
+		if kind != aiLineAssistant && bytes.Contains(line, []byte("<task-notification>")) {
 			transcript.indexNotification(line)
 		}
 	})
@@ -645,6 +695,15 @@ func newAITaskReader() *aiTaskReader {
 }
 
 func (reader *aiTaskReader) read(path string, stat os.FileInfo) *aiTranscript {
+	transcript, stale := reader.entry(path, stat)
+	if stale {
+		transcript.refresh(path)
+	}
+	return transcript
+}
+
+// entry는 path의 상태와, 기록이 바뀌어 다시 읽어야 하는지다. map은 여기서만 고친다.
+func (reader *aiTaskReader) entry(path string, stat os.FileInfo) (*aiTranscript, bool) {
 	transcript := reader.transcripts[path]
 	if transcript == nil || stat.Size() < transcript.offset {
 		transcript = &aiTranscript{launches: map[string]string{}, tasks: map[string]*aiBackground{}}
@@ -653,12 +712,56 @@ func (reader *aiTaskReader) read(path string, stat os.FileInfo) *aiTranscript {
 		}
 		reader.transcripts[path] = transcript
 	}
-	if transcript.size != stat.Size() || !transcript.modified.Equal(stat.ModTime()) {
-		transcript.size, transcript.modified = stat.Size(), stat.ModTime()
-		transcript.index(path)
-		transcript.tail(path)
+	if transcript.size == stat.Size() && transcript.modified.Equal(stat.ModTime()) {
+		return transcript, false
 	}
-	return transcript
+	transcript.size, transcript.modified = stat.Size(), stat.ModTime()
+	return transcript, true
+}
+
+func (transcript *aiTranscript) refresh(path string) {
+	transcript.index(path)
+	transcript.tail(path)
+}
+
+// aiTaskIndexWorkers는 기록을 동시에 색인하는 수의 상한이다. 처음 읽을 때 기록 수십 개를 한 번에 읽는다.
+const aiTaskIndexWorkers = 8
+
+// prepare는 files 가운데 바뀐 기록을 동시에 다시 읽는다. 기록마다 상태가 따로라 goroutine 하나가 하나씩만 고친다.
+// 그 뒤의 read는 바뀐 것이 없어 바로 돌아온다.
+func (reader *aiTaskReader) prepare(files []aiTaskFile) {
+	type work struct {
+		path       string
+		transcript *aiTranscript
+	}
+	var jobs []work
+	for _, file := range files {
+		if transcript, stale := reader.entry(file.path, file.stat); stale {
+			jobs = append(jobs, work{file.path, transcript})
+		}
+	}
+	if len(jobs) < 2 {
+		for _, job := range jobs {
+			job.transcript.refresh(job.path)
+		}
+		return
+	}
+	queue := make(chan work)
+	var wait sync.WaitGroup
+	for range min(len(jobs), runtime.GOMAXPROCS(0), aiTaskIndexWorkers) {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for job := range queue {
+				job.transcript.refresh(job.path)
+			}
+		}()
+	}
+	for _, job := range jobs {
+		queue <- job
+	}
+	close(queue)
+	wait.Wait()
 }
 
 // endedSessions는 hook 이벤트로 끝났다고 아는 Claude 세션이다. 살아 있다고 아는 세션의 기록은 reader.alive에 남긴다.
@@ -818,6 +921,7 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 	launched := map[string]*aiBackground{}
 	sessions := map[string]*aiTranscript{}
 	sessionFiles := reader.sessionFiles(claudeDir, now)
+	reader.prepare(sessionFiles)
 	for _, file := range sessionFiles {
 		id := strings.TrimSuffix(filepath.Base(file.path), ".jsonl")
 		if ended[id] {
@@ -841,6 +945,7 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 		}
 	}
 	agentFiles := agentFiles(sessionFiles, now)
+	reader.prepare(agentFiles)
 	agents := map[string]*aiTranscript{}
 	for _, file := range agentFiles {
 		agent := aiAgentAt(file.path)
@@ -1084,8 +1189,10 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 	for _, path := range agentPaths {
 		candidates = append(candidates, aiAgentAt(path))
 	}
-	for _, file := range append(aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*.jsonl"), now),
-		aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*", "subagents", "agent-*.jsonl"), now)...) {
+	files := append(aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*.jsonl"), now),
+		aiTaskFiles(filepath.Join(claudeDir, "projects", "*", "*", "subagents", "agent-*.jsonl"), now)...)
+	reader.prepare(files)
+	for _, file := range files {
 		transcript := reader.read(file.path, file.stat)
 		session := strings.TrimSuffix(filepath.Base(file.path), ".jsonl")
 		parent := ""

@@ -841,3 +841,26 @@ func TestAISessionsOpensChildActivity(t *testing.T) {
 		t.Fatalf("down from the child row selected %q", model.selected)
 	}
 }
+
+// 줄 종류는 앞뒤의 짧은 구간만 보고 짐작한다. 짐작하지 못한 줄은 모든 문구를 찾는다.
+// message 뒤의 다른 객체에 있는 attachment 키는 attachment 줄로 보지 않는다.
+func TestClassifyAILine(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		line string
+		want aiLineKind
+	}{
+		{"api request copy", `{"type":"api-request-blob","message":{"content":"<task-notification>"}}`, aiLineSkip},
+		{"queue operation", `{"type":"queue-operation","content":"<task-notification>"}`, aiLineQueue},
+		{"attachment", `{"parentUuid":"p","isSidechain":false,"attachment":{"type":"hook_success"},"type":"attachment"}`, aiLineSkip},
+		{"agent attachment", `{"parentUuid":"p","isSidechain":true,"agentId":"a1","attachment":{"type":"queued_command"},"type":"attachment"}`, aiLineSkip},
+		{"user", `{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","message":{"content":"hi"}}`, aiLineUser},
+		{"user with an attachment key after message", `{"parentUuid":"p","isSidechain":false,"promptId":"x","type":"user","message":{"content":"hi"},"toolUseResult":{"attachment":{"x":1}}}`, aiLineUser},
+		{"assistant", `{"parentUuid":"p","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash"}]},"type":"assistant","uuid":"u"}`, aiLineAssistant},
+		{"unknown", `{"parentUuid":"p","message":{"content":"` + strings.Repeat("x", aiLineTail) + `"},"type":"assistant"` + strings.Repeat(" ", aiLineTail) + `}`, aiLineUnknown},
+	} {
+		if got := classifyAILine([]byte(test.line)); got != test.want {
+			t.Errorf("%s = %d, want %d", test.name, got, test.want)
+		}
+	}
+}

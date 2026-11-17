@@ -13,7 +13,8 @@ func testJournalHeader(state byte, entries uint64, tail time.Time) []byte {
 	header := make([]byte, 256)
 	copy(header, auditJournalSignature)
 	header[auditJournalHeaderState] = state
-	binary.LittleEndian.PutUint32(header[auditJournalHeaderCompatible:], auditJournalCompatibleTailBootID)
+	// systemd v254+의 journald가 만드는 파일처럼 TAIL_ENTRY_BOOT_ID(1<<1)만 세운다. production 상수를 쓰면 그 값이 틀려도 테스트가 따라 틀린다.
+	binary.LittleEndian.PutUint32(header[8:], 1<<1)
 	binary.LittleEndian.PutUint64(header[auditJournalHeaderHeaderSize:], uint64(len(header)))
 	binary.LittleEndian.PutUint64(header[auditJournalHeaderEntries:], entries)
 	if !tail.IsZero() {
@@ -26,8 +27,11 @@ func testJournalHeader(state byte, entries uint64, tail time.Time) []byte {
 func TestAuditJournalArchivedBefore(t *testing.T) {
 	since := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	old, recent := since.Add(-time.Hour), since.Add(time.Hour)
-	beforeV254 := testJournalHeader(auditJournalStateArchived, 10, old)
-	binary.LittleEndian.PutUint32(beforeV254[auditJournalHeaderCompatible:], 0)
+	withCompatible := func(flags uint32) []byte {
+		header := testJournalHeader(auditJournalStateArchived, 10, old)
+		binary.LittleEndian.PutUint32(header[8:], flags)
+		return header
+	}
 	for _, test := range []struct {
 		name   string
 		header []byte
@@ -41,7 +45,9 @@ func TestAuditJournalArchivedBefore(t *testing.T) {
 		{"no entries", testJournalHeader(auditJournalStateArchived, 0, old), false},
 		{"no tail time", testJournalHeader(auditJournalStateArchived, 10, time.Time{}), false},
 		// v254 전 systemd가 쓴 파일은 시각이 거꾸로 간 기록을 같은 파일에 이어 썼을 수 있다.
-		{"archived old before v254", beforeV254, false},
+		{"archived old before v254", withCompatible(0), false},
+		{"archived old sealed before v254", withCompatible(1 << 0), false},
+		{"archived old sealed", withCompatible(1<<0 | 1<<1), true},
 	} {
 		if got := auditJournalArchivedBefore(test.header, since); got != test.want {
 			t.Errorf("%s = %v, want %v", test.name, got, test.want)

@@ -590,8 +590,14 @@ func TestAITaskLogBoundsShellOutput(t *testing.T) {
 	}
 	_, _ = file.WriteString(strings.Repeat(strings.Repeat("x", 1023)+"\n", 1024) + "last line\n")
 	steps, _ := log.read(reader, "", time.Now())
-	if len(steps) == 0 || !strings.HasSuffix(steps[0].Text, "bytes skipped") || steps[len(steps)-1].Text != "last line" || len(steps) > int(aiTaskOutputTail/1024)+2 {
-		t.Fatalf("after 1 MiB: %d steps, first %q, last %q", len(steps), steps[0].Text, steps[len(steps)-1].Text)
+	// 1024바이트 줄이 offset 6부터 이어지므로, 끝에서 64 KiB 앞 위치 뒤의 첫 줄 경계까지 건너뛴다.
+	size := int64(6 + 1024*1024 + len("last line\n"))
+	boundary := 6 + (size-aiTaskOutputTail-6+1023)/1024*1024
+	if want := fmt.Sprintf("… %d bytes skipped", boundary-6); len(steps) == 0 || steps[0].Text != want {
+		t.Fatalf("first step = %+v, want %q", steps[:min(len(steps), 1)], want)
+	}
+	if steps[len(steps)-1].Text != "last line" || len(steps) > int(aiTaskOutputTail/1024)+2 {
+		t.Fatalf("after 1 MiB: %d steps, last %q", len(steps), steps[len(steps)-1].Text)
 	}
 	_, _ = file.WriteString(strings.Repeat("y", int(aiTaskOutputTail)+1))
 	steps, _ = log.read(reader, "", time.Now())
@@ -647,5 +653,75 @@ func TestAITaskReaderSkipsWorkOfEndedSessions(t *testing.T) {
 	attachAITasks(sessions, tasks)
 	if sessions[0].State != aiStateEnded || sessions[0].Tasks != nil {
 		t.Fatalf("ended session = %+v", sessions[0])
+	}
+}
+
+// 긴 마지막 응답 뒤에 attachment 같은 짧은 줄이 붙어도 대화 줄을 볼 때까지 넓혀 읽어 끝난 세션으로 본다.
+func TestAITaskReaderReadsAFinalLineBeforeShortLines(t *testing.T) {
+	claudeDir := t.TempDir()
+	now := time.Now()
+	long := `{"type":"assistant","timestamp":"2026-11-17T00:39:10Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"` + strings.Repeat("r", int(aiActivityTail)+150<<10) + `"}]}}`
+	attachment := `{"parentUuid":"p","type":"attachment","timestamp":"2026-11-17T00:39:11Z","attachment":{"type":"hook_success"}}`
+	testSessionFile(t, claudeDir, "s1", []string{testAgentLines[0], long, attachment, attachment}, now)
+	if tasks, err := newAITaskReaderWithout().list(claudeDir, now); err != nil || len(tasks) != 0 {
+		t.Fatalf("tasks = %+v, %v; want none", tasks, err)
+	}
+}
+
+// 며칠 도는 shell은 그동안 세션 기록이 바뀌지 않는다. 지난 읽기에서 도는 작업이 있던 기록은 창 밖으로 밀려도 계속 읽고,
+// hook이 살아 있다고 아는 세션의 기록은 처음 읽을 때부터 창과 관계없이 읽는다.
+func TestAITaskReaderKeepsSessionsWithLongRunningWork(t *testing.T) {
+	claudeDir, outputs := t.TempDir(), t.TempDir()
+	now := time.Now()
+	output := filepath.Join(outputs, "b1.output")
+	testWrite(t, output, "serving\n")
+	session := "55555555-0000-0000-0000-000000000000"
+	lines := append([]string{testAgentLines[0]}, testShellLaunch("b1", "u1", "dev server", output, now.Add(-time.Hour))...)
+	path := testSessionFile(t, claudeDir, session, append(lines, testAgentLines[len(testAgentLines)-1]), now)
+	reader := newAITaskReaderWithout()
+	if tasks, _ := reader.list(claudeDir, now); len(tasks) != 2 {
+		t.Fatalf("first read = %+v", tasks)
+	}
+	later := now.Add(aiTaskWindow + time.Hour)
+	if tasks, _ := reader.list(claudeDir, later); len(tasks) != 2 || tasks[1].ID != "b1" {
+		t.Fatalf("after the window = %+v", tasks)
+	}
+	if tasks, _ := reader.list(claudeDir, later.Add(aiTaskSweep)); len(tasks) != 2 {
+		t.Fatalf("after a sweep = %+v", tasks)
+	}
+	events := filepath.Join(t.TempDir(), "ai-events.jsonl")
+	if err := appendAIHookEvent(events, aiHookEvent{At: now, Tool: "claude", Event: "SessionStart", Session: session, Transcript: path, PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := newAITaskReaderWithout()
+	fresh.hooks = &aiEventTail{path: events}
+	if tasks, _ := fresh.list(claudeDir, later); len(tasks) != 2 {
+		t.Fatalf("a new reader with a live session after the window = %+v", tasks)
+	}
+	if tasks, _ := newAITaskReaderWithout().list(claudeDir, later); len(tasks) != 0 {
+		t.Fatalf("a new reader without hooks after the window = %+v, want none", tasks)
+	}
+}
+
+// 같은 작업의 활동 화면을 닫았다 다시 열면 처음부터 다시 읽어 지난 기록이 보인다.
+func TestAIAgentsModelReopensWithHistory(t *testing.T) {
+	claudeDir := t.TempDir()
+	now := time.Now()
+	testSessionFile(t, claudeDir, "s1", []string{testAgentLines[0], testAgentLines[len(testAgentLines)-1]}, now)
+	testAgentFile(t, claudeDir, "s1", "a111", testAgentLines[:8], "", now)
+	model := aiAgentsModel{feed: &aiAgentsFeed{claudeDir: claudeDir, reader: newAITaskReaderWithout()}, width: 120, height: 30}
+	next, _ := model.Update(model.feed.read(now, nil, model.generation))
+	model = next.(aiAgentsModel)
+	model.move(1)
+	for round := range 2 {
+		next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		model = next.(aiAgentsModel)
+		next, _ = model.Update(model.feed.read(now, model.target, model.generation))
+		model = next.(aiAgentsModel)
+		if len(model.steps) != 5 {
+			t.Fatalf("round %d: steps = %d, want 5", round, len(model.steps))
+		}
+		next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		model = next.(aiAgentsModel)
 	}
 }

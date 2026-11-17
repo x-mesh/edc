@@ -88,6 +88,8 @@ type aiAgentParser struct {
 	// tools는 결과가 올 때 도구 이름을 붙이려고 남기는 tool_use ID별 이름이다. 병렬 호출의 결과는 순서가 섞인다.
 	tools   map[string]string
 	stopped bool
+	// decided는 멈춤 여부를 정하는 줄(user, assistant, api-request)을 하나라도 읽었는지다.
+	decided bool
 	cwd     string
 	started time.Time
 	last    time.Time
@@ -114,9 +116,10 @@ func (parser *aiAgentParser) line(data []byte) []aiAgentStep {
 	// api-request-blob도 message를 담지만 API에 보낸 대화의 사본이다. 활동은 user와 assistant 줄에서만 얻는다.
 	switch entry.Type {
 	case "api-request":
-		parser.stopped = false
+		parser.stopped, parser.decided = false, true
 		return nil
 	case "user", "assistant":
+		parser.decided = true
 	default:
 		return nil
 	}
@@ -487,13 +490,14 @@ func (transcript *aiTranscript) tail(path string) {
 			}
 		}
 	}
-	var data []byte
+	var parser *aiAgentParser
+	var last *aiAgentStep
 	for window := aiActivityTail; ; window *= 4 {
 		start := transcript.size - window
 		if start < 0 {
 			start = 0
 		}
-		data = make([]byte, transcript.size-start)
+		data := make([]byte, transcript.size-start)
 		if _, err := file.ReadAt(data, start); err != nil && err != io.EOF {
 			return
 		}
@@ -503,20 +507,20 @@ func (transcript *aiTranscript) tail(path string) {
 				data = data[cut+1:]
 			}
 		}
-		// 창 안에 끝난 줄이 하나도 없으면 마지막 줄이 창보다 길다. 넓혀 읽어야 그 줄의 stop_reason을 본다.
-		if start == 0 || bytes.IndexByte(data, '\n') >= 0 || window >= aiTranscriptTailLimit {
-			break
+		parser, last = newAIAgentParser(), nil
+		for _, line := range bytes.SplitAfter(data, []byte{'\n'}) {
+			// 줄바꿈이 없는 마지막 줄은 아직 쓰는 중이다.
+			if !bytes.HasSuffix(line, []byte{'\n'}) {
+				break
+			}
+			for _, step := range parser.line(line) {
+				last = &step
+			}
 		}
-	}
-	parser := newAIAgentParser()
-	var last *aiAgentStep
-	for _, line := range bytes.SplitAfter(data, []byte{'\n'}) {
-		// 줄바꿈이 없는 마지막 줄은 아직 쓰는 중이다.
-		if !bytes.HasSuffix(line, []byte{'\n'}) {
+		// 창 안에 대화 줄이 하나도 없으면 마지막 응답이나 도구 결과 한 줄이 창보다 길다. 그 뒤에 attachment 같은 짧은 줄이
+		// 붙어 있어도 같다. 넓혀 읽어야 그 줄의 stop_reason을 본다.
+		if start == 0 || parser.decided || window >= aiTranscriptTailLimit {
 			break
-		}
-		for _, step := range parser.line(line) {
-			last = &step
 		}
 	}
 	if transcript.cwd == "" {
@@ -536,6 +540,10 @@ type aiTaskReader struct {
 	// recent는 지난번 stat에서 aiTaskWindow 안이었던 세션 기록이다. 그 밖의 기록은 aiTaskSweep마다 한 번만 stat한다.
 	recent map[string]bool
 	swept  time.Time
+	// pinned는 aiTaskWindow 밖이어도 읽는 세션 기록이다. 지난 읽기에서 도는 agent나 shell이 있었던 기록과, hook이 아는
+	// 살아 있는 세션의 기록이다. 며칠 도는 개발 서버 같은 shell은 그동안 세션 기록이 바뀌지 않는다.
+	pinned map[string]bool
+	alive  map[string]bool
 }
 
 // aiTaskSweep은 오래된 세션 기록까지 모두 stat하는 간격이다. 기록 파일에 덧붙여도 디렉터리 수정 시각은 바뀌지 않으므로,
@@ -572,9 +580,11 @@ func (reader *aiTaskReader) read(path string, stat os.FileInfo) *aiTranscript {
 	return transcript
 }
 
-// endedSessions는 hook 이벤트로 끝났다고 아는 Claude 세션이다. hook이 없으면 비어 있다.
+// endedSessions는 hook 이벤트로 끝났다고 아는 Claude 세션이다. 살아 있다고 아는 세션의 기록은 reader.alive에 남긴다.
+// hook이 없으면 둘 다 비어 있다.
 func (reader *aiTaskReader) endedSessions(now time.Time) map[string]bool {
 	ended := map[string]bool{}
+	reader.alive = map[string]bool{}
 	if reader.hooks == nil || reader.hooks.read() != nil {
 		return ended
 	}
@@ -583,8 +593,11 @@ func (reader *aiTaskReader) endedSessions(now time.Time) map[string]bool {
 			continue
 		}
 		settleAISession(session, now, aiProcessAlive, aiFileModified)
-		if session.State == aiStateEnded {
+		switch {
+		case session.State == aiStateEnded:
 			ended[session.Session] = true
+		case session.PID > 0 && session.Transcript != "":
+			reader.alive[session.Transcript] = true
 		}
 	}
 	return ended
@@ -634,12 +647,13 @@ func (reader *aiTaskReader) sessionFiles(claudeDir string, now time.Time) []aiTa
 		}
 		for _, path := range project.sessions {
 			active, known := reader.recent[path]
-			if !sweep && known && !active {
+			pinned := reader.pinned[path] || reader.alive[path]
+			if !sweep && known && !active && !pinned {
 				continue
 			}
 			// ReadDir과 stat 사이에 Claude Code가 세션을 지웠다.
 			stat, err := os.Stat(path)
-			active = err == nil && now.Sub(stat.ModTime()) <= aiTaskWindow
+			active = err == nil && (pinned || now.Sub(stat.ModTime()) <= aiTaskWindow)
 			reader.recent[path] = active
 			if active {
 				files = append(files, aiTaskFile{path, stat})
@@ -789,6 +803,15 @@ func (reader *aiTaskReader) list(claudeDir string, now time.Time) ([]aiTask, err
 		entry.agents = append(entry.agents, agent)
 		entry.children[agent.ID] = shells
 	}
+	// 도는 작업이 있는 세션 기록은 창 밖으로 밀려도 다음 읽기에서 계속 본다.
+	pinned := map[string]bool{}
+	for _, file := range sessionFiles {
+		id := strings.TrimSuffix(filepath.Base(file.path), ".jsonl")
+		if entry := groups[id]; entry != nil && (len(entry.agents) > 0 || len(entry.shells) > 0) {
+			pinned[file.path] = true
+		}
+	}
+	reader.pinned = pinned
 	var ordered []*aiTaskGroup
 	for _, entry := range groups {
 		if entry.working || len(entry.agents) > 0 || len(entry.shells) > 0 {

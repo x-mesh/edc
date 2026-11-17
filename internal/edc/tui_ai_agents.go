@@ -34,6 +34,8 @@ type aiAgentsFeed struct {
 	reader    *aiTaskReader
 	log       *aiTaskLog
 	logKey    string
+	// logGeneration은 log를 만든 화면의 세대다. 같은 작업을 닫았다 다시 열면 세대가 바뀌므로 처음부터 다시 읽는다.
+	logGeneration int
 }
 
 type aiAgentsReadMsg struct {
@@ -60,8 +62,8 @@ func (feed *aiAgentsFeed) read(at time.Time, target *aiTask, generation int) aiA
 		return msg
 	}
 	msg.key = aiTaskKey(*target)
-	if msg.key != feed.logKey {
-		feed.log, feed.logKey, msg.reset = newAITaskLog(*target), msg.key, true
+	if msg.key != feed.logKey || generation != feed.logGeneration {
+		feed.log, feed.logKey, feed.logGeneration, msg.reset = newAITaskLog(*target), msg.key, generation, true
 	}
 	msg.steps, msg.err = feed.log.read(feed.reader, feed.claudeDir, at)
 	return msg

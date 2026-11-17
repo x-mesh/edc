@@ -235,8 +235,10 @@ func TestGrepOfficialRuntimeArchives(t *testing.T) {
 func TestGrepModelDownloadStopsOnlyWhenIdle(t *testing.T) {
 	old := grepModelIdleTimeout
 	defer func() { grepModelIdleTimeout = old }()
-	grepModelIdleTimeout = 200 * time.Millisecond
-	payload := []byte("slow but steady model bytes")
+	// 바이트 사이 간격은 시간 제한의 1/100이고, 전체 전송은 시간 제한보다 길다. 간격을 1/10로 두었을 때 CI의 macOS 실행기에서
+	// 200ms 넘게 멈춘 적이 있다.
+	grepModelIdleTimeout = time.Second
+	payload := bytes.Repeat([]byte("model "), 25)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher := w.(http.Flusher)
 		if r.URL.Path == "/stall" {
@@ -248,7 +250,7 @@ func TestGrepModelDownloadStopsOnlyWhenIdle(t *testing.T) {
 		for _, b := range payload {
 			w.Write([]byte{b})
 			flusher.Flush()
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}))
 	defer server.Close()

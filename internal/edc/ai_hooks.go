@@ -130,7 +130,7 @@ func parseAIHookInput(tool string, data []byte, now time.Time) (aiHookEvent, boo
 	case "StopFailure":
 		event.Detail = aiHookClip(input.Error, false)
 	case "UserPromptSubmit":
-		event.Detail = aiHookClip(input.Prompt, false)
+		event.Detail = aiHookClip(aiPromptText(input.Prompt), false)
 	case "SessionEnd", "SessionStart":
 		event.Kind = input.Reason
 	}
@@ -457,6 +457,8 @@ type aiSession struct {
 	Task     string         `json:"task,omitempty"`
 	Activity *aiActivity    `json:"activity,omitempty"`
 	Info     *aiSessionInfo `json:"info,omitempty"`
+	// Tasks는 이 세션에서 지금 도는 subagent와 백그라운드 shell이다. edc ai agents와 같은 판정을 쓴다.
+	Tasks []aiTask `json:"tasks,omitempty"`
 }
 
 func (session *aiSession) set(state aiSessionState, reason, detail string, at time.Time) {
@@ -488,7 +490,8 @@ func foldAIHookEvents(events []aiHookEvent) map[string]*aiSession {
 			session.set(aiStateWaiting, "started", "", event.At)
 		case "UserPromptSubmit":
 			if event.Detail != "" {
-				session.Task = event.Detail
+				// 정리하기 전의 edc가 남긴 이벤트에는 알림 태그가 그대로 있다.
+				session.Task = aiPromptText(event.Detail)
 			}
 			session.set(aiStateWorking, "", "", event.At)
 		case "PermissionRequest":
@@ -666,6 +669,9 @@ func runAISessions(args []string) int {
 	}
 	tail := &aiEventTail{path: path}
 	activities := aiActivityReader{}
+	tasks := newAITaskReader()
+	home, _ := os.UserHomeDir()
+	claudeDir := aiClaudeDir(home)
 	for sample := range max(*count, 1) {
 		if sample > 0 {
 			time.Sleep(aiScanInterval)
@@ -677,6 +683,9 @@ func runAISessions(args []string) int {
 		now := time.Now()
 		sessions := selectAISessions(foldAIHookEvents(tail.events), now, *needs, *all, aiProcessAlive, aiFileModified)
 		activities.annotate(sessions, now)
+		// Claude Code를 쓰지 않는 host에는 projects 디렉터리가 없다. 세션 목록은 그대로 보인다.
+		running, _ := tasks.list(claudeDir, now)
+		attachAITasks(sessions, running)
 		switch {
 		case *jsonPath != "":
 			// 표본이 여럿이면 한 줄에 하나씩 쓴다. 다른 도구가 줄 단위로 읽는다.
@@ -712,14 +721,18 @@ func selectAISessions(folded map[string]*aiSession, now time.Time, needs, all bo
 		}
 		sessions = append(sessions, *session)
 	}
-	// 같은 상태 안에서는 오래 기다린 세션을 먼저 보인다.
-	sort.Slice(sessions, func(i, j int) bool {
+	sortAISessions(sessions)
+	return sessions
+}
+
+// sortAISessions는 상태 순서대로 두고, 같은 상태 안에서는 오래 기다린 세션을 먼저 보인다.
+func sortAISessions(sessions []aiSession) {
+	sort.SliceStable(sessions, func(i, j int) bool {
 		if aiStateOrder[sessions[i].State] != aiStateOrder[sessions[j].State] {
 			return aiStateOrder[sessions[i].State] < aiStateOrder[sessions[j].State]
 		}
 		return sessions[i].Since.Before(sessions[j].Since)
 	})
-	return sessions
 }
 
 // aiStateMarks는 색 없이도 상태를 가르는 기호다.
@@ -732,8 +745,14 @@ func writeAISessions(writer io.Writer, sessions []aiSession, now time.Time) {
 	}
 	for _, session := range sessions {
 		fmt.Fprintln(writer, aiSessionLine(session, now))
+		for _, task := range session.Tasks {
+			fmt.Fprintln(writer, aiChildRow(task, now, 0, false))
+		}
 	}
 }
+
+// aiSessionStateWidth는 목록의 상태 칸 폭이다. 상태와 이유를 합친 문구가 모든 언어에서 이 안에 들어가야 열이 맞는다.
+const aiSessionStateWidth = 20
 
 // aiSessionContextWidth는 줄 끝 컨텍스트 칸의 폭이다. "722K 72%"가 들어간다.
 const aiSessionContextWidth = 9
@@ -770,7 +789,7 @@ func aiSessionHead(session aiSession, now time.Time) string {
 	if where == "" {
 		where = "-"
 	}
-	return strings.Join([]string{aiStateMarks[session.State], padRight(aiSessionStateText(session), 18), padRight(session.Tool, 6),
+	return strings.Join([]string{aiStateMarks[session.State], padRight(aiSessionStateText(session), aiSessionStateWidth), padRight(session.Tool, 6),
 		padRight(truncateName(project, 18), 18), padLeft(formatTopEventDuration(now.Sub(session.Since)), 6),
 		padLeft(aiSessionTokens(session), 7), padRight(where, 8)}, " ")
 }
@@ -838,7 +857,8 @@ func aiPaintContext(text string, percent int) string {
 
 // aiSessionDetail은 작업 중인 세션에는 지금 하는 일을, 활동을 모르면 받은 작업을 보인다. 이번 턴에 실패한 도구가 있으면 ✗와 그 수를 앞에 둔다.
 func aiSessionDetail(session aiSession, now time.Time) string {
-	if session.State != aiStateWorking {
+	// background는 본 대화가 쉬는 동안 띄운 agent나 shell이 도는 세션이다. 본 대화의 마지막 응답을 보이고, 도는 작업은 아래 줄에 있다.
+	if session.State != aiStateWorking || session.Reason == "background" {
 		return session.Detail
 	}
 	text := aiActivityText(session.Activity, now)

@@ -110,8 +110,23 @@ observe:
         started: "시작"
         done: "완료"
         idle: "유휴"
+        background: "bg"
         exited: "프로세스 종료"
         stale: "오래됨"
+    agents:
+      usage: "사용법: edc ai agents [<id>] [-f] [--count N] [--json <path|->]"
+      none: "지금 실행 중인 Claude Code 세션, agent, 백그라운드 shell이 없습니다."
+      no_activity: "아직 활동이 없습니다."
+      not_found: "%[2]s에 %[1]q에 맞는 세션, agent, shell이 없습니다."
+      ambiguous: "%q에 맞는 항목이 %d개입니다. ID를 더 길게 주세요:"
+      follow_needs_id: "-f/--follow에는 ID가 필요합니다: edc ai agents <id> -f"
+      state:
+        running: "실행 중"
+        idle: "대기"
+        stopped: "멈춤"
+        completed: "완료"
+        failed: "실패"
+        killed: "중단"
 
   watch:
     no_samples_duration: "관측 시간이 끝날 때까지 완료한 표본이 없어 대상의 상태를 판단할 수 없습니다."

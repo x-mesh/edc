@@ -44,6 +44,8 @@ func runAI(args []string, version string) int {
 			return runAIHooksSetup(args[1:])
 		case "sessions":
 			return runAISessions(args[1:])
+		case "agents":
+			return runAIAgents(args[1:])
 		}
 	}
 	set := newFlagSet("ai")

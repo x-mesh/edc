@@ -625,6 +625,7 @@ command:
       all: "include ended sessions"
       bell: "ring the terminal bell when a session starts to need you"
       sessions_count: "snapshots to print every 2s; 0 opens the live screen in a terminal"
+      follow: "keep printing new activity; a shell stops when it ends"
     notes:
       - "In a terminal, edc opens a table of tokens per interval on this host."
       - "In a terminal 131 columns or wider, the right side lists the sessions of edc ai sessions."
@@ -644,6 +645,8 @@ command:
       - "edc ai sessions shows each session: needs you, failed, working, waiting. --needs lists only the first two."
       - "In a terminal, edc ai sessions stays open and reads new events every 2 seconds. n needs only, a ended, q quit."
       - "Codex runs hooks only when config.toml sets hooks = true. Sessions started before install have no start event."
+      - "edc ai agents lists the running Claude Code sessions, subagents, and background shells. It needs no hook."
+      - "edc ai agents <id> prints the activity of one item, or the output of a shell. -f follows new lines."
   snapshot:
     summary: "Save host state as one report for report diff"
     option:

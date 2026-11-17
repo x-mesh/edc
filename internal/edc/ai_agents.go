@@ -430,7 +430,7 @@ func (transcript *aiTranscript) indexStopped(line []byte) bool {
 	if transcript.halted == nil {
 		transcript.halted = map[string]time.Time{}
 	}
-	transcript.halted[entry.Result.TaskID] = entry.Timestamp
+	keepEarliestStop(transcript.halted, entry.Result.TaskID, entry.Timestamp)
 	if task := transcript.tasks[entry.Result.TaskID]; task != nil && task.status == "" {
 		task.status, task.ended = "killed", entry.Timestamp
 	}
@@ -1197,7 +1197,7 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 	halted := map[string]time.Time{}
 	for _, file := range files {
 		for id, at := range reader.read(file.path, file.stat).halted {
-			halted[id] = at
+			keepEarliestStop(halted, id, at)
 		}
 	}
 	for _, file := range files {
@@ -1214,22 +1214,23 @@ func findAITasks(reader *aiTaskReader, claudeDir, query string, now time.Time) [
 				continue
 			}
 			state := aiTaskRunning
-			expired := task.kind == "monitor" && !task.deadline.IsZero()
-			switch ended, ok := aiShellEnd(task.output); {
-			case task.kind == "shell" && ok:
+			end := aiTaskEnd{}
+			if task.kind == "monitor" {
+				end.deadline = task.deadline
+			}
+			if task.status != "" {
+				end.offer(task.ended, task.status)
+			}
+			if at, ok := halted[task.id]; ok {
+				end.offer(at, string(aiTaskKilled))
+			}
+			if !end.deadline.IsZero() && !now.Before(end.deadline) {
+				end.offer(end.deadline, string(aiTaskExpired))
+			}
+			if ended, ok := aiShellEnd(task.output); task.kind == "shell" && ok {
 				state = ended
-			case task.status != "" && expired && task.ended.After(task.deadline):
-				// 만료 시각 뒤에 기록된 끝 알림보다 만료가 먼저다.
-				state = aiTaskExpired
-			case task.status != "":
-				state = aiTaskState(task.status)
-			case !halted[task.id].IsZero() && expired && halted[task.id].After(task.deadline):
-				// 만료 시각 뒤의 TaskStop보다 만료가 먼저다.
-				state = aiTaskExpired
-			case !halted[task.id].IsZero():
-				state = aiTaskKilled
-			case expired && !now.Before(task.deadline):
-				state = aiTaskExpired
+			} else if !end.at.IsZero() {
+				state = aiTaskState(end.state)
 			}
 			candidates = append(candidates, aiTask{Kind: task.kind, ID: task.id, Session: session, Parent: parent, Cwd: transcript.cwd,
 				Description: task.description, State: state, Started: task.started, Transcript: file.path, Output: task.output,
@@ -1410,10 +1411,18 @@ func (reader *aiTaskReader) haltedTasks(claudeDir string, now time.Time) map[str
 	halted := map[string]time.Time{}
 	for _, file := range files {
 		for id, at := range reader.read(file.path, file.stat).halted {
-			halted[id] = at
+			keepEarliestStop(halted, id, at)
 		}
 	}
 	return halted
+}
+
+// keepEarliestStop은 id의 TaskStop 시각을 halted에 남긴다. 같은 작업을 여러 번 멈췄으면 가장 이른 시각이 끝난 때다.
+// 기록을 읽는 순서는 파일 이름 순이라, 나중에 읽은 늦은 TaskStop이 앞선 TaskStop을 덮으면 만료로 잘못 판정한다.
+func keepEarliestStop(halted map[string]time.Time, id string, at time.Time) {
+	if previous, ok := halted[id]; !ok || at.Before(previous) {
+		halted[id] = at
+	}
 }
 
 // readMonitor는 monitor를 띄운 기록에서 그 monitor의 이벤트를 읽는다. 같은 알림이 queue-operation 줄과 user 줄에 겹쳐 오므로
@@ -1421,22 +1430,20 @@ func (reader *aiTaskReader) haltedTasks(claudeDir string, now time.Time) map[str
 // 끝 알림, 만료 이벤트, TaskStop, deadline 가운데 먼저 오는 것에서 멈춘다. 다른 기록의 TaskStop도 본다.
 func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now time.Time) ([]aiAgentStep, error) {
 	var steps []aiAgentStep
-	stop := func(at time.Time, text string) {
-		if !log.done {
-			log.done = true
-			steps = append(steps, aiAgentStep{At: at, Kind: "stopped", Text: text})
-		}
+	if log.done {
+		return nil, nil
 	}
+	end := aiTaskEnd{deadline: log.task.Expires}
 	id := []byte(log.task.ID)
 	offset, err := readAITranscriptLines(log.task.Transcript, log.offset, func(line []byte) {
-		if log.done || !bytes.Contains(line, id) {
+		if !bytes.Contains(line, id) {
 			return
 		}
 		if bytes.Contains(line, []byte(`"task_type"`)) {
 			stopped := &aiTranscript{tasks: map[string]*aiBackground{}}
 			stopped.indexStopped(line)
 			if at, ok := stopped.halted[log.task.ID]; ok {
-				log.stopAt(stop, at)
+				end.offer(at, string(aiTaskKilled))
 			}
 			return
 		}
@@ -1451,39 +1458,48 @@ func (log *aiTaskLog) readMonitor(reader *aiTaskReader, claudeDir string, now ti
 				continue
 			}
 			switch {
-			case fields["status"] != "" && !log.task.Expires.IsZero() && notification.at.After(log.task.Expires):
-				// 만료 시각 뒤에 기록된 끝 알림보다 만료가 먼저다.
-				stop(log.task.Expires, string(aiTaskExpired))
 			case fields["status"] != "":
-				stop(notification.at, strings.TrimSpace(fields["status"]+" "+fields["summary"]))
+				end.offer(notification.at, strings.TrimSpace(fields["status"]+" "+fields["summary"]))
 			case fields["event"] != "":
 				steps = append(steps, aiAgentStep{At: notification.at, Kind: "event", Text: aiHookClip(fields["event"], false)})
 				if aiMonitorExpired(fields["event"]) {
-					stop(notification.at, string(aiTaskExpired))
+					end.offer(notification.at, string(aiTaskExpired))
 				}
 			}
 		}
 	})
 	log.offset = offset
-	if !log.done && reader != nil {
+	if reader != nil {
 		if at, ok := reader.haltedTasks(claudeDir, now)[log.task.ID]; ok {
-			log.stopAt(stop, at)
+			end.offer(at, string(aiTaskKilled))
 		}
 	}
 	// 정확히 만료 시각부터 끝난 것으로 본다. 목록도 그 시각부터 monitor를 뺀다.
 	if !log.task.Expires.IsZero() && !now.Before(log.task.Expires) {
-		stop(log.task.Expires, string(aiTaskExpired))
+		end.offer(log.task.Expires, string(aiTaskExpired))
+	}
+	if !end.at.IsZero() {
+		log.done = true
+		steps = append(steps, aiAgentStep{At: end.at, Kind: "stopped", Text: end.state})
 	}
 	return steps, err
 }
 
-// stopAt은 at에 TaskStop으로 멈춘 monitor를 끝낸다. 만료 시각 뒤의 TaskStop보다 만료가 먼저다.
-func (log *aiTaskLog) stopAt(stop func(time.Time, string), at time.Time) {
-	if !log.task.Expires.IsZero() && at.After(log.task.Expires) {
-		stop(log.task.Expires, string(aiTaskExpired))
-		return
+// aiTaskEnd는 작업이 끝났다는 후보 가운데 가장 이른 것이다. 끝 알림, 만료 이벤트, 여러 기록의 TaskStop, monitor의 만료 시각이
+// 서로 다른 순서로 기록되므로, 읽은 순서가 아니라 시각으로 고른다. 만료 시각보다 늦은 끝은 만료 시각의 만료로 바꾼다.
+type aiTaskEnd struct {
+	deadline time.Time
+	at       time.Time
+	state    string
+}
+
+func (end *aiTaskEnd) offer(at time.Time, state string) {
+	if !end.deadline.IsZero() && at.After(end.deadline) {
+		at, state = end.deadline, string(aiTaskExpired)
 	}
-	stop(at, string(aiTaskKilled))
+	if end.at.IsZero() || at.Before(end.at) {
+		end.at, end.state = at, state
+	}
 }
 
 // readOutput은 shell 출력에서 새로 끝난 줄이다. 한 번에 aiTaskOutputTail까지만 읽는다. 그보다 많이 늘었으면 앞부분을 건너뛰고

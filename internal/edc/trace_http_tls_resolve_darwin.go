@@ -20,6 +20,13 @@ import (
 
 const darwinTLSTargetLimit = 16
 
+// darwinTLSGoVersions는 macOS의 Go TLS probe를 실제 캡처로 확인한 Go 버전이다. Linux 목록과 따로 검증한다.
+var darwinTLSGoVersions = map[string]bool{
+	"go1.25.0": true,
+	"go1.27.3": true,
+	"go1.27.4": true,
+}
+
 func darwinTLSMappings(output string) map[uint32][]string {
 	result := map[uint32][]string{}
 	var pid uint32
@@ -139,7 +146,7 @@ func inspectDarwinTLSFile(path string) ([]traceTLSTarget, error) {
 			if err != nil {
 				return fmt.Errorf("read Go TLS ABI: %w", err)
 			}
-			if info.GoVersion != "go1.25.0" && info.GoVersion != "go1.27.3" {
+			if !darwinTLSGoVersions[info.GoVersion] {
 				return fmt.Errorf("unsupported macOS Go TLS ABI: %s", info.GoVersion)
 			}
 			names := []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose, "internal/poll.(*FD).Read", "internal/poll.(*FD).Write"}

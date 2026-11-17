@@ -429,7 +429,7 @@ systemctl enable --now edc-watch-myapp
 journalctl -u edc-watch-myapp -f
 ```
 
-- `User=`가 없으면 서비스와 action이 root로 실행됩니다. 그러면 `watch.yaml`, `compose.yaml`이나 그 디렉터리를 바꿀 수 있는 사용자가 root로 다른 명령을 실행하거나 다른 Compose 구성을 적용하게 할 수 있습니다. 이 파일과 디렉터리는 `chown root:root`와 `chmod go-w`처럼 root만 쓸 수 있게 합니다. 또는 `User=`로 action에 필요한 권한만 가진 계정을 지정합니다. `docker` 그룹에 속한 계정도 Docker daemon을 거쳐 호스트의 root 권한을 얻습니다.
+- `User=`가 없으면 서비스와 action이 root로 실행됩니다. 그러면 `watch.yaml`, `compose.yaml`이나 그 디렉터리를 바꿀 수 있는 사용자가 root로 다른 명령을 실행하거나 다른 Compose 구성을 적용하게 할 수 있습니다. 이 파일과 그 디렉터리, `/`까지의 모든 상위 디렉터리는 `chown root:root`와 `chmod go-w`처럼 root만 쓸 수 있게 합니다. 상위 디렉터리에 쓸 수 있는 사용자는 프로젝트 디렉터리를 통째로 바꿔 놓을 수 있기 때문입니다. 그러므로 프로젝트는 홈 디렉터리가 아니라 `/srv`처럼 root가 소유한 경로에 둡니다. 또는 `User=`로 action에 필요한 권한만 가진 계정을 지정합니다. `docker` 그룹에 속한 계정도 Docker daemon을 거쳐 호스트의 root 권한을 얻습니다.
 - `ExecStart`에는 `edc`의 절대 경로를 씁니다. `command -v edc`로 확인할 수 있고, `install.sh`는 Linux에서 기본으로 `/usr/local/bin`에 설치합니다.
 - systemd는 셸 시작 파일을 읽지 않습니다. 기본 `PATH`는 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`이므로, 다른 디렉터리에 있는 명령은 절대 경로로 쓰거나 `Environment=PATH=...` 줄을 추가합니다.
 - `systemctl stop`은 SIGTERM을 보냅니다. 이때 `edc`는 Ctrl-C와 같이 실행 중인 action을 끝내고 요약을 출력한 뒤 종료합니다.

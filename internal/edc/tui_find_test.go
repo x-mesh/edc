@@ -129,6 +129,20 @@ func TestFindModelNarrowsInsideThePreviousResult(t *testing.T) {
 	}
 }
 
+// =단어를 늘리면 앞 결과에 없던 이름과 맞으므로 전부 다시 찾는다.
+func TestFindModelSearchesAgainWhenANameGrows(t *testing.T) {
+	model := testFindModel(false)
+	model, _ = findUpdate(t, model, findBatchMsg{entries: []findEntry{findTestEntry("src/ng", findKindFile, 0), findTestEntry("src/ngx", findKindFile, 0)}})
+	model = findType(t, model, "=ng")
+	if got := findShown(model); !reflect.DeepEqual(got, []string{"src/ng"}) {
+		t.Fatalf("=ng shown = %v", got)
+	}
+	model = findType(t, model, "x")
+	if got := findShown(model); !reflect.DeepEqual(got, []string{"src/ngx"}) {
+		t.Errorf("=ngx shown = %v", got)
+	}
+}
+
 func TestFindModelKeys(t *testing.T) {
 	model := testFindModel(false)
 	model, _ = findUpdate(t, model, findBatchMsg{entries: []findEntry{findTestEntry("a.txt", findKindFile, 0), findTestEntry("src", findKindDir, time.Minute)}})
@@ -153,7 +167,11 @@ func TestFindModelKeys(t *testing.T) {
 	if _, cmd := findUpdate(t, model, tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl}); cmd == nil {
 		t.Error("ctrl+o must run the editor")
 	}
-	grep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	// ctrl+g는 터미널의 다른 단축키가 먼저 가져갈 수 있어 grep을 열지 않는다.
+	if notGrep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}); notGrep.grepMode {
+		t.Error("ctrl+g must not open grep")
+	}
+	grep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	grep = findType(t, grep, "time out")
 	if !grep.grepMode || grep.grepPattern != "time out" || grep.query != "" {
 		t.Fatalf("grep mode: %+v", grep.grepPattern)
@@ -175,7 +193,7 @@ func TestFindModelDoesNotOpenInsideACommandSubstitution(t *testing.T) {
 	model := testFindModel(false)
 	model.config.stdoutTerminal = false
 	model, _ = findUpdate(t, model, findBatchMsg{entries: []findEntry{findTestEntry("a.txt", findKindFile, 0)}})
-	for _, code := range []rune{'o', 'v', 'g'} {
+	for _, code := range []rune{'o', 'v', 'f'} {
 		next, cmd := findUpdate(t, model, tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl})
 		if cmd != nil || next.grepMode || next.status != T("find.picker.open_pipe") {
 			t.Errorf("ctrl+%c: status %q", code, next.status)
@@ -283,12 +301,12 @@ func TestFindModelEnterWaitsForThePendingSearch(t *testing.T) {
 	}
 }
 
-// ctrl+g를 누른 뒤 계산이 끝나 선택이 바뀌어도 grep 대상은 누를 때 고른 경로다.
+// ctrl+f를 누른 뒤 계산이 끝나 선택이 바뀌어도 grep 대상은 누를 때 고른 경로다.
 func TestFindModelKeepsTheGrepTarget(t *testing.T) {
 	model := testFindModel(false)
 	model, _ = findUpdate(t, model, findBatchMsg{entries: []findEntry{findTestEntry("old.log", findKindFile, 0), findTestEntry("app.log", findKindFile, time.Hour)}})
 	model, search := findUpdate(t, model, tea.KeyPressMsg{Code: 'a', Text: "a"})
-	model, _ = findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	model, _ = findUpdate(t, model, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	model, _ = findUpdate(t, model, search())
 	if model.grepPath != "old.log" || !strings.Contains(ansi.Strip(model.promptLine()), "old.log") {
 		t.Errorf("grep path %q, prompt %q", model.grepPath, model.promptLine())

@@ -633,9 +633,6 @@ func formatCleanDocker(section cleanDocker, verbose bool, width int, style clean
 				style.phrase("clean.docker.reclaimable", formatSizeShort(reclaimable), richSizeColor(int64(reclaimable)))
 		}
 		line("  ", style.size(cleanPadLeft(sizes[index], sizeWidth), bytes, true)+"  "+cleanPad(T("clean.docker.type."+result.Type), nameWidth)+"  "+rest)
-		if verbose && result.Cleanup != "" {
-			line(strings.Repeat(" ", 2+sizeWidth+4), style.phrase("clean.cleanup", result.Cleanup, richCyan))
-		}
 	}
 	if verbose && section.Endpoint != "" {
 		line("  ", style.dim(T("clean.docker.endpoint", section.Endpoint)))

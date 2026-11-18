@@ -138,12 +138,33 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 		"xcode-derived-data": "", "swiftpm": "swift package purge-cache", "temp-xcode-builds": "",
 		"cargo-registry": "", "cargo-git": "", "zig": "", "bun": "bun pm cache rm", "pip": "pip3 cache purge",
 		"playwright": "", "puppeteer": "", "node-gyp": "", "electron": "", "coresimulator-caches": "",
-		"huggingface": "hf cache delete", "rustup-toolchains": "rustup toolchain uninstall <toolchain>", "ollama": "",
+		"huggingface": "hf cache delete", "rustup-toolchains": "rustup toolchain uninstall <toolchain>", "ollama": "ollama rm <model>",
 		"xcode-device-support": "", "app-updates": "", "app-logs": "", "app-caches": "", "dot-cache": "",
 		"journald": "journalctl --vacuum-size=500M", "apt-archives": "apt-get clean",
 	}
 	if !reflect.DeepEqual(cleanups, want) {
 		t.Fatalf("cleanups = %v", cleanups)
+	}
+	// rm -rf는 도구 명령이 없고 다시 만들 수 있는 후보에만 보인다. 앱 캐시와 로그처럼 내용을 모르는 후보는 빠진다.
+	var removable []string
+	for _, goos := range []string{"darwin", "linux"} {
+		for _, spec := range cleanCatalog(goos, "/h") {
+			if !spec.remove {
+				continue
+			}
+			if !spec.regenerable || spec.cleanup != "" {
+				t.Fatalf("%s removes a folder that is not regenerable or already has a command", spec.id)
+			}
+			if !contains(removable, spec.id) {
+				removable = append(removable, spec.id)
+			}
+		}
+	}
+	sort.Strings(removable)
+	wantRemovable := []string{"cargo-git", "cargo-registry", "coresimulator-caches", "electron", "node-gyp", "playwright", "puppeteer",
+		"temp-xcode-builds", "xcode-derived-data", "xcode-device-support", "zig"}
+	if !reflect.DeepEqual(removable, wantRemovable) {
+		t.Fatalf("removable = %v", removable)
 	}
 	// 새 후보 중 도구에 위치를 묻는 것은 pip뿐이다. bun, zig, rustup은 조회만으로 폴더를 만든다.
 	wantTools := map[string]string{"go-build": "go", "go-mod": "go", "npm": "npm", "pnpm": "pnpm", "uv": "uv", "homebrew": "brew", "pip": "pip3"}
@@ -291,6 +312,42 @@ func TestCleanLocatesFromEnvironmentInOrder(t *testing.T) {
 		}
 		t.Fatal("not_measured lacks simulators")
 	})
+}
+
+// 변수가 폴더 자체를 가리키면 그 폴더에 캐시가 아닌 데이터가 있을 수 있어 rm -rf를 보이지 않는다.
+// 변수 아래 도구가 정한 하위 폴더(CARGO_HOME/registry)와 기본 경로는 보인다.
+func TestCleanRemovesOnlyFoldersTheToolNames(t *testing.T) {
+	home := cleanTestHome(t)
+	other := t.TempDir()
+	for _, dir := range []string{filepath.Join(home, ".cache/ms-playwright"), filepath.Join(other, "registry")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	specs := map[string]cleanSpec{}
+	for _, spec := range cleanCatalog("linux", home) {
+		specs[spec.id] = spec
+	}
+	for _, tc := range []struct {
+		id      string
+		values  map[string]string
+		command bool
+	}{
+		{"playwright", nil, true},
+		{"playwright", map[string]string{"PLAYWRIGHT_BROWSERS_PATH": other}, false},
+		{"cargo-registry", map[string]string{"CARGO_HOME": other}, true},
+	} {
+		deps := cleanTestDeps(home, nil)
+		deps.lookupEnv = cleanEnvironment(tc.values)
+		deps.measure = func(context.Context, duOptions, duSources) (duScan, error) { return cleanFakeScan(4096), nil }
+		item := cleanScan(context.Background(), deps, []cleanSpec{specs[tc.id]})[0]
+		if !item.counted() {
+			t.Fatalf("%s %v: status %s %v", tc.id, tc.values, item.Status, item.Reasons)
+		}
+		if (item.Cleanup != "") != tc.command || tc.command && !strings.HasPrefix(item.Cleanup, "rm -rf ") {
+			t.Errorf("%s %v: cleanup %q", tc.id, tc.values, item.Cleanup)
+		}
+	}
 }
 
 func TestCleanRunnerGetsHomeDirectoryAndQuietEnvironment(t *testing.T) {
@@ -899,6 +956,20 @@ func TestCleanTempXcodeBuildsMeasuresOnlyBuildFolders(t *testing.T) {
 	if item.UsageBytes == nil || *item.UsageBytes < 96<<10 {
 		t.Fatalf("usage = %v", item.UsageBytes)
 	}
+	// 명령은 잰 빌드 폴더만 가리키고 임시 디렉터리 자체는 가리키지 않는다.
+	resolvedTemp, err := filepath.EvalSymlinks(temp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Fields(item.Cleanup)
+	if len(args) != 4 || args[0] != "rm" || args[1] != "-rf" {
+		t.Fatalf("cleanup = %q", item.Cleanup)
+	}
+	for _, arg := range args[2:] {
+		if !strings.HasPrefix(arg, resolvedTemp+"/") {
+			t.Fatalf("cleanup = %q, %s is not a build folder under %s", item.Cleanup, arg, resolvedTemp)
+		}
+	}
 
 	empty := t.TempDir()
 	cleanTempDir = empty
@@ -995,9 +1066,16 @@ func TestCleanBoundaryUserDataIsNeverACache(t *testing.T) {
 		if !reflect.DeepEqual(cleanGroupNames(support), []string{"iOS DeviceSupport"}) || support.Match != "*DeviceSupport" {
 			t.Fatalf("device support = %+v", support)
 		}
+		// 공백이 있는 경로도 ~가 펼쳐지도록 따옴표는 ~/ 뒤에 붙는다. 부모 폴더 ~/Library/Developer/Xcode는 가리키지 않는다.
+		if support.Cleanup != "rm -rf ~/'Library/Developer/Xcode/iOS DeviceSupport'" {
+			t.Fatalf("device support cleanup = %q", support.Cleanup)
+		}
+		if derived := cleanItemByID(t, items, cleanDerivedID); derived.Cleanup != "rm -rf ~/Library/Developer/Xcode/DerivedData" {
+			t.Fatalf("derived data cleanup = %q", derived.Cleanup)
+		}
 		for _, id := range []string{"app-caches", "dot-cache", "app-updates", "app-logs"} {
-			if item := cleanItemByID(t, items, id); item.Regenerable {
-				t.Errorf("%s is marked regenerable", id)
+			if item := cleanItemByID(t, items, id); item.Regenerable || item.Cleanup != "" {
+				t.Errorf("%s is marked regenerable or has a command: %q", id, item.Cleanup)
 			}
 		}
 		if got := cleanGroupNames(cleanItemByID(t, items, "app-caches")); !reflect.DeepEqual(got, []string{"appA"}) {
@@ -1790,8 +1868,12 @@ func TestCleanMessagesCoverEveryCode(t *testing.T) {
 		keys = append(keys, "clean.cost."+cost)
 	}
 	for _, id := range cleanSpecIDs {
-		keys = append(keys, "clean.candidate."+id)
+		keys = append(keys, "clean.candidate."+id, "clean.howto.note."+id)
 	}
+	for _, kind := range []string{cleanDockerImages, cleanDockerContainers, cleanDockerBuildCache} {
+		keys = append(keys, "clean.howto.docker."+kind, "clean.howto.note.docker_"+kind)
+	}
+	keys = append(keys, "clean.howto.note.worktrees")
 	for _, item := range cleanNotMeasured {
 		keys = append(keys, "clean.not_measured."+item.ID, "clean.not_measured_reason."+item.Reason)
 	}
@@ -1949,8 +2031,15 @@ func TestCleanColorVerboseListsGroupsAndCommands(t *testing.T) {
 			t.Fatalf("%q should be cyan:\n%q", command, text)
 		}
 	}
-	if !strings.Contains(plain, T("clean.cleanup", "git-kit worktree cleanup")) {
-		t.Fatalf("the cleanup sentence should stay whole:\n%s", plain)
+	// 정리 명령은 섹션 안이 아니라 보고서 끝의 정리 방법 패널에 한 번만 나온다.
+	howTo := strings.Index(plain, "╭─ "+T("clean.howto.panel"))
+	if howTo < 0 || strings.Contains(plain, T("clean.cleanup", "git-kit worktree cleanup")) {
+		t.Fatalf("the commands belong to the end panel:\n%s", plain)
+	}
+	for _, command := range []string{"rm -rf ~/Library/Developer/Xcode/DerivedData", "docker image prune", "git-kit worktree cleanup"} {
+		if strings.Count(plain, command) != 1 || strings.Index(plain, command) < howTo {
+			t.Fatalf("%q should appear once, in the end panel:\n%s", command, plain)
+		}
 	}
 }
 
@@ -1967,7 +2056,7 @@ func TestCleanColorDrawsSectionsAsPanels(t *testing.T) {
 			t.Fatalf("missing the panel %q:\n%s", title, plain)
 		}
 	}
-	if strings.Count(plain, "\n╰─\n") != 4 {
+	if strings.Count(plain, "\n╰─\n") != 5 {
 		t.Fatalf("each panel needs a bottom:\n%s", plain)
 	}
 	// 패널 안의 행은 평문처럼 칸을 맞춘다.

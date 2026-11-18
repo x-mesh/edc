@@ -649,16 +649,18 @@ Type to filter the list. The top line shows the number of matches and candidates
 | `Backspace`, `ctrl+w`, `ctrl+u` | Delete a letter, a word, or the query. |
 | `ctrl+o` | Open the selection in `$VISUAL` or `$EDITOR`. If both are empty, `vi` opens it. |
 | `ctrl+v` | Open the selected file in `edc view`. |
-| `ctrl+g` | Type a pattern, and read the `edc grep` result for the selection in `edc view`. |
+| `ctrl+f` | Type a pattern, and read the `edc grep` result for the selection in `edc view`. |
 | `Tab` | Show or hide the preview of the selection. |
 
 The preview shows the mode, the size, and the age of the selection. For a regular file, it shows the lines in the first 64 KiB. A file with a NUL byte shows as binary. For a directory, it shows the first 200 names, and for a symlink, its target. The preview does not open a FIFO, a socket, or a device file, because a read can block or change the device. If the terminal is 120 columns or wider, the preview is on the right. Otherwise it is below the list.
 
-When the editor or `edc view` exits, the picker comes back. If stdout is not a terminal, `ctrl+o`, `ctrl+v`, and `ctrl+g` do nothing, because the output goes to the command that called `edc find`.
+When the editor or `edc view` exits, the picker comes back. If stdout is not a terminal, `ctrl+o`, `ctrl+v`, and `ctrl+f` do nothing, because the output goes to the command that called `edc find`.
 
 ### Matches
 
 The letters of the pattern must appear in the path in the same order, so `adjrn` finds `audit_journal.go`. If you separate words with spaces, all words must match. A match in the file name, at the start of a word, or in consecutive letters gets a higher score. A skipped `_`, `-`, `.`, or `/` does not break consecutive letters, so `sshdconfig` finds `sshd_config` first. If two scores are equal, the shorter path comes first. If the pattern has no capital letter, case does not matter.
+
+To match a full file name, put `=` before the word. `=nginx.conf` finds `/etc/nginx/nginx.conf`, but not `nginx.conf.bak` or `conf.d/nginx.conf.default`. You can mix this word with fuzzy words: `etc =nginx.conf`. The case rule stays the same. If you use `--group`, the edc on each remote host must know this syntax. An older edc reads `=` as a normal letter and does not compare the full name. Run `edc update` on that host.
 
 `-E` makes the pattern a regular expression over the path. Then the matches go out in path order.
 

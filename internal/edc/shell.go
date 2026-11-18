@@ -150,13 +150,24 @@ func shellExecutedText(line string) string {
 	return kept.String()
 }
 
-// shellCommandWord는 text의 마지막 명령, 곧 마지막 ;, &, |, ( 뒤의 첫 단어다.
+// shellCommandWord는 text의 마지막 명령, 곧 마지막 ;, &, |, ( 뒤의 첫 단어다. 앞에 붙은 NAME=value 대입은 건너뛴다.
 func shellCommandWord(text string) string {
 	command := text[strings.LastIndexAny(text, ";&|(")+1:]
-	if words := strings.Fields(command); len(words) > 0 {
-		return words[0]
+	for _, word := range strings.Fields(command) {
+		if name, _, ok := strings.Cut(word, "="); !ok || !shellIsName(name) {
+			return word
+		}
 	}
 	return ""
+}
+
+func shellIsName(text string) bool {
+	for i, r := range text {
+		if r != '_' && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(i > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return text != ""
 }
 
 func shellWordBreak(r rune) bool {

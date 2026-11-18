@@ -135,7 +135,7 @@ func TestShellNonShellArgumentReportsStartupFile(t *testing.T) {
 			t.Fatalf("%q counted: %q", body, got)
 		}
 	}
-	for _, body := range []string{"eval \"$(edc shell zsh)\"\n", "source <(edc shell zsh) # edc\n", "[ -n \"$x\" ]#x; source <(edc shell zsh)\n", "eval 'source <(edc shell zsh)'\n", "x=1; eval 'source <(edc shell zsh)'\n"} {
+	for _, body := range []string{"eval \"$(edc shell zsh)\"\n", "source <(edc shell zsh) # edc\n", "[ -n \"$x\" ]#x; source <(edc shell zsh)\n", "eval 'source <(edc shell zsh)'\n", "x=1; eval 'source <(edc shell zsh)'\n", "EDC_MODE=1 eval 'source <(edc shell zsh)'\n"} {
 		write(".zshrc", body)
 		if got := run("/bin/zsh"); !strings.HasSuffix(got, T("command.shell.installed", "~/.zshrc")+"\n") {
 			t.Fatalf("%q not counted: %q", body, got)

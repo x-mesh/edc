@@ -167,6 +167,10 @@ func TestFindModelKeys(t *testing.T) {
 	if _, cmd := findUpdate(t, model, tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl}); cmd == nil {
 		t.Error("ctrl+o must run the editor")
 	}
+	// ctrl+g는 터미널의 다른 단축키가 먼저 가져갈 수 있어 grep을 열지 않는다.
+	if notGrep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}); notGrep.grepMode {
+		t.Error("ctrl+g must not open grep")
+	}
 	grep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	grep = findType(t, grep, "time out")
 	if !grep.grepMode || grep.grepPattern != "time out" || grep.query != "" {

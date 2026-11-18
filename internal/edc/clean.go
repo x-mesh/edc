@@ -134,6 +134,8 @@ type cleanSpec struct {
 	regenerable bool
 	cost        string
 	cleanup     string
+	// remove는 정리 명령이 없는 후보에 잰 경로를 지우는 rm -rf를 보이라는 뜻이다. 다시 만들 수 있다고 확인한 후보에만 둔다.
+	remove bool
 	// detail은 측정한 뒤 후보 아래에 한 줄로 보일 근거를 돌려준다. 빈 문자열이면 보이지 않는다.
 	detail        func() string
 	groupApps     bool
@@ -171,22 +173,22 @@ func cleanCatalog(goos, home string) []cleanSpec {
 	if darwin {
 		specs = append(specs,
 			cleanSpec{id: cleanDerivedID, category: "build_cache", priority: "P1", fixed: at("Library/Developer/Xcode/DerivedData"),
-				regenerable: true, cost: "medium", groupApps: true},
+				regenerable: true, cost: "medium", groupApps: true, remove: true},
 			cleanSpec{id: "swiftpm", category: "package_cache", priority: "P1", fixed: at("Library/Caches/org.swift.swiftpm"),
 				regenerable: true, cost: "medium", cleanup: "swift package purge-cache"},
 			// xcodebuild -derivedDataPath로 /tmp에 만든 빌드 폴더는 DerivedData 밖이라 위 후보가 세지 않는다.
 			cleanSpec{id: "temp-xcode-builds", category: "build_cache", priority: "P1", fixed: cleanTempDir,
-				children: &cleanChildren{xcodeBuild: true}, regenerable: true, cost: "medium"},
+				children: &cleanChildren{xcodeBuild: true}, regenerable: true, cost: "medium", remove: true},
 		)
 	}
 	// 도구 설정 파일(bunfig.toml, .npmrc, .puppeteerrc)은 읽지 않는다. 기본 경로로 잰 값과 보고 경로로 차이를 볼 수 있다.
 	specs = append(specs,
 		cleanSpec{id: "cargo-registry", category: "package_cache", priority: "P1", fixed: at(".cargo/registry"),
-			envs: []cleanEnv{{"CARGO_HOME", "registry"}}, regenerable: true, cost: "medium"},
+			envs: []cleanEnv{{"CARGO_HOME", "registry"}}, regenerable: true, cost: "medium", remove: true},
 		cleanSpec{id: "cargo-git", category: "package_cache", priority: "P1", fixed: at(".cargo/git"),
-			envs: []cleanEnv{{"CARGO_HOME", "git"}}, regenerable: true, cost: "medium"},
+			envs: []cleanEnv{{"CARGO_HOME", "git"}}, regenerable: true, cost: "medium", remove: true},
 		cleanSpec{id: "zig", category: "build_cache", priority: "P1", fixed: at(".cache/zig"),
-			envs: []cleanEnv{{"ZIG_GLOBAL_CACHE_DIR", ""}, {"XDG_CACHE_HOME", "zig"}}, regenerable: true, cost: "medium",
+			envs: []cleanEnv{{"ZIG_GLOBAL_CACHE_DIR", ""}, {"XDG_CACHE_HOME", "zig"}}, regenerable: true, cost: "medium", remove: true,
 			// zig의 resolveGlobalCacheDir(src/introspect.zig)는 빈 XDG_CACHE_HOME을 건너뛰고 ~/.cache/zig를 쓴다.
 			emptyUnset: []string{"XDG_CACHE_HOME"}},
 		cleanSpec{id: "bun", category: "package_cache", priority: "P1", fixed: at(".bun/install/cache"),
@@ -197,9 +199,9 @@ func cleanCatalog(goos, home string) []cleanSpec {
 	)
 	playwright := cleanSpec{id: "playwright", category: "downloaded_binary", priority: "P2", fixed: at(".cache/ms-playwright"),
 		envs:        []cleanEnv{{"PLAYWRIGHT_BROWSERS_PATH", ""}, {"XDG_CACHE_HOME", "ms-playwright"}},
-		regenerable: true, cost: "high"}
+		regenerable: true, cost: "high", remove: true}
 	nodeGyp := cleanSpec{id: "node-gyp", category: "downloaded_binary", priority: "P2", fixed: at(".cache/node-gyp"),
-		envs: []cleanEnv{{"npm_config_devdir", ""}, {"XDG_CACHE_HOME", "node-gyp"}}, regenerable: true, cost: "medium"}
+		envs: []cleanEnv{{"npm_config_devdir", ""}, {"XDG_CACHE_HOME", "node-gyp"}}, regenerable: true, cost: "medium", remove: true}
 	if darwin {
 		// macOS의 Playwright와 node-gyp는 XDG_CACHE_HOME을 보지 않고 ~/Library/Caches를 쓴다.
 		playwright.fixed, playwright.envs = at("Library/Caches/ms-playwright"), playwright.envs[:1]
@@ -207,16 +209,16 @@ func cleanCatalog(goos, home string) []cleanSpec {
 	}
 	specs = append(specs, playwright,
 		cleanSpec{id: "puppeteer", category: "downloaded_binary", priority: "P2", fixed: at(".cache/puppeteer"),
-			envs: []cleanEnv{{"PUPPETEER_CACHE_DIR", ""}}, regenerable: true, cost: "high"},
+			envs: []cleanEnv{{"PUPPETEER_CACHE_DIR", ""}}, regenerable: true, cost: "high", remove: true},
 		nodeGyp)
 	if darwin {
 		specs = append(specs,
 			cleanSpec{id: "electron", category: "downloaded_binary", priority: "P2", fixed: at("Library/Caches/electron"),
-				envs: []cleanEnv{{"electron_config_cache", ""}}, regenerable: true, cost: "medium"},
+				envs: []cleanEnv{{"electron_config_cache", ""}}, regenerable: true, cost: "medium", remove: true},
 			cleanSpec{id: "xcode-device-support", category: "xcode_support", priority: "P2", fixed: at("Library/Developer/Xcode"),
-				children: &cleanChildren{suffix: "DeviceSupport"}, regenerable: true, cost: "high"},
+				children: &cleanChildren{suffix: "DeviceSupport"}, regenerable: true, cost: "high", remove: true},
 			cleanSpec{id: "coresimulator-caches", category: "xcode_support", priority: "P2", fixed: at("Library/Developer/CoreSimulator/Caches"),
-				regenerable: true, cost: "low"},
+				regenerable: true, cost: "low", remove: true},
 			// 앱이 남긴 폴더는 무엇이 들었는지 모르므로 다시 만들 수 있다고 하지 않는다.
 			cleanSpec{id: "app-updates", category: "app_cache", priority: "P2", fixed: at("Library/Caches"),
 				children: &cleanChildren{suffix: ".ShipIt"}, cost: "unknown"},
@@ -242,7 +244,7 @@ func cleanCatalog(goos, home string) []cleanSpec {
 	}
 	if darwin {
 		specs = append(specs, cleanSpec{id: "ollama", category: "model", priority: "P3", fixed: at(".ollama/models"),
-			envs: []cleanEnv{{"OLLAMA_MODELS", ""}}, regenerable: true, cost: "high"})
+			envs: []cleanEnv{{"OLLAMA_MODELS", ""}}, regenerable: true, cost: "high", cleanup: "ollama rm <model>"})
 		// 나머지 묶음은 앞선 모든 후보의 측정 경로를 알아야 하므로 카탈로그 끝에 둔다.
 		specs = append(specs,
 			cleanSpec{id: "app-caches", category: "app_cache", priority: "P2", fixed: at("Library/Caches"), children: &cleanChildren{}, cost: "unknown"},
@@ -480,6 +482,9 @@ func cleanScan(ctx context.Context, deps cleanDeps, specs []cleanSpec) []cleanIt
 			continue
 		}
 		scanner.measureOne(ctx, spec, &item, resolvedHome)
+		if spec.remove && item.counted() && len(item.roots) > 0 {
+			item.Cleanup = cleanRemoveCommand(item.roots, deps.home, resolvedHome)
+		}
 		items = append(items, item)
 	}
 	cleanMarkInside(items)
@@ -1407,8 +1412,9 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home, style))
 		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width, style))
-		// 합계는 맨 끝에 둔다. 출력이 화면보다 길면 명령이 끝난 뒤 남는 것은 마지막 줄이다.
 		fmt.Fprint(output, formatCleanFilesystems(filesystems, width, style))
+		// 정리 방법은 합계보다 뒤에 둔다. 출력이 화면보다 길면 명령이 끝난 뒤 남는 것은 마지막 줄이고, 사용자가 실행할 것은 이 명령이다.
+		fmt.Fprint(output, formatCleanHowTo(cleanHowToEntries(items, docker, worktrees), width, style))
 	}
 	fmt.Fprint(output, "\n"+cleanWrap(T("clean.advisory"), width))
 	if options.redact {
@@ -1729,9 +1735,6 @@ func formatCleanDetail(item cleanItem, width int, indent, home string, style cle
 	}
 	if item.SkippedMounts > 0 {
 		line(T("clean.skipped_mounts", item.SkippedMounts))
-	}
-	if item.Cleanup != "" {
-		write(style.phrase("clean.cleanup", item.Cleanup, richCyan))
 	}
 	return builder.String()
 }

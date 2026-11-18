@@ -860,7 +860,7 @@ func TestCleanWorktreeTextShowsStatesAndCapsTheList(t *testing.T) {
 
 	text := formatCleanWorktrees(section, false, 0, "/h", false)
 	for _, want := range []string{"Worktrees under ~/.gk/worktree", "not added to any total", "merged, no changes  12",
-		"at least 2 changed, 1 untracked", "more, -v shows more", "git-kit worktree cleanup", "other files in the folder: 1.0 MB"} {
+		"at least 2 changed, 1 untracked", "more, -v shows more", "other files in the folder: 1.0 MB"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}

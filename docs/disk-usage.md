@@ -62,7 +62,7 @@ On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers 
 
 ## Known cache sizes (Linux and macOS)
 
-**Inspection only: `clean` never deletes files or runs the cleanup commands it displays.** Its name refers to finding cleanup candidates. `-v` can show commands for you to review and run separately.
+**Inspection only: `clean` never deletes files or runs the cleanup commands it displays.** Its name refers to finding cleanup candidates. The report ends with a How to clean section. It shows the commands for you to review and run separately.
 
 `edc clean` shows the disk usage of known development caches. It reads only. It does not delete or change a file.
 
@@ -71,7 +71,7 @@ On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers 
 
 ```bash
 edc clean                       # measure the known caches
-edc clean -v                    # show every candidate, more groups, reasons, and cleanup commands
+edc clean -v                    # show every candidate, more groups, and reasons
 edc clean --timeout 2m          # give edc more time
 edc clean --project ~/work      # also search ~/work for build folders
 edc clean --project ~/a --project ~/b   # repeat the option for more roots
@@ -154,7 +154,9 @@ The text output shows one line for each candidate that has a size or needs a che
 
 The sum for each file system is usage. The text output shows it at the end. It is not the space that a cleanup frees. APFS clones and snapshots can make the sum larger than the freed space. A hard link counts once in one candidate. A hard link between two candidates counts twice. The pnpm store and the uv cache use hard links. No candidate has a reclaimable value. Only the Docker section shows one, and the engine reports it.
 
-A candidate shows a cleanup command only if the tool documents one. The candidates `bun`, `pip`, `huggingface`, and `rustup-toolchains` show one. The candidates `cargo-registry`, `zig`, `app-caches`, and a few more show none. edc never runs a command.
+A candidate shows the cleanup command of its tool if the tool documents one, for example `go clean -cache` for `go-build`. If a candidate has no tool command and edc can recreate it, edc shows `rm -rf` with the measured folders, for example for `cargo-registry`, `zig`, and `xcode-derived-data`. For a grouped candidate, the command names only the measured folders, not the parent folder. The candidates `app-caches`, `dot-cache`, `app-updates`, and `app-logs` show no command, because edc does not know what these folders hold. edc never runs a command.
+
+The text output collects the commands in the How to clean section at the end of the report, also without `-v`. Each command has one note about the risk, for example that Xcode must be closed or that the command frees less than the size shown. The section also shows the commands of the Docker engine and of the worktrees. The commands for large logs, snap revisions, buildx cache folders, and the old Docker data directory stay in their sections with `-v`, next to the open files and the mount state. The JSON keeps each command in `cleanup`.
 
 With `-v`, edc also reads the date of the newest file in each candidate and in each folder group, for example `newest file 2026-10-19`. A cache that no tool has written to for months is a safer candidate than one that changed today. The date is the modification time of a regular file, not the access time. A `≥` before the date means that edc could not read some folders or stopped at a limit, so a newer file can exist. The JSON has `newest_write` and `newest_partial`. edc reads every file once more, so `edc clean -v` takes about as long as the measurement again.
 

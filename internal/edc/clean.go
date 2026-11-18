@@ -482,13 +482,24 @@ func cleanScan(ctx context.Context, deps cleanDeps, specs []cleanSpec) []cleanIt
 			continue
 		}
 		scanner.measureOne(ctx, spec, &item, resolvedHome)
-		if spec.remove && item.counted() && len(item.roots) > 0 {
+		if spec.remove && item.counted() && len(item.roots) > 0 && !cleanLocatedByWholeVariable(spec, item) {
 			item.Cleanup = cleanRemoveCommand(item.roots, deps.home, resolvedHome)
 		}
 		items = append(items, item)
 	}
 	cleanMarkInside(items)
 	return items
+}
+
+// cleanLocatedByWholeVariable은 변수 값을 하위 폴더 없이 그대로 위치로 썼는지 본다. 사용자가 그 변수로 캐시가 아닌
+// 데이터가 든 폴더를 가리킬 수 있어, 그 폴더 전체를 지우는 명령은 보이지 않는다.
+func cleanLocatedByWholeVariable(spec cleanSpec, item cleanItem) bool {
+	for _, env := range spec.envs {
+		if item.LocatedBy == "env:"+env.name {
+			return env.suffix == ""
+		}
+	}
+	return false
 }
 
 func cleanContextReason(err error) string {

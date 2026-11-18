@@ -149,7 +149,7 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 
 파일 시스템별 합계는 사용량이며, 정리하면 비워지는 양이 아닙니다. 텍스트 출력은 이 합계를 다른 섹션 뒤, 정리 방법 섹션 바로 앞에 보여 줍니다. APFS clone과 snapshot 때문에 합계가 비워지는 양보다 클 수 있습니다. hard link는 후보 하나 안에서는 한 번만 세지만, 두 후보에 걸친 hard link는 두 번 셉니다. pnpm 저장소와 uv 캐시가 hard link를 씁니다. 후보에는 회수 가능량이 없고, Docker 섹션만 엔진이 보고한 회수 가능량을 보여 줍니다.
 
-도구가 문서로 제공하는 정리 명령이 있으면 그 명령을 보여 줍니다(예: `go-build`의 `go clean -cache`). 도구 명령이 없고 다시 만들 수 있는 후보는 잰 폴더를 지우는 `rm -rf`를 보여 줍니다(예: `cargo-registry`, `zig`, `xcode-derived-data`). 묶음 후보의 명령은 부모 폴더가 아니라 잰 폴더만 가리킵니다. `app-caches`, `dot-cache`, `app-updates`, `app-logs`는 폴더에 무엇이 있는지 모르므로 명령을 보여 주지 않습니다. edc는 명령을 실행하지 않습니다.
+도구가 문서로 제공하는 정리 명령이 있으면 그 명령을 보여 줍니다(예: `go-build`의 `go clean -cache`). 도구 명령이 없고 다시 만들 수 있는 후보는 잰 폴더를 지우는 `rm -rf`를 보여 줍니다(예: `cargo-registry`, `zig`, `xcode-derived-data`). 묶음 후보의 명령은 부모 폴더가 아니라 잰 폴더만 가리킵니다. `PLAYWRIGHT_BROWSERS_PATH`처럼 환경 변수가 폴더 자체를 가리키면 `rm -rf`를 보여 주지 않습니다. 그 변수가 다른 데이터가 든 폴더를 가리킬 수 있기 때문입니다. `$CARGO_HOME/registry`처럼 변수 아래 도구가 정한 하위 폴더에는 명령을 보여 줍니다. `app-caches`, `dot-cache`, `app-updates`, `app-logs`는 폴더에 무엇이 있는지 모르므로 명령을 보여 주지 않습니다. edc는 명령을 실행하지 않습니다.
 
 텍스트 출력은 `-v` 없이도 보고서 끝의 정리 방법 섹션에 명령을 모읍니다. 명령마다 Xcode를 먼저 종료해야 한다거나 표시된 크기보다 적게 비워진다는 식의 위험을 한 줄로 덧붙입니다. Docker 엔진과 worktree의 명령도 이 섹션에 나옵니다. 큰 로그, snap revision, buildx 캐시 폴더, 옛 Docker 데이터 디렉터리의 명령은 열린 파일과 마운트 상태 옆에 있어야 하므로 `-v`에서 각 섹션에 그대로 둡니다. JSON은 각 명령을 `cleanup`에 그대로 담습니다.
 

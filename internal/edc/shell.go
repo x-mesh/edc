@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -113,7 +112,7 @@ func printShellStartupStatus(w io.Writer, shell string) {
 }
 
 // shellExecutedText는 시작 파일 한 줄에서 주석과 작은따옴표 안의 글자를 뺀 것이다. 둘 다 셸이 실행하지 않는다.
-// 큰따옴표 안은 남긴다. eval "$(edc shell zsh)"처럼 명령 치환이 실행된다. 앞에 eval이 있으면 작은따옴표 안도
+// 큰따옴표 안은 남긴다. eval "$(edc shell zsh)"처럼 명령 치환이 실행된다. 그 명령이 eval이면 작은따옴표 안도
 // 남긴다. eval 'source <(edc shell zsh)'는 eval이 따옴표 안을 다시 읽어 실행한다.
 func shellExecutedText(line string) string {
 	var kept strings.Builder
@@ -139,7 +138,7 @@ func shellExecutedText(line string) string {
 			}
 		case c == '\'':
 			quote = c
-			evaluated = slices.Contains(strings.FieldsFunc(kept.String(), shellWordBreak), "eval")
+			evaluated = shellCommandWord(kept.String()) == "eval"
 			continue
 		case c == '"':
 			quote = c
@@ -149,6 +148,15 @@ func shellExecutedText(line string) string {
 		kept.WriteByte(c)
 	}
 	return kept.String()
+}
+
+// shellCommandWord는 text의 마지막 명령, 곧 마지막 ;, &, |, ( 뒤의 첫 단어다.
+func shellCommandWord(text string) string {
+	command := text[strings.LastIndexAny(text, ";&|(")+1:]
+	if words := strings.Fields(command); len(words) > 0 {
+		return words[0]
+	}
+	return ""
 }
 
 func shellWordBreak(r rune) bool {

@@ -13,8 +13,8 @@ import (
 const shellPIDEnv = "EDC_SHELL_PID"
 
 var otherShells = map[string]bool{
-	"sh": true, "dash": true, "ksh": true, "mksh": true, "csh": true, "tcsh": true,
-	"fish": true, "nu": true, "pwsh": true, "elvish": true, "xonsh": true,
+	"sh": true, "ash": true, "dash": true, "ksh": true, "mksh": true, "oksh": true, "yash": true, "csh": true, "tcsh": true,
+	"fish": true, "nu": true, "pwsh": true, "elvish": true, "xonsh": true, "ion": true,
 }
 
 func runShell(args []string) int {
@@ -102,14 +102,47 @@ func printShellStartupStatus(w io.Writer, shell string) {
 		return
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "#") && strings.Contains(line, "edc shell") {
+		if strings.Contains(shellExecutedText(line), "edc shell") {
 			fmt.Fprintln(w, T("command.shell.installed", shown))
 			return
 		}
 	}
 	fmt.Fprintln(w, T("command.shell.startup", shown))
 	fmt.Fprintln(w, "  source <(edc shell "+shell+")")
+}
+
+// shellExecutedText는 시작 파일 한 줄에서 주석과 작은따옴표 안의 글자를 뺀 것이다. 둘 다 셸이 실행하지 않는다.
+// 큰따옴표 안은 남긴다. eval "$(edc shell zsh)"처럼 명령 치환이 실행된다.
+func shellExecutedText(line string) string {
+	var kept strings.Builder
+	quote := byte(0)
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		case c == '\\' && i+1 < len(line):
+			kept.WriteByte(c)
+			i++
+			c = line[i]
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'':
+			quote = c
+			continue
+		case c == '"':
+			quote = c
+		case c == '#' && (i == 0 || strings.IndexByte(" \t;&|()", line[i-1]) >= 0):
+			return kept.String()
+		}
+		kept.WriteByte(c)
+	}
+	return kept.String()
 }
 
 func renderShell(shell string, aliases bool) string {

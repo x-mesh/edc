@@ -64,6 +64,7 @@ func TestShellRejectsNonShellArgument(t *testing.T) {
 	}{
 		{[]string{"install"}, "/usr/bin/fish", "command.shell.not_shell", "install"},
 		{[]string{"fish"}, "/bin/zsh", "command.shell.unsupported_shell", "fish"},
+		{[]string{"ash"}, "/bin/zsh", "command.shell.unsupported_shell", "ash"},
 		{nil, "/usr/bin/fish", "command.shell.unsupported_shell", "fish"},
 	} {
 		var out, err strings.Builder
@@ -127,6 +128,19 @@ func TestShellNonShellArgumentReportsStartupFile(t *testing.T) {
 	if got := run("/bin/zsh"); !strings.HasSuffix(got, missing) {
 		t.Fatalf("commented line counted: %q", got)
 	}
+	// 주석과 작은따옴표 안의 글자는 셸이 실행하지 않는다.
+	for _, body := range []string{": # source <(edc shell zsh)\n", "echo '# edc shell'\n", "x=1 #edc shell\n"} {
+		write(".zshrc", body)
+		if got := run("/bin/zsh"); !strings.HasSuffix(got, missing) {
+			t.Fatalf("%q counted: %q", body, got)
+		}
+	}
+	for _, body := range []string{"eval \"$(edc shell zsh)\"\n", "source <(edc shell zsh) # edc\n", "[ -n \"$x\" ]#x; source <(edc shell zsh)\n"} {
+		write(".zshrc", body)
+		if got := run("/bin/zsh"); !strings.HasSuffix(got, T("command.shell.installed", "~/.zshrc")+"\n") {
+			t.Fatalf("%q not counted: %q", body, got)
+		}
+	}
 	write(".zshrc", "export X=1\n  source <(edc shell zsh)\n")
 	if got := run("/bin/zsh"); !strings.HasSuffix(got, T("command.shell.installed", "~/.zshrc")+"\n") {
 		t.Fatalf("installed zsh: %q", got)
@@ -145,6 +159,24 @@ func TestShellNonShellArgumentReportsStartupFile(t *testing.T) {
 	}
 	if got := run("/usr/bin/fish"); got != T("command.shell.not_shell", "install")+"\n" {
 		t.Fatalf("fish: %q", got)
+	}
+}
+
+func TestShellNonShellArgumentReportsUnreadableStartupFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZDOTDIR", "")
+	t.Setenv(shellPIDEnv, "")
+	if err := os.Mkdir(filepath.Join(home, ".zshrc"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out, err strings.Builder
+	if code := runShellWithIO([]string{"install"}, "/bin/zsh", &out, &err); code != 2 || out.Len() != 0 {
+		t.Fatalf("code %d stdout %q", code, &out)
+	}
+	got := err.String()
+	if !strings.Contains(got, filepath.Join(home, ".zshrc")) || strings.Contains(got, T("command.shell.installed", "~/.zshrc")) || strings.Contains(got, "source <(edc shell zsh)") {
+		t.Fatalf("unreadable rc file: %q", got)
 	}
 }
 

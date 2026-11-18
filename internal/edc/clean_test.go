@@ -314,6 +314,42 @@ func TestCleanLocatesFromEnvironmentInOrder(t *testing.T) {
 	})
 }
 
+// 변수가 폴더 자체를 가리키면 그 폴더에 캐시가 아닌 데이터가 있을 수 있어 rm -rf를 보이지 않는다.
+// 변수 아래 도구가 정한 하위 폴더(CARGO_HOME/registry)와 기본 경로는 보인다.
+func TestCleanRemovesOnlyFoldersTheToolNames(t *testing.T) {
+	home := cleanTestHome(t)
+	other := t.TempDir()
+	for _, dir := range []string{filepath.Join(home, ".cache/ms-playwright"), filepath.Join(other, "registry")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	specs := map[string]cleanSpec{}
+	for _, spec := range cleanCatalog("linux", home) {
+		specs[spec.id] = spec
+	}
+	for _, tc := range []struct {
+		id      string
+		values  map[string]string
+		command bool
+	}{
+		{"playwright", nil, true},
+		{"playwright", map[string]string{"PLAYWRIGHT_BROWSERS_PATH": other}, false},
+		{"cargo-registry", map[string]string{"CARGO_HOME": other}, true},
+	} {
+		deps := cleanTestDeps(home, nil)
+		deps.lookupEnv = cleanEnvironment(tc.values)
+		deps.measure = func(context.Context, duOptions, duSources) (duScan, error) { return cleanFakeScan(4096), nil }
+		item := cleanScan(context.Background(), deps, []cleanSpec{specs[tc.id]})[0]
+		if !item.counted() {
+			t.Fatalf("%s %v: status %s %v", tc.id, tc.values, item.Status, item.Reasons)
+		}
+		if (item.Cleanup != "") != tc.command || tc.command && !strings.HasPrefix(item.Cleanup, "rm -rf ") {
+			t.Errorf("%s %v: cleanup %q", tc.id, tc.values, item.Cleanup)
+		}
+	}
+}
+
 func TestCleanRunnerGetsHomeDirectoryAndQuietEnvironment(t *testing.T) {
 	home := cleanTestHome(t)
 	var specs []cleanToolSpec

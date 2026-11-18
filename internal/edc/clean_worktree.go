@@ -853,9 +853,6 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home 
 		}
 		line("  ", style.dim(T("clean.worktree.leftover", size)))
 	}
-	if section.Cleanup != "" {
-		line("  ", style.phrase("clean.cleanup", section.Cleanup, richCyan))
-	}
 	builder.WriteString(style.close())
 	return builder.String()
 }

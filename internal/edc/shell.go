@@ -158,7 +158,7 @@ func shellCommandWord(text string) string {
 	for len(words) > 0 {
 		if slices.Contains(shellCommandPrefixes, words[0]) {
 			words = words[1:]
-		} else if words[0] == "repeat" && len(words) > 1 {
+		} else if words[0] == "repeat" && len(words) > 1 && !shellNeverRepeats(words[1]) {
 			words = words[2:]
 		} else {
 			break
@@ -170,6 +170,13 @@ func shellCommandWord(text string) string {
 		}
 	}
 	return ""
+}
+
+// shellNeverRepeats는 zsh repeat의 횟수가 0 이하의 숫자라서 명령을 한 번도 실행하지 않는지 본다.
+// $n처럼 값을 모르는 횟수는 조건과 같이 평가하지 않는다.
+func shellNeverRepeats(count string) bool {
+	n, err := strconv.Atoi(count)
+	return err == nil && n <= 0
 }
 
 // shellLastCommandWords는 text를 공백으로 나눈 단어 중 큰따옴표 밖의 마지막 ;, &, |, ( 뒤의 단어다.

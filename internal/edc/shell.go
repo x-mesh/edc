@@ -151,11 +151,18 @@ func shellExecutedText(line string) string {
 	return kept.String()
 }
 
-// shellCommandWord는 text의 마지막 명령, 곧 마지막 ;, &, |, ( 뒤의 첫 단어다. 앞에 붙은 {, then 같은 예약어와 NAME=value 대입은 건너뛴다.
+// shellCommandWord는 text의 마지막 명령, 곧 큰따옴표 밖의 마지막 ;, &, |, ( 뒤의 첫 단어다.
+// 앞에 붙은 {, then 같은 예약어, zsh의 repeat 횟수, NAME=value 대입은 건너뛴다.
 func shellCommandWord(text string) string {
-	words := strings.Fields(text[strings.LastIndexAny(text, ";&|(")+1:])
-	for len(words) > 0 && slices.Contains(shellCommandPrefixes, words[0]) {
-		words = words[1:]
+	words := shellLastCommandWords(text)
+	for len(words) > 0 {
+		if slices.Contains(shellCommandPrefixes, words[0]) {
+			words = words[1:]
+		} else if words[0] == "repeat" && len(words) > 1 && !shellNeverRepeats(words[1]) {
+			words = words[2:]
+		} else {
+			break
+		}
 	}
 	for _, word := range words {
 		if name, _, ok := strings.Cut(word, "="); !ok || !shellIsName(name) {
@@ -163,6 +170,51 @@ func shellCommandWord(text string) string {
 		}
 	}
 	return ""
+}
+
+// shellNeverRepeats는 zsh repeat의 횟수가 0 이하의 숫자라서 명령을 한 번도 실행하지 않는지 본다.
+// "0"처럼 따옴표나 \가 붙은 숫자도 읽는다. $n이나 1-1처럼 값을 모르는 횟수는 조건과 같이 평가하지 않는다.
+func shellNeverRepeats(count string) bool {
+	n, err := strconv.Atoi(strings.NewReplacer(`"`, "", `\`, "").Replace(count))
+	return err == nil && n <= 0
+}
+
+// shellLastCommandWords는 text를 공백으로 나눈 단어 중 큰따옴표 밖의 마지막 ;, &, |, ( 뒤의 단어다.
+// 큰따옴표 안의 공백과 구분자, \ 뒤의 글자는 단어를 나누지 않는다. 따옴표는 단어에 남는다.
+func shellLastCommandWords(text string) []string {
+	var words []string
+	var word strings.Builder
+	inWord, quoted := false, false
+	end := func() {
+		if inWord {
+			words = append(words, word.String())
+			word.Reset()
+			inWord = false
+		}
+	}
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case c == '\\' && i+1 < len(text):
+			word.WriteByte(c)
+			i++
+			c = text[i]
+		case c == '"':
+			quoted = !quoted
+		case quoted:
+		case c == ' ' || c == '\t':
+			end()
+			continue
+		case strings.IndexByte(";&|(", c) >= 0:
+			end()
+			words = words[:0]
+			continue
+		}
+		word.WriteByte(c)
+		inWord = true
+	}
+	end()
+	return words
 }
 
 // shellCommandPrefixes는 명령 앞에 와도 그 명령을 실행하는 예약어다. { eval '...'; }와 then eval '...'의 명령은 eval이다.

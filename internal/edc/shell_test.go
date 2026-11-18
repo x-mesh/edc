@@ -129,13 +129,13 @@ func TestShellNonShellArgumentReportsStartupFile(t *testing.T) {
 		t.Fatalf("commented line counted: %q", got)
 	}
 	// 주석과 작은따옴표 안의 글자는 셸이 실행하지 않는다.
-	for _, body := range []string{": # source <(edc shell zsh)\n", "echo '# edc shell'\n", "x=1 #edc shell\n", "echo 'eval' 'edc shell'\n", "eval true; echo 'edc shell'\n", "echo eval 'source <(edc shell zsh)'\n", "{eval 'source <(edc shell zsh)'\n"} {
+	for _, body := range []string{": # source <(edc shell zsh)\n", "echo '# edc shell'\n", "x=1 #edc shell\n", "echo 'eval' 'edc shell'\n", "eval true; echo 'edc shell'\n", "echo eval 'source <(edc shell zsh)'\n", "{eval 'source <(edc shell zsh)'\n", "echo \"x; eval\" 'source <(edc shell zsh)'\n", "repeat 0 eval 'source <(edc shell zsh)'\n", "repeat \"0\" eval 'source <(edc shell zsh)'\n", "repeat \\0 eval 'source <(edc shell zsh)'\n"} {
 		write(".zshrc", body)
 		if got := run("/bin/zsh"); !strings.HasSuffix(got, missing) {
 			t.Fatalf("%q counted: %q", body, got)
 		}
 	}
-	for _, body := range []string{"eval \"$(edc shell zsh)\"\n", "source <(edc shell zsh) # edc\n", "[ -n \"$x\" ]#x; source <(edc shell zsh)\n", "eval 'source <(edc shell zsh)'\n", "x=1; eval 'source <(edc shell zsh)'\n", "EDC_MODE=1 eval 'source <(edc shell zsh)'\n", "{ eval 'source <(edc shell zsh)'; }\n", "if true; then eval 'source <(edc shell zsh)'; fi\n"} {
+	for _, body := range []string{"eval \"$(edc shell zsh)\"\n", "source <(edc shell zsh) # edc\n", "[ -n \"$x\" ]#x; source <(edc shell zsh)\n", "eval 'source <(edc shell zsh)'\n", "x=1; eval 'source <(edc shell zsh)'\n", "EDC_MODE=1 eval 'source <(edc shell zsh)'\n", "{ eval 'source <(edc shell zsh)'; }\n", "if true; then eval 'source <(edc shell zsh)'; fi\n", "repeat 1 eval 'source <(edc shell zsh)'\n", "repeat $n eval 'source <(edc shell zsh)'\n", "EDC_MODE=\"one two\" eval 'source <(edc shell zsh)'\n", "EDC_MODE=\"a;b\" eval 'source <(edc shell zsh)'\n"} {
 		write(".zshrc", body)
 		if got := run("/bin/zsh"); !strings.HasSuffix(got, T("command.shell.installed", "~/.zshrc")+"\n") {
 			t.Fatalf("%q not counted: %q", body, got)

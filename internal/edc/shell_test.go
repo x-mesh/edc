@@ -129,7 +129,7 @@ func TestShellNonShellArgumentReportsStartupFile(t *testing.T) {
 		t.Fatalf("commented line counted: %q", got)
 	}
 	// 주석과 작은따옴표 안의 글자는 셸이 실행하지 않는다.
-	for _, body := range []string{": # source <(edc shell zsh)\n", "echo '# edc shell'\n", "x=1 #edc shell\n", "echo 'eval' 'edc shell'\n", "eval true; echo 'edc shell'\n", "echo eval 'source <(edc shell zsh)'\n", "{eval 'source <(edc shell zsh)'\n", "echo \"x; eval\" 'source <(edc shell zsh)'\n", "repeat 0 eval 'source <(edc shell zsh)'\n"} {
+	for _, body := range []string{": # source <(edc shell zsh)\n", "echo '# edc shell'\n", "x=1 #edc shell\n", "echo 'eval' 'edc shell'\n", "eval true; echo 'edc shell'\n", "echo eval 'source <(edc shell zsh)'\n", "{eval 'source <(edc shell zsh)'\n", "echo \"x; eval\" 'source <(edc shell zsh)'\n", "repeat 0 eval 'source <(edc shell zsh)'\n", "repeat \"0\" eval 'source <(edc shell zsh)'\n", "repeat \\0 eval 'source <(edc shell zsh)'\n"} {
 		write(".zshrc", body)
 		if got := run("/bin/zsh"); !strings.HasSuffix(got, missing) {
 			t.Fatalf("%q counted: %q", body, got)

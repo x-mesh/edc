@@ -173,9 +173,9 @@ func shellCommandWord(text string) string {
 }
 
 // shellNeverRepeats는 zsh repeat의 횟수가 0 이하의 숫자라서 명령을 한 번도 실행하지 않는지 본다.
-// $n처럼 값을 모르는 횟수는 조건과 같이 평가하지 않는다.
+// "0"처럼 따옴표나 \가 붙은 숫자도 읽는다. $n이나 1-1처럼 값을 모르는 횟수는 조건과 같이 평가하지 않는다.
 func shellNeverRepeats(count string) bool {
-	n, err := strconv.Atoi(count)
+	n, err := strconv.Atoi(strings.NewReplacer(`"`, "", `\`, "").Replace(count))
 	return err == nil && n <= 0
 }
 

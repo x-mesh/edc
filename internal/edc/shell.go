@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -150,16 +151,22 @@ func shellExecutedText(line string) string {
 	return kept.String()
 }
 
-// shellCommandWord는 text의 마지막 명령, 곧 마지막 ;, &, |, ( 뒤의 첫 단어다. 앞에 붙은 NAME=value 대입은 건너뛴다.
+// shellCommandWord는 text의 마지막 명령, 곧 마지막 ;, &, |, ( 뒤의 첫 단어다. 앞에 붙은 {, then 같은 예약어와 NAME=value 대입은 건너뛴다.
 func shellCommandWord(text string) string {
-	command := text[strings.LastIndexAny(text, ";&|(")+1:]
-	for _, word := range strings.Fields(command) {
+	words := strings.Fields(text[strings.LastIndexAny(text, ";&|(")+1:])
+	for len(words) > 0 && slices.Contains(shellCommandPrefixes, words[0]) {
+		words = words[1:]
+	}
+	for _, word := range words {
 		if name, _, ok := strings.Cut(word, "="); !ok || !shellIsName(name) {
 			return word
 		}
 	}
 	return ""
 }
+
+// shellCommandPrefixes는 명령 앞에 와도 그 명령을 실행하는 예약어다. { eval '...'; }와 then eval '...'의 명령은 eval이다.
+var shellCommandPrefixes = []string{"{", "!", "if", "then", "else", "elif", "while", "until", "do", "time"}
 
 func shellIsName(text string) bool {
 	for i, r := range text {

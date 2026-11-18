@@ -168,8 +168,12 @@ func TestFindModelKeys(t *testing.T) {
 		t.Error("ctrl+o must run the editor")
 	}
 	// ctrl+g는 터미널의 다른 단축키가 먼저 가져갈 수 있어 grep을 열지 않는다.
-	if notGrep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}); notGrep.grepMode {
-		t.Error("ctrl+g must not open grep")
+	// reflect.DeepEqual은 nil이 아닌 함수를 늘 다르다고 보므로 config.now를 비우고 비교한다.
+	notGrep, cmd := findUpdate(t, model, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	before := model
+	before.config.now, notGrep.config.now = nil, nil
+	if cmd != nil || !reflect.DeepEqual(notGrep, before) {
+		t.Error("ctrl+g must leave the picker as it was")
 	}
 	grep, _ := findUpdate(t, model, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	grep = findType(t, grep, "time out")

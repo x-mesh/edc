@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -120,5 +124,99 @@ func TestAttachListenContainersReadsTheEngine(t *testing.T) {
 	plain := []listenSocket{{Proto: "tcp", Address: "*", Port: 5432}}
 	if err := attachListenContainers(context.Background(), plain, true); err != nil || plain[0].Container != nil {
 		t.Fatalf("no engine: %v %+v", err, plain[0].Container)
+	}
+}
+
+// runListen --json은 publish한 포트의 소켓에 container를 담고, Engine에 닿지 못하거나 Engine이 실패하면 그 이유를 container_error에
+// 남긴다. 소켓 목록은 이 테스트가 연 TCP 소켓을 포함한 실제 host의 것이다.
+func TestRunListenJSONReportsContainersAndEngineErrors(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("listen reads sockets only on Linux and macOS")
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	mode := "ok"
+	engine := ctrSocketFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == "/version":
+			fmt.Fprint(w, `{"ApiVersion":"1.50","MinAPIVersion":"1.41"}`)
+		case strings.HasSuffix(path, "/containers/json") && mode == "list":
+			http.Error(w, `{"message":"engine is restarting"}`, http.StatusInternalServerError)
+		case strings.HasSuffix(path, "/containers/json"):
+			fmt.Fprintf(w, `[{"Id":"aaa","Names":["/web"],"Image":"nginx:1","Ports":[{"IP":"127.0.0.1","PrivatePort":80,"PublicPort":%d,"Type":"tcp"}]}]`, port)
+		case strings.HasSuffix(path, "/containers/aaa/json") && mode == "inspect":
+			http.Error(w, `{"message":"inspect failed"}`, http.StatusInternalServerError)
+		case strings.HasSuffix(path, "/containers/aaa/json"):
+			fmt.Fprint(w, `{"Id":"aaa","Path":"nginx","Args":["-g","daemon off;"]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	t.Setenv("DOCKER_CONTEXT", "")
+	type socket struct {
+		Address   string           `json:"address"`
+		Port      int              `json:"port"`
+		Container *listenContainer `json:"container"`
+	}
+	run := func() (string, *listenContainer) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "listen.json")
+		if code := runListen([]string{"--json", path}, "test"); code != 0 {
+			t.Skipf("listen exited %d; this host cannot list its sockets", code)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report struct {
+			Results []struct {
+				Metrics struct {
+					Sockets        []socket `json:"sockets"`
+					ContainerError string   `json:"container_error"`
+				} `json:"metrics"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(data, &report); err != nil || len(report.Results) != 1 {
+			t.Fatalf("report = %s, %v", data, err)
+		}
+		metrics := report.Results[0].Metrics
+		for _, socket := range metrics.Sockets {
+			if socket.Address == "127.0.0.1" && socket.Port == port {
+				return metrics.ContainerError, socket.Container
+			}
+		}
+		t.Fatalf("the test socket 127.0.0.1:%d is not in the report:\n%s", port, data)
+		return "", nil
+	}
+
+	t.Setenv("DOCKER_HOST", "unix://"+engine.socket)
+	if failure, container := run(); failure != "" || container == nil || container.Name != "web" || container.Image != "nginx:1" || container.Port != 80 || container.Command != "nginx -g daemon off;" {
+		t.Fatalf("engine ok: error %q, container %+v", failure, container)
+	}
+	// inspect가 실패하면 container는 붙이되 명령이 없는 container처럼 보이지 않게 이유를 남긴다.
+	mode = "inspect"
+	if failure, container := run(); !strings.Contains(failure, "inspect failed") || container == nil || container.Name != "web" || container.Command != "" {
+		t.Fatalf("inspect failure: error %q, container %+v", failure, container)
+	}
+	mode = "list"
+	if failure, container := run(); !strings.Contains(failure, "engine is restarting") || container != nil {
+		t.Fatalf("list failure: error %q, container %+v", failure, container)
+	}
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "nope")
+	if failure, container := run(); failure != `docker context "nope" does not exist` || container != nil {
+		t.Fatalf("missing context: error %q, container %+v", failure, container)
+	}
+	// Engine socket이 없는 host는 container 없이 그대로다.
+	t.Setenv("DOCKER_CONTEXT", "")
+	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
+	if failure, container := run(); failure != "" || container != nil {
+		t.Fatalf("no engine: error %q, container %+v", failure, container)
 	}
 }

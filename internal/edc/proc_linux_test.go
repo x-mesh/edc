@@ -177,3 +177,30 @@ func TestLinuxProcExePathKeepsARealDeletedSuffix(t *testing.T) {
 		t.Fatalf("an unchecked name = %q", path)
 	}
 }
+
+func TestLinuxProcReplacedComparesTheStartTick(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "42"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// comm에 공백과 괄호가 있어도 마지막 ')' 뒤의 starttime(22번 필드)을 읽는다.
+	stat := "42 (tm (x)) S 1 42 42 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 1 0 271828 10000000 2000 18446744073709551615\n"
+	if err := os.WriteFile(filepath.Join(root, "42", "stat"), []byte(stat), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if linuxProcReplaced(root, topProcess{PID: 42, startTicks: 271828}) {
+		t.Fatal("the same process must not count as replaced")
+	}
+	if !linuxProcReplaced(root, topProcess{PID: 42, startTicks: 271827}) {
+		t.Fatal("another start tick means another process")
+	}
+	if !linuxProcReplaced(root, topProcess{PID: 43, startTicks: 271828}) {
+		t.Fatal("a process that ended must count as replaced")
+	}
+	if err := os.WriteFile(filepath.Join(root, "42", "stat"), []byte("42 (tm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !linuxProcReplaced(root, topProcess{PID: 42, startTicks: 271828}) {
+		t.Fatal("an unreadable stat must not pass as the same process")
+	}
+}

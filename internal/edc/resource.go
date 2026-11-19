@@ -213,6 +213,9 @@ type topProcess struct {
 	Command string
 	// Started는 process가 시작한 시각이다. PID가 재사용돼도 (PID, Started)는 process 하나를 가리킨다. 모르면 zero다.
 	Started time.Time
+	// startTicks는 Linux에서 부팅 뒤 시작한 tick이다. 같은 PID를 다시 읽어 같은 process인지 가를 때 Started 대신 쓴다. 시계를
+	// 맞추면 /proc/stat의 부팅 시각이 바뀌어 Started가 달라질 수 있기 때문이다.
+	startTicks uint64
 	// Threads는 thread 수이고 모르면 0이다.
 	Threads int
 	// State는 /proc/<pid>/stat의 state 문자다. 모르면 빈 문자열이다. "D"는 I/O를 기다리며 멈춘 상태다.
@@ -934,23 +937,26 @@ type topProcessTracker struct {
 	clockTicks float64
 	pageSize   uint64
 	previousAt time.Time
-	previous   map[int]uint64
+	previous   map[int]topProcessTicks
 }
 
+// topProcessTicks는 직전 읽기의 CPU tick과 시작 tick이다. 시작 tick이 다르면 그 PID를 다른 process가 다시 쓴 것이다.
+type topProcessTicks struct{ cpu, start uint64 }
+
 func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat) ([]topProcess, bool) {
-	current := make(map[int]uint64, len(stats))
+	current := make(map[int]topProcessTicks, len(stats))
 	processes := []topProcess{}
 	seconds := at.Sub(tracker.previousAt).Seconds()
 	for _, stat := range stats {
-		current[stat.PID] = stat.Ticks
+		current[stat.PID] = topProcessTicks{cpu: stat.Ticks, start: stat.StartTicks}
 		before, seen := tracker.previous[stat.PID]
-		if !seen || seconds <= 0 || stat.Ticks < before {
-			// 새 process나 pid 재사용은 비교할 기준이 없다.
+		// 새 process나 pid 재사용은 비교할 기준이 없다. 재사용한 process의 tick이 더 커도 시작 tick이 다르다.
+		if !seen || seconds <= 0 || stat.Ticks < before.cpu || stat.StartTicks != before.start {
 			continue
 		}
-		cpu := float64(stat.Ticks-before) / tracker.clockTicks / seconds * 100
+		cpu := float64(stat.Ticks-before.cpu) / tracker.clockTicks / seconds * 100
 		rss := stat.RSSPages * tracker.pageSize
-		process := topProcess{PID: stat.PID, PPID: stat.PPID, CWD: stat.CWD, CPU: cpu, RSS: rss, Memory: rss + stat.Swap, MemoryValid: stat.SwapValid, Command: stat.Command, Threads: stat.Threads, State: stat.State}
+		process := topProcess{PID: stat.PID, PPID: stat.PPID, CWD: stat.CWD, CPU: cpu, RSS: rss, Memory: rss + stat.Swap, MemoryValid: stat.SwapValid, Command: stat.Command, Threads: stat.Threads, State: stat.State, startTicks: stat.StartTicks}
 		if !tracker.boot.IsZero() {
 			process.Started = tracker.boot.Add(time.Duration(float64(stat.StartTicks) / tracker.clockTicks * float64(time.Second)))
 		}

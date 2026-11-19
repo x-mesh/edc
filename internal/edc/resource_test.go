@@ -172,7 +172,7 @@ func TestTopProcessTrackerUsesRecentTicks(t *testing.T) {
 	boot := time.Unix(1_000_000, 0)
 	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096, boot: boot}
 	start := time.Unix(0, 0)
-	if _, ok := tracker.update(start, []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_000}, {PID: 2, Command: "idle", Ticks: 50}}); ok {
+	if _, ok := tracker.update(start, []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_000, StartTicks: 250}, {PID: 2, Command: "idle", Ticks: 50}}); ok {
 		t.Fatal("the first read must only set a baseline")
 	}
 	// 오래 산 process가 방금 2초 동안 core 1.5개를 썼다. 수명 평균이었다면 거의 0이다.
@@ -183,6 +183,21 @@ func TestTopProcessTrackerUsesRecentTicks(t *testing.T) {
 	// starttime 250 tick은 부팅 2.5초 뒤다.
 	if want := boot.Add(2500 * time.Millisecond); processes[0].Threads != 4 || !processes[0].Started.Equal(want) {
 		t.Fatalf("threads %d, started %v, want %v", processes[0].Threads, processes[0].Started, want)
+	}
+}
+
+// 두 읽기 사이에 process가 끝나고 PID를 다른 process가 다시 쓰면, 새 process의 tick이 더 커도 CPU%를 셈하지 않는다.
+func TestTopProcessTrackerSkipsAReusedPID(t *testing.T) {
+	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096}
+	tracker.update(time.Unix(0, 0), []linuxProcessStat{{PID: 7, Command: "old", Ticks: 100, StartTicks: 1000}, {PID: 8, Command: "same", Ticks: 10, StartTicks: 500}})
+	processes, ok := tracker.update(time.Unix(1, 0), []linuxProcessStat{{PID: 7, Command: "new", Ticks: 400, StartTicks: 2000}, {PID: 8, Command: "same", Ticks: 60, StartTicks: 500}})
+	if !ok || len(processes) != 1 || processes[0].PID != 8 || processes[0].CPU != 50 || processes[0].startTicks != 500 {
+		t.Fatalf("processes = %#v", processes)
+	}
+	// 다음 읽기에서는 새 process가 기준을 가진다.
+	processes, _ = tracker.update(time.Unix(2, 0), []linuxProcessStat{{PID: 7, Command: "new", Ticks: 450, StartTicks: 2000}})
+	if len(processes) != 1 || processes[0].Command != "new" || processes[0].CPU != 50 {
+		t.Fatalf("next processes = %#v", processes)
 	}
 }
 

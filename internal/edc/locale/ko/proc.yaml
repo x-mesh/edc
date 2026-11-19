@@ -52,3 +52,4 @@ proc:
   error:
     unreadable: "process 목록을 읽지 못했습니다"
     not_found: "%s에 맞는 process가 없습니다"
+    replaced: "process %d가 읽는 도중에 끝났습니다. 그 PID는 지금 다른 process가 쓰고 있을 수 있습니다"

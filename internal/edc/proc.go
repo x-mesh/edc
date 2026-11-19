@@ -419,6 +419,11 @@ func runProc(args []string, version string) int {
 	selected := []topProcess{process}
 	newTopProcessEnricher()(selected)
 	details := readProcDetails(process.PID)
+	// 표본을 뜬 뒤 process가 끝나 PID가 다른 process에 넘어갔으면 위에서 읽은 limit, 명령행, fd, 출처가 섞인다.
+	if procReplaced(process) {
+		fmt.Fprintln(os.Stderr, T("proc.error.replaced", process.PID))
+		return 1
+	}
 	results := evaluateProc(selected[0], details, time.Now(), options.verbose)
 	return emit(options, buildReport(version, started, map[string]interface{}{"process": target, "pid": process.PID}, results, options.redact))
 }

@@ -23,6 +23,19 @@ func readProcDetails(pid int) procDetails {
 	return details
 }
 
+// procReplaced는 표본을 뜬 process가 끝났거나 그 PID를 다른 process가 다시 쓰는지 본다. 세부 정보를 다 읽은 뒤에 부른다. 살아 있는
+// process의 PID는 다른 process가 쓸 수 없으므로, 시작 tick이 그대로면 그 사이에 읽은 값은 모두 표본의 process 것이다.
+func procReplaced(process topProcess) bool { return linuxProcReplaced("/proc", process) }
+
+func linuxProcReplaced(procRoot string, process topProcess) bool {
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(process.PID), "stat"))
+	if err != nil {
+		return true
+	}
+	stat, ok := parseLinuxProcessStat(process.PID, string(data))
+	return !ok || stat.StartTicks != process.startTicks
+}
+
 // readLinuxProcOrigin은 root 아래의 /proc/<pid>/exe, dpkg 파일 목록, logind 세션 기록을 읽는다. 읽지 못한 값은 비우고, 그 줄은
 // 나오지 않는다.
 func readLinuxProcOrigin(root string, pid int) procOrigin {

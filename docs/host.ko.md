@@ -352,7 +352,7 @@ edc proc -v 1234         # 명령행 전체
 | `proc.sockets` | 대기 포트, 상태별 연결 수, 연결이 많은 상대 | `CLOSE_WAIT` 연결이 10개 이상일 때 |
 | `proc.cgroup` | cgroup v2 경로, `memory.max` 대비 메모리 사용량, OOM kill, CPU 제한 횟수. Linux에서만 읽습니다. | 메모리가 `memory.max`의 80% 이상이거나 OOM kill이 있었을 때 |
 
-명령행의 비밀 옵션과 URL 인증 정보는 `edc listen`과 같은 규칙으로 가립니다. `-v`가 없으면 명령행을 200자 한 줄로 자릅니다. process의 대기 포트로 들어온 연결은 상대 주소로, 나간 연결은 상대 주소와 포트로 묶습니다. Linux에서는 `/proc/<pid>`와 그 process의 network namespace에서 본 TCP 표를 읽으므로 container process는 자기 연결이 보입니다. macOS에서는 `lsof`로 fd와 소켓을 읽습니다. root가 아니면 다른 계정의 fd와 소켓은 `skip`입니다. 지워진 파일은 process가 닫을 때까지 디스크 공간을 차지합니다. memfd와 `/dev/shm` 파일은 세지 않습니다.
+명령행의 비밀 옵션과 URL 인증 정보는 `edc listen`과 같은 규칙으로 가립니다. `-v`가 없으면 명령행을 200자 한 줄로 자릅니다. process의 대기 포트로 들어온 연결은 상대 주소로, 나간 연결은 상대 주소와 포트로 묶습니다. Linux에서는 `/proc/<pid>`와 그 process의 network namespace에서 본 TCP 표를 읽으므로 container process는 자기 연결이 보입니다. macOS에서는 `lsof`로 fd와 소켓을 읽습니다. root가 아니면 다른 계정의 fd와 소켓은 `skip`입니다. 지워진 파일은 process가 닫을 때까지 디스크 공간을 차지합니다. memfd와 `/dev/shm` 파일은 세지 않습니다. Linux에서는 세부 정보를 읽은 뒤 process의 시작 시각을 다시 확인합니다. 그 사이에 process가 끝났으면 다른 process가 그 PID를 쓰고 있을 수 있으므로, 결과를 내지 않고 1로 끝납니다. macOS에서는 확인하지 않습니다.
 
 Linux에서 `proc.process`는 process가 어디서 왔는지도 보여 줍니다. `exe`는 실행 파일입니다. `패키지`는 이 파일을 가진 dpkg 패키지와, dpkg가 그 패키지를 마지막으로 설치하거나 업그레이드한 시각입니다. 이 시각은 `/var/lib/dpkg/info`에 있는 그 패키지 파일 목록의 수정 시각입니다. 이 파일을 가진 패키지가 없으면 `없음`으로 표시하고, dpkg가 없는 host에서는 `패키지` 줄이 없습니다. `세션`은 process를 띄운 로그인 세션입니다. 사용자, 원격 host, 서비스, 시작 시각을 `/run/systemd/sessions`에서 읽습니다. 사용자가 로그아웃했는데 process가 아직 돌고 있으면 그 사실도 표시합니다. system 서비스처럼 로그인 세션 밖에서 뜬 process에는 `세션` 줄이 없습니다.
 

@@ -40,8 +40,7 @@ func openLinuxProcHandle(procRoot string, pid int) (procHandle, bool) {
 	return procHandle{dir: dir}, true
 }
 
-// sameProcess는 열어 둔 process가 아직 PID를 쥐고 있고 시작 tick이 표본과 같은지 본다. 끝난 뒤 거두지 않은 zombie도 PID를 쥐므로
-// 같은 process로 본다.
+// sameProcess는 열어 둔 process가 아직 PID를 쥐고 있고 시작 tick이 표본과 같은지 본다.
 func (handle procHandle) sameProcess(process topProcess) bool {
 	if handle.dir == nil {
 		return false
@@ -57,7 +56,8 @@ func (handle procHandle) sameProcess(process topProcess) bool {
 		return false
 	}
 	stat, ok := parseLinuxProcessStat(process.PID, string(data))
-	return ok && stat.StartTicks == process.startTicks
+	// 읽는 동안 끝나 zombie가 된 process는 fd와 명령행이 비어 있다. 표본에서부터 zombie였던 process만 그대로 보여 준다.
+	return ok && stat.StartTicks == process.startTicks && (stat.State != "Z" || process.State == "Z")
 }
 
 func (handle procHandle) close() {

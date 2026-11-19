@@ -115,7 +115,7 @@ TC bit가 있는 응답은 `dns_truncated`입니다. 응답이 UDP에 다 들어
 
 `Errors`는 `dns_noerror`, `dns_nodata`, `dns_truncated`가 아닌 응답과 `dns_tcp_fail`을 셉니다. summary의 `TCP connections`는 `dns_tcp_connect`와 `dns_tcp_fail`을 셉니다.
 
-DNS event의 `target`은 질의한 이름이고 `destination`은 DNS 서버입니다. 스크롤 화면의 `DESTINATION` 열은 이름, record 종류, 서버를, `EVENT` 열은 결과와 응답 시간을 표시합니다. 따라서 `--group-by target`은 이름별로 묶고, `--destination`은 서버로 거릅니다. DNS 서버 port는 항상 53이므로 `trace dns`에는 port 보기가 없습니다.
+DNS event의 `target`은 질의한 이름이고 `destination`은 DNS 서버입니다. 스크롤 화면의 `DESTINATION` 열은 이름, record 종류, 서버를, `EVENT` 열은 결과와 응답 시간을 표시합니다. 따라서 `--group-by target`은 이름별로 묶고, `--destination`은 서버로 거릅니다. `--destination`은 DNS event를 이름으로도 거릅니다. 값이 이름 안에 label 단위로 들어 있으면 맞습니다. 예를 들어 `--destination tmate.io`는 `ssh.tmate.io`와 `ssh.tmate.io.loopvm`을 남기고 `nottmate.io`는 뺍니다. DNS 서버 port는 항상 53이므로 `trace dns`에는 port 보기가 없습니다.
 
 edc는 로컬 port, 서버, transaction ID가 같은 질의와 응답을 짝짓습니다. `latency_ms`는 kernel이 질의를 보낸 때부터 process가 응답을 읽은 때까지입니다.
 
@@ -127,9 +127,17 @@ edc는 이 시간을 둘로 나눕니다. `network_ms`는 응답이 socket 수�
 
 `Ctrl-C` 후 summary는 이름과 record 종류마다 한 행을 표시합니다. group 행은 byte 대신 질의, 응답, 오류, 응답 없음을 표시하고, 평균·최대 응답 시간과 평균 network 시간(`NETms`), 평균 읽기 지연(`RDms`)도 표시합니다.
 
+`PROCESS` 열은 process 이름 뒤에 PID를 붙입니다(`tmate(30905)`). 한 이름에 PID가 넷 이상이면 앞의 세 개와 나머지 수만 표시합니다.
+
 systemd-resolved가 있는 host에서는 조회 하나가 두 번 보일 수 있습니다. 프로그램과 `127.0.0.53` 사이, systemd-resolved와 상위 서버 사이입니다. 프로그램 쪽 행만 있으면 systemd-resolved가 캐시에서 답한 것입니다.
 
-`--side server`를 사용하면 systemd-resolved, dnsmasq, CoreDNS 같은 로컬 DNS 서버를 관측합니다. 서버가 port 53으로 받은 질의와 보낸 응답을 표시하며, event 이름은 client 쪽과 같습니다. JSON event와 요약에는 `"side": "server"`가 붙습니다. 서버 쪽 event의 `destination`은 질의한 client이고 `process`는 DNS 서버입니다. `--group-by source`는 서버 쪽 event를 서버가 받는 주소별로 묶습니다.
+edc는 trace를 시작할 때 port 53을 듣는 process(systemd-resolved, dnsmasq 등)를 읽습니다. 요약의 `PROCESS` 열은 이 process를 `via` 뒤에 둡니다(`tmate(30905) via systemd-resolve(812)`). JSON 요약에는 `relays`로 나옵니다. 질의 수는 두 process의 질의를 모두 셉니다.
+
+이름이 풀리지 않으면 resolver는 `/etc/resolv.conf`의 `search` 줄에 있는 도메인을 하나씩 붙여 다시 물을 수 있습니다(`ssh.tmate.io.loopvm`). trace에 원래 이름도 있으면 요약은 이 행을 원래 이름 아래에 들여 씁니다. JSON 요약에는 원래 이름이 `base_name`으로 나옵니다. `trace show`는 다른 host에서 녹화한 파일도 읽으므로 listen 소켓과 `/etc/resolv.conf`를 읽지 않습니다. 그래서 그 요약에는 `via`와 들여 쓴 행이 없습니다.
+
+요약의 `REPEATED FAILURES`는 한 process가 같은 이름과 record 종류에 같은 실패 응답을 일정한 간격으로 세 번 이상 받은 경우를 표시합니다. 가장 긴 간격이 가장 짧은 간격보다 20%를 넘게 길면 표시하지 않습니다. 이름을 풀지 못한 프로그램이 몇 초마다 다시 물으면 이런 모양이 됩니다. 기다리는 시간을 늘려 가며 다시 묻는 retry는 표시하지 않습니다. `NEXT` 열은 그 process를 볼 `edc proc` 명령입니다. JSON 요약에는 `repeated_failures`로 나옵니다. 검색 도메인을 붙인 이름이 원래 이름과 함께 되풀이되면 원래 이름만 표시합니다. `via` 뒤의 process는 표시하지 않습니다.
+
+`--side server`를 사용하면 systemd-resolved, dnsmasq, CoreDNS 같은 로컬 DNS 서버를 관측합니다. 서버가 port 53으로 받은 질의와 보낸 응답을 표시하며, event 이름은 client 쪽과 같습니다. JSON event와 요약에는 `"side": "server"`가 붙습니다. 서버 쪽 event의 `destination`은 질의한 client이고 `process`는 DNS 서버입니다. `--group-by source`는 서버 쪽 event를 서버가 받는 주소별로 묶습니다. 서버 쪽 요약에는 `via`, 들여 쓴 행, `REPEATED FAILURES`가 없습니다.
 
 ```bash
 edc trace dns --side server

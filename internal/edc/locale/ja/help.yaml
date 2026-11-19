@@ -471,7 +471,7 @@ command:
       live: "互換 flag。trace は既定でリアルタイムに実行"
       group_by: "source、target、port、process、event、path で集計"
       process: "一致する PID か command 名のみ、カンマ区切り"
-      destination: "宛先 host と port で絞る"
+      destination: "宛先 host と port で絞る。dns は問い合わせ名のドメインでも絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
       side: "http と DB の trace は両側、dns は client 側"

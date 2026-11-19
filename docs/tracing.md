@@ -392,7 +392,7 @@ An answer with the TC bit is `dns_truncated`. The answer did not fit in UDP, so 
 
 `Errors` counts `dns_tcp_fail` and all answers except `dns_noerror`, `dns_nodata`, and `dns_truncated`. `TCP connections` in the summary counts `dns_tcp_connect` and `dns_tcp_fail`.
 
-The `target` of a DNS event is the name in the query. The `destination` is the DNS server. In the scroll view, the `DESTINATION` column shows the name, the record type, and the server. The `EVENT` column shows the result and the latency. So `--group-by target` groups events by name, and `--destination` filters events by server. The DNS server port is always 53, so `trace dns` has no port view.
+The `target` of a DNS event is the name in the query. The `destination` is the DNS server. In the scroll view, the `DESTINATION` column shows the name, the record type, and the server. The `EVENT` column shows the result and the latency. So `--group-by target` groups events by name, and `--destination` filters events by server. `--destination` also filters DNS events by name. A name matches if it contains the value as full labels. For example, `--destination tmate.io` keeps `ssh.tmate.io` and `ssh.tmate.io.loopvm`, but not `nottmate.io`. The DNS server port is always 53, so `trace dns` has no port view.
 
 edc matches an answer to the query with the same local port, server, and transaction ID. `latency_ms` starts when the kernel sends the query and stops when the process reads the answer.
 
@@ -404,9 +404,17 @@ If the process sends the same query again before the answer, the answer counts f
 
 The summary after Ctrl-C shows one row for each name and record type. Grouped rows show queries, answers, errors, and unanswered queries instead of byte counts. They also show the average and maximum latency, and the average network time (`NETms`) and read delay (`RDms`).
 
+The `PROCESS` column shows the PID after each process name, for example `tmate(30905)`. If a name has more than three PIDs, the column shows the first three and the number of the others.
+
 On a host with systemd-resolved, one lookup can appear two times: between the program and `127.0.0.53`, and between systemd-resolved and the upstream server. If a name has only the program row, systemd-resolved answered from its cache.
 
-Use `--side server` to watch a local DNS server, for example systemd-resolved, dnsmasq, or CoreDNS. It shows the queries that the server receives on port 53 and the answers that it sends. The events use the same names as the client side, and JSON events and reports add `"side": "server"`. The `destination` of a server event is the client, and the `process` is the DNS server. `--group-by source` groups server events by the address that the server listens on.
+At the start, edc reads the processes that listen on port 53, for example systemd-resolved or dnsmasq. The `PROCESS` column of the summary puts these processes after `via`, for example `tmate(30905) via systemd-resolve(812)`. The JSON report lists them in `relays`. The counts include the queries of both processes.
+
+If a name does not resolve, the resolver can ask again with each domain from the `search` line of `/etc/resolv.conf`, for example `ssh.tmate.io.loopvm`. If the trace also has the original name, the summary puts these rows below it and indents them. The JSON report gives the original name in `base_name`. `trace show` can read a file from a different host, so it does not read the listening sockets or `/etc/resolv.conf`. Its summary has no `via` and no indented rows.
+
+`REPEATED FAILURES` in the summary shows a process that got the same failed answer for the same name and record type three or more times at a steady interval. The longest interval can be at most 20% longer than the shortest. A program that cannot resolve a name and asks again every few seconds makes this shape. A retry that waits longer each time does not show. The `NEXT` column gives the `edc proc` command for the process. The JSON report lists these rows in `repeated_failures`. If a name with a search domain repeats together with the original name, only the original name shows. The processes after `via` do not show.
+
+Use `--side server` to watch a local DNS server, for example systemd-resolved, dnsmasq, or CoreDNS. It shows the queries that the server receives on port 53 and the answers that it sends. The events use the same names as the client side, and JSON events and reports add `"side": "server"`. The `destination` of a server event is the client, and the `process` is the DNS server. `--group-by source` groups server events by the address that the server listens on. The server side summary has no `via`, no indented rows, and no repeated failures.
 
 ```bash
 edc trace dns --side server

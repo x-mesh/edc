@@ -761,6 +761,7 @@ func runTraceProtocol(args []string) int {
 	var encoder *json.Encoder
 	var written uint64
 	aggregate := newTraceAggregate(args[0], options.groupBy)
+	aggregate.useLocalDNS()
 	rawSockets := traceRawSockets{}
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)

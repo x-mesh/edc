@@ -439,6 +439,8 @@ edc ctr --collector-image edc-collector:amd64 --json - web
 
 Live daemon validation of the required capabilities and mounts is unverified. Get user confirmation before a live test. Show the Unix socket, local image ID and protocol label, target container ID, capabilities, exact mount sources, helper name, and cleanup target.
 
+`ctr.processes` reads the Docker top API with `ps -eo pid,pcpu,rss,args`. The busybox `ps` in the OrbStack VM rejects `pcpu`. Then edc asks again for `pid,rss,time,etime,args`, and computes the CPU percent from the CPU time and the elapsed time, to the second. If the daemon rejects the columns for another reason, `ctr.processes` shows the error.
+
 Missing API fields show an unavailable reason. A missing value does not become zero. Partial limit data stays visible. If every resource limit field is unavailable, `ctr.limits` shows `skip`. Any collector OOM values remain visible.
 
 The list puts failed containers first, then containers that need attention, then containers with restart history. It omits containers that exited with code 0 unless you add `--all`.

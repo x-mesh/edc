@@ -52,3 +52,4 @@ proc:
   error:
     unreadable: "could not read the process list"
     not_found: "no process matches %s"
+    replaced: "process %d ended while edc read it. Its PID can belong to another process now"

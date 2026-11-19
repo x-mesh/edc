@@ -4,7 +4,9 @@ package edc
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -175,5 +177,91 @@ func TestLinuxProcExePathKeepsARealDeletedSuffix(t *testing.T) {
 	unchecked := filepath.Join(dir, "other", "tool (deleted)")
 	if path, ok := linuxProcExePath("/", link("5", filepath.Join(dir, "tool")), unchecked); ok {
 		t.Fatalf("an unchecked name = %q", path)
+	}
+}
+
+func TestProcHandleComparesTheStartTick(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "42"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// comm에 공백과 괄호가 있어도 마지막 ')' 뒤의 starttime(22번 필드)을 읽는다.
+	stat := filepath.Join(root, "42", "stat")
+	if err := os.WriteFile(stat, []byte("42 (tm (x)) S 1 42 42 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 1 0 271828 10000000 2000 18446744073709551615\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handle, ok := openLinuxProcHandle(root, 42)
+	if !ok {
+		t.Fatal("the directory must open")
+	}
+	defer handle.close()
+	if !handle.sameProcess(topProcess{PID: 42, startTicks: 271828}) {
+		t.Fatal("the same process must pass")
+	}
+	if handle.sameProcess(topProcess{PID: 42, startTicks: 271827}) {
+		t.Fatal("another start tick means another process")
+	}
+	// 같은 tick 안에 PID를 다시 쓴 모양이다. 같은 경로에 시작 tick이 같은 새 디렉터리가 생겨도, 열어 둔 fd는 사라진 옛 디렉터리를
+	// 가리키므로 통과하지 않는다. 경로로 다시 읽었다면 같은 process로 보았을 것이다.
+	line, err := os.ReadFile(stat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "42")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "42"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stat, line, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if handle.sameProcess(topProcess{PID: 42, startTicks: 271828}) {
+		t.Fatal("a new directory at the same path must not pass")
+	}
+	reopened, ok := openLinuxProcHandle(root, 42)
+	if !ok {
+		t.Fatal("the new directory must open")
+	}
+	defer reopened.close()
+	if err := os.WriteFile(stat, []byte("42 (tm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if reopened.sameProcess(topProcess{PID: 42, startTicks: 271828}) {
+		t.Fatal("an unreadable stat must not pass")
+	}
+	if missing, ok := openLinuxProcHandle(root, 43); ok || missing.sameProcess(topProcess{PID: 43}) {
+		t.Fatal("a process that does not exist must not open or pass")
+	}
+}
+
+// 실제 procfs에서 열어 둔 디렉터리는 process가 끝나 거둬지면 stat을 읽지 못한다. 같은 PID를 다른 process가 같은 tick 안에 다시
+// 써도 마찬가지지만, PID를 고르려면 권한이 필요해 여기서는 끝난 경우만 본다.
+func TestProcHandleRefusesAProcessThatEnded(t *testing.T) {
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Skip(err)
+	}
+	pid := child.Process.Pid
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	stat, ok := parseLinuxProcessStat(pid, string(data))
+	if err != nil || !ok {
+		child.Process.Kill()
+		child.Wait()
+		t.Fatalf("stat = %q, %v", data, err)
+	}
+	process := topProcess{PID: pid, startTicks: stat.StartTicks}
+	handle, opened := openProcHandle(pid)
+	if !opened {
+		t.Fatal("the child must open")
+	}
+	defer handle.close()
+	if !handle.sameProcess(process) {
+		t.Fatal("a running child must pass")
+	}
+	child.Process.Kill()
+	child.Wait()
+	if handle.sameProcess(process) {
+		t.Fatal("a reaped child must not pass")
 	}
 }

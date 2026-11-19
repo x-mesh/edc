@@ -52,3 +52,4 @@ proc:
   error:
     unreadable: "process 一覧を読めませんでした"
     not_found: "%s に一致する process がありません"
+    replaced: "process %d は読み取り中に終了しました。その PID は今は別の process が使っている可能性があります"

@@ -4,14 +4,18 @@ package edc
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -68,14 +72,15 @@ func TestCtrSocketNegotiatesAndDecodesTypedInspect(t *testing.T) {
 }
 
 func TestCtrSocketEndpointRules(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
 	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:2375")
 	t.Setenv("DOCKER_CONTEXT", "default")
 	if _, err := ctrSocketEndpoint(); err != nil {
 		t.Fatalf("default context must ignore DOCKER_HOST: %v", err)
 	}
 	t.Setenv("DOCKER_CONTEXT", "work")
-	if _, err := ctrSocketEndpoint(); err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("nondefault context error = %v", err)
+	if _, err := ctrSocketEndpoint(); err == nil || !strings.Contains(err.Error(), `docker context "work" does not exist`) {
+		t.Fatalf("missing context error = %v", err)
 	}
 	t.Setenv("DOCKER_CONTEXT", "")
 	t.Setenv("DOCKER_HOST", "unix:///tmp/daemon.sock")
@@ -87,6 +92,55 @@ func TestCtrSocketEndpointRules(t *testing.T) {
 		if _, err := ctrSocketEndpoint(); err == nil {
 			t.Errorf("accepted %q", host)
 		}
+	}
+}
+
+// OrbStack과 Colima는 Engine socket을 docker context로만 알린다. docker CLI처럼 DOCKER_CONTEXT, DOCKER_HOST, currentContext 순으로 고른다.
+func TestCtrSocketEndpointReadsDockerContexts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+	writeContext := func(name, host string) {
+		t.Helper()
+		sum := sha256.Sum256([]byte(name))
+		meta := filepath.Join(dir, "contexts", "meta", hex.EncodeToString(sum[:]))
+		if err := os.MkdirAll(meta, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf(`{"Name":%q,"Metadata":{"Description":"test"},"Endpoints":{"docker":{"Host":%q,"SkipTLSVerify":false}}}`, name, host)
+		if err := os.WriteFile(filepath.Join(meta, "meta.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeContext("orbstack", "unix:///Users/me/.orbstack/run/docker.sock")
+	writeContext("remote", "ssh://me@host")
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"auths":{},"currentContext":"orbstack"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ctrSocketEndpoint(); err != nil || got != "/Users/me/.orbstack/run/docker.sock" {
+		t.Fatalf("current context = %q, %v", got, err)
+	}
+	t.Setenv("DOCKER_HOST", "unix:///tmp/host.sock")
+	if got, err := ctrSocketEndpoint(); err != nil || got != "/tmp/host.sock" {
+		t.Fatalf("DOCKER_HOST must win over the current context: %q, %v", got, err)
+	}
+	t.Setenv("DOCKER_CONTEXT", "orbstack")
+	if got, err := ctrSocketEndpoint(); err != nil || got != "/Users/me/.orbstack/run/docker.sock" {
+		t.Fatalf("DOCKER_CONTEXT must win over DOCKER_HOST: %q, %v", got, err)
+	}
+	t.Setenv("DOCKER_CONTEXT", "remote")
+	if _, err := ctrSocketEndpoint(); err == nil || !strings.Contains(err.Error(), `docker context "remote" must be an absolute Unix socket`) {
+		t.Fatalf("remote context error = %v", err)
+	}
+	// docker CLI는 깨진 config.json에 경고만 하고 기본 socket으로 이어 간다.
+	t.Setenv("DOCKER_CONTEXT", "")
+	t.Setenv("DOCKER_HOST", "")
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"currentContext":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ctrSocketEndpoint(); err != nil || got != ctrDefaultSocket() {
+		t.Fatalf("broken config = %q, %v", got, err)
 	}
 }
 
@@ -104,6 +158,75 @@ func TestCtrSocketTopValidatesColumnsAndPreservesCommand(t *testing.T) {
 	rows, err := engine.top(context.Background(), "id")
 	if err != nil || len(rows) != 1 || rows[0].PID != 7 || rows[0].RSS != 12*1024 || rows[0].CPU != 1.5 || rows[0].Command != "worker --name a b" {
 		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}
+
+// OrbStack의 VM은 busybox ps라 pcpu를 받지 않는다. 그때만 busybox가 받는 열로 다시 묻고, CPU를 TIME과 ELAPSED로 셈한다.
+func TestCtrSocketTopFallsBackToBusyboxColumns(t *testing.T) {
+	var asked []string
+	failure := `{"message":"ps: ps: bad -o argument 'pcpu', supported arguments: user,group,comm,args,pid,ppid,pgid,etime,nice,rgroup,ruser,time,tty,vsz,sid,stat,rss"}`
+	engine := ctrSocketFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version" {
+			fmt.Fprint(w, `{"ApiVersion":"1.51","MinAPIVersion":"1.41"}`)
+			return
+		}
+		args := r.URL.Query().Get("ps_args")
+		asked = append(asked, r.URL.Path+" "+args)
+		switch {
+		case r.URL.Path == "/v1.51/containers/other/top":
+			http.Error(w, `{"message":"container other is not running"}`, http.StatusInternalServerError)
+		case args == ctrTopArgs:
+			http.Error(w, failure, http.StatusInternalServerError)
+		default:
+			fmt.Fprint(w, `{"Titles":["PID","RSS","TIME","ELAPSED","COMMAND"],"Processes":[["377","10m","0:03","0:30","redis-server *:6379"],["400","512","1:00:00","2-00:00:00","worker --name a"]]}`)
+		}
+	}))
+	rows, err := engine.top(context.Background(), "id")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+	if rows[0].PID != 377 || rows[0].RSS != 10<<20 || rows[0].CPU != 10 || rows[0].Command != "redis-server *:6379" {
+		t.Fatalf("busybox row = %+v", rows[0])
+	}
+	// 2일 동안 CPU 1시간을 썼으면 평균 2.08%다.
+	if rows[1].RSS != 512<<10 || math.Abs(rows[1].CPU-100.0/48) > 1e-9 {
+		t.Fatalf("long-running row = %+v", rows[1])
+	}
+	if want := []string{"/v1.51/containers/id/top " + ctrTopArgs, "/v1.51/containers/id/top " + ctrTopBusyboxArgs}; !slices.Equal(asked, want) {
+		t.Fatalf("requests = %q, want %q", asked, want)
+	}
+	// 다른 실패는 다시 묻지 않고 그대로 알린다.
+	asked = nil
+	if _, err := engine.top(context.Background(), "other"); err == nil || !strings.Contains(err.Error(), "is not running") || len(asked) != 1 {
+		t.Fatalf("other failure: err=%v, requests %q", err, asked)
+	}
+}
+
+func TestCtrTopParsesPSTimesAndRSS(t *testing.T) {
+	// busybox는 위 단위 없이 분을 쌓으므로 맨 앞 칸은 60을 넘을 수 있다. 106751-23:47:16은 초 단위로 담을 수 있는 가장 긴 시간이다.
+	for text, want := range map[string]time.Duration{"0:00": 0, "0:05": 5 * time.Second, "12:34": 12*time.Minute + 34*time.Second, "123:45": 123*time.Minute + 45*time.Second, "01:02:03": time.Hour + 2*time.Minute + 3*time.Second, "2-03:04:05": 51*time.Hour + 4*time.Minute + 5*time.Second, "106751-23:47:16": time.Duration(math.MaxInt64/int64(time.Second)) * time.Second} {
+		if got, err := ctrPSDuration(text); err != nil || got != want {
+			t.Errorf("ctrPSDuration(%q) = %v, %v; want %v", text, got, err, want)
+		}
+	}
+	// 뒤 칸이 60 이상이거나 time.Duration을 넘는 값은 받지 않는다.
+	for _, text := range []string{"", "5", "1:2:3:4", "a:00", "-1:00", "x-00:01", "0:-1", "0:60", "1:60:00", "00:00:60", "2-24:00:00", "2-123:45", "106751-23:47:17", "106752-00:00:00", "9223372036854775807:00", "99999999999999999999:00"} {
+		if _, err := ctrPSDuration(text); err == nil {
+			t.Errorf("ctrPSDuration(%q) accepted", text)
+		}
+	}
+	for text, want := range map[string]uint64{"0": 0, "12": 12 << 10, "999": 999 << 10, "10m": 10 << 20, "1.5g": 3 << 29, "2k": 2 << 10} {
+		if got, err := ctrTopRSS(text); err != nil || got != want {
+			t.Errorf("ctrTopRSS(%q) = %d, %v; want %d", text, got, err, want)
+		}
+	}
+	for _, text := range []string{"", "m", "-1m", "10x", "abc", "18446744073709551615"} {
+		if _, err := ctrTopRSS(text); err == nil {
+			t.Errorf("ctrTopRSS(%q) accepted", text)
+		}
+	}
+	if cpu, err := ctrTopCPU("0:10", "0:00"); err != nil || cpu != 0 {
+		t.Errorf("a process that has just started = %v, %v", cpu, err)
 	}
 }
 

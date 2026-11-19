@@ -35,6 +35,8 @@ type listenSocket struct {
 	// 때만 채운다. Args의 비밀 값은 담기 전에 가린다.
 	Args []string `json:"args,omitempty"`
 	Cwd  string   `json:"cwd,omitempty"`
+	// Container는 이 포트를 publish한 container다. 소켓의 주인은 OrbStack Helper나 docker-proxy처럼 대신 연 process다.
+	Container *listenContainer `json:"container,omitempty"`
 
 	// inode는 Linux에서 소켓을 /proc/*/fd의 주인과 잇는 열쇠다. 출력하지 않는다.
 	inode uint32
@@ -187,6 +189,9 @@ func formatListenTable(sockets []listenSocket, detail bool, note func(string) st
 		if socket.PID != "" {
 			process += " (" + socket.PID + ")"
 		}
+		if container := socket.Container; container != nil {
+			process += " → " + topPrintableText(container.Name+" ("+container.Image+")")
+		}
 		port := strconv.Itoa(socket.Port)
 		if socket.Port == 0 {
 			// 유닉스 소켓은 포트가 없다. 빈 칸 대신 없음을 그대로 적는다.
@@ -225,6 +230,13 @@ func formatListenTable(sockets []listenSocket, detail bool, note func(string) st
 		writeRow(row)
 		if note != nil && commands[index] != "" {
 			builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+commands[index]) + "\n")
+		}
+		if container := sockets[index].Container; note != nil && container != nil {
+			line := T("observe.listen.container_port", container.Port, container.Proto)
+			if container.Command != "" {
+				line += ": " + container.Command
+			}
+			builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+topPrintableText(line)) + "\n")
 		}
 	}
 	return builder.String()
@@ -288,7 +300,8 @@ func listenShortPath(text, home string) string {
 }
 
 var (
-	listenSecretFlag    = regexp.MustCompile(`(?i)(^|[-_.])(pass(word|wd)?|secret|token|api[-_]?key|credentials?)s?($|[-_.])`)
+	// redis의 requirepass와 masterauth는 pass 앞에 구분자가 없어 이름을 따로 둔다. --passive 같은 옵션은 가리지 않는다.
+	listenSecretFlag    = regexp.MustCompile(`(?i)(^|[-_.])(pass(word|wd)?|requirepass|masterauth|secret|token|api[-_]?key|credentials?)s?($|[-_.])`)
 	listenURLCredential = regexp.MustCompile(`(://[^/:@\s]*:)[^/@\s]+@`)
 )
 

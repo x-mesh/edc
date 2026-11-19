@@ -431,7 +431,7 @@ command:
       - "상태, health, image, process, 한도, 로그를 조회합니다."
       - "Docker Engine API를 사용하며 Docker CLI를 실행하지 않습니다."
       - "socket을 직접 고르려면 절대 경로의 Unix socket URL을 DOCKER_HOST에 지정합니다."
-      - "DOCKER_CONTEXT=default는 DOCKER_HOST를 무시합니다. 다른 context는 지원하지 않습니다."
+      - "edc는 DOCKER_CONTEXT와 현재 docker context를 따릅니다. DOCKER_CONTEXT=default는 DOCKER_HOST를 무시합니다."
       - "API는 fd, 실제 listener, log 크기, 누적 OOM kill 횟수를 제공하지 않습니다."
       - "API 정보가 없으면 이유를 표시합니다."
     option:
@@ -471,7 +471,7 @@ command:
       live: "호환성 flag. trace는 기본으로 실시간 실행"
       group_by: "source, target, port, process, event, path별 묶기"
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
-      destination: "destination host와 port로 필터"
+      destination: "destination host와 port로 필터. dns는 조회 이름의 도메인으로도 필터"
       detail: "요약에 연결이나 flow를 하나씩 표시"
       yes: "확인 질문 생략"
       side: "http와 DB trace는 두 쪽, dns는 client 쪽"

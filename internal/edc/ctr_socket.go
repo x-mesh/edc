@@ -5,11 +5,14 @@ package edc
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
@@ -67,11 +70,20 @@ type ctrEngineVersion struct {
 }
 
 type ctrAPIContainer struct {
-	ID     string   `json:"Id"`
-	Names  []string `json:"Names"`
-	Image  string   `json:"Image"`
-	State  string   `json:"State"`
-	Status string   `json:"Status"`
+	ID     string       `json:"Id"`
+	Names  []string     `json:"Names"`
+	Image  string       `json:"Image"`
+	State  string       `json:"State"`
+	Status string       `json:"Status"`
+	Ports  []ctrAPIPort `json:"Ports"`
+}
+
+// ctrAPIPort는 container 목록의 포트 하나다. PublicPort가 0이면 host에 publish하지 않은 포트다.
+type ctrAPIPort struct {
+	IP          string `json:"IP"`
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort"`
+	Type        string `json:"Type"`
 }
 
 type ctrAPIInspect struct {
@@ -219,29 +231,86 @@ func hostCtrSources() (ctrSources, bool) {
 	}, true
 }
 
+// ctrSocketEndpoint는 docker CLI와 같은 순서로 Engine socket을 고른다. DOCKER_CONTEXT, DOCKER_HOST, docker context use로 고른
+// context, 기본 socket 순이다. OrbStack과 Colima는 자기 socket을 context로만 알린다.
 func ctrSocketEndpoint() (string, error) {
-	if contextName, ok := os.LookupEnv("DOCKER_CONTEXT"); ok && contextName != "" && contextName != "default" {
-		return "", fmt.Errorf("DOCKER_CONTEXT=%q is unsupported; use DOCKER_HOST with a Unix socket", contextName)
-	}
-	if os.Getenv("DOCKER_CONTEXT") != "default" {
-		if host := os.Getenv("DOCKER_HOST"); host != "" {
-			u, err := url.Parse(host)
-			if err != nil || u.Scheme != "unix" || !strings.HasPrefix(u.Path, "/") || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-				return "", fmt.Errorf("DOCKER_HOST must be an absolute Unix socket address")
-			}
-			return filepath.Clean(u.Path), nil
-		}
-	}
-	if os.Getenv("DOCKER_CONTEXT") == "default" {
+	switch name := os.Getenv("DOCKER_CONTEXT"); name {
+	case "default":
 		return ctrDefaultSocket(), nil
+	case "":
+	default:
+		return ctrContextSocket(name)
 	}
-	if runtime.GOOS == "darwin" && os.Getenv("HOME") != "" {
-		path := filepath.Join(os.Getenv("HOME"), ".docker", "run", "docker.sock")
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
+	if host := os.Getenv("DOCKER_HOST"); host != "" {
+		return ctrUnixSocket(host, "DOCKER_HOST")
+	}
+	if name := ctrCurrentContext(); name != "" && name != "default" {
+		return ctrContextSocket(name)
 	}
 	return ctrDefaultSocket(), nil
+}
+
+// ctrUnixSocket은 Engine 주소에서 Unix socket 경로를 꺼낸다. edc는 TCP와 SSH로 Engine에 붙지 않는다.
+func ctrUnixSocket(host, source string) (string, error) {
+	u, err := url.Parse(host)
+	if err != nil || u.Scheme != "unix" || !strings.HasPrefix(u.Path, "/") || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("%s must be an absolute Unix socket address", source)
+	}
+	return filepath.Clean(u.Path), nil
+}
+
+// ctrDockerConfigDir는 docker CLI의 설정 디렉터리다.
+func ctrDockerConfigDir() string {
+	if dir := os.Getenv("DOCKER_CONFIG"); dir != "" {
+		return dir
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".docker")
+	}
+	return ""
+}
+
+// ctrCurrentContext는 docker context use가 config.json에 남긴 context 이름이다. docker CLI는 설정 파일을 읽지 못하면 경고만 하고
+// 기본값으로 이어 가므로, 읽지 못하면 빈 문자열이다.
+func ctrCurrentContext() string {
+	dir := ctrDockerConfigDir()
+	if dir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return ""
+	}
+	var config struct {
+		CurrentContext string `json:"currentContext"`
+	}
+	if json.Unmarshal(data, &config) != nil {
+		return ""
+	}
+	return config.CurrentContext
+}
+
+// ctrContextSocket은 docker context의 Engine socket이다. docker CLI는 context를 contexts/meta/<이름의 sha256>/meta.json에 둔다.
+func ctrContextSocket(name string) (string, error) {
+	sum := sha256.Sum256([]byte(name))
+	data, err := os.ReadFile(filepath.Join(ctrDockerConfigDir(), "contexts", "meta", hex.EncodeToString(sum[:]), "meta.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("docker context %q does not exist", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("docker context %q: %w", name, err)
+	}
+	var meta struct {
+		Endpoints struct {
+			Docker struct {
+				Host string `json:"Host"`
+			} `json:"docker"`
+		} `json:"Endpoints"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", fmt.Errorf("docker context %q: %w", name, err)
+	}
+	return ctrUnixSocket(meta.Endpoints.Docker.Host, fmt.Sprintf("the endpoint of docker context %q", name))
 }
 
 func ctrDefaultSocket() string {
@@ -536,28 +605,61 @@ func (e *ctrEngine) image(ctx context.Context, ref string) (ctrImageRef, error) 
 	return ctrImageRef{ID: v.ID, Created: created}, nil
 }
 
+const (
+	// ctrTopArgs는 procps ps의 열이다. pcpu는 process가 산 동안의 평균 CPU 사용률이다.
+	ctrTopArgs = "-eo pid,pcpu,rss,args"
+	// ctrTopBusyboxArgs는 busybox ps가 받는 열이다. OrbStack의 VM은 busybox ps라 pcpu를 받지 않는다. 같은 평균을 time과 etime으로
+	// 셈한다.
+	ctrTopBusyboxArgs = "-eo pid,rss,time,etime,args"
+)
+
 func (e *ctrEngine) top(ctx context.Context, id string) ([]topProcess, error) {
-	q := url.Values{"ps_args": {"-eo pid,pcpu,rss,args"}}
-	data, err := e.get(ctx, "/containers/"+ctrSegment(id)+"/top?"+q.Encode(), ctrJSONLimit)
+	response, err := e.topRows(ctx, id, ctrTopArgs)
+	// busybox ps는 모르는 열을 받으면 "bad -o argument"로 실패한다. 그때만 busybox가 받는 열로 다시 묻는다.
+	var httpErr *ctrHTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError && strings.Contains(httpErr.Message, "bad -o argument") {
+		response, err = e.topRows(ctx, id, ctrTopBusyboxArgs)
+	}
 	if err != nil {
 		return nil, err
 	}
+	return parseCtrTop(response)
+}
+
+func (e *ctrEngine) topRows(ctx context.Context, id, args string) (ctrAPITop, error) {
+	q := url.Values{"ps_args": {args}}
+	data, err := e.get(ctx, "/containers/"+ctrSegment(id)+"/top?"+q.Encode(), ctrJSONLimit)
+	if err != nil {
+		return ctrAPITop{}, err
+	}
 	var response ctrAPITop
 	if err = json.Unmarshal(data, &response); err != nil {
-		return nil, err
+		return ctrAPITop{}, err
 	}
+	return response, nil
+}
+
+// parseCtrTop은 procps 열(PID, %CPU, RSS, COMMAND)이나 busybox 열(PID, RSS, TIME, ELAPSED, COMMAND)의 top 응답을 읽는다.
+func parseCtrTop(response ctrAPITop) ([]topProcess, error) {
 	columns := make(map[string]int, len(response.Titles))
 	for index, title := range response.Titles {
 		columns[strings.ToUpper(title)] = index
 	}
-	for _, required := range []string{"PID", "%CPU", "RSS", "COMMAND"} {
-		if _, ok := columns[required]; !ok {
-			if required == "COMMAND" {
+	_, hasCPU := columns["%CPU"]
+	required := []string{"PID", "RSS", "COMMAND"}
+	if hasCPU {
+		required = append(required, "%CPU")
+	} else {
+		required = append(required, "TIME", "ELAPSED")
+	}
+	for _, name := range required {
+		if _, ok := columns[name]; !ok {
+			if name == "COMMAND" {
 				if _, ok = columns["ARGS"]; ok {
 					continue
 				}
 			}
-			return nil, fmt.Errorf("Docker top response has no %s field", required)
+			return nil, fmt.Errorf("Docker top response has no %s field", name)
 		}
 	}
 	commandIndex, ok := columns["COMMAND"]
@@ -570,14 +672,90 @@ func (e *ctrEngine) top(ctx context.Context, id string) ([]topProcess, error) {
 			return nil, fmt.Errorf("Docker top response has an invalid row")
 		}
 		pid, e1 := strconv.Atoi(row[columns["PID"]])
-		cpu, e2 := strconv.ParseFloat(row[columns["%CPU"]], 64)
-		rss, e3 := strconv.ParseUint(row[columns["RSS"]], 10, 64)
-		if e1 != nil || pid <= 0 || e2 != nil || math.IsNaN(cpu) || math.IsInf(cpu, 0) || cpu < 0 || e3 != nil || rss > math.MaxUint64/1024 {
+		rss, e2 := ctrTopRSS(row[columns["RSS"]])
+		var cpu float64
+		var e3 error
+		if hasCPU {
+			cpu, e3 = strconv.ParseFloat(row[columns["%CPU"]], 64)
+		} else {
+			cpu, e3 = ctrTopCPU(row[columns["TIME"]], row[columns["ELAPSED"]])
+		}
+		if e1 != nil || pid <= 0 || e2 != nil || e3 != nil || math.IsNaN(cpu) || math.IsInf(cpu, 0) || cpu < 0 {
 			return nil, fmt.Errorf("Docker top response has an invalid process value")
 		}
-		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, Command: row[commandIndex]})
+		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss, Command: row[commandIndex]})
 	}
 	return processes, nil
+}
+
+// ctrTopRSS는 ps의 RSS를 byte로 바꾼다. procps는 KiB 수를 쓰고, busybox는 큰 값에 10m처럼 1024 단위 접미사를 붙인다.
+func ctrTopRSS(text string) (uint64, error) {
+	units := map[byte]float64{'k': 1 << 10, 'm': 1 << 20, 'g': 1 << 30, 't': 1 << 40}
+	if text != "" {
+		if unit, ok := units[text[len(text)-1]]; ok {
+			value, err := strconv.ParseFloat(text[:len(text)-1], 64)
+			if err != nil || math.IsNaN(value) || value < 0 || value*unit >= math.MaxUint64 {
+				return 0, fmt.Errorf("invalid RSS %q", text)
+			}
+			return uint64(value * unit), nil
+		}
+	}
+	kib, err := strconv.ParseUint(text, 10, 64)
+	if err != nil || kib > math.MaxUint64/1024 {
+		return 0, fmt.Errorf("invalid RSS %q", text)
+	}
+	return kib * 1024, nil
+}
+
+// ctrTopCPU는 누적 CPU 시간을 산 시간으로 나눈 사용률이다. procps의 pcpu와 같은 평균이고, 두 값이 초 단위라 그 이하는 버린다.
+func ctrTopCPU(cpuTime, elapsed string) (float64, error) {
+	used, e1 := ctrPSDuration(cpuTime)
+	lived, e2 := ctrPSDuration(elapsed)
+	if e1 != nil || e2 != nil {
+		return 0, fmt.Errorf("invalid CPU time %q or elapsed time %q", cpuTime, elapsed)
+	}
+	if lived == 0 {
+		return 0, nil
+	}
+	return used.Seconds() / lived.Seconds() * 100, nil
+}
+
+// ctrPSDuration은 ps의 [[DD-]HH:]MM:SS 시간을 읽는다. busybox는 분을 한 자리로 쓰고(0:05), procps는 두 자리로 쓴다. 맨 앞 칸은
+// 위 단위가 없으면 60을 넘을 수 있다(busybox의 123:45). 뒤 칸은 60 미만이다. 일이 있으면 DD-HH:MM:SS만 받고 시는 24 미만이다.
+func ctrPSDuration(text string) (time.Duration, error) {
+	const maxSeconds = int64(math.MaxInt64 / int64(time.Second))
+	var days int64
+	before, after, withDays := strings.Cut(text, "-")
+	if withDays {
+		value, err := strconv.ParseInt(before, 10, 64)
+		if err != nil || value < 0 {
+			return 0, fmt.Errorf("invalid ps time %q", text)
+		}
+		days, text = value, after
+	}
+	parts := strings.Split(text, ":")
+	if len(parts) < 2 || len(parts) > 3 || (withDays && len(parts) != 3) {
+		return 0, fmt.Errorf("invalid ps time %q", text)
+	}
+	var seconds int64
+	for index, part := range parts {
+		value, err := strconv.ParseInt(part, 10, 64)
+		limit := int64(60)
+		if index == 0 {
+			limit = math.MaxInt64
+			if withDays {
+				limit = 24
+			}
+		}
+		if err != nil || value < 0 || value >= limit || seconds > (maxSeconds-value)/60 {
+			return 0, fmt.Errorf("invalid ps time %q", text)
+		}
+		seconds = seconds*60 + value
+	}
+	if days > (maxSeconds-seconds)/(24*60*60) {
+		return 0, fmt.Errorf("invalid ps time %q", text)
+	}
+	return time.Duration(days*24*60*60+seconds) * time.Second, nil
 }
 
 func (e *ctrEngine) stats(ctx context.Context, id string, inspect ctrInspect, detailed bool) ctrLimits {

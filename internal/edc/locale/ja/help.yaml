@@ -431,7 +431,7 @@ command:
       - "状態、health、image、process、上限、log を確認します。"
       - "Docker Engine API を使います。Docker CLI は実行しません。"
       - "socket を選ぶには絶対パスの Unix socket URL を DOCKER_HOST に設定します。"
-      - "DOCKER_CONTEXT=default は DOCKER_HOST を無視します。他の context は未対応です。"
+      - "edc は DOCKER_CONTEXT と現在の docker context に従います。DOCKER_CONTEXT=default は DOCKER_HOST を無視します。"
       - "API は fd、実際の listener、log サイズ、累積 OOM kill 数を返しません。"
       - "API の情報がない場合は理由を表示します。"
     option:
@@ -471,7 +471,7 @@ command:
       live: "互換 flag。trace は既定でリアルタイムに実行"
       group_by: "source、target、port、process、event、path で集計"
       process: "一致する PID か command 名のみ、カンマ区切り"
-      destination: "宛先 host と port で絞る"
+      destination: "宛先 host と port で絞る。dns は問い合わせ名のドメインでも絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
       side: "http と DB の trace は両側、dns は client 側"

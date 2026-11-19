@@ -48,6 +48,25 @@ type procDetails struct {
 	Conns     map[string]int
 	Remotes   map[string]int
 	SocketErr error
+	// Origin은 process가 어디서 왔는지다. Linux에서만 읽는다.
+	Origin procOrigin
+}
+
+// procOrigin은 실행 파일, 그 파일을 가진 dpkg 패키지, process를 띄운 로그인 세션이다.
+type procOrigin struct {
+	Exe string
+	// PackageDB는 dpkg 파일 목록이 있는 호스트다. 그러면 Package가 비었을 때 어느 패키지에도 없는 파일이라고 적을 수 있다.
+	PackageDB bool
+	Package   string
+	// PackageChanged는 dpkg가 그 패키지의 파일 목록을 마지막으로 쓴 때다. dpkg는 설치와 업그레이드 때 목록을 다시 쓴다.
+	PackageChanged time.Time
+	Session        *procLoginSession
+}
+
+// procLoginSession은 systemd-logind가 /run/systemd/sessions/<id>에 남긴 세션 기록이다.
+type procLoginSession struct {
+	ID, User, RemoteHost, Service, State string
+	Start                                time.Time
 }
 
 type procDeletedFile struct {
@@ -154,11 +173,54 @@ func procProcessResult(process topProcess, details procDetails, now time.Time, v
 	if process.Threads > 0 {
 		lines = append(lines, T("proc.field.threads", process.Threads))
 	}
+	lines = append(lines, procOriginLines(process, details.Origin)...)
 	result.Evidence = []Evidence{{Label: T("proc.evidence.process"), Value: strings.Join(lines, "\n")}}
 	if status == StatusWarn && process.State == "Z" {
 		result.Next = fmt.Sprintf("edc proc %d", process.PPID)
 	}
 	return result
+}
+
+// procOriginLines는 시작 시각과 출처 줄이다. 상대 시간은 요약에 있고, 여기에는 로그인 기록과 견줄 수 있는 시각을 쓴다.
+func procOriginLines(process topProcess, origin procOrigin) []string {
+	var lines []string
+	if !process.Started.IsZero() {
+		lines = append(lines, T("proc.field.started", auditLoginTime(process.Started)))
+	}
+	if origin.Exe != "" {
+		// 파일 이름에는 줄바꿈과 escape가 들어갈 수 있다. 그대로 쓰면 다른 근거 줄처럼 보이는 줄을 만들 수 있다.
+		lines = append(lines, T("proc.field.exe", viewSanitize(origin.Exe)))
+	}
+	switch {
+	case origin.Package != "" && !origin.PackageChanged.IsZero():
+		lines = append(lines, T("proc.field.package", origin.Package, auditLoginTime(origin.PackageChanged)))
+	case origin.Package != "":
+		lines = append(lines, T("proc.field.package_unknown_time", origin.Package))
+	case origin.Exe != "" && origin.PackageDB:
+		lines = append(lines, T("proc.field.package_none"))
+	}
+	if session := origin.Session; session != nil {
+		parts := []string{session.ID}
+		if who := session.User; who != "" && session.RemoteHost != "" {
+			parts = append(parts, T("proc.session.from", who, session.RemoteHost))
+		} else if who != "" {
+			parts = append(parts, who)
+		}
+		if session.Service != "" {
+			parts = append(parts, session.Service)
+		}
+		if !session.Start.IsZero() {
+			parts = append(parts, T("proc.session.started", auditLoginTime(session.Start)))
+		}
+		// logind는 세션을 연 process가 끝나도 남은 process가 있으면 세션을 closing으로 둔다. 로그아웃한 뒤에도 도는 process다.
+		if session.State == "closing" {
+			parts = append(parts, T("proc.session.closing"))
+		} else if session.State != "" {
+			parts = append(parts, session.State)
+		}
+		lines = append(lines, T("proc.field.session", strings.Join(parts, " · ")))
+	}
+	return lines
 }
 
 // procPeer는 연결의 상대를 묶는 열쇠다. 이 process의 대기 포트로 들어온 연결은 상대 포트가 임시 포트라 IP로 묶고, 나간
@@ -336,6 +398,14 @@ func runProc(args []string, version string) int {
 		return 2
 	}
 	started := time.Now()
+	target := set.Arg(0)
+	// PID를 주면 표본을 뜨기 전에 그 process를 열어 둔다. 끝에 같은 process이면 표본과 세부 정보가 모두 그 process 것이다.
+	handle, opened := procHandle{}, false
+	if pid, err := strconv.Atoi(target); err == nil {
+		if handle, opened = openProcHandle(pid); opened {
+			defer handle.close()
+		}
+	}
 	read := newTopProcessReader()
 	// CPU 사용률은 두 번 읽은 차이다. 첫 읽기는 기준만 남기고, Linux는 이때 결과가 없다고 답한다.
 	read()
@@ -345,7 +415,6 @@ func runProc(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("proc.error.unreadable"))
 		return 1
 	}
-	target := set.Arg(0)
 	process, matches, err := selectProc(processes, target)
 	switch {
 	case errors.Is(err, errProcNotFound):
@@ -354,9 +423,20 @@ func runProc(args []string, version string) int {
 	case len(matches) > 0:
 		return emit(options, buildReport(version, started, map[string]interface{}{"process": target}, []Result{procCandidatesResult(target, matches)}, options.redact))
 	}
+	// 이름으로 고르면 표본을 뜬 뒤에야 PID를 안다. 표본과 이 열기 사이에 같은 tick으로 PID를 다시 쓴 process는 가르지 못한다.
+	if !opened {
+		if handle, opened = openProcHandle(process.PID); opened {
+			defer handle.close()
+		}
+	}
 	selected := []topProcess{process}
 	newTopProcessEnricher()(selected)
 	details := readProcDetails(process.PID)
+	// 열어 둔 process가 끝나 PID가 다른 process에 넘어갔으면 위에서 읽은 limit, 명령행, fd, 출처가 섞인다.
+	if !handle.sameProcess(process) {
+		fmt.Fprintln(os.Stderr, T("proc.error.replaced", process.PID))
+		return 1
+	}
 	results := evaluateProc(selected[0], details, time.Now(), options.verbose)
 	return emit(options, buildReport(version, started, map[string]interface{}{"process": target, "pid": process.PID}, results, options.redact))
 }

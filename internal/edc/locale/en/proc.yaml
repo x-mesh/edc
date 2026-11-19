@@ -10,6 +10,16 @@ proc:
     ppid: "ppid     %d"
     cwd: "cwd      %s"
     threads: "threads  %d"
+    started: "started  %s"
+    exe: "exe      %s"
+    package: "package  %s, installed or upgraded %s"
+    package_unknown_time: "package  %s"
+    package_none: "package  none, no dpkg package has this file"
+    session: "session  %s"
+  session:
+    from: "%s from %s"
+    started: "started %s"
+    closing: "logged out, the process still runs"
   memory_with_rss: "%s (RSS %s)"
   resources: "CPU %.1f%% · memory %s"
   fd:
@@ -42,3 +52,4 @@ proc:
   error:
     unreadable: "could not read the process list"
     not_found: "no process matches %s"
+    replaced: "process %d ended while edc read it. Its PID can belong to another process now"

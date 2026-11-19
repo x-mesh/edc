@@ -431,7 +431,7 @@ command:
       - "It reads container state, health, image, process, limits, and logs."
       - "It uses the Docker Engine API. It does not call Docker CLI."
       - "Set DOCKER_HOST to an absolute Unix socket URL to select a socket."
-      - "Set DOCKER_CONTEXT=default to ignore DOCKER_HOST. Other contexts are unsupported."
+      - "edc follows DOCKER_CONTEXT and the current docker context. Set DOCKER_CONTEXT=default to ignore DOCKER_HOST."
       - "The API does not expose file descriptors, actual listeners, log size, or cumulative OOM kills."
       - "Missing API data shows an unavailable reason."
     option:
@@ -471,7 +471,7 @@ command:
       live: "compatibility flag. Trace is live by default"
       group_by: "group by source, target, port, process, event, path"
       process: "match PIDs or command names, comma-separated"
-      destination: "filter by destination host and port"
+      destination: "filter by destination host and port; for dns, also by a domain in the query name"
       detail: "list each connection or flow in the summary"
       yes: "skip the question"
       side: "http and database traces: both sides. dns: client"

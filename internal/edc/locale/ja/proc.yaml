@@ -10,6 +10,16 @@ proc:
     ppid: "ppid     %d"
     cwd: "cwd      %s"
     threads: "thread   %d"
+    started: "開始     %s"
+    exe: "exe      %s"
+    package: "package  %s、インストール・更新 %s"
+    package_unknown_time: "package  %s"
+    package_none: "package  なし、このファイルを持つ dpkg パッケージがない"
+    session: "session  %s"
+  session:
+    from: "%s、接続元 %s"
+    started: "開始 %s"
+    closing: "ログアウト済み、process はまだ実行中"
   memory_with_rss: "%s (RSS %s)"
   resources: "CPU %.1f%% · メモリ %s"
   fd:
@@ -42,3 +52,4 @@ proc:
   error:
     unreadable: "process 一覧を読めませんでした"
     not_found: "%s に一致する process がありません"
+    replaced: "process %d は読み取り中に終了しました。その PID は今は別の process が使っている可能性があります"

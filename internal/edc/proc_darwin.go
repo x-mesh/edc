@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // procLsofTimeout은 lsof 한 번의 제한이다. fd가 많은 process도 1초 안에 끝났다.
@@ -89,3 +91,44 @@ func parseLsofFields(output string, details *procDetails) {
 		}
 	}
 }
+
+// procHandle은 연 때의 process 시작 시각이다. 표본의 시작 시각은 ps의 초 단위 값이라 같은 초 안의 PID 재사용을 가르지 못해서,
+// kern.proc.pid의 p_starttime(마이크로초)을 쓴다. 이 값은 거두지 않은 zombie에도 있고, 거둔 뒤에는 읽히지 않는다.
+type procHandle struct {
+	pid   int
+	start unix.Timeval
+	ok    bool
+}
+
+// openProcHandle은 PID의 시작 시각을 읽어 둔다. 그런 process가 없으면 false다.
+func openProcHandle(pid int) (procHandle, bool) {
+	start, _, ok := darwinProcessStart(pid)
+	return procHandle{pid: pid, start: start, ok: ok}, ok
+}
+
+// darwinProcZombie는 kinfo_proc의 p_stat에서 거두지 않은 zombie(SZOMB)다.
+const darwinProcZombie = 5
+
+// darwinProcessStart는 process의 시작 시각과 zombie인지를 읽는다. ps도 이 sysctl로 process를 읽는다.
+func darwinProcessStart(pid int) (unix.Timeval, bool, bool) {
+	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || int(info.Proc.P_pid) != pid {
+		return unix.Timeval{}, false, false
+	}
+	return info.Proc.P_starttime, info.Proc.P_stat == darwinProcZombie, true
+}
+
+// sameProcess는 연 때의 process가 아직 PID를 쥐고 있는지 본다. 표본의 시작 시각은 ps의 초 단위 값이라 초까지만 견준다.
+func (handle procHandle) sameProcess(process topProcess) bool {
+	if !handle.ok || handle.pid != process.PID {
+		return false
+	}
+	start, zombie, ok := darwinProcessStart(handle.pid)
+	if !ok || start != handle.start || (!process.Started.IsZero() && process.Started.Unix() != start.Sec) {
+		return false
+	}
+	// 읽는 동안 끝나 zombie가 된 process는 lsof가 fd를 보여 주지 않는다. 표본에서부터 zombie였던 process만 그대로 보여 준다.
+	return !zombie || process.State == "Z"
+}
+
+func (procHandle) close() {}

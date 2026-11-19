@@ -443,8 +443,15 @@ type dnsTraceNameKey struct {
 	queryType string
 }
 
+// dnsTraceProcess는 한 이름을 물은 process다. relay는 이 호스트의 resolver가 다른 program의 조회를 상위 서버로 넘긴 질의다.
+type dnsTraceProcess struct {
+	name  string
+	pid   uint32
+	relay bool
+}
+
 type dnsTraceNameStats struct {
-	processes map[string]struct{}
+	processes map[dnsTraceProcess]struct{}
 	servers   map[string]struct{}
 	addresses map[string]struct{}
 	results   map[string]uint64
@@ -452,34 +459,134 @@ type dnsTraceNameStats struct {
 }
 
 type dnsTraceName struct {
-	Name      string            `json:"name"`
-	Type      string            `json:"type,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+	// BaseName은 resolver가 검색 도메인을 붙여 다시 물은 이름의 원래 이름이다. 표는 이 행을 원래 이름 아래에 들여 쓴다.
+	BaseName  string            `json:"base_name,omitempty"`
 	Processes []string          `json:"processes,omitempty"`
+	PIDs      []uint32          `json:"pids,omitempty"`
+	Relays    []string          `json:"relays,omitempty"`
 	Servers   []string          `json:"servers,omitempty"`
 	Addresses []string          `json:"addresses,omitempty"`
 	Results   map[string]uint64 `json:"results,omitempty"`
 	traceDNSCounts
+	processLabel string
+}
+
+// dnsRepeatedFailure는 같은 process가 같은 이름에 같은 실패 응답을 거의 같은 간격으로 받은 것이다. 이름을 풀지 못한 program이
+// 몇 초마다 다시 묻는 모양이다.
+type dnsRepeatedFailure struct {
+	PID        uint32  `json:"pid"`
+	Process    string  `json:"process"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type,omitempty"`
+	Result     string  `json:"result"`
+	Count      uint64  `json:"count"`
+	IntervalMS float64 `json:"interval_ms"`
 }
 
 type dnsTraceReport struct {
-	Side       string            `json:"side,omitempty"`
-	DurationMS int64             `json:"duration_ms"`
-	LostEvents uint64            `json:"lost_events"`
-	Results    map[string]uint64 `json:"results"`
-	Names      []dnsTraceName    `json:"names"`
+	Side             string               `json:"side,omitempty"`
+	DurationMS       int64                `json:"duration_ms"`
+	LostEvents       uint64               `json:"lost_events"`
+	Results          map[string]uint64    `json:"results"`
+	Names            []dnsTraceName       `json:"names"`
+	RepeatedFailures []dnsRepeatedFailure `json:"repeated_failures,omitempty"`
 	traceDNSCounts
+}
+
+// dnsTraceLocal은 이 호스트의 DNS 설정이다. 실시간 trace만 채운다. trace show는 다른 호스트에서 녹화한 파일도 읽으므로 비워 둔다.
+type dnsTraceLocal struct {
+	// resolvers는 port 53을 듣는 process다. client 쪽에서 이 process가 보낸 질의는 다른 program의 조회를 상위 서버로 넘긴 것이다.
+	resolvers map[uint32]bool
+	// search는 resolv.conf의 검색 도메인이다. resolver는 풀리지 않은 이름에 이 도메인을 붙여 다시 묻는다.
+	search []string
+}
+
+// readDNSTraceLocal은 listen 소켓과 resolv.conf를 읽는다. 읽지 못한 값은 비우고, 그러면 요약은 중계와 검색 도메인을 가리지 않는다.
+func readDNSTraceLocal() dnsTraceLocal {
+	local := dnsTraceLocal{resolvers: map[uint32]bool{}}
+	if sockets, err := collectListenSockets(listenFamilies{TCP: true, UDP: true}); err == nil {
+		for _, socket := range sockets {
+			if pid, err := strconv.ParseUint(socket.PID, 10, 32); err == nil && socket.Port == 53 {
+				local.resolvers[uint32(pid)] = true
+			}
+		}
+	}
+	if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		for _, domain := range parseResolvConf(string(data)).Search {
+			if domain = traceDNSName(domain); domain != "" {
+				local.search = append(local.search, domain)
+			}
+		}
+	}
+	return local
+}
+
+// useLocalDNS는 실시간 DNS trace의 요약에 이 호스트의 resolver와 검색 도메인을 넣는다.
+func (aggregate *traceAggregate) useLocalDNS() {
+	if summarizer, ok := aggregate.summary.(*dnsTraceSummarizer); ok {
+		summarizer.local = readDNSTraceLocal()
+	}
+}
+
+const (
+	// dnsRepeatMinFailures는 되풀이로 보는 최소 실패 수다. 간격이 둘은 있어야 일정한지 견줄 수 있다.
+	dnsRepeatMinFailures = 3
+	// dnsTraceShownPIDs는 PROCESS 칸에 이름마다 적는 PID 수다. 짧게 사는 process가 많이 물어도 칸이 넘치지 않는다.
+	dnsTraceShownPIDs = 3
+)
+
+type dnsFailureKey struct {
+	pid       uint32
+	process   string
+	name      string
+	queryType string
+	result    string
+}
+
+// dnsFailureRun은 실패 시각의 처음과 끝, 가장 짧고 긴 간격이다. 시각을 모두 두지 않아 긴 trace에서도 메모리가 늘지 않는다.
+type dnsFailureRun struct {
+	count, first, last, minGap, maxGap uint64
+}
+
+func (run *dnsFailureRun) observe(at uint64) {
+	if run.count == 0 {
+		run.first, run.last, run.count = at, at, 1
+		return
+	}
+	// event 순서가 바뀌어 오면 간격을 0으로 센다. 그러면 일정하다고 보지 않는다.
+	gap := at - min(at, run.last)
+	if run.count == 1 || gap < run.minGap {
+		run.minGap = gap
+	}
+	if gap > run.maxGap {
+		run.maxGap = gap
+	}
+	if at > run.last {
+		run.last = at
+	}
+	run.count++
+}
+
+// regular는 실패가 거의 같은 간격으로 되풀이됐는지 본다. 가장 긴 간격이 가장 짧은 간격보다 20% 넘게 길면 backoff로 늘어나는
+// retry나 우연히 겹친 실패로 본다.
+func (run dnsFailureRun) regular() bool {
+	return run.count >= dnsRepeatMinFailures && run.minGap > 0 && run.maxGap*5 <= run.minGap*6
 }
 
 // dnsTraceSummarizer는 --group-by 없이 끝난 DNS trace를 조회한 이름과 레코드 종류마다 한 행으로 묶는다.
 type dnsTraceSummarizer struct {
-	names   map[dnsTraceNameKey]*dnsTraceNameStats
-	results map[string]uint64
-	counts  traceDNSCounts
-	side    string
+	names    map[dnsTraceNameKey]*dnsTraceNameStats
+	failures map[dnsFailureKey]*dnsFailureRun
+	results  map[string]uint64
+	counts   traceDNSCounts
+	side     string
+	local    dnsTraceLocal
 }
 
 func newDNSTraceSummarizer() *dnsTraceSummarizer {
-	return &dnsTraceSummarizer{names: map[dnsTraceNameKey]*dnsTraceNameStats{}, results: map[string]uint64{}}
+	return &dnsTraceSummarizer{names: map[dnsTraceNameKey]*dnsTraceNameStats{}, failures: map[dnsFailureKey]*dnsFailureRun{}, results: map[string]uint64{}}
 }
 
 func (summarizer *dnsTraceSummarizer) observe(event captureEvent) {
@@ -489,11 +596,12 @@ func (summarizer *dnsTraceSummarizer) observe(event captureEvent) {
 	key := dnsTraceNameKey{name: emptyAs(event.Target, "-"), queryType: event.QueryType}
 	stats := summarizer.names[key]
 	if stats == nil {
-		stats = &dnsTraceNameStats{processes: map[string]struct{}{}, servers: map[string]struct{}{}, addresses: map[string]struct{}{}, results: map[string]uint64{}}
+		stats = &dnsTraceNameStats{processes: map[dnsTraceProcess]struct{}{}, servers: map[string]struct{}{}, addresses: map[string]struct{}{}, results: map[string]uint64{}}
 		summarizer.names[key] = stats
 	}
+	relay := event.Side == "" && summarizer.local.resolvers[event.PID]
 	if event.Process != "" {
-		stats.processes[event.Process] = struct{}{}
+		stats.processes[dnsTraceProcess{name: event.Process, pid: event.PID, relay: relay}] = struct{}{}
 	}
 	if event.Destination != "" {
 		stats.servers[event.Destination] = struct{}{}
@@ -505,6 +613,16 @@ func (summarizer *dnsTraceSummarizer) observe(event captureEvent) {
 		result := strings.TrimPrefix(event.Event, "dns_")
 		stats.results[result]++
 		summarizer.results[result]++
+		// 서버 쪽은 한 서버 process가 여러 client에 답하므로 되풀이를 client 쪽에서만 본다. 중계는 원래 물은 program의 되풀이를 따라 한다.
+		if traceDNSError(event.Event) && event.Side == "" && event.PID != 0 && !relay {
+			failure := dnsFailureKey{pid: event.PID, process: event.Process, name: key.name, queryType: key.queryType, result: result}
+			run := summarizer.failures[failure]
+			if run == nil {
+				run = &dnsFailureRun{}
+				summarizer.failures[failure] = run
+			}
+			run.observe(event.TimestampNS)
+		}
 	}
 	stats.counts.observe(event)
 	summarizer.counts.observe(event)
@@ -514,9 +632,20 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 	report := dnsTraceReport{Side: summarizer.side, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Results: maps.Clone(summarizer.results), traceDNSCounts: summarizer.counts.finished()}
 	report.Names = make([]dnsTraceName, 0, len(summarizer.names))
 	for key, stats := range summarizer.names {
+		processes, pids, relays := map[string]struct{}{}, map[uint32]struct{}{}, map[string]struct{}{}
+		for process := range stats.processes {
+			processes[process.name] = struct{}{}
+			if process.pid != 0 {
+				pids[process.pid] = struct{}{}
+			}
+			if process.relay {
+				relays[process.name] = struct{}{}
+			}
+		}
 		report.Names = append(report.Names, dnsTraceName{
-			Name: key.name, Type: key.queryType, Processes: slices.Sorted(maps.Keys(stats.processes)), Servers: slices.Sorted(maps.Keys(stats.servers)),
-			Addresses: slices.Sorted(maps.Keys(stats.addresses)), Results: maps.Clone(stats.results), traceDNSCounts: stats.counts.finished(),
+			Name: key.name, Type: key.queryType, Processes: slices.Sorted(maps.Keys(processes)), PIDs: slices.Sorted(maps.Keys(pids)), Relays: slices.Sorted(maps.Keys(relays)),
+			Servers: slices.Sorted(maps.Keys(stats.servers)), Addresses: slices.Sorted(maps.Keys(stats.addresses)), Results: maps.Clone(stats.results), traceDNSCounts: stats.counts.finished(),
+			processLabel: traceDNSProcessLabel(stats.processes),
 		})
 	}
 	sort.Slice(report.Names, func(i, j int) bool {
@@ -529,7 +658,153 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 		}
 		return left.Type < right.Type
 	})
+	// 서버 쪽 질의는 다른 호스트의 client가 보낸 것이라 이 호스트의 검색 도메인이 맞지 않는다.
+	search := summarizer.local.search
+	if summarizer.side == traceServerSide {
+		search = nil
+	}
+	report.Names = traceDNSGroupSearchNames(report.Names, search)
+	report.RepeatedFailures = summarizer.repeatedFailures(search)
 	return report
+}
+
+func (summarizer *dnsTraceSummarizer) repeatedFailures(search []string) []dnsRepeatedFailure {
+	var failures []dnsRepeatedFailure
+	for key, run := range summarizer.failures {
+		if !run.regular() {
+			continue
+		}
+		// 검색 도메인을 붙인 이름은 원래 이름과 같은 조회의 일부다. 원래 이름도 되풀이됐으면 원래 이름만 적는다.
+		base, _ := traceDNSSearchBase(key.name, search, func(base string) bool {
+			parent := key
+			parent.name = base
+			run := summarizer.failures[parent]
+			return run != nil && run.regular()
+		})
+		if base != "" {
+			continue
+		}
+		failures = append(failures, dnsRepeatedFailure{
+			PID: key.pid, Process: key.process, Name: key.name, Type: key.queryType, Result: key.result, Count: run.count,
+			IntervalMS: float64(run.last-run.first) / float64(run.count-1) / float64(time.Millisecond),
+		})
+	}
+	sort.Slice(failures, func(i, j int) bool {
+		left, right := failures[i], failures[j]
+		if left.Count != right.Count {
+			return left.Count > right.Count
+		}
+		if left.PID != right.PID {
+			return left.PID < right.PID
+		}
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		if left.Type != right.Type {
+			return left.Type < right.Type
+		}
+		return left.Result < right.Result
+	})
+	return failures
+}
+
+// traceDNSProcessLabel은 process 이름마다 PID를 붙이고, 중계한 resolver는 "via" 뒤에 둔다. 한 이름의 PID가 많으면 앞의
+// dnsTraceShownPIDs개와 남은 수만 적는다.
+func traceDNSProcessLabel(processes map[dnsTraceProcess]struct{}) string {
+	type owner struct {
+		name  string
+		relay bool
+	}
+	pids := map[owner][]uint32{}
+	for process := range processes {
+		key := owner{name: process.name, relay: process.relay}
+		list := pids[key]
+		if process.pid != 0 {
+			list = append(list, process.pid)
+		}
+		pids[key] = list
+	}
+	var origins, relays []string
+	for _, key := range slices.SortedFunc(maps.Keys(pids), func(left, right owner) int { return strings.Compare(left.name, right.name) }) {
+		label := key.name
+		if list := pids[key]; len(list) > 0 {
+			slices.Sort(list)
+			parts := make([]string, 0, dnsTraceShownPIDs+1)
+			for _, pid := range list[:min(len(list), dnsTraceShownPIDs)] {
+				parts = append(parts, strconv.FormatUint(uint64(pid), 10))
+			}
+			if extra := len(list) - dnsTraceShownPIDs; extra > 0 {
+				parts = append(parts, "+"+strconv.Itoa(extra))
+			}
+			label += "(" + strings.Join(parts, ",") + ")"
+		}
+		if key.relay {
+			relays = append(relays, label)
+		} else {
+			origins = append(origins, label)
+		}
+	}
+	label := strings.Join(origins, ",")
+	if len(relays) > 0 {
+		label = strings.TrimSpace(label + " via " + strings.Join(relays, ","))
+	}
+	return emptyAs(label, "-")
+}
+
+// traceDNSSearchBase는 name이 검색 도메인을 붙인 이름이면 원래 이름과 그 도메인의 순서를 돌려준다. 원래 이름도 seen이어야 한다.
+// 검색 도메인 안의 host(web.loopvm)를 원래 이름 없이 물었으면 따로 둔다. 도메인이 겹치면 긴 쪽을 쓴다.
+func traceDNSSearchBase(name string, search []string, seen func(string) bool) (string, int) {
+	base, rank := "", -1
+	for index, domain := range search {
+		rest, ok := strings.CutSuffix(name, "."+domain)
+		if ok && rest != "" && (rank < 0 || len(domain) > len(search[rank])) && seen(rest) {
+			base, rank = rest, index
+		}
+	}
+	return base, rank
+}
+
+// traceDNSGroupSearchNames는 검색 도메인을 붙여 다시 물은 이름을 원래 이름 바로 아래로 옮긴다. resolver가 도메인을 시도하는
+// 순서를 따른다.
+func traceDNSGroupSearchNames(names []dnsTraceName, search []string) []dnsTraceName {
+	if len(search) == 0 {
+		return names
+	}
+	seen := map[dnsTraceNameKey]bool{}
+	for _, name := range names {
+		seen[dnsTraceNameKey{name: name.Name, queryType: name.Type}] = true
+	}
+	baseOf := func(name, queryType string) (string, int) {
+		return traceDNSSearchBase(name, search, func(base string) bool { return seen[dnsTraceNameKey{name: base, queryType: queryType}] })
+	}
+	type child struct {
+		name dnsTraceName
+		rank int
+	}
+	children := map[dnsTraceNameKey][]child{}
+	top := make([]dnsTraceName, 0, len(names))
+	for _, name := range names {
+		// 원래 이름도 다른 이름 아래로 가면 이 행이 놓일 곳이 없다. 원래 이름이 맨 위 행일 때만 묶는다.
+		if base, rank := baseOf(name.Name, name.Type); base != "" {
+			if parent, _ := baseOf(base, name.Type); parent == "" {
+				name.BaseName = base
+				key := dnsTraceNameKey{name: base, queryType: name.Type}
+				children[key] = append(children[key], child{name: name, rank: rank})
+				continue
+			}
+		}
+		top = append(top, name)
+	}
+	grouped := make([]dnsTraceName, 0, len(names))
+	for _, name := range top {
+		grouped = append(grouped, name)
+		list := children[dnsTraceNameKey{name: name.Name, queryType: name.Type}]
+		slices.SortStableFunc(list, func(left, right child) int { return left.rank - right.rank })
+		for _, item := range list {
+			grouped = append(grouped, item.name)
+		}
+	}
+	return grouped
 }
 
 // print는 detail과 상관없이 같다. DNS 요약은 이미 이름과 record 종류마다 한 행이고, 질의마다의 행은 두지 않는다.
@@ -550,8 +825,35 @@ func (report dnsTraceReport) print(bool) {
 	}
 	table := traceTable{titles: []string{"NAME", "TYPE", "QUERIES", "ANSWERS", "RESULTS", "UNANSWERED", "AVG", "MAX", "NET", "READ", "PROCESS"}}
 	for _, name := range report.Names {
-		table.add(name.Name, emptyAs(name.Type, "-"), fmt.Sprint(name.Queries), fmt.Sprint(name.Answers), traceResultCounts(name.Results), fmt.Sprint(name.Unanswered), traceLatency(name.LatencyAvgMS, "ms"), traceLatency(name.LatencyMaxMS, "ms"), traceLatency(name.NetworkAvgMS, "ms"), traceLatency(name.ReadDelayAvgMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
+		label := name.Name
+		if name.BaseName != "" {
+			label = "  " + label
+		}
+		table.add(label, emptyAs(name.Type, "-"), fmt.Sprint(name.Queries), fmt.Sprint(name.Answers), traceResultCounts(name.Results), fmt.Sprint(name.Unanswered), traceLatency(name.LatencyAvgMS, "ms"), traceLatency(name.LatencyMaxMS, "ms"), traceLatency(name.NetworkAvgMS, "ms"), traceLatency(name.ReadDelayAvgMS, "ms"), emptyAs(name.processLabel, emptyAs(strings.Join(name.Processes, ","), "-")))
 	}
 	io.WriteString(out, "\n")
 	style.writeTable(out, table)
+	report.printRepeatedFailures(out, style)
+}
+
+// printRepeatedFailures는 같은 process가 일정한 간격으로 같은 실패를 받은 이름을 쓴다. NEXT는 그 process를 볼 명령이다.
+func (report dnsTraceReport) printRepeatedFailures(out io.Writer, style traceSummaryStyle) {
+	if len(report.RepeatedFailures) == 0 {
+		return
+	}
+	io.WriteString(out, "\n")
+	style.line(out, style.subheading("REPEATED FAILURES")+style.dim(": the same process got the same failed answer at a steady interval"))
+	table := traceTable{titles: []string{"PROCESS", "NAME", "TYPE", "RESULT", "COUNT", "EVERY", "NEXT"}}
+	for _, failure := range report.RepeatedFailures {
+		table.add(fmt.Sprintf("%s(%d)", emptyAs(failure.Process, "-"), failure.PID), failure.Name, emptyAs(failure.Type, "-"), failure.Result, fmt.Sprint(failure.Count), traceDNSInterval(failure.IntervalMS), fmt.Sprintf("edc proc %d", failure.PID))
+	}
+	style.writeTable(out, table)
+}
+
+// traceDNSInterval은 되풀이 간격이다. 1초 이상은 0.1초 단위로 쓴다.
+func traceDNSInterval(ms float64) string {
+	if ms >= 1000 {
+		return strconv.FormatFloat(ms/1000, 'f', 1, 64) + "s"
+	}
+	return strconv.FormatFloat(ms, 'f', 0, 64) + "ms"
 }

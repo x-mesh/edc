@@ -764,7 +764,14 @@ func traceEventMatches(event captureEvent, process, destination string) bool {
 	if process != "" && event.Process != process {
 		return false
 	}
-	return destination == "" || event.Destination == destination || event.Target == destination
+	return destination == "" || event.Destination == destination || event.Target == destination || traceProtocol(event) == "dns" && traceDNSNameContains(event.Target, destination)
+}
+
+// traceDNSNameContains는 조회한 이름이 filter를 label 단위로 품는지 본다. tmate.io는 ssh.tmate.io와, resolver가 검색 도메인을
+// 붙여 다시 물은 ssh.tmate.io.loopvm에 맞고 nottmate.io에는 맞지 않는다.
+func traceDNSNameContains(name, filter string) bool {
+	filter = traceDNSName(filter)
+	return name != "" && filter != "" && strings.Contains("."+name+".", "."+filter+".")
 }
 
 // captureEventName은 TCP 상태 전이를 이름 붙인다. 상태 값은 kernel의 enum과 같다:

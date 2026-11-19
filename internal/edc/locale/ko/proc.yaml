@@ -10,6 +10,16 @@ proc:
     ppid: "ppid     %d"
     cwd: "cwd      %s"
     threads: "thread   %d"
+    started: "시작     %s"
+    exe: "exe      %s"
+    package: "패키지   %s, 설치·업그레이드 %s"
+    package_unknown_time: "패키지   %s"
+    package_none: "패키지   없음, 이 파일을 가진 dpkg 패키지가 없음"
+    session: "세션     %s"
+  session:
+    from: "%s, 출처 %s"
+    started: "시작 %s"
+    closing: "로그아웃함, process는 아직 실행 중"
   memory_with_rss: "%s (RSS %s)"
   resources: "CPU %.1f%% · 메모리 %s"
   fd:
@@ -42,3 +52,4 @@ proc:
   error:
     unreadable: "process 목록을 읽지 못했습니다"
     not_found: "%s에 맞는 process가 없습니다"
+    replaced: "process %d가 읽는 도중에 끝났습니다. 그 PID는 지금 다른 process가 쓰고 있을 수 있습니다"

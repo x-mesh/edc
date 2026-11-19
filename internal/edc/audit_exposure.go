@@ -259,9 +259,13 @@ func auditPublishedPorts(inspect auditAPIContainer) []int {
 	return ports
 }
 
-// readHostAuditContainers는 docker API로 실행 중인 container를 읽는다. socket이 없으면 fs.ErrNotExist다.
+// readHostAuditContainers는 docker API로 실행 중인 container를 읽는다. socket은 edc ctr, edc listen과 같은 순서로 고르고, 고른
+// socket이 없으면 fs.ErrNotExist다. 고를 수 없는 context는 Engine이 없는 host가 아니므로 그 이유를 돌려준다.
 func readHostAuditContainers(ctx context.Context) ([]auditContainer, error) {
-	socket := ctrDefaultSocket()
+	socket, err := ctrSocketEndpoint()
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(socket); err != nil {
 		return nil, err
 	}

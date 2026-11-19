@@ -1,13 +1,14 @@
 package edc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"time"
 )
@@ -29,7 +30,8 @@ type listenContainer struct {
 }
 
 // attachListenContainers는 Docker Engine이 있으면 publish한 포트의 container를 소켓에 붙인다. Engine socket이 없는 호스트에서는
-// 아무것도 하지 않는다. Engine에 닿지 못하면 그 오류를 돌려주고 소켓은 그대로 둔다.
+// 아무것도 하지 않는다. Engine에 닿지 못하면 그 오류를 돌려주고 소켓은 그대로 둔다. container 명령을 읽지 못하면 붙인 container는
+// 두고 첫 오류를 돌려준다.
 func attachListenContainers(ctx context.Context, sockets []listenSocket, withCommand bool) error {
 	path, err := ctrSocketEndpoint()
 	if err != nil {
@@ -54,6 +56,7 @@ func attachListenContainers(ctx context.Context, sockets []listenSocket, withCom
 		return nil
 	}
 	commands := map[string]string{}
+	var first error
 	for index := range sockets {
 		container := sockets[index].Container
 		if container == nil {
@@ -61,33 +64,38 @@ func attachListenContainers(ctx context.Context, sockets []listenSocket, withCom
 		}
 		command, seen := commands[container.ID]
 		if !seen {
-			// 그 사이에 끝난 container는 첫 process를 모르는 채로 둔다. 명령행의 비밀 값은 listen의 규칙으로 가린다.
-			if command, err = listenContainerCommand(ctx, engine, container.ID); err == nil {
-				command = strings.Join(listenMaskArgs(strings.Fields(command)), " ")
+			args, err := listenContainerCommand(ctx, engine, container.ID)
+			switch {
+			// 그 사이에 끝난 container는 첫 process를 모르는 채로 둔다.
+			case ctrHTTPStatus(err, http.StatusNotFound):
+			// 다른 실패는 명령이 없는 container처럼 보이지 않도록 돌려준다.
+			case err != nil:
+				first = cmp.Or(first, err)
+			default:
+				command = strings.Join(listenMaskArgs(args), " ")
 			}
 			commands[container.ID] = command
 		}
 		container.Command = command
 	}
-	return nil
+	return first
 }
 
-// listenContainerCommand는 container의 첫 process 명령이다. ps_args를 주지 않는다. OrbStack의 VM은 busybox ps라 edc ctr이 쓰는
-// pcpu를 받지 않는다. 열 이름은 ps -ef의 CMD이거나 busybox ps의 COMMAND다.
-func listenContainerCommand(ctx context.Context, engine *ctrEngine, id string) (string, error) {
-	data, err := engine.get(ctx, "/containers/"+ctrSegment(id)+"/top", ctrJSONLimit)
+// listenContainerCommand는 container의 첫 process 명령을 인자 단위로 돌려준다. /top의 명령 열은 인자를 공백으로 이은 한 문자열이라
+// 공백이 든 비밀 값을 가릴 수 없다. inspect의 Path와 Args는 인자 경계를 그대로 둔다.
+func listenContainerCommand(ctx context.Context, engine *ctrEngine, id string) ([]string, error) {
+	data, err := engine.get(ctx, "/containers/"+ctrSegment(id)+"/json", ctrJSONLimit)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var top ctrAPITop
-	if err := json.Unmarshal(data, &top); err != nil {
-		return "", err
+	var inspect ctrAPIInspect
+	if err := json.Unmarshal(data, &inspect); err != nil {
+		return nil, err
 	}
-	column := slices.IndexFunc(top.Titles, func(title string) bool { return title == "CMD" || title == "COMMAND" })
-	if column < 0 || len(top.Processes) == 0 || len(top.Processes[0]) <= column {
-		return "", fmt.Errorf("Docker top response has no command")
+	if inspect.Path == "" {
+		return nil, fmt.Errorf("Docker inspect response has no command")
 	}
-	return top.Processes[0][column], nil
+	return append([]string{inspect.Path}, inspect.Args...), nil
 }
 
 // matchListenContainers는 publish한 host 주소, 포트, 프로토콜이 소켓과 같은 container를 붙인다. docker는 0.0.0.0과 ::을 따로

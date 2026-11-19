@@ -5,17 +5,119 @@ package edc
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func readProcDetails(pid int) procDetails {
-	return readLinuxProcDetails("/proc", pid)
+	details := readLinuxProcDetails("/proc", pid)
+	details.Origin = readLinuxProcOrigin("/", pid)
+	return details
+}
+
+// readLinuxProcOrigin은 root 아래의 /proc/<pid>/exe, dpkg 파일 목록, logind 세션 기록을 읽는다. 읽지 못한 값은 비우고, 그 줄은
+// 나오지 않는다.
+func readLinuxProcOrigin(root string, pid int) procOrigin {
+	var origin procOrigin
+	directory := filepath.Join(root, "proc", strconv.Itoa(pid))
+	if exe, err := os.Readlink(filepath.Join(directory, "exe")); err == nil {
+		origin.Exe = exe
+		if path, ok := linuxProcExePath(root, directory, exe); ok {
+			owners, packageDB := auditDpkgOwners(auditSources{root: root}, []string{path})
+			origin.PackageDB, origin.Package = packageDB, owners[path]
+			if origin.Package != "" {
+				origin.PackageChanged = readLinuxDpkgListTime(root, origin.Package)
+			}
+		}
+	}
+	origin.Session = readLinuxLoginSession(root, directory)
+	return origin
+}
+
+// linuxProcExePath는 dpkg에서 찾을 실행 파일 경로다. 커널은 지워진 실행 파일의 링크에 " (deleted)"를 붙이지만, 파일 이름 자체가
+// 그렇게 끝날 수도 있다. 그 이름의 파일이 없거나 실행 중인 파일과 다를 때만 접미사를 뗀다. 둘 중 어느 쪽인지 확인하지 못하면
+// 다른 파일의 패키지를 출처로 적지 않도록 경로를 내지 않는다.
+func linuxProcExePath(root, directory, exe string) (string, bool) {
+	path, deleted := strings.CutSuffix(exe, deletedOpenSuffix)
+	if !deleted {
+		return exe, true
+	}
+	named, err := os.Stat(filepath.Join(root, exe))
+	if errors.Is(err, fs.ErrNotExist) {
+		return path, true
+	}
+	if err != nil {
+		return "", false
+	}
+	running, err := os.Stat(filepath.Join(directory, "exe"))
+	if err != nil {
+		return "", false
+	}
+	if os.SameFile(running, named) {
+		return exe, true
+	}
+	return path, true
+}
+
+// readLinuxDpkgListTime은 패키지의 파일 목록을 마지막으로 쓴 때다. multiarch 패키지는 <package>:<arch>.list라 둘 다 찾는다.
+func readLinuxDpkgListTime(root, name string) time.Time {
+	lists, _ := filepath.Glob(filepath.Join(root, "var/lib/dpkg/info", name+".list"))
+	arch, _ := filepath.Glob(filepath.Join(root, "var/lib/dpkg/info", name+":*.list"))
+	var latest time.Time
+	for _, list := range append(lists, arch...) {
+		if info, err := os.Stat(list); err == nil && info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return latest
+}
+
+// readLinuxLoginSession은 process의 audit session ID로 logind 세션 기록을 읽는다. 로그인 세션 밖의 process는 ID가 4294967295이고
+// 그 기록은 없다. 같은 디렉터리의 <id>.ref는 FIFO라서 열면 쓰는 쪽이 올 때까지 멈춘다. 그래서 숫자 ID의 파일 하나를, 보통 파일일
+// 때만 연다.
+func readLinuxLoginSession(root, directory string) *procLoginSession {
+	data, err := os.ReadFile(filepath.Join(directory, "sessionid"))
+	id := strings.TrimSpace(string(data))
+	if err != nil {
+		return nil
+	}
+	if _, err := strconv.ParseUint(id, 10, 32); err != nil {
+		return nil
+	}
+	path := filepath.Join(root, "run/systemd/sessions", id)
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	if data, err = os.ReadFile(path); err != nil {
+		return nil
+	}
+	session := procLoginSession{ID: id}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		switch key {
+		case "USER":
+			session.User = value
+		case "REMOTE_HOST":
+			session.RemoteHost = value
+		case "SERVICE":
+			session.Service = value
+		case "STATE":
+			session.State = value
+		case "REALTIME":
+			if micros, err := strconv.ParseInt(value, 10, 64); err == nil {
+				session.Start = time.UnixMicro(micros)
+			}
+		}
+	}
+	return &session
 }
 
 // readLinuxProcDetails는 /proc/<pid>의 cmdline, status, fd 링크, 그 process의 network namespace에서 본 TCP 표를 읽는다.

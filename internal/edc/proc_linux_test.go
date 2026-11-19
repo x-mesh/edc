@@ -157,18 +157,23 @@ func TestLinuxProcExePathKeepsARealDeletedSuffix(t *testing.T) {
 		}
 	}
 	named := filepath.Join(dir, "tool (deleted)")
-	if path := linuxProcExePath("/", link("1", named), named); path != named {
-		t.Fatalf("a running file named with the suffix = %q", path)
+	if path, ok := linuxProcExePath("/", link("1", named), named); !ok || path != named {
+		t.Fatalf("a running file named with the suffix = %q %v", path, ok)
 	}
 	// 실행 중인 파일이 그 이름의 파일과 다르면 지워진 실행 파일이다.
-	if path := linuxProcExePath("/", link("2", filepath.Join(dir, "other")), named); path != filepath.Join(dir, "tool") {
-		t.Fatalf("a deleted file next to a file named with the suffix = %q", path)
+	if path, ok := linuxProcExePath("/", link("2", filepath.Join(dir, "other")), named); !ok || path != filepath.Join(dir, "tool") {
+		t.Fatalf("a deleted file next to a file named with the suffix = %q %v", path, ok)
 	}
 	gone := filepath.Join(dir, "gone (deleted)")
-	if path := linuxProcExePath("/", link("3", gone), gone); path != filepath.Join(dir, "gone") {
-		t.Fatalf("a deleted file = %q", path)
+	if path, ok := linuxProcExePath("/", link("3", gone), gone); !ok || path != filepath.Join(dir, "gone") {
+		t.Fatalf("a deleted file = %q %v", path, ok)
 	}
-	if path := linuxProcExePath("/", link("4", filepath.Join(dir, "tool")), filepath.Join(dir, "tool")); path != filepath.Join(dir, "tool") {
-		t.Fatalf("a plain file = %q", path)
+	if path, ok := linuxProcExePath("/", link("4", filepath.Join(dir, "tool")), filepath.Join(dir, "tool")); !ok || path != filepath.Join(dir, "tool") {
+		t.Fatalf("a plain file = %q %v", path, ok)
+	}
+	// 그 이름의 파일을 확인하지 못하면 지워졌다고 단정하지 않는다. 부모가 보통 파일이면 Stat은 ENOTDIR이다.
+	unchecked := filepath.Join(dir, "other", "tool (deleted)")
+	if path, ok := linuxProcExePath("/", link("5", filepath.Join(dir, "tool")), unchecked); ok {
+		t.Fatalf("an unchecked name = %q", path)
 	}
 }

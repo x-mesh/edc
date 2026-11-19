@@ -133,6 +133,10 @@ func TestRunListenJSONReportsContainersAndEngineErrors(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("listen reads sockets only on Linux and macOS")
 	}
+	// 소켓을 나열하지 못하는 host만 건너뛴다. 그 밖에 runListen이 실패하면 회귀다.
+	if _, err := collectListenSockets(selectedListenFamilies(false, false, false, false)); err != nil {
+		t.Skipf("this host cannot list its sockets: %v", err)
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skip(err)
@@ -168,7 +172,7 @@ func TestRunListenJSONReportsContainersAndEngineErrors(t *testing.T) {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "listen.json")
 		if code := runListen([]string{"--json", path}, "test"); code != 0 {
-			t.Skipf("listen exited %d; this host cannot list its sockets", code)
+			t.Fatalf("listen exited %d", code)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

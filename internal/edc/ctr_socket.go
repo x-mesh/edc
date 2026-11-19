@@ -720,29 +720,42 @@ func ctrTopCPU(cpuTime, elapsed string) (float64, error) {
 	return used.Seconds() / lived.Seconds() * 100, nil
 }
 
-// ctrPSDuration은 ps의 [[DD-]HH:]MM:SS 시간을 읽는다. busybox는 분을 한 자리로 쓰고(0:05), procps는 두 자리로 쓴다.
+// ctrPSDuration은 ps의 [[DD-]HH:]MM:SS 시간을 읽는다. busybox는 분을 한 자리로 쓰고(0:05), procps는 두 자리로 쓴다. 맨 앞 칸은
+// 위 단위가 없으면 60을 넘을 수 있다(busybox의 123:45). 뒤 칸은 60 미만이다. 일이 있으면 DD-HH:MM:SS만 받고 시는 24 미만이다.
 func ctrPSDuration(text string) (time.Duration, error) {
-	var days int
-	if before, after, ok := strings.Cut(text, "-"); ok {
-		value, err := strconv.Atoi(before)
+	const maxSeconds = int64(math.MaxInt64 / int64(time.Second))
+	var days int64
+	before, after, withDays := strings.Cut(text, "-")
+	if withDays {
+		value, err := strconv.ParseInt(before, 10, 64)
 		if err != nil || value < 0 {
 			return 0, fmt.Errorf("invalid ps time %q", text)
 		}
 		days, text = value, after
 	}
 	parts := strings.Split(text, ":")
-	if len(parts) < 2 || len(parts) > 3 {
+	if len(parts) < 2 || len(parts) > 3 || (withDays && len(parts) != 3) {
 		return 0, fmt.Errorf("invalid ps time %q", text)
 	}
-	seconds := 0
-	for _, part := range parts {
-		value, err := strconv.Atoi(part)
-		if err != nil || value < 0 {
+	var seconds int64
+	for index, part := range parts {
+		value, err := strconv.ParseInt(part, 10, 64)
+		limit := int64(60)
+		if index == 0 {
+			limit = math.MaxInt64
+			if withDays {
+				limit = 24
+			}
+		}
+		if err != nil || value < 0 || value >= limit || seconds > (maxSeconds-value)/60 {
 			return 0, fmt.Errorf("invalid ps time %q", text)
 		}
 		seconds = seconds*60 + value
 	}
-	return time.Duration(days)*24*time.Hour + time.Duration(seconds)*time.Second, nil
+	if days > (maxSeconds-seconds)/(24*60*60) {
+		return 0, fmt.Errorf("invalid ps time %q", text)
+	}
+	return time.Duration(days*24*60*60+seconds) * time.Second, nil
 }
 
 func (e *ctrEngine) stats(ctx context.Context, id string, inspect ctrInspect, detailed bool) ctrLimits {

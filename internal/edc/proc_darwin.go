@@ -90,5 +90,11 @@ func parseLsofFields(output string, details *procDetails) {
 	}
 }
 
-// procReplaced는 macOS에서 확인하지 않는다. 표본의 시작 시각은 ps의 초 단위 값이라 같은 초 안의 PID 재사용을 가르지 못한다.
-func procReplaced(topProcess) bool { return false }
+// procHandle은 macOS에서 아무것도 열지 않는다. 표본의 시작 시각은 ps의 초 단위 값이라 같은 초 안의 PID 재사용을 가르지 못한다.
+type procHandle struct{}
+
+func openProcHandle(int) (procHandle, bool) { return procHandle{}, true }
+
+func (procHandle) sameProcess(topProcess) bool { return true }
+
+func (procHandle) close() {}

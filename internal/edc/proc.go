@@ -398,6 +398,14 @@ func runProc(args []string, version string) int {
 		return 2
 	}
 	started := time.Now()
+	target := set.Arg(0)
+	// PID를 주면 표본을 뜨기 전에 그 process를 열어 둔다. 끝에 같은 process이면 표본과 세부 정보가 모두 그 process 것이다.
+	handle, opened := procHandle{}, false
+	if pid, err := strconv.Atoi(target); err == nil {
+		if handle, opened = openProcHandle(pid); opened {
+			defer handle.close()
+		}
+	}
 	read := newTopProcessReader()
 	// CPU 사용률은 두 번 읽은 차이다. 첫 읽기는 기준만 남기고, Linux는 이때 결과가 없다고 답한다.
 	read()
@@ -407,7 +415,6 @@ func runProc(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("proc.error.unreadable"))
 		return 1
 	}
-	target := set.Arg(0)
 	process, matches, err := selectProc(processes, target)
 	switch {
 	case errors.Is(err, errProcNotFound):
@@ -416,11 +423,17 @@ func runProc(args []string, version string) int {
 	case len(matches) > 0:
 		return emit(options, buildReport(version, started, map[string]interface{}{"process": target}, []Result{procCandidatesResult(target, matches)}, options.redact))
 	}
+	// 이름으로 고르면 표본을 뜬 뒤에야 PID를 안다. 표본과 이 열기 사이에 같은 tick으로 PID를 다시 쓴 process는 가르지 못한다.
+	if !opened {
+		if handle, opened = openProcHandle(process.PID); opened {
+			defer handle.close()
+		}
+	}
 	selected := []topProcess{process}
 	newTopProcessEnricher()(selected)
 	details := readProcDetails(process.PID)
-	// 표본을 뜬 뒤 process가 끝나 PID가 다른 process에 넘어갔으면 위에서 읽은 limit, 명령행, fd, 출처가 섞인다.
-	if procReplaced(process) {
+	// 열어 둔 process가 끝나 PID가 다른 process에 넘어갔으면 위에서 읽은 limit, 명령행, fd, 출처가 섞인다.
+	if !handle.sameProcess(process) {
 		fmt.Fprintln(os.Stderr, T("proc.error.replaced", process.PID))
 		return 1
 	}

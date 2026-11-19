@@ -7,5 +7,11 @@ func readProcDetails(int) procDetails {
 	return procDetails{FDErr: err, SocketErr: err}
 }
 
-// procReplaced는 이 OS에서 확인하지 않는다. 세부 정보를 읽지 않으므로 섞일 값이 없다.
-func procReplaced(topProcess) bool { return false }
+// procHandle은 이 OS에서 아무것도 열지 않는다. 세부 정보를 읽지 않으므로 섞일 값이 없다.
+type procHandle struct{}
+
+func openProcHandle(int) (procHandle, bool) { return procHandle{}, true }
+
+func (procHandle) sameProcess(topProcess) bool { return true }
+
+func (procHandle) close() {}

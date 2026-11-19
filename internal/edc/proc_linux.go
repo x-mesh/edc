@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -23,17 +24,46 @@ func readProcDetails(pid int) procDetails {
 	return details
 }
 
-// procReplaced는 표본을 뜬 process가 끝났거나 그 PID를 다른 process가 다시 쓰는지 본다. 세부 정보를 다 읽은 뒤에 부른다. 살아 있는
-// process의 PID는 다른 process가 쓸 수 없으므로, 시작 tick이 그대로면 그 사이에 읽은 값은 모두 표본의 process 것이다.
-func procReplaced(process topProcess) bool { return linuxProcReplaced("/proc", process) }
+// procHandle은 열어 둔 /proc/<pid> 디렉터리다. 이 fd는 연 때의 process에 묶여서, 그 process가 끝나면 다른 process가 PID를 다시
+// 써도 이 fd로는 파일을 열지 못한다(ESRCH). 시작 tick은 clock tick 단위라 같은 tick 안에 PID를 다시 쓴 process와 같을 수 있어서
+// 이 fd로 가른다. 끝에 이 fd로 stat을 읽을 수 있으면, 연 때부터 그때까지 /proc/<pid> 경로로 읽은 값은 모두 그 process 것이다.
+type procHandle struct{ dir *os.File }
 
-func linuxProcReplaced(procRoot string, process topProcess) bool {
-	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(process.PID), "stat"))
+// openProcHandle은 PID의 /proc 디렉터리를 연다. 그런 process가 없으면 false다.
+func openProcHandle(pid int) (procHandle, bool) { return openLinuxProcHandle("/proc", pid) }
+
+func openLinuxProcHandle(procRoot string, pid int) (procHandle, bool) {
+	dir, err := os.Open(filepath.Join(procRoot, strconv.Itoa(pid)))
 	if err != nil {
-		return true
+		return procHandle{}, false
+	}
+	return procHandle{dir: dir}, true
+}
+
+// sameProcess는 열어 둔 process가 아직 PID를 쥐고 있고 시작 tick이 표본과 같은지 본다. 끝난 뒤 거두지 않은 zombie도 PID를 쥐므로
+// 같은 process로 본다.
+func (handle procHandle) sameProcess(process topProcess) bool {
+	if handle.dir == nil {
+		return false
+	}
+	fd, err := syscall.Openat(int(handle.dir.Fd()), "stat", syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	file := os.NewFile(uintptr(fd), "stat")
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return false
 	}
 	stat, ok := parseLinuxProcessStat(process.PID, string(data))
-	return !ok || stat.StartTicks != process.startTicks
+	return ok && stat.StartTicks == process.startTicks
+}
+
+func (handle procHandle) close() {
+	if handle.dir != nil {
+		handle.dir.Close()
+	}
 }
 
 // readLinuxProcOrigin은 root 아래의 /proc/<pid>/exe, dpkg 파일 목록, logind 세션 기록을 읽는다. 읽지 못한 값은 비우고, 그 줄은

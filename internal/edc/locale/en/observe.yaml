@@ -205,7 +205,7 @@ observe:
     label: "listening sockets"
     watch_summary: "socket changes: %d opened, %d closed, %d errors in %s"
     full_no_watch: "--full does not work with --watch"
-    container_port: "container port %d/%s"
+    container_port: "container port %d/%s, image %s"
     column:
       port: "PORT"
       proto: "PROTO"

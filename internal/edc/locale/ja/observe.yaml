@@ -205,7 +205,7 @@ observe:
     label: "接続を待つソケット"
     watch_summary: "socket 変化: open %d、close %d、error %d・%s"
     full_no_watch: "--full は --watch と併用できません"
-    container_port: "container ポート %d/%s"
+    container_port: "container ポート %d/%s、イメージ %s"
     column:
       port: "ポート"
       proto: "プロトコル"

@@ -486,8 +486,8 @@ func runListen(args []string, version string) int {
 		if *full || options.jsonPath != "" {
 			attachListenCommands(sockets)
 		}
-		// 표와 JSON은 publish한 포트의 container를 함께 보여 준다. Engine에 닿지 못하면 JSON에만 그 이유를 남긴다.
-		if err := attachListenContainers(ctx, sockets, *full || options.jsonPath != ""); err != nil {
+		// 표와 JSON은 publish한 포트의 container와 그 명령을 함께 보여 준다. Engine에 닿지 못하면 JSON에만 그 이유를 남긴다.
+		if err := attachListenContainers(ctx, sockets); err != nil {
 			result.Metrics["container_error"] = err.Error()
 		}
 	}

@@ -393,7 +393,7 @@ edc ctr --collector-image edc-collector:amd64 web
 |---|---|---|
 | `ctr.state` | 상태, 재시작, health, 종료 코드 | 기존 결과를 유지합니다. |
 | `ctr.image` | 현재 이미지 참조와 image ID | 기존 결과를 유지합니다. |
-| `ctr.processes` | Docker top API의 process, CPU, RSS | 기존 결과를 유지합니다. daemon이 요청한 열을 거부하면 오류를 표시합니다. |
+| `ctr.processes` | Docker top API의 process, CPU, RSS. OrbStack VM의 busybox `ps`가 `pcpu`를 거부하면 `pid,rss,time,etime,args`로 다시 묻고, CPU를 누적 CPU 시간과 실행 시간으로 초 단위까지 셈합니다. | 기존 결과를 유지합니다. daemon이 그 밖의 이유로 요청한 열을 거부하면 오류를 표시합니다. |
 | `ctr.limits` | API 필드가 있으면 memory, 한도, CPU throttle, pids | container cgroup 수명 동안의 OOM·oom_kill 누적 횟수 |
 | `ctr.fd` | 제공하지 않음 | 대상 cgroup process별 FD 수와 soft limit |
 | `ctr.listen` | publish한 port 설정 | 대상 process FD가 소유한 TCP·UDP listener의 주소와 port |

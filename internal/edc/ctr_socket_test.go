@@ -203,12 +203,14 @@ func TestCtrSocketTopFallsBackToBusyboxColumns(t *testing.T) {
 }
 
 func TestCtrTopParsesPSTimesAndRSS(t *testing.T) {
-	for text, want := range map[string]time.Duration{"0:00": 0, "0:05": 5 * time.Second, "12:34": 12*time.Minute + 34*time.Second, "01:02:03": time.Hour + 2*time.Minute + 3*time.Second, "2-03:04:05": 51*time.Hour + 4*time.Minute + 5*time.Second} {
+	// busybox는 위 단위 없이 분을 쌓으므로 맨 앞 칸은 60을 넘을 수 있다.
+	for text, want := range map[string]time.Duration{"0:00": 0, "0:05": 5 * time.Second, "12:34": 12*time.Minute + 34*time.Second, "123:45": 123*time.Minute + 45*time.Second, "01:02:03": time.Hour + 2*time.Minute + 3*time.Second, "2-03:04:05": 51*time.Hour + 4*time.Minute + 5*time.Second} {
 		if got, err := ctrPSDuration(text); err != nil || got != want {
 			t.Errorf("ctrPSDuration(%q) = %v, %v; want %v", text, got, err, want)
 		}
 	}
-	for _, text := range []string{"", "5", "1:2:3:4", "a:00", "-1:00", "x-00:01", "0:-1"} {
+	// 뒤 칸이 60 이상이거나 time.Duration을 넘는 값은 받지 않는다.
+	for _, text := range []string{"", "5", "1:2:3:4", "a:00", "-1:00", "x-00:01", "0:-1", "0:60", "1:60:00", "00:00:60", "106752-00:00:00", "9223372036854775807:00", "99999999999999999999:00"} {
 		if _, err := ctrPSDuration(text); err == nil {
 			t.Errorf("ctrPSDuration(%q) accepted", text)
 		}

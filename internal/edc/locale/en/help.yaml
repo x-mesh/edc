@@ -471,7 +471,7 @@ command:
       live: "compatibility flag. Trace is live by default"
       group_by: "group by source, target, port, process, event, path"
       process: "match PIDs or command names, comma-separated"
-      destination: "filter by destination host and port"
+      destination: "filter by destination host and port; for dns, also by a domain in the query name"
       detail: "list each connection or flow in the summary"
       yes: "skip the question"
       side: "http and database traces: both sides. dns: client"

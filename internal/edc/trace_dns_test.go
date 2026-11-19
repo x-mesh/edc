@@ -2,6 +2,8 @@ package edc
 
 import (
 	"encoding/json"
+	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -472,5 +474,173 @@ func TestDNSTCPStreamsFindMessagesInChunks(t *testing.T) {
 	// BPF가 읽는 크기에서 잘린 message는 잘린 채로 넘긴다. header는 남는다.
 	if got := streams.messages(received, frame[:2+traceDNSHeaderSize+3], 2+traceDNSHeaderSize+3); len(got) != 1 || len(got[0]) != traceDNSHeaderSize+3 {
 		t.Fatalf("cut message = %v", got)
+	}
+}
+
+// dnsTestLookup은 한 process가 이름 하나를 묻고 nxdomain을 받은 두 event다.
+func dnsTestLookup(pid uint32, process, name, server string, at uint64) []captureEvent {
+	return []captureEvent{
+		{Protocol: "dns", Event: traceDNSQueryEvent, TimestampNS: at, PID: pid, Process: process, Target: name, QueryType: "A", Destination: server},
+		{Protocol: "dns", Event: "dns_nxdomain", TimestampNS: at + uint64(time.Millisecond), PID: pid, Process: process, Target: name, QueryType: "A", Destination: server},
+	}
+}
+
+func dnsTestReportOutput(t *testing.T, report dnsTraceReport) string {
+	t.Helper()
+	t.Setenv("NO_COLOR", "1")
+	previous := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	report.print(false)
+	os.Stdout = previous
+	writer.Close()
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(output)
+}
+
+// 2026-11-19 tmate 한 번의 조회가 검색 도메인 두 개 때문에 세 행으로 갈라졌고, PROCESS 칸에는 중계한 systemd-resolve가 섞였다.
+func TestDNSTraceSummaryMarksRelaysAndGroupsSearchNames(t *testing.T) {
+	var events []captureEvent
+	for _, name := range []string{"ssh.tmate.io", "ssh.tmate.io.corp.example", "ssh.tmate.io.loopvm"} {
+		events = append(events, dnsTestLookup(30905, "tmate", name, "127.0.0.53:53", 0)...)
+		events = append(events, dnsTestLookup(812, "systemd-resolve", name, "1.1.1.1:53", 0)...)
+	}
+	// 검색 도메인 안의 host를 원래 이름 없이 물었으면 따로 둔다.
+	events = append(events, dnsTestLookup(400, "curl", "web.loopvm", "127.0.0.53:53", 0)...)
+	summarize := func(local dnsTraceLocal, events []captureEvent) dnsTraceReport {
+		summarizer := newDNSTraceSummarizer()
+		summarizer.local = local
+		for _, event := range events {
+			summarizer.observe(event)
+		}
+		return summarizer.summarize(captureSummary{}, time.Second).(dnsTraceReport)
+	}
+	// 검색 도메인은 resolver가 시도하는 순서대로 원래 이름 아래에 놓인다. 이름 순서와 일부러 반대로 둔다.
+	local := dnsTraceLocal{resolvers: map[uint32]bool{812: true}, search: []string{"loopvm", "corp.example"}}
+	report := summarize(local, events)
+	var order []string
+	for _, name := range report.Names {
+		order = append(order, name.Name+"<"+name.BaseName)
+	}
+	if want := []string{"ssh.tmate.io<", "ssh.tmate.io.loopvm<ssh.tmate.io", "ssh.tmate.io.corp.example<ssh.tmate.io", "web.loopvm<"}; !slices.Equal(order, want) {
+		t.Fatalf("names = %q, want %q", order, want)
+	}
+	first := report.Names[0]
+	if !slices.Equal(first.Processes, []string{"systemd-resolve", "tmate"}) || !slices.Equal(first.PIDs, []uint32{812, 30905}) || !slices.Equal(first.Relays, []string{"systemd-resolve"}) {
+		t.Fatalf("first name = %+v", first)
+	}
+	output := dnsTestReportOutput(t, report)
+	for _, want := range []string{"ssh.tmate.io\tA\t2\t", "\ttmate(30905) via systemd-resolve(812)\n", "\n  ssh.tmate.io.loopvm\tA\t", "\nweb.loopvm\tA\t1\t", "\tcurl(400)\n"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output has no %q:\n%s", want, output)
+		}
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"base_name":"ssh.tmate.io"`, `"processes":["systemd-resolve","tmate"],"pids":[812,30905],"relays":["systemd-resolve"]`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("JSON %s has no %s", data, want)
+		}
+	}
+
+	// trace show는 다른 호스트의 파일도 읽으므로 이 호스트의 resolver와 검색 도메인을 쓰지 않는다.
+	plain := summarize(dnsTraceLocal{}, events)
+	if plain.Names[1].Name != "ssh.tmate.io.corp.example" || plain.Names[1].BaseName != "" || plain.Names[0].Relays != nil {
+		t.Fatalf("names without local = %+v", plain.Names)
+	}
+	if output := dnsTestReportOutput(t, plain); !strings.Contains(output, "\tsystemd-resolve(812),tmate(30905)\n") {
+		t.Fatalf("output without local:\n%s", output)
+	}
+
+	// 서버 쪽 질의는 다른 호스트의 client가 보낸 것이라 묶지 않는다.
+	server := slices.Clone(events)
+	for index := range server {
+		server[index].Side = traceServerSide
+	}
+	if report := summarize(local, server); report.Names[1].BaseName != "" || report.Names[0].Relays != nil {
+		t.Fatalf("server names = %+v", report.Names)
+	}
+}
+
+func TestDNSTraceSummaryFindsRepeatedFailures(t *testing.T) {
+	second := uint64(time.Second)
+	var events []captureEvent
+	// tmate는 2초마다 다시 묻고, 그때마다 검색 도메인을 붙인 이름도 묻는다. 간격은 실제처럼 조금씩 흔들린다.
+	for index, at := range []uint64{0, 2008 * second / 1000, 4017 * second / 1000, 6025 * second / 1000} {
+		events = append(events, dnsTestLookup(30905, "tmate", "ssh.tmate.io", "127.0.0.53:53", at)...)
+		events = append(events, dnsTestLookup(30905, "tmate", "ssh.tmate.io.loopvm", "127.0.0.53:53", at+2*uint64(time.Millisecond))...)
+		events = append(events, dnsTestLookup(812, "systemd-resolve", "ssh.tmate.io", "1.1.1.1:53", at)...)
+		// backoff로 간격이 늘어나는 retry는 되풀이로 보지 않는다.
+		events = append(events, dnsTestLookup(500, "apt", "deb.example", "127.0.0.53:53", second<<index)...)
+	}
+	// 두 번만 실패한 것도 되풀이로 보지 않는다.
+	events = append(events, dnsTestLookup(600, "curl", "once.example", "127.0.0.53:53", 0)...)
+	events = append(events, dnsTestLookup(600, "curl", "once.example", "127.0.0.53:53", 2*second)...)
+	summarizer := newDNSTraceSummarizer()
+	summarizer.local = dnsTraceLocal{resolvers: map[uint32]bool{812: true}, search: []string{"loopvm"}}
+	for _, event := range events {
+		summarizer.observe(event)
+	}
+	report := summarizer.summarize(captureSummary{}, 7*time.Second).(dnsTraceReport)
+	if len(report.RepeatedFailures) != 1 {
+		t.Fatalf("repeated failures = %+v", report.RepeatedFailures)
+	}
+	failure := report.RepeatedFailures[0]
+	if failure.PID != 30905 || failure.Process != "tmate" || failure.Name != "ssh.tmate.io" || failure.Type != "A" || failure.Result != "nxdomain" || failure.Count != 4 || failure.IntervalMS < 2008 || failure.IntervalMS > 2009 {
+		t.Fatalf("failure = %+v", failure)
+	}
+	output := dnsTestReportOutput(t, report)
+	if !strings.Contains(output, "REPEATED FAILURES") || !strings.Contains(output, "\ntmate(30905)\tssh.tmate.io\tA\tnxdomain\t4\t2.0s\tedc proc 30905\n") {
+		t.Fatalf("output:\n%s", output)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"repeated_failures":[{"pid":30905,"process":"tmate","name":"ssh.tmate.io","type":"A","result":"nxdomain","count":4,"interval_ms":2008.33`) {
+		t.Fatalf("JSON = %s", data)
+	}
+
+	// 순서가 바뀌어 온 event는 간격을 0으로 세므로 되풀이로 보지 않는다.
+	var run dnsFailureRun
+	for _, at := range []uint64{4 * second, 2 * second, 6 * second} {
+		run.observe(at)
+	}
+	if run.regular() {
+		t.Fatalf("run = %+v", run)
+	}
+}
+
+func TestTraceEventMatchesDNSNamesByDomain(t *testing.T) {
+	event := func(protocol, target string) captureEvent {
+		return captureEvent{Protocol: protocol, Target: target, Destination: "127.0.0.53:53"}
+	}
+	for _, test := range []struct {
+		event       captureEvent
+		destination string
+		want        bool
+	}{
+		{event("dns", "ssh.tmate.io"), "tmate.io", true},
+		{event("dns", "ssh.tmate.io.loopvm"), "tmate.io", true},
+		{event("dns", "ssh.tmate.io"), "TMATE.IO.", true},
+		{event("dns", "ssh.tmate.io"), "ssh.tmate.io", true},
+		{event("dns", "nottmate.io"), "tmate.io", false},
+		{event("dns", "tmate.iox"), "tmate.io", false},
+		{event("dns", ""), "tmate.io", false},
+		{event("dns", "ssh.tmate.io"), "127.0.0.53:53", true},
+		// TCP의 target은 HTTP host 같은 값이라 전과 같이 정확히 같을 때만 맞는다.
+		{event("tcp", "api.tmate.io"), "tmate.io", false},
+	} {
+		if got := traceEventMatches(test.event, "", test.destination); got != test.want {
+			t.Fatalf("traceEventMatches(%+v, %q) = %v, want %v", test.event, test.destination, got, test.want)
+		}
 	}
 }

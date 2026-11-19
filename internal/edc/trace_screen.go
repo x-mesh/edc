@@ -1870,6 +1870,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	started := time.Now()
 	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
 	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
+	aggregate.useLocalDNS()
 	go func() {
 		summary, err := collectTraceEventsLive(traceScreenScope(protocol, options), options.duration, func(event captureEvent) error {
 			if event.TLSNotice == "" && (traceProtocol(event) != protocol || !options.matches(event)) {

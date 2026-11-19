@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -148,9 +149,16 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 		backdoor.Checked++
 		comm, _ := readTrimmed(filepath.Join(dir, "comm"))
 		args := readAuditArgs(dir)
+		// 터널 도구는 systemd 서비스로 상시 운영하는 일이 많다(cloudflared.service). accept는 점검 단위라서 서비스까지 경고하면
+		// 그 경고를 accept할 때 tmate 같은 터미널 공유도 함께 가려진다. 그래서 서비스로 둔 터널은 판정하지 않는다. cgroup 이름은
+		// 누구나 만들 수 있으므로 systemd가 도는 호스트에서만 서비스로 본다.
+		shareKind := auditRemoteShareKind(comm, exe)
+		if shareKind == "tunnel" && backdoor.Systemd && strings.HasPrefix(readAuditCgroup(dir), "/system.slice/") {
+			shareKind = ""
+		}
 		var stdio []int
 		var peer string
-		var peers []string
+		peers := map[string]bool{}
 		kinds := map[string]bool{}
 		fdDir := filepath.Join(dir, "fd")
 		fds, _ := os.ReadDir(fdDir)
@@ -172,7 +180,10 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 				continue
 			}
 			if socket, ok := tcp[inode]; ok {
-				peers = append(peers, socket.Remote.String())
+				// 상대 주소는 원격 공유 도구에만 쓴다. 연결이 많은 다른 process마다 모으지 않는다.
+				if shareKind != "" {
+					peers[socket.Remote.String()] = true
+				}
 				if number <= 2 {
 					stdio = append(stdio, number)
 					peer = socket.Remote.String()
@@ -203,11 +214,8 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 		if comm == "sshd" && strings.Contains(strings.Join(args, " "), "[listener]") {
 			backdoor.Daemons = append(backdoor.Daemons, auditSSHDaemon{Process: describe(pid, comm, exe, args), Cgroup: readAuditCgroup(dir)})
 		}
-		// 터널 도구는 systemd 서비스로 상시 운영하는 일이 많다(cloudflared.service). accept는 점검 단위라서 서비스까지 경고하면
-		// 그 경고를 accept할 때 tmate 같은 터미널 공유도 함께 가려진다. 그래서 서비스로 둔 터널은 판정하지 않는다.
-		if kind := auditRemoteShareKind(comm, exe); kind != "" && (kind != "tunnel" || !strings.HasPrefix(readAuditCgroup(dir), "/system.slice/")) {
-			slices.Sort(peers)
-			backdoor.Shares = append(backdoor.Shares, auditRemoteShare{Process: describe(pid, comm, exe, args), Kind: kind, Peers: slices.Compact(peers), Session: readLinuxLoginSession(sources.root, dir)})
+		if shareKind != "" {
+			backdoor.Shares = append(backdoor.Shares, auditRemoteShare{Process: describe(pid, comm, exe, args), Kind: shareKind, Peers: slices.Sorted(maps.Keys(peers)), Session: readLinuxLoginSession(sources.root, dir)})
 		}
 	}
 	for _, socket := range facts.Listen {

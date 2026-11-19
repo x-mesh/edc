@@ -352,6 +352,9 @@ func TestAuditRemoteShareFindsTerminalSharingAndSessionTunnels(t *testing.T) {
 		testBackdoorProc{pid: 500, comm: "cloudflared", exe: "/usr/bin/cloudflared", cmdline: "/usr/bin/cloudflared\x00tunnel\x00run\x00", cgroup: "0::/system.slice/cloudflared.service", fds: map[int]uint64{3: 9001}},
 		testBackdoorProc{pid: 600, comm: "tmux: server", exe: "/usr/bin/tmux", cmdline: "tmux\x00", cgroup: "0::/user.slice/user-0.slice/session-22190.scope"},
 	)
+	if err := os.MkdirAll(filepath.Join(root, "run/systemd/system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeAuditFile(t, root, "/proc/30905/sessionid", "22190", 0o644)
 	// 로그인 세션 밖에서 뜬 process의 session ID다.
 	writeAuditFile(t, root, "/proc/400/sessionid", "4294967295", 0o644)
@@ -384,6 +387,16 @@ func TestAuditRemoteShareFindsTerminalSharingAndSessionTunnels(t *testing.T) {
 	// 같은 연결을 두 fd가 쥐어도 상대는 한 번만 적는다.
 	if strings.Count(value, "3.20.1.1:443") != 1 || strings.Contains(value, "cloudflared") || strings.Contains(value, "tmux") {
 		t.Fatalf("evidence = %q", value)
+	}
+
+	// systemd가 없으면 /system.slice/ cgroup은 이름일 뿐이라 서비스로 보지 않는다.
+	if err := os.Remove(filepath.Join(root, "run/systemd/system")); err != nil {
+		t.Fatal(err)
+	}
+	facts = auditFacts{Now: testLoginAt(120)}
+	collectAuditBackdoor(sources, &facts)
+	if shares := facts.Backdoor.Shares; len(shares) != 3 || shares[2].Process.PID != 500 || !slices.Equal(shares[2].Peers, []string{"104.16.0.1:7844"}) {
+		t.Fatalf("shares without systemd = %+v", shares)
 	}
 
 	// 연결된 소켓을 읽지 못하면 연결이 없다고 적지 않는다.

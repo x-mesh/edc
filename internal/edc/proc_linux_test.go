@@ -201,6 +201,13 @@ func TestProcHandleComparesTheStartTick(t *testing.T) {
 	if handle.sameProcess(topProcess{PID: 42, startTicks: 271827}) {
 		t.Fatal("another start tick means another process")
 	}
+	// 읽는 동안 zombie가 된 process는 끝난 것으로 본다. 표본에서부터 zombie였으면 그대로 보여 준다.
+	if err := os.WriteFile(stat, []byte("42 (tm (x)) Z 1 42 42 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 1 0 271828 0 0 18446744073709551615\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if handle.sameProcess(topProcess{PID: 42, startTicks: 271828, State: "S"}) || !handle.sameProcess(topProcess{PID: 42, startTicks: 271828, State: "Z"}) {
+		t.Fatal("a zombie must pass only if the sample saw a zombie")
+	}
 	// 같은 tick 안에 PID를 다시 쓴 모양이다. 같은 경로에 시작 tick이 같은 새 디렉터리가 생겨도, 열어 둔 fd는 사라진 옛 디렉터리를
 	// 가리키므로 통과하지 않는다. 경로로 다시 읽었다면 같은 process로 보았을 것이다.
 	line, err := os.ReadFile(stat)
@@ -250,7 +257,7 @@ func TestProcHandleRefusesAProcessThatEnded(t *testing.T) {
 		child.Wait()
 		t.Fatalf("stat = %q, %v", data, err)
 	}
-	process := topProcess{PID: pid, startTicks: stat.StartTicks}
+	process := topProcess{PID: pid, startTicks: stat.StartTicks, State: stat.State}
 	handle, opened := openProcHandle(pid)
 	if !opened {
 		t.Fatal("the child must open")
@@ -260,6 +267,24 @@ func TestProcHandleRefusesAProcessThatEnded(t *testing.T) {
 		t.Fatal("a running child must pass")
 	}
 	child.Process.Kill()
+	// 거두기 전의 zombie다. 표본에서는 실행 중이었으므로 끝난 것으로 본다.
+	zombie := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && !zombie; time.Sleep(10 * time.Millisecond) {
+		data, _ := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+		now, ok := parseLinuxProcessStat(pid, string(data))
+		zombie = ok && now.State == "Z"
+	}
+	if !zombie {
+		child.Wait()
+		t.Fatal("the killed child did not become a zombie")
+	}
+	if handle.sameProcess(process) {
+		t.Fatal("a child that became a zombie must not pass")
+	}
+	process.State = "Z"
+	if !handle.sameProcess(process) {
+		t.Fatal("a zombie in the sample must pass")
+	}
 	child.Wait()
 	if handle.sameProcess(process) {
 		t.Fatal("a reaped child must not pass")

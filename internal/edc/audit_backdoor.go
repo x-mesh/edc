@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -54,6 +55,15 @@ type auditSSHDaemon struct {
 	Ports   []string
 }
 
+// auditRemoteShare는 이 호스트의 shell이나 포트를 밖의 중계 서버로 여는 도구의 process다. Peers는 지금 연결된 TCP 상대이고,
+// Session은 그 process를 띄운 로그인 세션이다.
+type auditRemoteShare struct {
+	Process auditBackdoorProcess
+	Kind    string
+	Peers   []string
+	Session *procLoginSession
+}
+
 type auditBackdoor struct {
 	Err     error
 	Checked int
@@ -70,8 +80,17 @@ type auditBackdoor struct {
 	Raw         []auditRawHolder
 	Daemons     []auditSSHDaemon
 	Extra       []auditSSHDaemon
+	Shares      []auditRemoteShare
 	Systemd     bool
 	PackageDB   bool
+}
+
+// auditRemoteShareTools는 이 호스트를 밖의 중계 서버로 여는 도구의 실행 파일 이름과 종류다. terminal은 shell을 공유하고 tunnel은 포트를 연다.
+// 2026-11-19 한 호스트에서 2월에 띄운 tmate가 로그아웃 뒤에도 남아 2초마다 ssh.tmate.io를 다시 조회했다. 이름이 풀리지 않아 연결이 없었으므로
+// 소켓을 보는 점검은 잡지 못했다. 그래서 연결이 아니라 실행 파일 이름으로 찾는다.
+var auditRemoteShareTools = map[string]string{
+	"tmate": "terminal", "sshx": "terminal", "upterm": "terminal", "tty-share": "terminal",
+	"ngrok": "tunnel", "cloudflared": "tunnel", "frpc": "tunnel", "chisel": "tunnel", "bore": "tunnel",
 }
 
 // auditSSHDFamily는 sshd의 process 이름이다. OpenSSH 9.8부터 연결마다 sshd-session이 돈다.
@@ -130,8 +149,16 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 		backdoor.Checked++
 		comm, _ := readTrimmed(filepath.Join(dir, "comm"))
 		args := readAuditArgs(dir)
+		// 터널 도구는 systemd 서비스로 상시 운영하는 일이 많다(cloudflared.service). accept는 점검 단위라서 서비스까지 경고하면
+		// 그 경고를 accept할 때 tmate 같은 터미널 공유도 함께 가려진다. 그래서 서비스로 둔 터널은 판정하지 않는다. cgroup 이름은
+		// 누구나 만들 수 있으므로 systemd가 도는 호스트에서만 서비스로 본다.
+		shareKind := auditRemoteShareKind(comm, exe)
+		if shareKind == "tunnel" && backdoor.Systemd && strings.HasPrefix(readAuditCgroup(dir), "/system.slice/") {
+			shareKind = ""
+		}
 		var stdio []int
 		var peer string
+		peers := map[string]bool{}
 		kinds := map[string]bool{}
 		fdDir := filepath.Join(dir, "fd")
 		fds, _ := os.ReadDir(fdDir)
@@ -152,9 +179,15 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 			if err != nil {
 				continue
 			}
-			if socket, ok := tcp[inode]; ok && number <= 2 {
-				stdio = append(stdio, number)
-				peer = socket.Remote.String()
+			if socket, ok := tcp[inode]; ok {
+				// 상대 주소는 원격 공유 도구에만 쓴다. 연결이 많은 다른 process마다 모으지 않는다.
+				if shareKind != "" {
+					peers[socket.Remote.String()] = true
+				}
+				if number <= 2 {
+					stdio = append(stdio, number)
+					peer = socket.Remote.String()
+				}
 			}
 			if kind, ok := raw[inode]; ok {
 				kinds[kind] = true
@@ -180,6 +213,9 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 		}
 		if comm == "sshd" && strings.Contains(strings.Join(args, " "), "[listener]") {
 			backdoor.Daemons = append(backdoor.Daemons, auditSSHDaemon{Process: describe(pid, comm, exe, args), Cgroup: readAuditCgroup(dir)})
+		}
+		if shareKind != "" {
+			backdoor.Shares = append(backdoor.Shares, auditRemoteShare{Process: describe(pid, comm, exe, args), Kind: shareKind, Peers: slices.Sorted(maps.Keys(peers)), Session: readLinuxLoginSession(sources.root, dir)})
 		}
 	}
 	for _, socket := range facts.Listen {
@@ -231,6 +267,9 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 	for _, holder := range backdoor.Raw {
 		add(holder.Process)
 	}
+	for _, share := range backdoor.Shares {
+		add(share.Process)
+	}
 	if len(exes) == 0 {
 		return
 	}
@@ -247,6 +286,9 @@ func collectAuditBackdoor(sources auditSources, facts *auditFacts) {
 	}
 	for index := range backdoor.Extra {
 		owner(&backdoor.Extra[index].Process)
+	}
+	for index := range backdoor.Shares {
+		owner(&backdoor.Shares[index].Process)
 	}
 	// 패키지가 가진 binary는 대개 정상이다(systemd-networkd, dhclient, tcpdump). 패키지 밖이거나 임시 경로에서 도는 것만 남긴다.
 	backdoor.Raw = slices.DeleteFunc(backdoor.Raw, func(holder auditRawHolder) bool {
@@ -289,6 +331,14 @@ func readAuditCgroup(dir string) string {
 		}
 	}
 	return fallback
+}
+
+// auditRemoteShareKind는 process가 원격 공유 도구면 그 종류다. comm은 15바이트에서 잘리므로 실행 파일 이름을 먼저 본다.
+func auditRemoteShareKind(comm, exe string) string {
+	if kind, ok := auditRemoteShareTools[filepath.Base(strings.TrimSuffix(exe, deletedOpenSuffix))]; ok {
+		return kind
+	}
+	return auditRemoteShareTools[comm]
 }
 
 func readAuditArgs(dir string) []string {
@@ -512,6 +562,51 @@ func auditRawSocketResult(facts auditFacts) Result {
 	result.Evidence = []Evidence{{Label: T("audit.evidence.processes"), Value: strings.Join(items, "\n")}}
 	pid := backdoor.Raw[0].Process.PID
 	result.Next = fmt.Sprintf("ls -l /proc/%d/exe; tr '\\0' ' ' < /proc/%d/cmdline", pid, pid)
+	return result
+}
+
+func auditRemoteShareResult(facts auditFacts) Result {
+	const id = "proc.remote_share"
+	backdoor := facts.Backdoor
+	if backdoor.Err != nil {
+		return auditSkip(id, "/proc", backdoor.Err)
+	}
+	if len(backdoor.Shares) == 0 {
+		return auditResult(id, StatusPass, T("audit.proc.share_ok", backdoor.Checked))
+	}
+	result := auditResult(id, StatusWarn, T("audit.proc.share_bad", len(backdoor.Shares)))
+	items := make([]string, 0, min(len(backdoor.Shares), auditProcessShown)+1)
+	for _, share := range backdoor.Shares[:min(len(backdoor.Shares), auditProcessShown)] {
+		process := share.Process
+		head := fmt.Sprintf("%d %s  %s", process.PID, process.Comm, strings.TrimSuffix(process.Exe, deletedOpenSuffix))
+		var details []string
+		notes := []string{T("audit.proc.share_note_" + share.Kind)}
+		if session := share.Session; session != nil {
+			start := "-"
+			if !session.Start.IsZero() {
+				start = auditLoginTime(session.Start)
+			}
+			details = append(details, T("audit.proc.share_session", session.ID, emptyAs(session.User, "-"), emptyAs(session.RemoteHost, "-"), start, emptyAs(session.State, "-")))
+			// logind는 로그아웃한 뒤에도 그 세션의 process가 남아 있으면 세션을 closing으로 둔다.
+			if session.State == "closing" {
+				notes = append(notes, T("audit.proc.share_session_closed"))
+			}
+		}
+		// 연결된 TCP 소켓을 읽지 못했으면 연결이 없다고 적을 근거가 없다.
+		if backdoor.TCPErr == nil {
+			if len(share.Peers) > 0 {
+				details = append(details, T("audit.proc.share_peers", strings.Join(share.Peers, ", ")))
+			} else {
+				details = append(details, T("audit.proc.share_no_peer"))
+			}
+		}
+		items = append(items, auditItem(head, auditBackdoorDetails(process, facts.Now, details...), append(notes, auditOwnerNote(process, backdoor.PackageDB))))
+	}
+	if extra := len(backdoor.Shares) - auditProcessShown; extra > 0 {
+		items = append(items, fmt.Sprintf("+%d", extra))
+	}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.processes"), Value: strings.Join(items, "\n")}}
+	result.Next = fmt.Sprintf("edc proc %d", backdoor.Shares[0].Process.PID)
 	return result
 }
 

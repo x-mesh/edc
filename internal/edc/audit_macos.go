@@ -13,7 +13,7 @@ import (
 // macOS에서 파일이 없어 통과로 보일 수 있다.
 var darwinAuditUnsupported = []string{
 	"user.empty_pass", "user.root_groups", "login.mismatch", "login.local_source", "history.tampered",
-	"proc.unusual_exe", "proc.preload", "proc.socket_shell", "proc.raw_socket", "net.reverse_tunnel", "ssh.extra_sshd",
+	"proc.unusual_exe", "proc.preload", "proc.socket_shell", "proc.raw_socket", "proc.remote_share", "net.reverse_tunnel", "ssh.extra_sshd",
 	"persist.changed", "file.pkg_modified", "kernel.sysctl", "kernel.taint", "docker.escape",
 }
 

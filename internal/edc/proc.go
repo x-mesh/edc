@@ -48,6 +48,25 @@ type procDetails struct {
 	Conns     map[string]int
 	Remotes   map[string]int
 	SocketErr error
+	// Origin은 process가 어디서 왔는지다. Linux에서만 읽는다.
+	Origin procOrigin
+}
+
+// procOrigin은 실행 파일, 그 파일을 가진 dpkg 패키지, process를 띄운 로그인 세션이다.
+type procOrigin struct {
+	Exe string
+	// PackageDB는 dpkg 파일 목록이 있는 호스트다. 그러면 Package가 비었을 때 어느 패키지에도 없는 파일이라고 적을 수 있다.
+	PackageDB bool
+	Package   string
+	// PackageChanged는 dpkg가 그 패키지의 파일 목록을 마지막으로 쓴 때다. dpkg는 설치와 업그레이드 때 목록을 다시 쓴다.
+	PackageChanged time.Time
+	Session        *procLoginSession
+}
+
+// procLoginSession은 systemd-logind가 /run/systemd/sessions/<id>에 남긴 세션 기록이다.
+type procLoginSession struct {
+	ID, User, RemoteHost, Service, State string
+	Start                                time.Time
 }
 
 type procDeletedFile struct {
@@ -154,11 +173,53 @@ func procProcessResult(process topProcess, details procDetails, now time.Time, v
 	if process.Threads > 0 {
 		lines = append(lines, T("proc.field.threads", process.Threads))
 	}
+	lines = append(lines, procOriginLines(process, details.Origin)...)
 	result.Evidence = []Evidence{{Label: T("proc.evidence.process"), Value: strings.Join(lines, "\n")}}
 	if status == StatusWarn && process.State == "Z" {
 		result.Next = fmt.Sprintf("edc proc %d", process.PPID)
 	}
 	return result
+}
+
+// procOriginLines는 시작 시각과 출처 줄이다. 상대 시간은 요약에 있고, 여기에는 로그인 기록과 견줄 수 있는 시각을 쓴다.
+func procOriginLines(process topProcess, origin procOrigin) []string {
+	var lines []string
+	if !process.Started.IsZero() {
+		lines = append(lines, T("proc.field.started", auditLoginTime(process.Started)))
+	}
+	if origin.Exe != "" {
+		lines = append(lines, T("proc.field.exe", origin.Exe))
+	}
+	switch {
+	case origin.Package != "" && !origin.PackageChanged.IsZero():
+		lines = append(lines, T("proc.field.package", origin.Package, auditLoginTime(origin.PackageChanged)))
+	case origin.Package != "":
+		lines = append(lines, T("proc.field.package_unknown_time", origin.Package))
+	case origin.Exe != "" && origin.PackageDB:
+		lines = append(lines, T("proc.field.package_none"))
+	}
+	if session := origin.Session; session != nil {
+		parts := []string{session.ID}
+		if who := session.User; who != "" && session.RemoteHost != "" {
+			parts = append(parts, T("proc.session.from", who, session.RemoteHost))
+		} else if who != "" {
+			parts = append(parts, who)
+		}
+		if session.Service != "" {
+			parts = append(parts, session.Service)
+		}
+		if !session.Start.IsZero() {
+			parts = append(parts, T("proc.session.started", auditLoginTime(session.Start)))
+		}
+		// logind는 세션을 연 process가 끝나도 남은 process가 있으면 세션을 closing으로 둔다. 로그아웃한 뒤에도 도는 process다.
+		if session.State == "closing" {
+			parts = append(parts, T("proc.session.closing"))
+		} else if session.State != "" {
+			parts = append(parts, session.State)
+		}
+		lines = append(lines, T("proc.field.session", strings.Join(parts, " · ")))
+	}
+	return lines
 }
 
 // procPeer는 연결의 상대를 묶는 열쇠다. 이 process의 대기 포트로 들어온 연결은 상대 포트가 임시 포트라 IP로 묶고, 나간

@@ -96,3 +96,41 @@ func TestProcStateAndCgroup(t *testing.T) {
 		t.Fatalf("no limits = %+v", skip)
 	}
 }
+
+// 2026-11-19 로그아웃한 ssh 세션에 tmate가 남았다. 근거에서 언제, 어느 패키지로, 어느 로그인에서 떴는지 보여야 한다.
+func TestProcProcessResultShowsTheOrigin(t *testing.T) {
+	started := time.Date(2026, 2, 24, 22, 48, 12, 0, time.Local)
+	process := topProcess{PID: 30905, PPID: 1, Command: "tmate", State: "S", Started: started}
+	session := &procLoginSession{ID: "22190", User: "root", RemoteHost: "192.0.2.7", Service: "sshd", State: "closing", Start: started.Add(-81 * time.Minute)}
+	installed := started.Add(-3 * time.Minute)
+	details := procDetails{Origin: procOrigin{Exe: "/usr/bin/tmate", PackageDB: true, Package: "tmate", PackageChanged: installed, Session: session}}
+	value := procProcessResult(process, details, started.Add(time.Hour), false).Evidence[0].Value
+	for _, want := range []string{
+		T("proc.field.started", "2026-02-24 22:48:12"), T("proc.field.exe", "/usr/bin/tmate"), T("proc.field.package", "tmate", "2026-02-24 22:45:12"),
+		T("proc.field.session", strings.Join([]string{"22190", T("proc.session.from", "root", "192.0.2.7"), "sshd", T("proc.session.started", "2026-02-24 21:27:12"), T("proc.session.closing")}, " · ")),
+	} {
+		if !strings.Contains(value, want+"\n") && !strings.HasSuffix(value, want) {
+			t.Fatalf("evidence has no %q:\n%s", want, value)
+		}
+	}
+
+	// 열린 세션은 상태를 그대로 쓰고, 원격 host가 없는 로그인은 사용자만 쓴다.
+	session.State, session.RemoteHost = "active", ""
+	if value := procProcessResult(process, details, started, false).Evidence[0].Value; !strings.HasSuffix(value, T("proc.field.session", "22190 · root · sshd · "+T("proc.session.started", "2026-02-24 21:27:12")+" · active")) {
+		t.Fatalf("active session:\n%s", value)
+	}
+
+	// dpkg가 있는 호스트에서 어느 패키지에도 없는 파일은 그렇다고 쓴다. dpkg가 없으면 패키지 줄을 쓰지 않는다.
+	details.Origin = procOrigin{Exe: "/root/.local/bin/agent", PackageDB: true}
+	if value := procProcessResult(process, details, started, false).Evidence[0].Value; !strings.HasSuffix(value, T("proc.field.package_none")) {
+		t.Fatalf("no package:\n%s", value)
+	}
+	details.Origin.PackageDB = false
+	if value := procProcessResult(process, details, started, false).Evidence[0].Value; !strings.HasSuffix(value, T("proc.field.exe", "/root/.local/bin/agent")) {
+		t.Fatalf("no dpkg:\n%s", value)
+	}
+	// 시작 시각도 출처도 모르면 줄을 더하지 않는다.
+	if value := procProcessResult(topProcess{PID: 1, Command: "init"}, procDetails{}, started, false).Evidence[0].Value; strings.Count(value, "\n") != 1 {
+		t.Fatalf("bare process:\n%s", value)
+	}
+}

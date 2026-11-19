@@ -356,13 +356,15 @@ edc proc -v 1234         # the full command line
 
 | Result | Shows | Warns when |
 |---|---|---|
-| `proc.process` | PID, name, user, uptime, command line, parent, working directory, threads | the process is a zombie (`next` points at its parent) or waits for I/O in D state |
+| `proc.process` | PID, name, user, uptime and start time, command line, parent, working directory, threads, and on Linux the executable, its dpkg package, and the login session | the process is a zombie (`next` points at its parent) or waits for I/O in D state |
 | `proc.resources` | CPU over 0.5 seconds, memory and RSS | |
 | `proc.fd` | open fds by type, against the soft limit on Linux, and deleted files that the process still holds | 80% or more of the fd limit is in use |
 | `proc.sockets` | listening ports, connections by state, and the peers with the most connections | 10 or more connections are in `CLOSE_WAIT` |
 | `proc.cgroup` | the cgroup v2 path, memory use against `memory.max`, OOM kills, and CPU throttling. Linux only. | memory use is 80% or more of `memory.max`, or the cgroup had an OOM kill |
 
 The command line hides secret options and URL credentials with the same rule as `edc listen`. Without `-v`, it is cut to one line of 200 characters. Peers of a connection to a listening port of the process are grouped by address, and the peers of an outgoing connection by address and port. On Linux, edc reads `/proc/<pid>` and the TCP table of the network namespace of the process, so a container process shows its own connections. On macOS, edc reads the fds and sockets with `lsof`. Without root, the fds and sockets of another account show `skip`. A deleted file keeps its disk space until the process closes it. The memfd and `/dev/shm` files are not counted.
+
+On Linux, `proc.process` also shows where the process came from. `exe` is the executable. `package` is the dpkg package that has this file, and the last time that dpkg installed or upgraded the package. edc takes this time from the modification time of the file list of the package in `/var/lib/dpkg/info`. If no package has the file, the line shows `none`. A host without dpkg shows no `package` line. `session` is the login session that started the process. edc reads the user, the remote host, the service, and the start time from `/run/systemd/sessions`. If the user logged out and the process still runs, the line tells you. A process outside a login session, such as a system service, shows no `session` line.
 
 ## Scheduled jobs (Linux and macOS)
 

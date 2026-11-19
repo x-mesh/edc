@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseLinuxTCPTableDecodesAddresses(t *testing.T) {
@@ -62,5 +64,75 @@ func TestReadLinuxProcDetailsClassifiesFDs(t *testing.T) {
 	}
 	if strings.Join(details.Args, " ") != "app --port 8080" || details.Conns["ESTABLISHED"] != 1 || details.Remotes["127.0.0.1:50000"] != 1 {
 		t.Fatalf("details = %+v", details)
+	}
+}
+
+func TestReadLinuxProcOriginReadsExePackageAndSession(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, text string) {
+		t.Helper()
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	process := func(pid, exe, sessionID string) {
+		t.Helper()
+		write("proc/"+pid+"/sessionid", sessionID)
+		if err := os.Symlink(exe, filepath.Join(root, "proc", pid, "exe")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	process("42", "/usr/bin/tmate", "22190")
+	// 로그인 세션 밖에서 뜬 process의 session ID다.
+	process("43", "/opt/agent/agent (deleted)", "4294967295")
+	process("44", "/usr/bin/foo", "22191")
+	// 실행 중에 패키지를 업그레이드하면 옛 실행 파일은 지워진 채로 돈다.
+	process("45", "/usr/bin/tmate (deleted)", "4294967295")
+	write("run/systemd/sessions/22190", "# This is private data. Do not parse.\nUID=0\nUSER=root\nSTATE=closing\nREMOTE=1\nREMOTE_HOST=192.0.2.7\nSERVICE=sshd\nREALTIME=1771936023246410\n")
+	// logind의 <id>.ref와 같은 FIFO다. 열면 쓰는 쪽이 올 때까지 멈추므로, 세션 기록이 FIFO면 읽지 않아야 한다.
+	if err := syscall.Mkfifo(filepath.Join(root, "run/systemd/sessions/22191"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write("var/lib/dpkg/info/tmate.list", "/.\n/usr\n/usr/bin\n/usr/bin/tmate\n")
+	write("var/lib/dpkg/info/foo:amd64.list", "/usr/bin/foo\n")
+	installed := time.Date(2026, 2, 24, 22, 45, 47, 0, time.UTC)
+	for _, list := range []string{"tmate.list", "foo:amd64.list"} {
+		if err := os.Chtimes(filepath.Join(root, "var/lib/dpkg/info", list), installed, installed); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	origin := readLinuxProcOrigin(root, 42)
+	session := origin.Session
+	if origin.Exe != "/usr/bin/tmate" || !origin.PackageDB || origin.Package != "tmate" || !origin.PackageChanged.Equal(installed) || session == nil {
+		t.Fatalf("origin = %+v", origin)
+	}
+	if *session != (procLoginSession{ID: "22190", User: "root", RemoteHost: "192.0.2.7", Service: "sshd", State: "closing", Start: time.UnixMicro(1771936023246410)}) {
+		t.Fatalf("session = %+v", *session)
+	}
+	// 로그인 세션 밖의 process이고, 지워진 실행 파일은 어느 패키지에도 없다.
+	if origin := readLinuxProcOrigin(root, 43); origin.Exe != "/opt/agent/agent (deleted)" || !origin.PackageDB || origin.Package != "" || origin.Session != nil {
+		t.Fatalf("origin 43 = %+v", origin)
+	}
+	if origin := readLinuxProcOrigin(root, 45); origin.Package != "tmate" {
+		t.Fatalf("origin 45 = %+v", origin)
+	}
+	done := make(chan procOrigin, 1)
+	go func() { done <- readLinuxProcOrigin(root, 44) }()
+	select {
+	case origin := <-done:
+		if origin.Package != "foo" || !origin.PackageChanged.Equal(installed) || origin.Session != nil {
+			t.Fatalf("origin 44 = %+v", origin)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reading a FIFO session record blocked")
+	}
+	// /proc를 읽지 못하면 아무 줄도 없다.
+	if origin := readLinuxProcOrigin(root, 99); origin != (procOrigin{}) {
+		t.Fatalf("missing process = %+v", origin)
 	}
 }

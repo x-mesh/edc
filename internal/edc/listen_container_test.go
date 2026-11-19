@@ -79,21 +79,27 @@ func TestAttachListenContainersReadsTheEngine(t *testing.T) {
 		{Proto: "tcp", Address: "127.0.0.1", Port: 16379, Process: "OrbStack Helper", PID: "9378"},
 		{Proto: "tcp", Address: "127.0.0.1", Port: 32222, Process: "OrbStack Helper", PID: "9378"},
 	}
-	if err := attachListenContainers(context.Background(), sockets, false); err != nil {
+	if err := attachListenContainers(context.Background(), sockets); err != nil {
 		t.Fatal(err)
 	}
-	if sockets[0].Container == nil || sockets[0].Container.Name != "pg" || sockets[0].Container.Command != "" || sockets[2].Container != nil || len(inspects) != 0 {
-		t.Fatalf("without commands: %+v %+v, inspects %v", sockets[0].Container, sockets[2].Container, inspects)
+	// 명령행의 비밀 값은 listen의 규칙으로 가린다. 표에도 명령이 나오므로 --full이 아니어도 읽는다.
+	if sockets[0].Container == nil || sockets[0].Container.Name != "pg" || sockets[2].Container != nil || len(inspects) != 2 ||
+		sockets[0].Container.Command != "docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf" || sockets[1].Container.Command != "redis-server *:6379 --requirepass ***" {
+		t.Fatalf("containers: %+v %+v %+v, inspects %q", sockets[0].Container, sockets[1].Container, sockets[2].Container, inspects)
 	}
-	if err := attachListenContainers(context.Background(), sockets, true); err != nil {
-		t.Fatal(err)
+	// 기본 표의 PROCESS 칸은 container 이름과 명령이다. 긴 명령은 자르고, --full의 아랫줄에 포트, 이미지, 명령 전체를 적는다.
+	plainTable := formatListenTable(sockets, true, nil)
+	for _, want := range []string{"OrbStack Helper (9378) → pg: docker-entrypoint.sh postgres -c config_…", "OrbStack Helper (9378) → cache: redis-server *:6379 --requirepass ***"} {
+		if !strings.Contains(plainTable, want) {
+			t.Fatalf("table has no %q:\n%s", want, plainTable)
+		}
 	}
-	// 명령행의 비밀 값은 listen의 규칙으로 가린다.
-	if sockets[0].Container.Command != "docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf" || sockets[1].Container.Command != "redis-server *:6379 --requirepass ***" || len(inspects) != 2 {
-		t.Fatalf("with commands: %q %q, inspects %q", sockets[0].Container.Command, sockets[1].Container.Command, inspects)
+	if strings.Contains(plainTable, "postgres:16") || strings.Contains(plainTable, "↳") {
+		t.Fatalf("the table without --full must not show the image or the lines below:\n%s", plainTable)
 	}
 	table := formatListenTable(sockets, false, func(text string) string { return text })
-	for _, want := range []string{"OrbStack Helper (9378) → pg (postgres:16)\n", "↳ " + T("observe.listen.container_port", 6379, "tcp") + ": redis-server *:6379 --requirepass ***\n", "OrbStack Helper (9378)\n"} {
+	for _, want := range []string{"↳ " + T("observe.listen.container_port", 5432, "tcp", "postgres:16") + ": docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf\n",
+		"↳ " + T("observe.listen.container_port", 6379, "tcp", "redis:7") + ": redis-server *:6379 --requirepass ***\n", "OrbStack Helper (9378)\n"} {
 		if !strings.Contains(table, want) {
 			t.Fatalf("table has no %q:\n%s", want, table)
 		}
@@ -110,19 +116,23 @@ func TestAttachListenContainersReadsTheEngine(t *testing.T) {
 	// 그 사이에 끝난 container는 명령 없이 둔다. 다른 실패는 명령 없는 container처럼 보이지 않게 오류로 돌려준다.
 	gone := []listenSocket{{Proto: "tcp", Address: "*", Port: 5432}}
 	inspectStatus = http.StatusNotFound
-	if err := attachListenContainers(context.Background(), gone, true); err != nil || gone[0].Container == nil || gone[0].Container.Command != "" {
+	if err := attachListenContainers(context.Background(), gone); err != nil || gone[0].Container == nil || gone[0].Container.Command != "" {
 		t.Fatalf("a container that ended: %v %+v", err, gone[0].Container)
+	}
+	// 명령을 모르면 이름만 적는다.
+	if table := formatListenTable(gone, false, nil); !strings.Contains(table, "→ pg\n") {
+		t.Fatalf("a container without a command:\n%s", table)
 	}
 	busy := []listenSocket{{Proto: "tcp", Address: "*", Port: 5432}}
 	inspectStatus = http.StatusInternalServerError
-	if err := attachListenContainers(context.Background(), busy, true); err == nil || busy[0].Container == nil || busy[0].Container.Command != "" {
+	if err := attachListenContainers(context.Background(), busy); err == nil || busy[0].Container == nil || busy[0].Container.Command != "" {
 		t.Fatalf("a failing inspect: %v %+v", err, busy[0].Container)
 	}
 
 	// Engine socket이 없는 호스트는 아무것도 하지 않는다.
 	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
 	plain := []listenSocket{{Proto: "tcp", Address: "*", Port: 5432}}
-	if err := attachListenContainers(context.Background(), plain, true); err != nil || plain[0].Container != nil {
+	if err := attachListenContainers(context.Background(), plain); err != nil || plain[0].Container != nil {
 		t.Fatalf("no engine: %v %+v", err, plain[0].Container)
 	}
 }

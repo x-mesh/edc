@@ -136,3 +136,39 @@ func TestReadLinuxProcOriginReadsExePackageAndSession(t *testing.T) {
 		t.Fatalf("missing process = %+v", origin)
 	}
 }
+
+// 이름이 " (deleted)"로 끝나는 파일이 실행 중이면 그 이름이 실행 파일이다. 지워진 파일일 때만 접미사를 뗀다.
+func TestLinuxProcExePathKeepsARealDeletedSuffix(t *testing.T) {
+	dir := t.TempDir()
+	link := func(name, target string) string {
+		t.Helper()
+		directory := filepath.Join(dir, "proc", name)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(directory, "exe")); err != nil {
+			t.Fatal(err)
+		}
+		return directory
+	}
+	for _, name := range []string{"tool", "tool (deleted)", "other"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	named := filepath.Join(dir, "tool (deleted)")
+	if path := linuxProcExePath("/", link("1", named), named); path != named {
+		t.Fatalf("a running file named with the suffix = %q", path)
+	}
+	// 실행 중인 파일이 그 이름의 파일과 다르면 지워진 실행 파일이다.
+	if path := linuxProcExePath("/", link("2", filepath.Join(dir, "other")), named); path != filepath.Join(dir, "tool") {
+		t.Fatalf("a deleted file next to a file named with the suffix = %q", path)
+	}
+	gone := filepath.Join(dir, "gone (deleted)")
+	if path := linuxProcExePath("/", link("3", gone), gone); path != filepath.Join(dir, "gone") {
+		t.Fatalf("a deleted file = %q", path)
+	}
+	if path := linuxProcExePath("/", link("4", filepath.Join(dir, "tool")), filepath.Join(dir, "tool")); path != filepath.Join(dir, "tool") {
+		t.Fatalf("a plain file = %q", path)
+	}
+}

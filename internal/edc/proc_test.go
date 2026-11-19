@@ -129,6 +129,11 @@ func TestProcProcessResultShowsTheOrigin(t *testing.T) {
 	if value := procProcessResult(process, details, started, false).Evidence[0].Value; !strings.HasSuffix(value, T("proc.field.exe", "/root/.local/bin/agent")) {
 		t.Fatalf("no dpkg:\n%s", value)
 	}
+	// 파일 이름의 줄바꿈과 escape는 다른 근거 줄을 만들지 못한다.
+	details.Origin = procOrigin{Exe: "/tmp/x\npackage tmate\x1b[2K"}
+	if value := procProcessResult(process, details, started, false).Evidence[0].Value; !strings.HasSuffix(value, T("proc.field.exe", "/tmp/x·package tmate")) {
+		t.Fatalf("control characters in the exe name:\n%q", value)
+	}
 	// 시작 시각도 출처도 모르면 줄을 더하지 않는다.
 	if value := procProcessResult(topProcess{PID: 1, Command: "init"}, procDetails{}, started, false).Evidence[0].Value; strings.Count(value, "\n") != 1 {
 		t.Fatalf("bare process:\n%s", value)

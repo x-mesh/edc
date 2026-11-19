@@ -28,7 +28,7 @@ func readLinuxProcOrigin(root string, pid int) procOrigin {
 	directory := filepath.Join(root, "proc", strconv.Itoa(pid))
 	if exe, err := os.Readlink(filepath.Join(directory, "exe")); err == nil {
 		origin.Exe = exe
-		path := strings.TrimSuffix(exe, deletedOpenSuffix)
+		path := linuxProcExePath(root, directory, exe)
 		owners, packageDB := auditDpkgOwners(auditSources{root: root}, []string{path})
 		origin.PackageDB, origin.Package = packageDB, owners[path]
 		if origin.Package != "" {
@@ -37,6 +37,23 @@ func readLinuxProcOrigin(root string, pid int) procOrigin {
 	}
 	origin.Session = readLinuxLoginSession(root, directory)
 	return origin
+}
+
+// linuxProcExePath는 dpkg에서 찾을 실행 파일 경로다. 커널은 지워진 실행 파일의 링크에 " (deleted)"를 붙이지만, 파일 이름 자체가
+// 그렇게 끝날 수도 있다. 그 이름의 파일이 실행 중인 파일과 같으면 이름을 그대로 쓴다.
+func linuxProcExePath(root, directory, exe string) string {
+	path, deleted := strings.CutSuffix(exe, deletedOpenSuffix)
+	if !deleted {
+		return exe
+	}
+	running, err := os.Stat(filepath.Join(directory, "exe"))
+	if err != nil {
+		return path
+	}
+	if named, err := os.Stat(filepath.Join(root, exe)); err == nil && os.SameFile(running, named) {
+		return exe
+	}
+	return path
 }
 
 // readLinuxDpkgListTime은 패키지의 파일 목록을 마지막으로 쓴 때다. multiarch 패키지는 <package>:<arch>.list라 둘 다 찾는다.

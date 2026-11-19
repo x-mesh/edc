@@ -188,7 +188,8 @@ func procOriginLines(process topProcess, origin procOrigin) []string {
 		lines = append(lines, T("proc.field.started", auditLoginTime(process.Started)))
 	}
 	if origin.Exe != "" {
-		lines = append(lines, T("proc.field.exe", origin.Exe))
+		// 파일 이름에는 줄바꿈과 escape가 들어갈 수 있다. 그대로 쓰면 다른 근거 줄처럼 보이는 줄을 만들 수 있다.
+		lines = append(lines, T("proc.field.exe", viewSanitize(origin.Exe)))
 	}
 	switch {
 	case origin.Package != "" && !origin.PackageChanged.IsZero():

@@ -1,8 +1,12 @@
 package edc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -239,5 +243,42 @@ func TestAuditPersistChanged(t *testing.T) {
 	collectAuditPersist(auditSources{root: root}, &quiet)
 	if result := auditPersistChanged(quiet); result.Status != StatusPass || !slices.Contains(result.Warnings, T("audit.persist.not_root")) {
 		t.Fatalf("quiet = %+v", result)
+	}
+}
+
+// audit은 edc ctr, edc listen과 같은 순서로 Engine socket을 고른다. rootless Docker나 OrbStack처럼 context로 socket을 알리는
+// host에서도 container를 점검한다.
+func TestReadHostAuditContainersFollowsTheDockerSocketChoice(t *testing.T) {
+	engine := ctrSocketFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == "/version":
+			fmt.Fprint(w, `{"ApiVersion":"1.50","MinAPIVersion":"1.41"}`)
+		case strings.HasSuffix(path, "/containers/json"):
+			fmt.Fprint(w, `[{"Id":"aaa","Names":["/web"],"Image":"nginx:1"}]`)
+		case strings.HasSuffix(path, "/containers/aaa/json"):
+			fmt.Fprint(w, `{"Name":"/web","Config":{"Image":"nginx:1"},"HostConfig":{"Privileged":true},"Mounts":[{"Source":"/var/run/docker.sock","Destination":"/var/run/docker.sock","RW":true}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	t.Setenv("DOCKER_CONTEXT", "")
+	t.Setenv("DOCKER_HOST", "unix://"+engine.socket)
+	containers, err := readHostAuditContainers(context.Background())
+	if err != nil || len(containers) != 1 || containers[0].Name != "web" || !containers[0].Privileged || len(containers[0].Mounts) != 1 {
+		t.Fatalf("containers = %+v, %v", containers, err)
+	}
+	// 고를 수 없는 context는 Engine이 없는 host가 아니다. 이유를 돌려주어 audit이 skip에 적는다.
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "nope")
+	if _, err := readHostAuditContainers(context.Background()); err == nil || errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), `docker context "nope" does not exist`) {
+		t.Fatalf("missing context error = %v", err)
+	}
+	// 고른 socket이 없으면 Engine이 없는 host다.
+	t.Setenv("DOCKER_CONTEXT", "")
+	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
+	if _, err := readHostAuditContainers(context.Background()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no engine error = %v", err)
 	}
 }

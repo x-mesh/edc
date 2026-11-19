@@ -431,7 +431,7 @@ command:
       - "상태, health, image, process, 한도, 로그를 조회합니다."
       - "Docker Engine API를 사용하며 Docker CLI를 실행하지 않습니다."
       - "socket을 직접 고르려면 절대 경로의 Unix socket URL을 DOCKER_HOST에 지정합니다."
-      - "DOCKER_CONTEXT=default는 DOCKER_HOST를 무시합니다. 다른 context는 지원하지 않습니다."
+      - "edc는 DOCKER_CONTEXT와 현재 docker context를 따릅니다. DOCKER_CONTEXT=default는 DOCKER_HOST를 무시합니다."
       - "API는 fd, 실제 listener, log 크기, 누적 OOM kill 횟수를 제공하지 않습니다."
       - "API 정보가 없으면 이유를 표시합니다."
     option:

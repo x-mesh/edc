@@ -509,6 +509,10 @@ const (
 func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buffers *grepBuffers, printer *grepPrinter, hints *grepHints) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
+		// 사용자가 준 경로는 대상을 모을 때 이미 확인했다. 여기서 없다면 모은 뒤에 사라진 파일이다. /proc의 끝난 thread가 그렇다.
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
 		return false, err
 	}
 	defer file.Close()
@@ -539,7 +543,12 @@ func grepSearchFile(path string, options grepOptions, compiled *grepMatcher, buf
 	}
 	size := info.Size()
 	sample := buffers.sampleOf(int(min(size, int64(grepSampleSize))))
-	if _, err := io.ReadFull(io.NewSectionReader(file, 0, int64(len(sample))), sample); err != nil {
+	read, err := io.ReadFull(io.NewSectionReader(file, 0, int64(len(sample))), sample)
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		// sysfs 파일은 내용 길이와 상관없이 크기를 4096으로 알린다. 표본보다 일찍 끝나면 읽은 데까지가 파일 전체다.
+		sample, size, err = sample[:read], int64(read), nil
+	}
+	if err != nil {
 		return false, err
 	}
 	if bytes.IndexByte(sample[:min(len(sample), grepBinaryProbe)], 0) >= 0 {

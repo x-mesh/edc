@@ -750,3 +750,38 @@ func TestGrepGzipMatchesFileSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestGrepSearchFileSkipsVanishedFile(t *testing.T) {
+	options, _, err := parseGrepOptions([]string{"--code", "needle"}, io.Discard, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	printer := &grepPrinter{out: bufio.NewWriter(&out), showPath: true}
+	found, err := grepSearchFile(filepath.Join(t.TempDir(), "gone"), options, matcher, &grepBuffers{}, printer, &grepHints{options: options})
+	if found || err != nil {
+		t.Fatalf("found %v, err %v", found, err)
+	}
+}
+
+// sysfs 파일은 크기를 4096으로 알리지만 내용은 그보다 짧다.
+func TestGrepSearchFileReadsSysfsFile(t *testing.T) {
+	const path = "/sys/devices/system/cpu/online"
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Skip(err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() <= int64(len(content)) {
+		t.Skipf("%s의 크기가 내용보다 크지 않다", path)
+	}
+	for _, args := range [][]string{{"--code"}, {"--no-index"}} {
+		code, stdout, stderr := grepCommand(t, "", append(args, strings.TrimSpace(string(content)), path)...)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, strings.TrimSpace(string(content))) {
+			t.Fatalf("%v: code %d stdout %q stderr %q", args, code, stdout, stderr)
+		}
+	}
+}

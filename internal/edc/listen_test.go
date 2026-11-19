@@ -231,6 +231,8 @@ func TestListenMaskArgsProgramURLAndChainedSecrets(t *testing.T) {
 		{[]string{"https://user:hunter2@host/run", "--port", "80"}, []string{"https://user:***@host/run", "--port", "80"}},
 		{[]string{"app", "--password", "--token", "abc123"}, []string{"app", "--password", "***", "***"}},
 		{[]string{"app", "--password", "--token", "--api-key", "k", "--port", "80"}, []string{"app", "--password", "***", "***", "***", "--port", "80"}},
+		// redis container는 암호를 이 옵션으로 받는다. listen --full이 container의 명령도 보여 준다.
+		{[]string{"redis-server", "*:6379", "--requirepass", "hunter2", "--masterauth=m", "--passive", "on"}, []string{"redis-server", "*:6379", "--requirepass", "***", "--masterauth=***", "--passive", "on"}},
 	}
 	for _, tt := range tests {
 		if got := listenMaskArgs(tt.args); !slices.Equal(got, tt.want) {

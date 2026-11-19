@@ -5,11 +5,14 @@ package edc
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
@@ -67,11 +70,20 @@ type ctrEngineVersion struct {
 }
 
 type ctrAPIContainer struct {
-	ID     string   `json:"Id"`
-	Names  []string `json:"Names"`
-	Image  string   `json:"Image"`
-	State  string   `json:"State"`
-	Status string   `json:"Status"`
+	ID     string       `json:"Id"`
+	Names  []string     `json:"Names"`
+	Image  string       `json:"Image"`
+	State  string       `json:"State"`
+	Status string       `json:"Status"`
+	Ports  []ctrAPIPort `json:"Ports"`
+}
+
+// ctrAPIPort는 container 목록의 포트 하나다. PublicPort가 0이면 host에 publish하지 않은 포트다.
+type ctrAPIPort struct {
+	IP          string `json:"IP"`
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort"`
+	Type        string `json:"Type"`
 }
 
 type ctrAPIInspect struct {
@@ -219,29 +231,86 @@ func hostCtrSources() (ctrSources, bool) {
 	}, true
 }
 
+// ctrSocketEndpoint는 docker CLI와 같은 순서로 Engine socket을 고른다. DOCKER_CONTEXT, DOCKER_HOST, docker context use로 고른
+// context, 기본 socket 순이다. OrbStack과 Colima는 자기 socket을 context로만 알린다.
 func ctrSocketEndpoint() (string, error) {
-	if contextName, ok := os.LookupEnv("DOCKER_CONTEXT"); ok && contextName != "" && contextName != "default" {
-		return "", fmt.Errorf("DOCKER_CONTEXT=%q is unsupported; use DOCKER_HOST with a Unix socket", contextName)
-	}
-	if os.Getenv("DOCKER_CONTEXT") != "default" {
-		if host := os.Getenv("DOCKER_HOST"); host != "" {
-			u, err := url.Parse(host)
-			if err != nil || u.Scheme != "unix" || !strings.HasPrefix(u.Path, "/") || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-				return "", fmt.Errorf("DOCKER_HOST must be an absolute Unix socket address")
-			}
-			return filepath.Clean(u.Path), nil
-		}
-	}
-	if os.Getenv("DOCKER_CONTEXT") == "default" {
+	switch name := os.Getenv("DOCKER_CONTEXT"); name {
+	case "default":
 		return ctrDefaultSocket(), nil
+	case "":
+	default:
+		return ctrContextSocket(name)
 	}
-	if runtime.GOOS == "darwin" && os.Getenv("HOME") != "" {
-		path := filepath.Join(os.Getenv("HOME"), ".docker", "run", "docker.sock")
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
+	if host := os.Getenv("DOCKER_HOST"); host != "" {
+		return ctrUnixSocket(host, "DOCKER_HOST")
+	}
+	if name := ctrCurrentContext(); name != "" && name != "default" {
+		return ctrContextSocket(name)
 	}
 	return ctrDefaultSocket(), nil
+}
+
+// ctrUnixSocket은 Engine 주소에서 Unix socket 경로를 꺼낸다. edc는 TCP와 SSH로 Engine에 붙지 않는다.
+func ctrUnixSocket(host, source string) (string, error) {
+	u, err := url.Parse(host)
+	if err != nil || u.Scheme != "unix" || !strings.HasPrefix(u.Path, "/") || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("%s must be an absolute Unix socket address", source)
+	}
+	return filepath.Clean(u.Path), nil
+}
+
+// ctrDockerConfigDir는 docker CLI의 설정 디렉터리다.
+func ctrDockerConfigDir() string {
+	if dir := os.Getenv("DOCKER_CONFIG"); dir != "" {
+		return dir
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".docker")
+	}
+	return ""
+}
+
+// ctrCurrentContext는 docker context use가 config.json에 남긴 context 이름이다. docker CLI는 설정 파일을 읽지 못하면 경고만 하고
+// 기본값으로 이어 가므로, 읽지 못하면 빈 문자열이다.
+func ctrCurrentContext() string {
+	dir := ctrDockerConfigDir()
+	if dir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return ""
+	}
+	var config struct {
+		CurrentContext string `json:"currentContext"`
+	}
+	if json.Unmarshal(data, &config) != nil {
+		return ""
+	}
+	return config.CurrentContext
+}
+
+// ctrContextSocket은 docker context의 Engine socket이다. docker CLI는 context를 contexts/meta/<이름의 sha256>/meta.json에 둔다.
+func ctrContextSocket(name string) (string, error) {
+	sum := sha256.Sum256([]byte(name))
+	data, err := os.ReadFile(filepath.Join(ctrDockerConfigDir(), "contexts", "meta", hex.EncodeToString(sum[:]), "meta.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("docker context %q does not exist", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("docker context %q: %w", name, err)
+	}
+	var meta struct {
+		Endpoints struct {
+			Docker struct {
+				Host string `json:"Host"`
+			} `json:"docker"`
+		} `json:"Endpoints"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", fmt.Errorf("docker context %q: %w", name, err)
+	}
+	return ctrUnixSocket(meta.Endpoints.Docker.Host, fmt.Sprintf("the endpoint of docker context %q", name))
 }
 
 func ctrDefaultSocket() string {

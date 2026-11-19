@@ -385,7 +385,7 @@ edc ctr --json - web
 edc ctr --collector-image edc-collector:amd64 web
 ```
 
-다른 socket을 쓰려면 `DOCKER_HOST`에 절대 경로의 Unix socket URL을 지정합니다. `DOCKER_CONTEXT=default`는 `DOCKER_HOST`를 무시합니다. edc는 Docker context나 credential 파일을 읽지 않습니다. default가 아닌 context와 TCP·SSH·TLS endpoint는 오류를 냅니다. Linux는 `/var/run/docker.sock`을 씁니다. macOS는 `~/.docker/run/docker.sock`이 있으면 그 경로를 쓰고, 없으면 `/var/run/docker.sock`을 씁니다.
+다른 socket을 쓰려면 `DOCKER_HOST`에 절대 경로의 Unix socket URL을 지정합니다. edc는 docker CLI와 같은 순서로 socket을 고릅니다. `DOCKER_CONTEXT`, `DOCKER_HOST`, `docker context use`로 고른 현재 context, 기본 socket 순입니다. `DOCKER_CONTEXT=default`는 `DOCKER_HOST`를 무시합니다. context의 endpoint는 `~/.docker/contexts`나 `$DOCKER_CONFIG/contexts`에서 읽습니다. OrbStack은 자기 socket을 이 방법으로만 알립니다. TCP·SSH·TLS endpoint를 쓰는 context나 `DOCKER_HOST`는 오류를 냅니다. credential 파일은 읽지 않습니다. 기본 socket은 Linux에서는 `/var/run/docker.sock`이고, macOS에서는 `~/.docker/run/docker.sock`이 있으면 그 경로, 없으면 `/var/run/docker.sock`입니다.
 
 기본 상세 조회는 읽기 전용 GET 요청만 보냅니다. Docker API 1.41부터 1.51까지 협상합니다. 개별 요청은 5초로 제한하고, 기본 전체 제한은 15초입니다.
 
@@ -550,4 +550,6 @@ edc listen --full
 edc listen --watch -i 0.5 --duration 10s
 ```
 
-`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.
+`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token`, redis의 `--requirepass` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.
+
+컨테이너가 publish한 포트이면 행에 `→` 뒤로 그 컨테이너도 표시합니다(`OrbStack Helper (9378) → pg (postgres:16)`). OrbStack과 `docker-proxy`는 컨테이너 대신 host에서 publish한 포트를 열기 때문에, 소켓의 process는 실제 서버가 아닙니다. edc는 Docker Engine에 publish한 포트를 묻고, 프로토콜, 포트, host 주소가 같은 소켓을 찾습니다. `--full`은 컨테이너 안의 포트와 컨테이너의 첫 process도 표시합니다. Engine socket은 `edc ctr`과 같은 방법으로 찾습니다. Engine에 닿지 못하면 행에는 process만 나오고, `--json`의 `container_error`에 이유가 남습니다. OrbStack이 자기 자신을 위해 연 포트처럼 어느 컨테이너도 publish하지 않은 포트에는 process만 나옵니다.

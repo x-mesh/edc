@@ -431,7 +431,7 @@ command:
       - "状態、health、image、process、上限、log を確認します。"
       - "Docker Engine API を使います。Docker CLI は実行しません。"
       - "socket を選ぶには絶対パスの Unix socket URL を DOCKER_HOST に設定します。"
-      - "DOCKER_CONTEXT=default は DOCKER_HOST を無視します。他の context は未対応です。"
+      - "edc は DOCKER_CONTEXT と現在の docker context に従います。DOCKER_CONTEXT=default は DOCKER_HOST を無視します。"
       - "API は fd、実際の listener、log サイズ、累積 OOM kill 数を返しません。"
       - "API の情報がない場合は理由を表示します。"
     option:

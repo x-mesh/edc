@@ -4,7 +4,9 @@ package edc
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,14 +70,15 @@ func TestCtrSocketNegotiatesAndDecodesTypedInspect(t *testing.T) {
 }
 
 func TestCtrSocketEndpointRules(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
 	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:2375")
 	t.Setenv("DOCKER_CONTEXT", "default")
 	if _, err := ctrSocketEndpoint(); err != nil {
 		t.Fatalf("default context must ignore DOCKER_HOST: %v", err)
 	}
 	t.Setenv("DOCKER_CONTEXT", "work")
-	if _, err := ctrSocketEndpoint(); err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("nondefault context error = %v", err)
+	if _, err := ctrSocketEndpoint(); err == nil || !strings.Contains(err.Error(), `docker context "work" does not exist`) {
+		t.Fatalf("missing context error = %v", err)
 	}
 	t.Setenv("DOCKER_CONTEXT", "")
 	t.Setenv("DOCKER_HOST", "unix:///tmp/daemon.sock")
@@ -87,6 +90,55 @@ func TestCtrSocketEndpointRules(t *testing.T) {
 		if _, err := ctrSocketEndpoint(); err == nil {
 			t.Errorf("accepted %q", host)
 		}
+	}
+}
+
+// OrbStack과 Colima는 Engine socket을 docker context로만 알린다. docker CLI처럼 DOCKER_CONTEXT, DOCKER_HOST, currentContext 순으로 고른다.
+func TestCtrSocketEndpointReadsDockerContexts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+	writeContext := func(name, host string) {
+		t.Helper()
+		sum := sha256.Sum256([]byte(name))
+		meta := filepath.Join(dir, "contexts", "meta", hex.EncodeToString(sum[:]))
+		if err := os.MkdirAll(meta, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf(`{"Name":%q,"Metadata":{"Description":"test"},"Endpoints":{"docker":{"Host":%q,"SkipTLSVerify":false}}}`, name, host)
+		if err := os.WriteFile(filepath.Join(meta, "meta.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeContext("orbstack", "unix:///Users/me/.orbstack/run/docker.sock")
+	writeContext("remote", "ssh://me@host")
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"auths":{},"currentContext":"orbstack"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ctrSocketEndpoint(); err != nil || got != "/Users/me/.orbstack/run/docker.sock" {
+		t.Fatalf("current context = %q, %v", got, err)
+	}
+	t.Setenv("DOCKER_HOST", "unix:///tmp/host.sock")
+	if got, err := ctrSocketEndpoint(); err != nil || got != "/tmp/host.sock" {
+		t.Fatalf("DOCKER_HOST must win over the current context: %q, %v", got, err)
+	}
+	t.Setenv("DOCKER_CONTEXT", "orbstack")
+	if got, err := ctrSocketEndpoint(); err != nil || got != "/Users/me/.orbstack/run/docker.sock" {
+		t.Fatalf("DOCKER_CONTEXT must win over DOCKER_HOST: %q, %v", got, err)
+	}
+	t.Setenv("DOCKER_CONTEXT", "remote")
+	if _, err := ctrSocketEndpoint(); err == nil || !strings.Contains(err.Error(), `docker context "remote" must be an absolute Unix socket`) {
+		t.Fatalf("remote context error = %v", err)
+	}
+	// docker CLI는 깨진 config.json에 경고만 하고 기본 socket으로 이어 간다.
+	t.Setenv("DOCKER_CONTEXT", "")
+	t.Setenv("DOCKER_HOST", "")
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"currentContext":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ctrSocketEndpoint(); err != nil || got != ctrDefaultSocket() {
+		t.Fatalf("broken config = %q, %v", got, err)
 	}
 }
 

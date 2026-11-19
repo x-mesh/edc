@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type testBackdoorProc struct {
@@ -337,5 +338,64 @@ func TestAuditPkgModified(t *testing.T) {
 	collectAuditPkgVerify(auditSources{root: t.TempDir()}, &facts)
 	if result := auditPkgModified(facts); result.Status != StatusSkip || result.Summary != T("audit.skip.no_dpkg") {
 		t.Fatalf("no dpkg = %+v", result)
+	}
+}
+
+// 2026-11-19에 본 호스트의 모양이다. 로그아웃한 세션에 tmate가 연결 없이 남았다. 사용자 세션의 ngrok은 판정하고,
+// 서비스로 도는 cloudflared와 원격 공유 도구가 아닌 tmux는 판정하지 않는다.
+func TestAuditRemoteShareFindsTerminalSharingAndSessionTunnels(t *testing.T) {
+	root := t.TempDir()
+	writeBackdoorProcs(t, root,
+		testBackdoorProc{pid: 30905, comm: "tmate", exe: "/usr/bin/tmate", cmdline: "tmate\x00", cgroup: "0::/user.slice/user-0.slice/session-22190.scope"},
+		testBackdoorProc{pid: 30906, comm: "bash", exe: "/usr/bin/bash", cmdline: "-bash\x00", cgroup: "0::/user.slice/user-0.slice/session-22190.scope"},
+		testBackdoorProc{pid: 400, comm: "ngrok", exe: "/opt/ngrok/ngrok", cmdline: "ngrok\x00http\x008080\x00", cgroup: "0::/user.slice/user-1000.slice/session-5.scope", fds: map[int]uint64{7: 9000, 8: 9000}},
+		testBackdoorProc{pid: 500, comm: "cloudflared", exe: "/usr/bin/cloudflared", cmdline: "/usr/bin/cloudflared\x00tunnel\x00run\x00", cgroup: "0::/system.slice/cloudflared.service", fds: map[int]uint64{3: 9001}},
+		testBackdoorProc{pid: 600, comm: "tmux: server", exe: "/usr/bin/tmux", cmdline: "tmux\x00", cgroup: "0::/user.slice/user-0.slice/session-22190.scope"},
+	)
+	writeAuditFile(t, root, "/proc/30905/sessionid", "22190", 0o644)
+	// 로그인 세션 밖에서 뜬 process의 session ID다.
+	writeAuditFile(t, root, "/proc/400/sessionid", "4294967295", 0o644)
+	writeAuditFile(t, root, "/run/systemd/sessions/22190", "# This is private data. Do not parse.\nUID=0\nUSER=root\nSTATE=closing\nREMOTE=1\nREMOTE_HOST=192.0.2.7\nSERVICE=sshd\nLEADER=9409\nREALTIME=1771936023246410\n", 0o644)
+	writeAuditFile(t, root, "/var/lib/dpkg/info/tmate.list", "/usr/bin/tmate\n", 0o644)
+	sources := auditSources{root: root, tcpConnected: func() ([]auditTCPSocket, error) {
+		return []auditTCPSocket{testTCP("10.0.0.5:50000", "3.20.1.1:443", 9000), testTCP("10.0.0.5:50001", "104.16.0.1:7844", 9001)}, nil
+	}}
+	facts := auditFacts{Now: testLoginAt(120)}
+	collectAuditBackdoor(sources, &facts)
+	shares := facts.Backdoor.Shares
+	if len(shares) != 2 || shares[0].Process.PID != 30905 || shares[1].Process.PID != 400 || shares[1].Session != nil {
+		t.Fatalf("shares = %+v", shares)
+	}
+	result := auditRemoteShareResult(facts)
+	if result.Status != StatusWarn || result.Summary != T("audit.proc.share_bad", 2) || result.Next != "edc proc 30905" {
+		t.Fatalf("result = %+v", result)
+	}
+	value := result.Evidence[0].Value
+	session := T("audit.proc.share_session", "22190", "root", "192.0.2.7", auditLoginTime(time.UnixMicro(1771936023246410)), "closing")
+	for _, want := range []string{
+		"30905 tmate  /usr/bin/tmate", session, T("audit.proc.share_session_closed"), T("audit.proc.share_no_peer"),
+		T("audit.proc.share_note_terminal"), T("audit.proc.lib_package", "tmate"),
+		"400 ngrok  /opt/ngrok/ngrok", T("audit.proc.share_peers", "3.20.1.1:443"), T("audit.proc.share_note_tunnel"),
+	} {
+		if !strings.Contains(value, want) {
+			t.Fatalf("evidence has no %q:\n%s", want, value)
+		}
+	}
+	// 같은 연결을 두 fd가 쥐어도 상대는 한 번만 적는다.
+	if strings.Count(value, "3.20.1.1:443") != 1 || strings.Contains(value, "cloudflared") || strings.Contains(value, "tmux") {
+		t.Fatalf("evidence = %q", value)
+	}
+
+	// 연결된 소켓을 읽지 못하면 연결이 없다고 적지 않는다.
+	sources.tcpConnected = func() ([]auditTCPSocket, error) { return nil, fs.ErrPermission }
+	facts = auditFacts{Now: testLoginAt(120)}
+	collectAuditBackdoor(sources, &facts)
+	if value := auditRemoteShareResult(facts).Evidence[0].Value; strings.Contains(value, T("audit.proc.share_no_peer")) {
+		t.Fatalf("no tcp evidence = %q", value)
+	}
+
+	_, facts = testBackdoorHost(t)
+	if result := auditRemoteShareResult(facts); result.Status != StatusPass || result.Summary != T("audit.proc.share_ok", facts.Backdoor.Checked) {
+		t.Fatalf("clean host = %+v", result)
 	}
 }

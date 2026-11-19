@@ -369,7 +369,7 @@ var auditCheckIDs = []string{
 	"ssh.root_login", "ssh.password_auth", "ssh.forwarding", "ssh.key_files", "ssh.key_changed", "ssh.extra_sshd",
 	"user.uid0", "user.empty_pass", "user.sudo_nopass", "user.root_groups",
 	"login.mismatch", "login.local_source", "history.tampered", "history.disabled",
-	"proc.unusual_exe", "proc.preload", "proc.socket_shell", "proc.raw_socket",
+	"proc.unusual_exe", "proc.preload", "proc.socket_shell", "proc.raw_socket", "proc.remote_share",
 	"persist.changed", "file.sensitive", "file.path_writable", "file.pkg_modified", "kernel.sysctl", "kernel.taint",
 	"docker.escape", "ctr.privileged", "ctr.docker_sock", "ctr.root_user", "ctr.host_ns",
 }
@@ -1258,6 +1258,7 @@ func evaluateAudit(facts auditFacts) []Result {
 		auditProcessPreload(facts),
 		auditSocketShellResult(facts),
 		auditRawSocketResult(facts),
+		auditRemoteShareResult(facts),
 		auditPersistChanged(facts),
 		auditSensitiveModes(facts),
 		auditPath(facts),

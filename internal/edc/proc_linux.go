@@ -80,46 +80,6 @@ func readLinuxDpkgListTime(root, name string) time.Time {
 	return latest
 }
 
-// readLinuxLoginSession은 process의 audit session ID로 logind 세션 기록을 읽는다. 로그인 세션 밖의 process는 ID가 4294967295이고
-// 그 기록은 없다. 같은 디렉터리의 <id>.ref는 FIFO라서 열면 쓰는 쪽이 올 때까지 멈춘다. 그래서 숫자 ID의 파일 하나를, 보통 파일일
-// 때만 연다.
-func readLinuxLoginSession(root, directory string) *procLoginSession {
-	data, err := os.ReadFile(filepath.Join(directory, "sessionid"))
-	id := strings.TrimSpace(string(data))
-	if err != nil {
-		return nil
-	}
-	if _, err := strconv.ParseUint(id, 10, 32); err != nil {
-		return nil
-	}
-	path := filepath.Join(root, "run/systemd/sessions", id)
-	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
-		return nil
-	}
-	if data, err = os.ReadFile(path); err != nil {
-		return nil
-	}
-	session := procLoginSession{ID: id}
-	for _, line := range strings.Split(string(data), "\n") {
-		key, value, _ := strings.Cut(line, "=")
-		switch key {
-		case "USER":
-			session.User = value
-		case "REMOTE_HOST":
-			session.RemoteHost = value
-		case "SERVICE":
-			session.Service = value
-		case "STATE":
-			session.State = value
-		case "REALTIME":
-			if micros, err := strconv.ParseInt(value, 10, 64); err == nil {
-				session.Start = time.UnixMicro(micros)
-			}
-		}
-	}
-	return &session
-}
-
 // readLinuxProcDetails는 /proc/<pid>의 cmdline, status, fd 링크, 그 process의 network namespace에서 본 TCP 표를 읽는다.
 // 다른 계정의 fd는 root가 아니면 읽을 수 없다.
 func readLinuxProcDetails(procRoot string, pid int) procDetails {

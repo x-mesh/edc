@@ -25,14 +25,26 @@ type listenContainer struct {
 	// Port와 Proto는 container 안의 포트다.
 	Port  int    `json:"port"`
 	Proto string `json:"proto"`
-	// Command는 container의 첫 process다. --full과 --json에서만 읽는다.
+	// Command는 container의 첫 process다. 소켓을 대신 연 process보다 이 명령이 실제 서버를 알려 준다.
 	Command string `json:"command,omitempty"`
+}
+
+// listenContainerCommandShown은 표의 PROCESS 칸에 적는 container 명령의 글자 수다. -v는 그 뒤에 열이 더 있어, 긴 명령 하나가 모든
+// 행을 넓히지 않게 자른다. --full의 아랫줄과 JSON에는 명령 전체가 있다.
+const listenContainerCommandShown = 40
+
+// listenContainerLabel은 PROCESS 칸의 → 뒤에 적는 container다. 명령을 모르면 이름만 적는다.
+func listenContainerLabel(container listenContainer) string {
+	if container.Command == "" {
+		return container.Name
+	}
+	return container.Name + ": " + svcTruncate(container.Command, listenContainerCommandShown)
 }
 
 // attachListenContainers는 Docker Engine이 있으면 publish한 포트의 container를 소켓에 붙인다. Engine socket이 없는 호스트에서는
 // 아무것도 하지 않는다. Engine에 닿지 못하면 그 오류를 돌려주고 소켓은 그대로 둔다. container 명령을 읽지 못하면 붙인 container는
 // 두고 첫 오류를 돌려준다.
-func attachListenContainers(ctx context.Context, sockets []listenSocket, withCommand bool) error {
+func attachListenContainers(ctx context.Context, sockets []listenSocket) error {
 	path, err := ctrSocketEndpoint()
 	if err != nil {
 		return err
@@ -52,9 +64,6 @@ func attachListenContainers(ctx context.Context, sockets []listenSocket, withCom
 		return err
 	}
 	matchListenContainers(sockets, containers)
-	if !withCommand {
-		return nil
-	}
 	commands := map[string]string{}
 	var first error
 	for index := range sockets {

@@ -190,7 +190,7 @@ func formatListenTable(sockets []listenSocket, detail bool, note func(string) st
 			process += " (" + socket.PID + ")"
 		}
 		if container := socket.Container; container != nil {
-			process += " → " + topPrintableText(container.Name+" ("+container.Image+")")
+			process += " → " + topPrintableText(listenContainerLabel(*container))
 		}
 		port := strconv.Itoa(socket.Port)
 		if socket.Port == 0 {
@@ -232,7 +232,7 @@ func formatListenTable(sockets []listenSocket, detail bool, note func(string) st
 			builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+commands[index]) + "\n")
 		}
 		if container := sockets[index].Container; note != nil && container != nil {
-			line := T("observe.listen.container_port", container.Port, container.Proto)
+			line := T("observe.listen.container_port", container.Port, container.Proto, container.Image)
 			if container.Command != "" {
 				line += ": " + container.Command
 			}

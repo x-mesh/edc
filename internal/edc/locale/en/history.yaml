@@ -1,4 +1,28 @@
 history:
+  evidence:
+    title: "Saved evidence · event times"
+    time_only: "Events overlap in time; causality is not established."
+    empty: "No saved evidence is available in this range. This does not mean no incident occurred."
+    host_unknown: "host not recorded"
+    overlap: "execution overlaps this range; ended %s"
+    window: "Selected window: %s → %s (end excluded)"
+    sample_unavailable: "This sample has no recorded run or timestamp."
+    notice:
+      logs_unavailable: "Command-log archive could not be read"
+      snapshots_unavailable: "Saved snapshot data is unavailable"
+      run_host_unknown: "Run host identity is unknown; snapshot correlation is disabled"
+      results_limit: "Candidate-result limit reached; evidence may be incomplete"
+      payload_limit: "An oversized saved result was skipped (byte limit)"
+      total_bytes_limit: "Saved-data byte budget reached; remaining results were not read"
+      entries_limit: "Timeline entry limit reached; additional evidence was omitted"
+      text_limit: "Some saved text was shortened (character limit)"
+      malformed: "Malformed saved data was skipped"
+      source_unavailable: "This source was not collected successfully in the saved snapshot"
+      stored_warning: "The saved source reported a warning"
+      legacy_events: "Legacy events lack structured timestamps; local-time text is not interpreted"
+      snapshot_truncated: "The saved event timeline had already omitted entries"
+      legacy_changes: "Saved changes lack structured timestamps"
+      logs_host_unknown: "Command-log records do not store a host; these entries are unscoped archive evidence"
   help_sections:
     storage:
       title: "Database and files"

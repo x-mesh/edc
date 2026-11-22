@@ -1242,6 +1242,7 @@ func (model topModel) detailLines() []string {
 	if !model.processFilter.active() {
 		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid, model.limits.color))
 	}
+	lines = append(lines, model.processDeltaLines(row)...)
 	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid, model.limits.color) {
 		if index == 0 {
 			line = "  " + line
@@ -3156,4 +3157,25 @@ func (model topModel) networkPeakLines(last topDashboardRow) []string {
 		"softnet drop " + peak("softnet_dropped") + " · UDP buffer " + peak("udp_rcvbuf_errors"),
 		"TCP mem pressure " + peak("tcp_memory_pressures") + " · NIC rx missed " + peak("nic_rx_missed") + " · rx fifo " + peak("nic_rx_fifo"),
 	}
+}
+
+func (model topModel) processDeltaLines(row topDashboardRow) []string {
+	if !row.processesValid {
+		return []string{"  RSS change unavailable · process collection unavailable"}
+	}
+	if len(row.processes) == 0 {
+		return []string{"  RSS change unavailable · no matching process observations"}
+	}
+	lines := make([]string, 0, min(3, len(row.processes)))
+	for _, process := range row.processes[:min(3, len(row.processes))] {
+		delta := topObservedProcessDelta(model.rows, model.selected, process, model.processFilter.String())
+		line := fmt.Sprintf("  RSS pid %d: %s", process.PID, formatProcessRSS(process.RSS))
+		if delta.Unavailable != "" {
+			line += " · change unavailable: " + delta.Unavailable
+		} else {
+			line += fmt.Sprintf(" · %s over %s · %d observed samples", delta.changeText(), delta.windowText(), delta.Samples)
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }

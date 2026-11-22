@@ -250,3 +250,39 @@ func TestRunSvcWithoutAUnitListsTheServices(t *testing.T) {
 		t.Fatalf("skip report = %s", data)
 	}
 }
+
+func TestObserveOutputServiceTableKeepsIdentityAndNumbers(t *testing.T) {
+	restarts, uptime, memory := uint64(17), int64(120), uint64(3<<30)
+	items := []svcListItem{{Unit: "com.example." + strings.Repeat("deployment-", 20) + ".service", ActiveState: "failed", SubState: "failed", LoadState: "loaded", MainPID: 4194304, Restarts: &restarts, UptimeS: &uptime, MemoryBytes: &memory}, {Unit: "second.service", ActiveState: "active", LoadState: "loaded", MainPID: 98}}
+	before, _ := json.Marshal(items)
+	for _, width := range []int{32, 48, 80, 140} {
+		for _, color := range []bool{false, true} {
+			text := formatObserveSvcTable(items, infoStyle{textStyle{width: width, color: color}}, false)
+			compact := observeOutputCompact(text)
+			for _, want := range append([]string{items[0].Unit, "second.service"}, svcListCells(items[0])[1:]...) {
+				if !strings.Contains(compact, observeOutputCompact(want)) {
+					t.Fatalf("width %d lost %q:\n%s", width, want, text)
+				}
+			}
+			if strings.Index(compact, observeOutputCompact(items[0].Unit)) > strings.Index(compact, "second.service") {
+				t.Fatal("service order changed")
+			}
+			assertObserveOutputWidth(t, text, width)
+		}
+	}
+	after, _ := json.Marshal(items)
+	if string(before) != string(after) {
+		t.Fatal("table mutated items")
+	}
+	short := []svcListItem{{Unit: "web.service", ActiveState: "active", LoadState: "loaded", MainPID: 42}}
+	if got, want := formatObserveSvcTable(short, infoStyle{textStyle{width: 140}}, false), formatSvcListTable(short, textStyle{}); got != want {
+		t.Fatalf("wide table changed:\n%s\n%s", got, want)
+	}
+	if got, want := formatObserveSvcTable(items, infoStyle{}, false), formatSvcListTable(items, textStyle{}); got != want {
+		t.Fatal("legacy table changed")
+	}
+	redacted := formatObserveSvcTable([]svcListItem{{Unit: "service-192.0.2.123.service", ActiveState: "active", LoadState: "loaded"}}, infoStyle{textStyle{width: 32}}, true)
+	if strings.Contains(observeOutputCompact(redacted), "192.0.2.123") {
+		t.Fatal("service identity leaked raw IP")
+	}
+}

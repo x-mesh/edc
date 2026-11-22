@@ -71,17 +71,39 @@ func runChanges(args []string, version string) int {
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, nil, results, options.redact))
 	}
-	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	terminal := isTerminal(os.Stdout)
+	style := observeTerminalStyle(os.Stdout)
+	color := terminal && os.Getenv("NO_COLOR") == ""
 	var output io.Writer = os.Stdout
 	var buffer strings.Builder
 	if options.redact {
 		output = &buffer
 	}
-	for _, result := range results {
-		fmt.Fprint(output, formatResultLine(result, color))
-		printResultDetail(output, result, false, color)
+	events := changesEventsOf(results)
+	renderResults := results
+	if terminal && options.redact {
+		var err error
+		renderResults, err = observeOutputRedactedResults(results)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
-	if table := formatChangesTable(changesEventsOf(results), options.verbose, color); table != "" {
+	for _, result := range renderResults {
+		if terminal {
+			printObserveResult(output, result, false, style)
+		} else {
+			fmt.Fprint(output, formatResultLine(result, color))
+			printResultDetail(output, result, false, color)
+		}
+	}
+	table := ""
+	if terminal {
+		table = formatObserveChangesTable(events, options.verbose, style, options.redact)
+	} else {
+		table = formatChangesTable(events, options.verbose, color)
+	}
+	if table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
 	printCollectionSummary(output, results, color)
@@ -667,7 +689,10 @@ func collectServiceChanges(ctx context.Context, sources changesSources, cutoff t
 // formatChangesTable은 시각, 종류, 이름, 내용을 최근 것부터 그린다. all이 아니면 changesTableLimit 줄에서
 // 자르고 남은 수를 알린다. 마지막 열은 채우지 않아 줄이 필요 이상 넓어지지 않는다.
 func formatChangesTable(events []changeEvent, all, color bool) string {
-	style := newTextStyle(color)
+	return formatChangesTableWithStyle(events, all, newTextStyle(color))
+}
+
+func formatChangesTableWithStyle(events []changeEvent, all bool, style textStyle) string {
 	if len(events) == 0 {
 		return ""
 	}

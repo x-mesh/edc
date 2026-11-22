@@ -136,6 +136,8 @@ The demo opens the viewer, changes the filter, shows the details, and then compa
 
 `--auto-record` (or `defaults.top.auto_record = true`) lets the dashboard start a recording on its own. Three conditions start it: load1 above two times the core count, swap out, and memory pressure `warn` or `critical`. The dashboard keeps the last 5 minutes of samples in memory. The new run starts with these samples, so the run shows how the problem started. The run stops when all conditions stay clear for 1 minute. The run payload keeps the reason in `trigger`. `edc history list` shows the reason in the `TRIGGER` column, and `edc history list --auto` lists only these runs. The option is off by default. It does nothing while `w` or `-w` records.
 
+When an automatic recording closes, the dashboard shows a notice. After you leave the dashboard, the terminal shows a summary of the latest automatic recording. [Automatic recording completion](top-recording.md) describes the summary.
+
 ```bash
 edc top -w
 edc history list
@@ -159,6 +161,8 @@ edc history prune --older-than 90d --command snapshot --yes --vacuum
 ```
 
 `edc history top` and `edc history process` open interactive browsers in a terminal. Use ↑↓ to select an observation, Enter for full details, Home to follow the newest observation, and `p` to pause refresh. The host table adds disk, network, swap and other supported metrics as width allows, with a selected observation panel on wide screens. Redirected top output remains a table with disk/network/swap columns; `--json` keeps JSONL output. The process browser shows PID, CPU, RSS and command, adding MEM, disk I/O, threads and FDs when space and recorded data allow. Its details include the process start time and available limits. Existing `--process`, `--run`, time range and metric filters apply to the browser too.
+
+To see the saved events, changes, and command logs around one observation, open `edc history`, choose a top run, press `t`, select a sample, and press `e`. You can also run `edc history overview --run <id> --from <time> --to <time>`. [Saved evidence around an observation](history-evidence.md) describes the sources and the limits.
 
 Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. Nothing is deleted automatically; `history prune` deletes old runs.
 

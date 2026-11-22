@@ -130,8 +130,12 @@ stdin과 stdout이 모두 terminal이면 `edc report show`와 `edc report diff`�
 
 `--auto-record`(또는 `defaults.top.auto_record = true`)를 주면 대시보드가 load1이 코어 수의 2배를 넘거나, swap out이 생기거나, 메모리 압박이 `warn` 이상일 때 스스로 기록을 시작합니다. 대시보드는 최근 5분의 관측값을 메모리에 두었다가 새 실행의 앞부분으로 저장하므로, 문제가 시작된 때부터 남습니다. 조건이 모두 1분 동안 풀려 있으면 기록을 멈춥니다. 실행 payload의 `trigger`에 이유가 남습니다. `edc history list`는 이 이유를 `TRIGGER` 열에 보이고, `edc history list --auto`는 자동 기록 실행만 보입니다. 기본으로 꺼져 있으며, `w`나 `-w`로 기록하는 동안에는 동작하지 않습니다.
 
+자동 기록이 끝나면 대시보드에 알림이 나오고, 대시보드를 나간 뒤에는 터미널에 마지막 자동 기록의 요약이 나옵니다. 요약 내용은 [자동 기록 종료 요약](top-recording.ko.md)에서 설명합니다.
+
 
 터미널에서 `edc history top`과 `edc history process`는 인터랙티브 탐색 화면을 엽니다. ↑↓ 선택, Enter 전체 상세, Home 최신 관측 추적, `p` 자동 갱신 일시정지를 지원합니다. top 표는 너비에 따라 디스크·네트워크·swap 등 지원되는 지표의 컬럼을 추가하고, 넓은 화면에서는 선택한 관측값의 상세 패널을 표시합니다. top의 파이프 출력은 디스크·네트워크·swap 컬럼을 포함하는 표이며, `--json`은 기존 JSONL 출력입니다. process 탐색 화면은 PID·CPU·RSS·명령어를 기본으로 표시하고 공간과 기록된 데이터에 따라 MEM·디스크 I/O·thread·FD 컬럼을 추가합니다. 상세에는 process 시작 시각과 수집된 한도도 표시합니다. 기존 `--process`, `--run`, 시간 범위와 지표 필터를 그대로 사용할 수 있습니다.
+
+관측값 하나 주변에 저장된 event, 변경, 명령 로그를 보려면 `edc history`에서 top 실행을 고르고 `t`를 누른 뒤, 관측값을 골라 `e`를 누릅니다. `edc history overview --run <id> --from <시각> --to <시각>`로도 볼 수 있습니다. 읽는 원천과 한계는 [관측 시각 주변의 저장 증거](history-evidence.ko.md)에서 설명합니다.
 
 ```bash
 edc top -w

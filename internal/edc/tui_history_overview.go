@@ -94,6 +94,9 @@ func (model historyOverviewBrowser) lines() []string {
 			duration = historyShortDuration(run.EndedAt.Sub(run.StartedAt))
 		}
 		lines := []string{title, fmt.Sprintf(T("history.overview.browser.run"), run.ID, historyTerminalText(run.Command), historyTerminalText(run.Hostname)), fmt.Sprintf(T("history.overview.browser.run_detail"), duration, run.IntervalS, historyTerminalText(emptyAs(run.Process, "—")))}
+		if !model.overview.From.IsZero() && model.overview.From.Before(model.overview.To) {
+			lines = append(lines, historyEvidenceWrappedLines([]string{T("history.evidence.window", model.overview.From.Local().Format(time.RFC3339Nano), model.overview.To.Local().Format(time.RFC3339Nano))}, model.width)...)
+		}
 		return model.tableLines(lines)
 	}
 	window := fmt.Sprintf(T("history.overview.browser.window"), model.overview.From.Local().Format(time.DateTime), model.overview.To.Local().Format(time.DateTime), model.overview.Runs, model.overview.Samples, model.overview.SnapshotRuns)
@@ -128,7 +131,16 @@ func (model historyOverviewBrowser) tableLines(lines []string) []string {
 			lines = append(lines, model.logRow(log.Command, log.Started.Local().Format(time.DateTime), log.Outcome, historyShortDuration(log.Duration)))
 		}
 	}
+	lines = append(lines, historyEvidenceWrappedLines(historyOverviewEvidenceLines(model.overview, time.Local), model.width)...)
 	return lines
+}
+
+func historyEvidenceWrappedLines(lines []string, width int) []string {
+	var wrapped []string
+	for _, line := range lines {
+		wrapped = append(wrapped, strings.Split(ansi.Hardwrap(line, max(1, width), true), "\n")...)
+	}
+	return wrapped
 }
 
 func historyOverviewMetricRow(name, average, p95, maximum, spark string, nameWidth int) string {

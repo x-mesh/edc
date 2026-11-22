@@ -191,6 +191,7 @@ func evaluateMacEvents(facts macEventsFacts) []Result {
 	}
 	since := eventsDurationText(facts.Since)
 	window := eventsResult("window", StatusPass, T("events.window.summary", len(facts.Signals), since, facts.Start.Format(eventsTimeLayout)))
+	window.Metrics = eventsTimelineMetrics(facts.Start, facts.Now, facts.Signals)
 	if len(facts.Signals) > 0 {
 		lines := make([]string, 0, len(facts.Signals))
 		for _, signal := range facts.Signals {

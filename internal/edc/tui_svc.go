@@ -284,8 +284,8 @@ func (model svcBrowser) visible() []svcListItem {
 	return items
 }
 
-// listRows는 표 머리줄 아래에 들어가는 unit 수다. 제목, 키 안내, 머리줄이 세 줄이다.
-func (model svcBrowser) listRows() int { return model.height - 3 }
+// listRows는 제목, 키 안내, 수집 범위, 표 머리줄을 뺀 unit 수다.
+func (model svcBrowser) listRows() int { return model.height - 4 }
 
 func (model *svcBrowser) keepCursor() {
 	count := len(model.visible())
@@ -352,6 +352,16 @@ func (model svcBrowser) listLines() []string {
 	}
 	title := svcBrowserHeading("edc svc", parts, model.color)
 	lines := []string{title, svcBrowserHints(model.filter, model.filtering, model.failed, model.all, len(visible), model.color)}
+	if model.loaded {
+		observation := evaluateSvcList(model.items, model.err).Collection
+		text := T("collection.summary", collectionText(observation))
+		code := richGray
+		if observation != nil && observation.State != collectionObserved {
+			code = richYellow
+		}
+		lines = append(lines, svcBrowserPaint(text, code, false, model.color))
+	}
+
 	switch {
 	case !model.loaded:
 		return append(lines, liveMuted("loading…", model.color))

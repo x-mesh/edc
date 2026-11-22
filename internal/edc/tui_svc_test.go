@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -129,8 +130,8 @@ func TestSvcBrowserFitsNarrowTerminals(t *testing.T) {
 			}
 		}
 		// 80열에서는 PID만 빠지고 메모리는 남는다.
-		if width == 80 && (!strings.Contains(lines[2], "MEM") || strings.Contains(lines[2], "PID")) {
-			t.Fatalf("80 columns header: %q", lines[2])
+		if width == 80 && (!strings.Contains(lines[3], "MEM") || strings.Contains(lines[3], "PID")) {
+			t.Fatalf("80 columns header: %q", lines[3])
 		}
 	}
 }
@@ -160,5 +161,29 @@ func TestSvcBrowserColorsStatesAndTheSelection(t *testing.T) {
 	}
 	if strings.Count(view, liveChipBase()+"\033[") < 1 || strings.Count(view, liveSelectedBar) != 1 {
 		t.Fatalf("one selected row expected:\n%q", view)
+	}
+}
+
+func TestSvcBrowserCollectionDistinguishesEmptyAndPermissionFailure(t *testing.T) {
+	model, _ := svcBrowserFixture(t)
+	model.width = 140
+	text := model.View().Content
+	if !strings.Contains(text, "Collection: observed") || !strings.Contains(text, "5 observed items") {
+		t.Fatalf("observed list: %s", text)
+	}
+	model, _ = svcBrowserKeys(t, model, "f")
+	if !strings.Contains(model.View().Content, "5 observed items") {
+		t.Fatal("display filter changed source coverage")
+	}
+	next, _ := model.Update(svcListMsg{seq: model.seq, err: os.ErrPermission})
+	model = next.(svcBrowser)
+	text = model.View().Content
+	if !strings.Contains(text, "permission denied") || strings.Contains(text, "0 observed items") {
+		t.Fatalf("failure looks empty: %s", text)
+	}
+	next, _ = model.Update(svcListMsg{seq: model.seq, items: nil})
+	text = next.(svcBrowser).View().Content
+	if !strings.Contains(text, "Collection: observed") || !strings.Contains(text, "0 observed items") {
+		t.Fatalf("empty list: %s", text)
 	}
 }

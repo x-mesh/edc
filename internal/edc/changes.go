@@ -84,6 +84,7 @@ func runChanges(args []string, version string) int {
 	if table := formatChangesTable(changesEventsOf(results), options.verbose, color); table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
+	printCollectionSummary(output, results, color)
 	if options.redact {
 		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))
 	}

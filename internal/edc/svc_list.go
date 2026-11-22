@@ -294,6 +294,7 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	if table := formatSvcListTable(items, newTextStyle(color)); table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
+	printCollectionSummary(output, []Result{result}, color)
 	if options.redact {
 		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))
 	}

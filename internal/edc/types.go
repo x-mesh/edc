@@ -28,11 +28,12 @@ type Result struct {
 	DurationMS int64     `json:"duration_ms"`
 	Summary    string    `json:"summary"`
 	// Next는 사용자가 이어서 실행할 명령이다. 문장 안에 넣지 않고 따로 두어 복사하기 쉽게 한다.
-	Next     string                 `json:"next,omitempty"`
-	Metrics  map[string]interface{} `json:"metrics,omitempty"`
-	Evidence []Evidence             `json:"evidence,omitempty"`
-	Warnings []string               `json:"warnings,omitempty"`
-	Error    *DiagnosticError       `json:"error,omitempty"`
+	Collection *collectionObservation `json:"collection,omitempty"`
+	Next       string                 `json:"next,omitempty"`
+	Metrics    map[string]interface{} `json:"metrics,omitempty"`
+	Evidence   []Evidence             `json:"evidence,omitempty"`
+	Warnings   []string               `json:"warnings,omitempty"`
+	Error      *DiagnosticError       `json:"error,omitempty"`
 }
 
 type ToolInfo struct {

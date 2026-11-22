@@ -106,10 +106,10 @@ func TestInfoVerboseNetworkAndDiskDetails(t *testing.T) {
 	for _, want := range []string{
 		"├── Open files (system): 2048 / 8192 (25.00%)\n",
 		"├── IPv6 default route: fe80::1 dev eno1\n",
-		"├── Local IP\n│   └── eno1           : 192.0.2.5 / 255.255.255.0, G/W: 192.0.2.1\n└── Interfaces\n",
+		"├── Local IP\n│   └── eno1           : 192.0.2.5/24 · default · Gateway: 192.0.2.1\n└── Interfaces\n",
 		"    └── eno1           : mtu 9000 · 1000 Mb/s full · MAC 00:00:5e:00:53:01 · IPv6 2001:db8::5/64\n",
 		"│   options: rw,relatime\n",
-		"(read-only)\n    options: ro,noexec\n",
+		"(read-only)\n    Device: /dev/sdb1\n    options: ro,noexec\n",
 	} {
 		if !strings.Contains(verbose.String(), want) {
 			t.Fatalf("-v 출력에 %q가 없다:\n%s", want, verbose.String())

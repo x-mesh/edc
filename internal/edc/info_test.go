@@ -30,7 +30,7 @@ func TestInfoResourcesDistinguishesErrorsAndUnsupportedFeatures(t *testing.T) {
 	var output strings.Builder
 	printInfoResources(&output, infoMemory{}, errors.New("Mach read failed"), infoSignals{}, nil, errors.New("process read failed"), []infoCapability{{"PSI", "unsupported", "Linux-only"}}, false, false)
 	text := output.String()
-	for _, want := range []string{"Unavailable: Mach read failed", "Unavailable: process read failed", "PSI: unsupported"} {
+	for _, want := range []string{"Unavailable: Mach read failed", "Unavailable: process read failed"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q: %s", want, text)
 		}
@@ -117,7 +117,7 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 	var compact strings.Builder
 	printInfoListen(&compact, result, true, false, false)
 	text := compact.String()
-	for _, want := range []string{"TCP 8 · UDP 1 · Exposed 8 (all 7 · specific 1) · Loopback 1", "1001   tcp  *  all interfaces  app (2)", "… 3 more exposed · edc listen", "└── Sockets of other accounts are hidden without root"} {
+	for _, want := range []string{"TCP 8 · UDP 1 · Non-loopback bindings 8 (all 7 · specific 1) · Loopback 1", "1001   tcp  *  all interfaces  app (2)", "… 3 more · edc listen", "└── Sockets of other accounts are hidden without root"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("%q가 없다:\n%s", want, text)
 		}
@@ -135,7 +135,7 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 			t.Fatalf("-v에 %q가 없다:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "more exposed") || strings.Contains(text, "without root") {
+	if strings.Contains(text, "more") || strings.Contains(text, "without root") {
 		t.Fatalf("-v가 목록을 자르거나 쓰지 않을 안내를 붙였다:\n%s", text)
 	}
 }
@@ -170,7 +170,7 @@ func TestInfoLocalIPListsTheDefaultRouteFirst(t *testing.T) {
 	printInfo(&output, "test", hostDetails{Hostname: "host"}, interfaces, nil, nil, infoSignals{}, false, false)
 	text := output.String()
 	en0, bridge, en9 := strings.Index(text, "en0 "), strings.Index(text, "bridge0 "), strings.Index(text, "en9 ")
-	if en0 < 0 || en0 > bridge || bridge > en9 || !strings.Contains(text, "G/W: 192.168.1.1") || !strings.Contains(text, "255.255.0.0 · link-local") {
+	if en0 < 0 || en0 > bridge || bridge > en9 || !strings.Contains(text, "Gateway: 192.168.1.1") || !strings.Contains(text, "/16 · link-local") {
 		t.Fatalf("local IP order or tags are wrong:\n%s", text)
 	}
 }
@@ -196,11 +196,11 @@ func TestInfoListenBreaksExposedDownByScope(t *testing.T) {
 		listenSocket{Proto: "tcp", Address: "192.0.2.10", Port: 82, Process: "c", PID: "3"},
 		listenSocket{Proto: "tcp", Address: "not-an-address", Port: 83, Process: "d", PID: "4"},
 	)
-	if !strings.Contains(mixed, "Exposed 4 (all 2 · specific 1 · unknown 1)") || !strings.Contains(mixed, "83     tcp  not-an-address  unknown") {
+	if !strings.Contains(mixed, "Non-loopback bindings 4 (all 2 · specific 1 · unknown 1)") || !strings.Contains(mixed, "83     tcp  not-an-address  unknown") {
 		t.Fatalf("output:\n%s", mixed)
 	}
 	local := render(listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "a", PID: "1"})
-	if !strings.Contains(local, "Exposed 0 · ") || strings.Contains(local, "Exposed 0 (") {
+	if !strings.Contains(local, "Non-loopback bindings 0 · ") || strings.Contains(local, "Non-loopback bindings 0 (") {
 		t.Fatalf("output:\n%s", local)
 	}
 }
@@ -345,5 +345,31 @@ func TestInfoRuntimeShowsPythonOnlyWhenChecked(t *testing.T) {
 	}
 	if !strings.Contains(verbose.String(), "├── Runtime: Python 3.13.1 · Go ") {
 		t.Fatalf("-v에 python 버전이 없다:\n%s", verbose.String())
+	}
+}
+
+func TestInfoDiskLongPathsDoNotMoveCapacityColumns(t *testing.T) {
+	long := t.TempDir()
+	device := "/Applications/" + strings.Repeat("long-device-", 12)
+	root := diskDetails{Mount: "/", Device: "/dev/disk3s1s1", Used: 813 << 30, Total: 1024 << 30, Percent: 79.4}
+	for _, verbose := range []bool{false, true} {
+		var baseline, output strings.Builder
+		printDiskUsageStyled(&baseline, []diskDetails{root}, nil, infoStyle{textStyle{width: 140}}, verbose)
+		printDiskUsageStyled(&output, []diskDetails{root, {Mount: long, Device: device, Used: 808 << 30, Total: 1024 << 30, Percent: 78.9}}, nil, infoStyle{textStyle{width: 140}}, verbose)
+		rootRow := strings.Split(output.String(), "\n")[2]
+		baselineRow := strings.Split(baseline.String(), "\n")[2]
+		if strings.TrimPrefix(rootRow, "├──") != strings.TrimPrefix(baselineRow, "└──") {
+			t.Fatalf("long path moved root capacity: %q vs %q", rootRow, baselineRow)
+		}
+		for _, row := range strings.Split(output.String(), "\n") {
+			if liveWidth(row) > 140 {
+				t.Fatalf("row exceeds terminal width: %q", row)
+			}
+		}
+		for _, want := range []string{"808.00 GB", "1.00 TB", "Free: 216.00 GB", "Device:"} {
+			if !strings.Contains(output.String(), want) {
+				t.Fatalf("missing %q: %s", want, output.String())
+			}
+		}
 	}
 }

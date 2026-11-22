@@ -168,7 +168,10 @@ func networkConntrackUsage(health *networkHealth) (float64, bool) {
 }
 
 func printInfoNetworkHealth(writer io.Writer, health *networkHealth, color, verbose bool) {
-	style := newTextStyle(color)
+	if (health == nil || !health.Supported) && !verbose {
+		return
+	}
+	style := newInfoStyle(color)
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("Network Limits"))
 	if health == nil || !health.Supported {

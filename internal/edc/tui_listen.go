@@ -139,9 +139,10 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return model, nil
 	case tea.WindowSizeMsg:
+		widthChanged := model.width != max(1, value.Width)
 		model.width, model.height = max(1, value.Width), max(1, value.Height)
 		model.keepCursor()
-		if model.detail != nil {
+		if model.detail != nil && widthChanged {
 			detail := *model.detail
 			detail.offset = 0
 			model.detail = &detail

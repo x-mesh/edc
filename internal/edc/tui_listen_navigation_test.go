@@ -103,3 +103,20 @@ func TestTopInteractiveRejectsNonTerminalWithoutBatchFlags(t *testing.T) {
 		t.Fatalf("non-terminal interactive exit %d", code)
 	}
 }
+
+func TestListenBrowserResumeSizeMessagePreservesDetailScroll(t *testing.T) {
+	model := listenBrowserFixture(t)
+	model, load := listenBrowserKey(model, "enter")
+	next, _ := model.Update(load())
+	model = next.(listenBrowser)
+	model, _ = listenBrowserKey(model, "down")
+	before := model.detail.offset
+	next, _ = model.Update(tea.WindowSizeMsg{Width: model.width, Height: model.height})
+	if next.(listenBrowser).detail.offset != before {
+		t.Fatal("same-size resume reset detail scroll")
+	}
+	next, _ = model.Update(tea.WindowSizeMsg{Width: model.width + 1, Height: model.height})
+	if next.(listenBrowser).detail.offset != 0 {
+		t.Fatal("width change must recompute wrapped detail position")
+	}
+}

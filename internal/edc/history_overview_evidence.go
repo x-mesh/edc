@@ -331,7 +331,10 @@ func historyOverviewEvidenceLines(view historyOverview, loc *time.Location) []st
 		if notice.RunID != "" {
 			source += " / " + historyTerminalText(notice.RunID)
 		}
-		message := T("history.evidence.notice."+notice.Code, historyTerminalText(notice.Detail))
+		message := T("history.evidence.notice." + notice.Code)
+		if notice.Detail != "" {
+			message += " · " + historyTerminalText(notice.Detail)
+		}
 		lines = append(lines, "  ["+source+"] "+message)
 	}
 	return lines

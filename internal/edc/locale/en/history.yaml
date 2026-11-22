@@ -146,7 +146,7 @@ history:
     selected: "selected observation"
     paused: "refresh paused"
     empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
-    navigator_help: "o Processes"
+    navigator_help: "o Processes   e Evidence ±5m"
   database_path: "Default history DB: %s"
   usage: "Usage: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:

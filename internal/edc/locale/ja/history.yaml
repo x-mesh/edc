@@ -146,7 +146,7 @@ history:
     selected: "選択した観測を維持"
     paused: "更新を一時停止"
     empty: "topの記録がありません。edc topでwを押すか、edc top -wで記録してください。snapshotはedc history listで確認できます。"
-    navigator_help: "o Process"
+    navigator_help: "o プロセス   e 根拠 ±5分"
   database_path: "既定のhistory DB: %s"
   usage: "使い方: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:

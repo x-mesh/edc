@@ -146,7 +146,7 @@ history:
     selected: "선택한 관측 유지"
     paused: "갱신 일시정지"
     empty: "top 기록이 없습니다. edc top에서 w를 누르거나 edc top -w로 기록하세요. snapshot은 edc history list에서 확인합니다."
-    navigator_help: "o Process"
+    navigator_help: "o 프로세스   e 근거 ±5분"
   database_path: "기본 history DB: %s"
   usage: "사용법: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:

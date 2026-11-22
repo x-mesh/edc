@@ -196,6 +196,7 @@ var topProcessIOThreshold = topThreshold{warn: 10 << 20, danger: 50 << 20}
 // topDashboardRow는 포맷 문자열 대신 측정값을 보존한다. 같은 시점을 다른 렌즈로
 // 다시 그릴 수 있고, 선택한 과거 행의 상세도 최신 값과 섞이지 않는다.
 type topDashboardRow struct {
+	processesAt    time.Time
 	at             time.Time
 	rate           resourceRate
 	processes      []topProcess
@@ -400,7 +401,7 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, tea.Quit
 		}
 		before := len(model.rows) + 1
-		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
+		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, processesAt: value.snapshot.ProcessesAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
 		model = model.recordEvents(model.rows[len(model.rows)-1])
 		model.previous = value.snapshot
 		if model.follow {

@@ -151,7 +151,7 @@ func loadHistorySnapshotEvidence(db *sql.DB, view historyOverview, acc *historyE
  CASE WHEN length(CAST(s.payload AS BLOB))<=? THEN s.payload ELSE '' END,length(CAST(s.payload AS BLOB)),r.hostname,
  CASE WHEN length(CAST(r.payload AS BLOB))<=? THEN r.payload ELSE '' END
  FROM snapshot_results s JOIN runs r ON r.id=s.run_id
- WHERE r.command='snapshot' AND s.time_ns>=? AND (s.probe='events.window' OR s.probe LIKE 'changes.%')`
+ WHERE r.command='snapshot' AND s.time_ns>=? AND (s.probe='events.window' OR (s.probe LIKE 'events.%' AND s.status='skip') OR s.probe LIKE 'changes.%')`
 	args := []any{historyEvidenceMaxPayloadBytes, historyEvidenceRunBytes, view.From.UnixNano()}
 	if view.Run != nil {
 		query += " AND r.hostname=?"

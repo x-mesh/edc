@@ -215,3 +215,18 @@ func TestHistoryOverviewEvidenceRowAndTotalByteLimits(t *testing.T) {
 		t.Fatalf("missing total byte limit: %+v", notices)
 	}
 }
+
+func TestHistoryOverviewEvidenceRetainsSkippedEventSources(t *testing.T) {
+	db := historyEvidenceDB(t)
+	from := time.Unix(1000, 0).UTC()
+	captured := from.Add(time.Minute)
+	addHistoryEvidenceSnapshot(t, db, "partial", "host", captured,
+		evidenceWindow(captured),
+		Result{Probe: "events.units", Status: StatusSkip, Summary: "journal unavailable"},
+		Result{Probe: "events.oom", Status: StatusFail, Summary: "OOM was observed"},
+	)
+	entries, notices := loadHistoryOverviewEvidence(db, historyOverview{From: from, To: from.Add(time.Hour)}, nil, nil)
+	if len(entries) != 0 || len(notices) != 1 || notices[0].Code != "source_unavailable" || notices[0].Source != "events.units" {
+		t.Fatalf("lost coverage or treated health failure as collection failure: %+v %+v", entries, notices)
+	}
+}

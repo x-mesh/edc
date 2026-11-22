@@ -56,7 +56,7 @@ func TestInfoColorKeepsTextAndColorsOnlyAboveNormal(t *testing.T) {
 		// 4 core에서 load 0.5는 정상, 3.5는 경고, 5는 위험이다.
 		richDim("Load:") + " 0.50/" + richPaint("3.50", richYellow, false) + "/" + richPaint("5.00", richRed, false),
 		richFill(strings.Repeat(diskBarFull, 19), richRed),
-		richDim("G/W:") + " 192.0.2.254",
+		richDim("Gateway:") + " 192.0.2.254",
 	} {
 		if !strings.Contains(colored, want) {
 			t.Fatalf("missing %q in\n%s", want, colored)
@@ -68,7 +68,7 @@ func TestInfoResourcesColorStates(t *testing.T) {
 	capabilities := []infoCapability{{"Process I/O", "available", "ok"}, {"PSI", "unsupported", "Linux-only"}, {"CPU wait / I/O latency", "permission required", "missing CAP_BPF"}}
 	render := func(color bool) string {
 		var output strings.Builder
-		printInfoResources(&output, infoMemory{Total: 8 << 30, Available: 1 << 28, SwapUsed: 96, SwapTotal: 100}, nil, infoSignals{}, nil, fmt.Errorf("process read failed"), capabilities, color, false)
+		printInfoResources(&output, infoMemory{Total: 8 << 30, Available: 1 << 28, SwapUsed: 96, SwapTotal: 100}, nil, infoSignals{}, nil, fmt.Errorf("process read failed"), capabilities, color, true)
 		return output.String()
 	}
 	plain, colored := render(false), render(true)
@@ -106,8 +106,8 @@ func TestInfoListenColorKeepsTextAndHighlightsTheCommand(t *testing.T) {
 
 func TestNetworkHealthColorKeepsText(t *testing.T) {
 	var plain, colored strings.Builder
-	printInfoNetworkHealth(&plain, nil, false, false)
-	printInfoNetworkHealth(&colored, nil, true, false)
+	printInfoNetworkHealth(&plain, nil, false, true)
+	printInfoNetworkHealth(&colored, nil, true, true)
 	assertSameText(t, plain.String(), colored.String())
 }
 

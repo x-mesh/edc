@@ -278,6 +278,8 @@ A number must equal a PID. Other terms match part of the command name without ca
 
 A process that matches any term stays in the list.
 
+With `--process`, the detail panel that `Enter` opens also shows the recent RSS change of each matching process. [Recent RSS changes in top](observe-process-deltas.md) describes how edc compares the observations.
+
 On Linux, the command name is `comm`, which the kernel cuts at 15 characters. On macOS, it is the executable path.
 
 ```bash

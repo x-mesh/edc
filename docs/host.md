@@ -345,6 +345,8 @@ For one job, edc looks in the `gui/<uid>`, `user/<uid>`, and `system` domains, a
 - `svc.process`: CPU, memory, open fds, and listening ports of the running process. `next` is `edc proc <pid>`.
 - `svc.log`: the last 20 lines of the file in `StandardErrorPath`, or else `StandardOutPath`. If the job sets neither, `next` is a `log show` command for the unified log.
 
+[Collection coverage in observe commands](observe-collection.md) describes the `Collection:` line of this output, and [One-shot observation output](observe-output.md) describes how the output fits the terminal width.
+
 ## Process view (Linux and macOS)
 
 `edc proc <pid|name>` shows one process on one screen. It reads only and changes nothing.
@@ -367,6 +369,8 @@ The command line hides secret options and URL credentials with the same rule as 
 
 On Linux, `proc.process` also shows where the process came from. `exe` is the executable. `package` is the dpkg package that has this file, and the last time that dpkg installed or upgraded the package. edc takes this time from the modification time of the file list of the package in `/var/lib/dpkg/info`. If no package has the file, the line shows `none`. A host without dpkg shows no `package` line. `session` is the login session that started the process. edc reads the user, the remote host, the service, and the start time from `/run/systemd/sessions`. If the user logged out and the process still runs, the line tells you. A process outside a login session, such as a system service, shows no `session` line.
 
+[Collection coverage in observe commands](observe-collection.md) describes the `Collection:` line of this output, and [One-shot observation output](observe-output.md) describes how the output fits the terminal width.
+
 ## Scheduled jobs (Linux and macOS)
 
 `edc jobs` lists the scheduled jobs and the result of their last run. It changes nothing.
@@ -383,6 +387,8 @@ sudo edc jobs -v   # every job, also the user crontabs and the launchd daemons
 | `jobs.launchd` (macOS) | the plists with `StartInterval` or `StartCalendarInterval` in `/Library/LaunchDaemons`, `/Library/LaunchAgents`, and `~/Library/LaunchAgents` | The last exit status from `launchctl list`. A positive exit code fails. A job that ended by a signal does not fail, as in `check`. |
 
 A failed job comes first and makes the exit code 1. If a job failed, the default output shows only the failed jobs. Use `-v` to see all jobs. Without root, the user crontabs are not read, and `launchctl list` shows only the agents of your session.
+
+[Collection coverage in observe commands](observe-collection.md) describes the `Collection:` line of this output, and [One-shot observation output](observe-output.md) describes how the output fits the terminal width.
 
 ## Container view (Linux and macOS)
 
@@ -482,6 +488,8 @@ If edc cannot read a source, the result is `skip` with the reason. A `skip` does
 
 `edc changes` reads `.gz` and `.zst` rotated logs. It does not decompress other formats, such as `.xz` or `.bz2`. If one of those logs is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
 
+[Collection coverage in observe commands](observe-collection.md) describes the `Collection:` line of this output, and [One-shot observation output](observe-output.md) describes how the output fits the terminal width.
+
 ## Kernel and systemd events (Linux)
 
 `edc events` reads the kernel log and the systemd journal for a time window. It finds failure signals and puts them in time order. It changes nothing, and it sends nothing over the network.
@@ -549,7 +557,7 @@ Every diagnostic command keeps to read-only inspection. `edc` runs no automatic 
 
 ## Listening ports
 
-Use `listen` to inspect open ports separately from the host overview. Add `--unix` or `--all` for unix sockets, or repeat the observation with `--watch`.
+Use `listen` to inspect open ports separately from the host overview. Add `--unix` or `--all` for unix sockets, or repeat the observation with `--watch`. In an interactive terminal, `edc listen` opens a socket browser by default. Use `-B` for one-shot output. [Browse listening sockets](listen-browse.md) describes the keys and the `listen.browse` setting.
 
 ```bash
 edc listen

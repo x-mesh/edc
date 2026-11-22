@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +138,26 @@ func TestProcProcessResultShowsTheOrigin(t *testing.T) {
 	// 시작 시각도 출처도 모르면 줄을 더하지 않는다.
 	if value := procProcessResult(topProcess{PID: 1, Command: "init"}, procDetails{}, started, false).Evidence[0].Value; strings.Count(value, "\n") != 1 {
 		t.Fatalf("bare process:\n%s", value)
+	}
+}
+
+func TestProcCollectionDistinguishesEmptyPermissionAndUnsupported(t *testing.T) {
+	process := topProcess{PID: 42, Command: "app"}
+	details := procDetails{}
+	results := evaluateProc(process, details, time.Now(), false)
+	for _, index := range []int{2, 3} {
+		c := results[index].Collection
+		if c == nil || c.State != collectionObserved || c.Observed == nil || *c.Observed != 0 {
+			t.Fatalf("empty source: %+v", c)
+		}
+	}
+	details.FDErr = os.ErrPermission
+	details.SocketErr = errProcUnsupported
+	results = evaluateProc(process, details, time.Now(), false)
+	if c := results[2].Collection; c.State != collectionPermissionDenied || c.Observed != nil || results[2].Status != StatusSkip {
+		t.Fatalf("permission: %+v", c)
+	}
+	if c := results[3].Collection; c.State != collectionUnsupported || c.Observed != nil {
+		t.Fatalf("unsupported: %+v", c)
 	}
 }

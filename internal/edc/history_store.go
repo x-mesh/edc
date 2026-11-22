@@ -521,15 +521,17 @@ type historyRun struct {
 }
 
 type topRecorder struct {
-	db       *sql.DB
-	runID    string
-	queue    chan []byte
-	done     chan struct{}
-	failed   chan struct{}
-	mutex    sync.Mutex
-	err      error
-	finish   sync.Once
-	closeErr error
+	automatic bool
+	summary   topRecordingSummary
+	db        *sql.DB
+	runID     string
+	queue     chan []byte
+	done      chan struct{}
+	failed    chan struct{}
+	mutex     sync.Mutex
+	err       error
+	finish    sync.Once
+	closeErr  error
 }
 
 func newTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool) (*topRecorder, error) {
@@ -541,6 +543,11 @@ func newTopRecorder(path, version string, details hostDetails, interval time.Dur
 func newTriggeredTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool, trigger string, backlog []historyTopSample) (*topRecorder, error) {
 	db, err := openHistoryDB(path, true)
 	if err != nil {
+		return nil, err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		db.Close()
 		return nil, err
 	}
 	started := time.Now().UTC()
@@ -570,7 +577,7 @@ func newTriggeredTopRecorder(path, version string, details hostDetails, interval
 		db.Close()
 		return nil, err
 	}
-	recorder := &topRecorder{db: db, runID: run.ID, queue: make(chan []byte, historyQueueSize), done: make(chan struct{}), failed: make(chan struct{})}
+	recorder := &topRecorder{automatic: trigger != "", summary: topRecordingSummary{runID: run.ID, path: absolute, trigger: trigger, started: run.StartedAt}, db: db, runID: run.ID, queue: make(chan []byte, historyQueueSize), done: make(chan struct{}), failed: make(chan struct{})}
 	go recorder.writeLoop(pending)
 	return recorder, nil
 }
@@ -642,12 +649,22 @@ func (recorder *topRecorder) writeSamples(payloads [][]byte) error {
 		return err
 	}
 	defer tx.Rollback()
+	summary := recorder.summary
 	for _, payload := range payloads {
+		var sample historyTopSample
+		if err := json.Unmarshal(payload, &sample); err != nil {
+			return err
+		}
+		summary = summary.observe(sample)
 		if err := recorder.writeSample(tx, payload); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	recorder.summary = summary
+	return nil
 }
 
 func (recorder *topRecorder) writeSample(tx *sql.Tx, payload []byte) error {

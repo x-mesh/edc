@@ -1,0 +1,10 @@
+collection:
+  detail: "수집: %s"
+  summary: "수집 범위: %s"
+  observed_count: "관측한 항목 %d개"
+  state:
+    observed: "관측됨"
+    partial: "부분 수집"
+    permission_denied: "권한 부족"
+    unsupported: "미지원"
+    unavailable: "조회 불가"

@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+const historyEvidenceSampleWindow = 5 * time.Minute
+
 type historyTopColumn struct {
 	name, title string
 	width       int
@@ -184,6 +186,21 @@ func (model historySampleBrowser) atTop() bool { return !model.expanded }
 func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) (tea.Model, bool, error) {
 	if !model.atTop() || model.count() == 0 {
 		return nil, false, nil
+	}
+	if model.hosted && !model.processMode && key == "e" {
+		if model.selected < 0 || model.selected >= len(model.samples) {
+			return nil, true, fmt.Errorf("%s", T("history.evidence.sample_unavailable"))
+		}
+		sample := model.samples[model.selected]
+		if sample.RunID == "" || sample.Time.IsZero() {
+			return nil, true, fmt.Errorf("%s", T("history.evidence.sample_unavailable"))
+		}
+		child := newHistoryOverviewBrowser(db, path, historyOverviewOptions{run: sample.RunID, from: sample.Time.Add(-historyEvidenceSampleWindow), to: sample.Time.Add(historyEvidenceSampleWindow)})
+		if child.err != nil {
+			return nil, true, child.err
+		}
+		child.hosted = true
+		return child, true, nil
 	}
 	if !model.processMode && key == "o" {
 		sample := model.samples[model.selected]

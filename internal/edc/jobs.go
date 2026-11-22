@@ -29,9 +29,9 @@ const (
 type scheduledJob struct {
 	// Inspect는 실패한 작업을 더 볼 명령이다. 비어 있으면 edc jobs -v를 권한다.
 	Name, Schedule, User, Command, Inspect string
-	Next, Last                    time.Time
-	Result                        string
-	Failed                        bool
+	Next, Last                             time.Time
+	Result                                 string
+	Failed                                 bool
 }
 
 // jobsSource는 원천 하나의 결과다. Err가 있으면 그 원천은 skip이고, Unreadable은 권한 때문에 읽지 못한 파일이다.
@@ -48,6 +48,21 @@ var errJobsUnsupported = errors.New("unsupported")
 
 // verbose가 아니면 실패가 있을 때 실패한 작업만 근거로 남긴다. 실패 상자에 정상 작업까지 쌓이면 원인이 묻힌다.
 func jobsResult(source jobsSource, now time.Time, verbose bool) Result {
+	result := jobsHealthResult(source, now, verbose)
+	if errors.Is(source.Err, errJobsUnsupported) {
+		return withCollection(result, collectionUnsupported, nil, "")
+	}
+	if source.Err != nil {
+		return collectionReadError(result, source.Err)
+	}
+	state := collectionObserved
+	if len(source.Unreadable) > 0 {
+		state = collectionPartial
+	}
+	return withCollection(result, state, intPointer(len(source.Jobs)), "")
+}
+
+func jobsHealthResult(source jobsSource, now time.Time, verbose bool) Result {
 	started := time.Now()
 	if errors.Is(source.Err, errJobsUnsupported) {
 		return unsupported(source.Probe, T("jobs.skip.unsupported"))

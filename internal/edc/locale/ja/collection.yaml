@@ -1,0 +1,10 @@
+collection:
+  detail: "収集: %s"
+  summary: "収集範囲: %s"
+  observed_count: "観測した項目%d件"
+  state:
+    observed: "観測済み"
+    partial: "部分収集"
+    permission_denied: "権限不足"
+    unsupported: "未対応"
+    unavailable: "取得不可"

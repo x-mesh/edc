@@ -1,0 +1,7 @@
+helptopics:
+  resources: "リソース"
+  processes: "プロセス"
+  logs_files: "ログ・ファイル"
+  network: "ネットワーク"
+  tracing_changes: "追跡・変更"
+  other: "その他"

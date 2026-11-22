@@ -479,3 +479,58 @@ func TestRunSvcAcceptsOptionsAfterTheUnit(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 }
+
+func TestSvcCollectionSeparatesFailedHealthAndPartialSources(t *testing.T) {
+	used := 0
+	facts := svcFacts{Systemd: true, Root: false, Show: svcShow{LoadState: "loaded", ActiveState: "failed", SubState: "failed"}, Processes: []topProcess{{PID: 1}, {PID: 2}}, FD: map[int]topFDLimit{1: {topLimitStatus: topLimitStatus{Status: "available"}, Used: &used}, 2: {topLimitStatus: topLimitStatus{Status: "permission_denied"}}}, Journal: svcJournal{Hidden: true, Lines: []string{"visible error"}}, JournalErr: errSvcNeedsRoot}
+	results := evaluateSvc(facts)
+	byID := map[string]Result{}
+	for _, result := range results {
+		byID[result.Probe] = result
+	}
+	if c := byID["svc.state"].Collection; c.State != collectionObserved || byID["svc.state"].Status != StatusFail {
+		t.Fatalf("state: %+v", byID["svc.state"])
+	}
+	if c := byID["svc.fd"].Collection; c.State != collectionPartial || c.Observed == nil || *c.Observed != 1 {
+		t.Fatalf("fd: %+v", c)
+	}
+	if c := byID["svc.listen"].Collection; c.State != collectionPermissionDenied || c.Observed != nil {
+		t.Fatalf("listen: %+v", c)
+	}
+	if c := byID["svc.journal"].Collection; c.State != collectionPartial || c.Observed == nil || *c.Observed != 1 {
+		t.Fatalf("journal: %+v", c)
+	}
+	facts.Probe = "ctr"
+	for _, result := range evaluateSvc(facts) {
+		if result.Collection != nil {
+			t.Fatal("shared ctr builders changed")
+		}
+	}
+	if c := evaluateSvcList(nil, nil).Collection; c.State != collectionObserved || *c.Observed != 0 {
+		t.Fatalf("list zero: %+v", c)
+	}
+	if c := evaluateSvcList(nil, errSvcNoSystemd).Collection; c.State != collectionUnsupported || c.Observed != nil {
+		t.Fatalf("no backend: %+v", c)
+	}
+}
+
+func TestSvcCollectionDoesNotTreatMissingMainProcessAsObservedZero(t *testing.T) {
+	facts := svcFacts{Systemd: true, Root: true, Show: svcShow{LoadState: "loaded", ActiveState: "active", SubState: "running", MainPID: 42}}
+	for _, result := range evaluateSvc(facts) {
+		if result.Probe == "svc.processes" || result.Probe == "svc.fd" || result.Probe == "svc.listen" {
+			if c := result.Collection; c.State != collectionUnavailable || c.Observed != nil {
+				t.Fatalf("missing process looks empty: %s %+v", result.Probe, c)
+			}
+		}
+	}
+	used := 0
+	facts.Processes = []topProcess{{PID: 43}}
+	facts.FD = map[int]topFDLimit{43: {topLimitStatus: topLimitStatus{Status: "available"}, Used: &used}}
+	for _, result := range evaluateSvc(facts) {
+		if result.Probe == "svc.processes" || result.Probe == "svc.fd" || result.Probe == "svc.listen" {
+			if c := result.Collection; c.State != collectionPartial || c.Observed == nil {
+				t.Fatalf("missing main lost partial scope: %s %+v", result.Probe, c)
+			}
+		}
+	}
+}

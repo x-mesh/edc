@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,7 +140,7 @@ func runSvcWith(args []string, version string, sources svcSources, ok bool) int 
 	started := time.Now()
 	target := map[string]interface{}{"unit": unit}
 	if !ok {
-		return emit(options, buildReport(version, started, target, []Result{unsupported(svcProbeID, T("svc.skip.linux_only"))}, options.redact))
+		return emit(options, buildReport(version, started, target, []Result{withCollection(unsupported(svcProbeID, T("svc.skip.linux_only")), collectionUnsupported, nil, "")}, options.redact))
 	}
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
@@ -404,7 +404,7 @@ func svcSkipFor(probe, id, source string, err error) Result {
 	return svcResultFor(probe, id, StatusSkip, T("svc.skip.unreadable", source, infoSingleLine(err.Error())))
 }
 
-func evaluateSvc(facts svcFacts) []Result {
+func evaluateSvcHealth(facts svcFacts) []Result {
 	if !facts.Systemd {
 		return []Result{unsupported(svcProbeID, T("svc.skip.no_systemd"))}
 	}
@@ -621,4 +621,108 @@ func svcJournalResult(facts svcFacts) Result {
 	result := svcResultFor(facts.probe(), "journal", StatusWarn, T("svc.journal.errors", len(lines), lines[len(lines)-1]))
 	result.Evidence = []Evidence{{Label: T("svc.evidence.journal"), Value: strings.Join(lines, "\n")}}
 	return result
+}
+
+func evaluateSvc(facts svcFacts) []Result {
+	results := evaluateSvcHealth(facts)
+	if facts.probe() != svcProbeID {
+		return results
+	}
+	mainMissing := facts.Show.MainPID > 0 && !slices.ContainsFunc(facts.Processes, func(process topProcess) bool { return process.PID == facts.Show.MainPID })
+	for i, result := range results {
+		if !facts.Systemd {
+			results[i] = withCollection(result, collectionUnsupported, nil, "")
+			continue
+		}
+		if facts.ShowErr != nil {
+			results[i] = svcCollectionError(result, facts.ShowErr)
+			continue
+		}
+		switch strings.TrimPrefix(result.Probe, "svc.") {
+		case "state":
+			results[i] = withCollection(result, collectionObserved, intPointer(1), "")
+		case "processes":
+			if facts.ProcessErr != nil {
+				results[i] = svcCollectionError(result, facts.ProcessErr)
+			} else {
+				state := collectionObserved
+				count := intPointer(len(facts.Processes))
+				if mainMissing {
+					state = collectionPartial
+					if len(facts.Processes) == 0 {
+						state, count = collectionUnavailable, nil
+					}
+				}
+				results[i] = withCollection(result, state, count, "")
+			}
+		case "fd":
+			if facts.ProcessErr != nil {
+				results[i] = svcCollectionError(result, facts.ProcessErr)
+				continue
+			}
+			readable, denied, failed := 0, 0, 0
+			for _, process := range svcRows(facts.Processes, facts.Show.MainPID) {
+				limit := facts.FD[process.PID]
+				switch {
+				case limit.Status == "permission_denied":
+					denied++
+				case limit.Status == "available" && limit.Used != nil:
+					readable++
+				default:
+					failed++
+				}
+			}
+			state := collectionObserved
+			count := intPointer(readable)
+			switch {
+			case readable == 0 && denied > 0:
+				state, count = collectionPermissionDenied, nil
+			case readable == 0 && (failed > 0 || mainMissing):
+				state, count = collectionUnavailable, nil
+			case denied+failed > 0 || readable < len(facts.Processes) || mainMissing:
+				state = collectionPartial
+			}
+			results[i] = withCollection(result, state, count, "")
+		case "listen":
+			switch {
+			case facts.ProcessErr != nil:
+				results[i] = svcCollectionError(result, facts.ProcessErr)
+			case mainMissing && len(facts.Processes) == 0:
+				results[i] = withCollection(result, collectionUnavailable, nil, "")
+			case svcListenHidden(facts):
+				results[i] = withCollection(result, collectionPermissionDenied, nil, "")
+			case facts.ListenErr != nil:
+				results[i] = svcCollectionError(result, facts.ListenErr)
+			default:
+				count := 0
+				if number, ok := result.Metrics["sockets"].(int); ok {
+					count = number
+				}
+				state := collectionObserved
+				if mainMissing {
+					state = collectionPartial
+				}
+				results[i] = withCollection(result, state, intPointer(count), "")
+			}
+		case "journal":
+			switch {
+			case facts.Journal.Hidden && len(facts.Journal.Lines) > 0:
+				results[i] = withCollection(result, collectionPartial, intPointer(len(facts.Journal.Lines)), "")
+			case facts.Journal.Hidden:
+				results[i] = withCollection(result, collectionPermissionDenied, nil, "")
+			case facts.JournalErr != nil:
+				results[i] = svcCollectionError(result, facts.JournalErr)
+			default:
+				results[i] = withCollection(result, collectionObserved, intPointer(len(facts.Journal.Lines)), "")
+			}
+		}
+	}
+	return results
+}
+
+func svcCollectionError(result Result, err error) Result {
+	if errors.Is(err, errSvcNeedsRoot) {
+		return withCollection(result, collectionPermissionDenied, nil, "")
+	}
+	return collectionReadError(result, err)
 }

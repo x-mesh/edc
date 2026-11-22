@@ -862,6 +862,10 @@ func printHelp(writer io.Writer, version string) {
 			continue
 		}
 		fmt.Fprintf(writer, "\n%s\n", T("help.group."+group))
+		if group == "observe" {
+			printObserveHelp(writer, members, width, false)
+			continue
+		}
 		for _, doc := range members {
 			fmt.Fprintf(writer, "  %-*s  %s\n", width, doc.name, doc.summary())
 		}
@@ -916,8 +920,12 @@ func printRichHelp(writer io.Writer, version string) {
 			continue
 		}
 		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.group."+group), strconv.Itoa(len(members)), ""))
-		for _, doc := range members {
-			fmt.Fprintln(writer, richPanelLine(richPaint(padRight(doc.name, width), richCyan, true)+"  "+doc.summary(), ""))
+		if group == "observe" {
+			printObserveHelp(writer, members, width, true)
+		} else {
+			for _, doc := range members {
+				fmt.Fprintln(writer, richPanelLine(richPaint(padRight(doc.name, width), richCyan, true)+"  "+doc.summary(), ""))
+			}
 		}
 		fmt.Fprintln(writer, richPanelBottom(""))
 	}

@@ -109,6 +109,7 @@ var evidenceShownProbes = map[string]bool{}
 var warnEvidenceProbes = map[string]bool{}
 
 func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
+	printCollectionDetail(writer, result, verbose, color)
 	if result.Status == StatusFail {
 		printFailureBox(writer, resultLabel(result), result, color)
 	}
@@ -158,6 +159,7 @@ func evidenceValueLines(value string) []string {
 }
 
 func printResultSummary(writer io.Writer, results []Result, color bool) {
+	printCollectionSummary(writer, results, color)
 	if color {
 		fmt.Fprintf(writer, "\n%s\n", richResultCounts(results, writerWidth(writer)))
 		return

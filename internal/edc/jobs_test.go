@@ -141,3 +141,31 @@ func TestJobsResultShowsOnlyFailuresUnlessVerbose(t *testing.T) {
 		t.Fatalf("healthy = %+v", healthy)
 	}
 }
+
+func TestJobsCollectionDoesNotConfuseHealthNotesAndMissingData(t *testing.T) {
+	now := time.Now()
+	source := jobsSource{Probe: jobsProbeCron, Note: "cron has no last-result history"}
+	empty := jobsResult(source, now, false)
+	if c := empty.Collection; c.State != collectionObserved || c.Observed == nil || *c.Observed != 0 {
+		t.Fatalf("empty: %+v", c)
+	}
+	source.Jobs = []scheduledJob{{Name: "bad", Failed: true}}
+	failed := jobsResult(source, now, false)
+	if failed.Status != StatusFail || failed.Collection.State != collectionObserved || exitCode([]Result{failed}) != 1 {
+		t.Fatalf("health changed: %+v", failed)
+	}
+	source.Unreadable = []string{"/root/crontab"}
+	partial := jobsResult(source, now, false)
+	if c := partial.Collection; c.State != collectionPartial || *c.Observed != 1 {
+		t.Fatalf("partial: %+v", c)
+	}
+	source.Err = os.ErrPermission
+	denied := jobsResult(source, now, false)
+	if c := denied.Collection; c.State != collectionPermissionDenied || c.Observed != nil {
+		t.Fatalf("denied: %+v", c)
+	}
+	source.Err = errJobsUnsupported
+	if c := jobsResult(source, now, false).Collection; c.State != collectionUnsupported || c.Observed != nil {
+		t.Fatalf("unsupported: %+v", c)
+	}
+}

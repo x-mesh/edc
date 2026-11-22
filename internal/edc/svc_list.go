@@ -165,10 +165,10 @@ func collectSvcList(ctx context.Context, sources svcSources, all bool) ([]svcLis
 // unit이 있으면 warn이다. 예전에 재시작한 적만 있는 unit은 위에 보이지만 경고하지 않는다. 오래 돈 host에서는 흔하다.
 func evaluateSvcList(items []svcListItem, err error) Result {
 	if errors.Is(err, errSvcNoSystemd) {
-		return unsupported(svcProbeID, T("svc.skip.no_systemd"))
+		return withCollection(unsupported(svcProbeID, T("svc.skip.no_systemd")), collectionUnsupported, nil, "")
 	}
 	if err != nil {
-		return svcFailed(svcResult("list", StatusFail, T("svc.list.failed", infoSingleLine(err.Error()))))
+		return collectionReadError(svcFailed(svcResult("list", StatusFail, T("svc.list.failed", infoSingleLine(err.Error())))), err)
 	}
 	var failed []string
 	changing := 0
@@ -194,7 +194,7 @@ func evaluateSvcList(items []svcListItem, err error) Result {
 		}
 	}
 	result.Metrics = map[string]interface{}{"services": items, "failed": len(failed), "changing": changing}
-	return result
+	return withCollection(result, collectionObserved, intPointer(len(items)), "")
 }
 
 // svcListCells는 표와 대화형 화면이 같이 쓰는 칸이다.
@@ -270,7 +270,7 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	started := time.Now()
 	target := map[string]interface{}{"all": all}
 	if !ok {
-		return emit(options, buildReport(version, started, target, []Result{unsupported(svcProbeID, T("svc.skip.linux_only"))}, options.redact))
+		return emit(options, buildReport(version, started, target, []Result{withCollection(unsupported(svcProbeID, T("svc.skip.linux_only")), collectionUnsupported, nil, "")}, options.redact))
 	}
 	if options.jsonPath == "" && liveTerminal() && sources.systemd() {
 		return runSvcBrowser(sources, options.timeout, all)
@@ -283,17 +283,39 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, target, []Result{result}, options.redact))
 	}
-	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	terminal := isTerminal(os.Stdout)
+	style := observeTerminalStyle(os.Stdout)
+	color := terminal && os.Getenv("NO_COLOR") == ""
 	var output io.Writer = os.Stdout
 	var buffer strings.Builder
 	if options.redact {
 		output = &buffer
 	}
-	fmt.Fprint(output, formatResultLine(result, color))
-	printResultDetail(output, result, false, color)
-	if table := formatSvcListTable(items, newTextStyle(color)); table != "" {
+	if terminal {
+		rendered := result
+		if options.redact {
+			redacted, err := observeOutputRedactedResults([]Result{result})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 2
+			}
+			rendered = redacted[0]
+		}
+		printObserveResult(output, rendered, false, style)
+	} else {
+		fmt.Fprint(output, formatResultLine(result, color))
+		printResultDetail(output, result, false, color)
+	}
+	table := ""
+	if terminal {
+		table = formatObserveSvcTable(items, style, options.redact)
+	} else {
+		table = formatSvcListTable(items, newTextStyle(color))
+	}
+	if table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
+	printCollectionSummary(output, []Result{result}, color)
 	if options.redact {
 		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))
 	}

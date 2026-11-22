@@ -1,0 +1,10 @@
+collection:
+  detail: "collection: %s"
+  summary: "Collection: %s"
+  observed_count: "%d observed items"
+  state:
+    observed: "observed"
+    partial: "partial"
+    permission_denied: "permission denied"
+    unsupported: "unsupported"
+    unavailable: "unavailable"

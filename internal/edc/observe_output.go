@@ -99,9 +99,11 @@ func printObserveTerminal(writer io.Writer, results []Result, verbose bool, styl
 		printObserveResult(writer, result, verbose, style)
 	}
 	var footer strings.Builder
-	printResultSummary(&footer, results, style.color)
+	printResultSummary(&footer, results, false)
+	footerStyle := style
+	footerStyle.color = false
 	for _, line := range strings.Split(strings.TrimSuffix(footer.String(), "\n"), "\n") {
-		observeOutputLine(writer, style, 0, line)
+		observeOutputLine(writer, footerStyle, 0, line)
 	}
 }
 

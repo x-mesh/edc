@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	historyEvidenceMaxResults      = 1000
-	historyEvidenceMaxPayloadBytes = 8 << 20
-	historyEvidenceMaxTotalBytes   = 32 << 20
-	historyEvidenceMaxEntries      = 200
-	historyEvidenceTextLimit       = 1024
-	historyEvidenceRunBytes        = 64 << 10
+	historyEvidenceMaxResults       = 1000
+	historyEvidenceMaxPayloadBytes  = 8 << 20
+	historyEvidenceMaxTotalBytes    = 32 << 20
+	historyEvidenceMaxEntries       = 200
+	historyEvidenceTextLimit        = 1024
+	historyEvidenceRunBytes         = 64 << 10
+	historyEvidenceCapturePrecision = time.Millisecond
 )
 
 type historyOverviewEvidence struct {
@@ -46,15 +47,16 @@ type historyEvidenceAccumulator struct {
 	entries    []historyOverviewEvidence
 	notices    []historyEvidenceNotice
 	seen       map[[32]byte]bool
-	noticeKeys map[string]bool
+	noticeKeys map[[32]byte]bool
 }
 
 func newHistoryEvidenceAccumulator() *historyEvidenceAccumulator {
-	return &historyEvidenceAccumulator{entries: []historyOverviewEvidence{}, notices: []historyEvidenceNotice{}, seen: map[[32]byte]bool{}, noticeKeys: map[string]bool{}}
+	return &historyEvidenceAccumulator{entries: []historyOverviewEvidence{}, notices: []historyEvidenceNotice{}, seen: map[[32]byte]bool{}, noticeKeys: map[[32]byte]bool{}}
 }
 
 func (acc *historyEvidenceAccumulator) notice(code, source, run, detail string) {
-	key := code + "\x00" + source
+	encoded, _ := json.Marshal([]string{code, source, run, detail})
+	key := sha256.Sum256(encoded)
 	if acc.noticeKeys[key] {
 		return
 	}
@@ -151,8 +153,9 @@ func loadHistorySnapshotEvidence(db *sql.DB, view historyOverview, acc *historyE
  CASE WHEN length(CAST(s.payload AS BLOB))<=? THEN s.payload ELSE '' END,length(CAST(s.payload AS BLOB)),r.hostname,
  CASE WHEN length(CAST(r.payload AS BLOB))<=? THEN r.payload ELSE '' END
  FROM snapshot_results s JOIN runs r ON r.id=s.run_id
- WHERE r.command='snapshot' AND s.time_ns>=? AND (s.probe='events.window' OR (s.probe LIKE 'events.%' AND s.status='skip') OR s.probe LIKE 'changes.%')`
-	args := []any{historyEvidenceMaxPayloadBytes, historyEvidenceRunBytes, view.From.UnixNano()}
+ WHERE r.command='snapshot' AND (s.time_ns>=? OR r.ended_ns>=?) AND (s.probe='events.window' OR (s.probe LIKE 'events.%' AND s.status='skip') OR s.probe LIKE 'changes.%')`
+	// Snapshot ends are reconstructed from DurationMS, which truncates sub-millisecond collection time.
+	args := []any{historyEvidenceMaxPayloadBytes, historyEvidenceRunBytes, view.From.UnixNano(), view.From.Add(-historyEvidenceCapturePrecision).UnixNano()}
 	if view.Run != nil {
 		query += " AND r.hostname=?"
 		args = append(args, view.Run.Hostname)

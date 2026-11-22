@@ -256,3 +256,90 @@ func TestHistoryOverviewEvidencePrefersTargetHostOverUnscopedLogs(t *testing.T) 
 		}
 	}
 }
+
+func TestHistoryOverviewEvidenceNoticesPreserveRunAndDetail(t *testing.T) {
+	acc := newHistoryEvidenceAccumulator()
+	for _, notice := range []historyEvidenceNotice{
+		{Code: "source_unavailable", Source: "events.units", RunID: "run-a", Detail: "permission denied"},
+		{Code: "source_unavailable", Source: "events.units", RunID: "run-b", Detail: "journal missing"},
+		{Code: "source_unavailable", Source: "events.units", RunID: "run-a", Detail: "journal rotated"},
+		{Code: "source_unavailable", Source: "events.units", RunID: "run-a", Detail: "permission denied"},
+	} {
+		acc.notice(notice.Code, notice.Source, notice.RunID, notice.Detail)
+	}
+	if len(acc.notices) != 3 || len(acc.noticeKeys) != 3 {
+		t.Fatalf("distinct provenance was collapsed: %+v", acc.notices)
+	}
+	expected := map[string]bool{"run-a/permission denied": false, "run-b/journal missing": false, "run-a/journal rotated": false}
+	for _, notice := range acc.notices {
+		expected[notice.RunID+"/"+notice.Detail] = true
+	}
+	for identity, found := range expected {
+		if !found {
+			t.Fatalf("missing %s: %+v", identity, acc.notices)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		acc.notice("entries_limit", "", "", "200")
+	}
+	if len(acc.notices) != 4 {
+		t.Fatalf("global notice was duplicated: %+v", acc.notices)
+	}
+}
+
+func TestHistoryOverviewEvidenceNoticesRemainBoundedByCandidateBudget(t *testing.T) {
+	db := historyEvidenceDB(t)
+	from := time.Unix(1000, 0).UTC()
+	capture := from.Add(time.Minute)
+	addHistoryEvidenceSnapshot(t, db, "rows", "host", capture)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < historyEvidenceMaxResults+1; i++ {
+		payload, err := json.Marshal(Result{Probe: "events.units", Status: StatusSkip, Summary: fmt.Sprintf("distinct failure %d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("INSERT INTO snapshot_results(run_id,time_ns,probe,status,payload) VALUES (?,?,?,?,?)", "rows", capture.UnixNano(), "events.units", "skip", string(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	_, notices := loadHistoryOverviewEvidence(db, historyOverview{From: from, To: from.Add(time.Hour)}, nil, nil)
+	if len(notices) != historyEvidenceMaxResults+1 || !hasHistoryEvidenceNotice(notices, "results_limit") {
+		t.Fatalf("candidate bound not preserved: %d", len(notices))
+	}
+}
+
+func TestHistoryOverviewEvidenceIncludesCollectionAcrossWindowStart(t *testing.T) {
+	from := time.Unix(1000, 0).UTC()
+	for _, tc := range []struct {
+		name                                   string
+		capture, event, collectedTo, storedEnd time.Time
+		want                                   int
+	}{
+		{"collection crosses start", from.Add(-time.Second), from.Add(500 * time.Millisecond), from.Add(time.Second), from.Add(2 * time.Second), 1},
+		{"millisecond end quantization", from.Add(-time.Second - 300*time.Microsecond), from.Add(100 * time.Microsecond), from.Add(300 * time.Microsecond), from.Add(-300 * time.Microsecond), 1},
+		{"collection ended before start", from.Add(-2 * time.Second), from.Add(-1500 * time.Millisecond), from.Add(-time.Second), from.Add(-time.Second), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := historyEvidenceDB(t)
+			window := eventsWindow(eventsFacts{Start: from.Add(-time.Hour), Now: tc.collectedTo, Since: time.Hour, Signals: []eventsSignal{{Time: tc.event, Kind: "oom", Brief: "observed during collection"}}})
+			addHistoryEvidenceSnapshot(t, db, "straddles-start", "host", tc.capture, window)
+			addHistoryEvidenceSnapshot(t, db, "other-host", "elsewhere", tc.capture, window)
+			if _, err := db.Exec("UPDATE runs SET ended_ns=?", tc.storedEnd.UnixNano()); err != nil {
+				t.Fatal(err)
+			}
+			entries, notices := loadHistoryOverviewEvidence(db, historyOverview{From: from, To: from.Add(time.Minute), Run: &historyRun{Hostname: "host"}}, nil, nil)
+			if len(entries) != tc.want || len(notices) != 0 {
+				t.Fatalf("boundary evidence: %+v %+v", entries, notices)
+			}
+			if tc.want > 0 && (entries[0].Host != "host" || !entries[0].Time.Equal(tc.event) || entries[0].CapturedAt == nil || !entries[0].CapturedAt.Equal(tc.capture)) {
+				t.Fatalf("time or host identity changed: %+v", entries)
+			}
+		})
+	}
+}

@@ -513,3 +513,24 @@ func TestSvcCollectionSeparatesFailedHealthAndPartialSources(t *testing.T) {
 		t.Fatalf("no backend: %+v", c)
 	}
 }
+
+func TestSvcCollectionDoesNotTreatMissingMainProcessAsObservedZero(t *testing.T) {
+	facts := svcFacts{Systemd: true, Root: true, Show: svcShow{LoadState: "loaded", ActiveState: "active", SubState: "running", MainPID: 42}}
+	for _, result := range evaluateSvc(facts) {
+		if result.Probe == "svc.processes" || result.Probe == "svc.fd" || result.Probe == "svc.listen" {
+			if c := result.Collection; c.State != collectionUnavailable || c.Observed != nil {
+				t.Fatalf("missing process looks empty: %s %+v", result.Probe, c)
+			}
+		}
+	}
+	used := 0
+	facts.Processes = []topProcess{{PID: 43}}
+	facts.FD = map[int]topFDLimit{43: {topLimitStatus: topLimitStatus{Status: "available"}, Used: &used}}
+	for _, result := range evaluateSvc(facts) {
+		if result.Probe == "svc.processes" || result.Probe == "svc.fd" || result.Probe == "svc.listen" {
+			if c := result.Collection; c.State != collectionPartial || c.Observed == nil {
+				t.Fatalf("missing main lost partial scope: %s %+v", result.Probe, c)
+			}
+		}
+	}
+}

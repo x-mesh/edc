@@ -628,6 +628,7 @@ func evaluateSvc(facts svcFacts) []Result {
 	if facts.probe() != svcProbeID {
 		return results
 	}
+	mainMissing := facts.Show.MainPID > 0 && !slices.ContainsFunc(facts.Processes, func(process topProcess) bool { return process.PID == facts.Show.MainPID })
 	for i, result := range results {
 		if !facts.Systemd {
 			results[i] = withCollection(result, collectionUnsupported, nil, "")
@@ -644,7 +645,15 @@ func evaluateSvc(facts svcFacts) []Result {
 			if facts.ProcessErr != nil {
 				results[i] = svcCollectionError(result, facts.ProcessErr)
 			} else {
-				results[i] = withCollection(result, collectionObserved, intPointer(len(facts.Processes)), "")
+				state := collectionObserved
+				count := intPointer(len(facts.Processes))
+				if mainMissing {
+					state = collectionPartial
+					if len(facts.Processes) == 0 {
+						state, count = collectionUnavailable, nil
+					}
+				}
+				results[i] = withCollection(result, state, count, "")
 			}
 		case "fd":
 			if facts.ProcessErr != nil {
@@ -668,9 +677,9 @@ func evaluateSvc(facts svcFacts) []Result {
 			switch {
 			case readable == 0 && denied > 0:
 				state, count = collectionPermissionDenied, nil
-			case readable == 0 && failed > 0:
+			case readable == 0 && (failed > 0 || mainMissing):
 				state, count = collectionUnavailable, nil
-			case denied+failed > 0 || readable < len(facts.Processes):
+			case denied+failed > 0 || readable < len(facts.Processes) || mainMissing:
 				state = collectionPartial
 			}
 			results[i] = withCollection(result, state, count, "")
@@ -678,6 +687,8 @@ func evaluateSvc(facts svcFacts) []Result {
 			switch {
 			case facts.ProcessErr != nil:
 				results[i] = svcCollectionError(result, facts.ProcessErr)
+			case mainMissing && len(facts.Processes) == 0:
+				results[i] = withCollection(result, collectionUnavailable, nil, "")
 			case svcListenHidden(facts):
 				results[i] = withCollection(result, collectionPermissionDenied, nil, "")
 			case facts.ListenErr != nil:
@@ -687,7 +698,11 @@ func evaluateSvc(facts svcFacts) []Result {
 				if number, ok := result.Metrics["sockets"].(int); ok {
 					count = number
 				}
-				results[i] = withCollection(result, collectionObserved, intPointer(count), "")
+				state := collectionObserved
+				if mainMissing {
+					state = collectionPartial
+				}
+				results[i] = withCollection(result, state, intPointer(count), "")
 			}
 		case "journal":
 			switch {

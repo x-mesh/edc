@@ -461,3 +461,29 @@ func TestFormatChangesTableCapsRows(t *testing.T) {
 		t.Fatal("변화가 없는데 표를 그렸다")
 	}
 }
+
+func TestChangesCollectionUsesTypedFactsAndExplicitPartialFlags(t *testing.T) {
+	cases := []struct {
+		name   string
+		source changesSourceResult
+		state  collectionState
+		known  bool
+	}{
+		{"observed zero", changesSourceResult{summary: "no changes"}, collectionObserved, true},
+		{"note is not partial", changesSourceResult{warnings: []string{"informational"}}, collectionObserved, true},
+		{"partial zero", changesSourceResult{partial: true}, collectionPartial, true},
+		{"budget", changesSourceResult{truncated: true}, collectionPartial, true},
+		{"permission", changesSourceResult{skip: "translated reason", collectionErr: os.ErrPermission}, collectionPermissionDenied, false},
+		{"unsupported", changesSourceResult{skip: "translated reason", unsupported: true}, collectionUnsupported, false},
+		{"generic unavailable", changesSourceResult{skip: "permission denied words are not typed facts"}, collectionUnavailable, false},
+		{"successful empty enumeration", changesSourceResult{skip: "none found", observedEmpty: true}, collectionObserved, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := changesResult("test", time.Now(), tc.source)
+			if c := result.Collection; c.State != tc.state || (c.Observed != nil) != tc.known {
+				t.Fatalf("coverage: %+v", c)
+			}
+		})
+	}
+}

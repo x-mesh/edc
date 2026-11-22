@@ -167,7 +167,7 @@ _edc() {
           _arguments "1:shell:(zsh bash)" "--no-alias[completion only]"
           ;;
         top)
-          _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
+          _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--interactive[NO_COLOR에서도 터미널 대시보드]' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         history)
           if [[ $words[2] == log ]]; then _arguments '*:command:_command_names -e'; return; fi
@@ -257,7 +257,7 @@ _edc() {
           ;;
         listen)
           # listen의 -v는 evidence를 펼치지 않고 열을 늘린다. 공용 설명을 빼고 이 명령의 것을 쓴다.
-          _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
+          _arguments ${common:#*verbose*} '(-b --browse -B --no-browse)'{-b,--browse}'[소켓 목록 탐색; r로 새로고침]' '(-B --no-browse -b --browse)'{-B,--no-browse}'[한 번 출력 후 종료]' '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
           ;;
         changes)
           # changes의 -v는 evidence를 펼치지 않고 표의 모든 줄을 보인다.
@@ -410,7 +410,7 @@ _edc() {
         --columns) COMPREPLY=($(compgen -W "all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+" -- "$cur")); return ;;
       esac
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "setup" -- "$cur")); return; fi
-      COMPREPLY=($(compgen -W "--interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
+      COMPREPLY=($(compgen -W "--interactive --interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process overview export trend growth prune log" -- "$cur"))
       elif [[ ${COMP_WORDS[2]} == log ]]; then COMPREPLY=($(compgen -c -- "$cur"))
@@ -486,7 +486,7 @@ _edc() {
       else
         COMPREPLY=($(compgen -d -- "$cur"))
       fi ;;
-    listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
+    listen) COMPREPLY=($(compgen -W "$common -b --browse -B --no-browse --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
     changes) COMPREPLY=($(compgen -W "$common --since" -- "$cur")) ;;
     quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;

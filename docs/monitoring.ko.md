@@ -240,6 +240,8 @@ edc top --count 5 --json -
 
 `--process <filter>`는 process 목록을 지정한 process로 좁힙니다. filter는 쉼표로 구분한 목록입니다. 숫자는 PID와 같아야 하고, 그 밖의 항목은 command 이름의 일부와 대소문자를 가리지 않고 맞아야 합니다. 항목 하나라도 맞으면 목록에 남습니다. command 이름은 Linux에서는 kernel이 15자로 자르는 `comm`, macOS에서는 실행 파일 경로입니다.
 
+`--process`를 주면 `Enter`로 여는 상세 패널에 맞는 process마다 최근 RSS 변화도 표시합니다. 관측값을 비교하는 방식은 [top의 최근 RSS 변화](observe-process-deltas.ko.md)에서 설명합니다.
+
 ```bash
 # 대시보드: process 보기로 열리고, Enter로 가장 바쁜 process를 봅니다
 edc top --process output-mesh

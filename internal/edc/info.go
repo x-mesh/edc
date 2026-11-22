@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/miekg/dns"
 )
 
@@ -157,19 +158,26 @@ func infoSwapText(style textStyle, used, total uint64) string {
 }
 
 func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, signals infoSignals, processes []topProcess, processErr error, capabilities []infoCapability, color, verbose bool) {
-	style := newTextStyle(color)
+	style := newInfoStyle(color)
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("📊 Memory Status"))
 	if memoryErr != nil {
 		// swap은 호스트 정보에서 따로 읽으므로 메모리를 읽지 못해도 보여 준다.
-		style.tree(writer, "├──", infoUnavailable(style, memoryErr.Error()))
-		style.tree(writer, "└──", style.kv("Swap", infoSwapText(style, memory.SwapUsed, memory.SwapTotal)))
+		style.tree(writer, "├──", infoUnavailable(style.textStyle, memoryErr.Error()))
+		style.tree(writer, "└──", style.kv("Swap", infoSwapText(style.textStyle, memory.SwapUsed, memory.SwapTotal)))
 	} else {
 		used := memory.Total - memory.Available
 		percent := float64(used) / float64(memory.Total) * 100
 		usage := formatBytes(used) + " / " + formatBytes(memory.Total) + " " + style.level(fmt.Sprintf("(%.2f%%)", percent), newTopLimits(1, false).memory.level(percent))
-		style.tree(writer, "├──", style.join(" · ", style.kv("Used", usage), style.kv("Available", formatBytes(memory.Available))))
-		style.tree(writer, "├──", style.kv("Swap", infoSwapText(style, memory.SwapUsed, memory.SwapTotal)))
+		headline := style.join(" · ", style.kv("Used", usage), style.kv("Available", formatBytes(memory.Available)))
+		swap := style.kv("Swap", infoSwapText(style.textStyle, memory.SwapUsed, memory.SwapTotal))
+		combined := style.join(" · ", headline, swap)
+		if style.width > 0 && liveWidth(combined)+4 <= style.width {
+			style.tree(writer, "├──", combined)
+		} else {
+			style.tree(writer, "├──", headline)
+			style.tree(writer, "├──", swap)
+		}
 		if line := infoPressureLine(signals, color); line != "" {
 			style.tree(writer, "├──", line)
 		}
@@ -192,7 +200,7 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("Process Snapshot"))
 	if processErr != nil {
-		style.tree(writer, "└──", infoUnavailable(style, processErr.Error()))
+		style.tree(writer, "└──", infoUnavailable(style.textStyle, processErr.Error()))
 	} else {
 		threads, known := 0, 0
 		for _, process := range processes {
@@ -220,8 +228,16 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].RSS > ordered[j].RSS })
 		for _, process := range ordered[:min(3, len(ordered))] {
 			rss := style.paint(fmt.Sprintf("%9s", infoProcessSize(process.RSS)), richSizeColor(int64(process.RSS)))
-			style.line(writer, "    "+style.dim("PID")+" "+fmt.Sprintf("%-7d %-28s ", process.PID, topProcessName(process.Command, 28))+rss)
+			nameWidth := 36
+			if style.width > 0 {
+				nameWidth = max(8, style.width-27)
+			}
+			name := liveCell(ansi.Truncate(topProcessName(process.Command, 4096), nameWidth, "…"), nameWidth)
+			style.write(writer, "    ", "    ", style.dim("PID")+" "+fmt.Sprintf("%-7d ", process.PID)+name+" "+rss)
 		}
+	}
+	if !verbose {
+		return
 	}
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("Diagnostic Support"))
@@ -230,7 +246,7 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 		if index == len(capabilities)-1 {
 			branch = "└──"
 		}
-		style.tree(writer, branch, style.kv(capability.Name, infoCapabilityState(style, capability.State)+style.dim(" · "+infoSingleLine(capability.Detail))))
+		style.tree(writer, branch, style.kv(capability.Name, infoCapabilityState(style.textStyle, capability.State)+style.dim(" · "+infoSingleLine(capability.Detail))))
 	}
 }
 
@@ -241,12 +257,12 @@ const infoListenRows = 5
 // loopback은 개수만 세고, 주소를 해석하지 못한 소켓은 노출된 쪽으로 센다. -v는 loopback까지 모두 보여 준다.
 // hidesOtherAccounts는 macOS에서 root가 아니라 다른 계정의 소켓이 목록에서 빠진다는 뜻이다.
 func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color, verbose bool) {
-	style := newTextStyle(color)
+	style := newInfoStyle(color)
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("Listening Ports"))
 	sockets, ok := result.Metrics["sockets"].([]listenSocket)
 	if !ok {
-		style.tree(writer, "└──", infoUnavailable(style, result.Summary))
+		style.tree(writer, "└──", infoUnavailable(style.textStyle, result.Summary))
 		return
 	}
 	var tcp, udp, loopback int
@@ -270,7 +286,8 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		}
 	}
 	count := func(label string, value int) string { return style.dim(label) + " " + fmt.Sprint(value) }
-	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), infoListenExposed(style, len(sockets)-loopback, scopes), count("Loopback", loopback))}
+	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), infoListenExposed(style.textStyle, len(sockets)-loopback, scopes), count("Loopback", loopback))}
+	lines = append(lines, style.dim("External reachability is not checked"))
 	limit := len(shown)
 	if !verbose {
 		limit = min(limit, infoListenRows)
@@ -289,7 +306,7 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+scope+"  "+process)
 	}
 	if hidden := len(shown) - limit; hidden > 0 {
-		lines = append(lines, style.dim(fmt.Sprintf("… %d more exposed · ", hidden))+style.command("edc listen"))
+		lines = append(lines, style.dim(fmt.Sprintf("… %d more · ", hidden))+style.command("edc listen"))
 	}
 	for _, warning := range result.Warnings {
 		lines = append(lines, style.warn("Warning: "+infoSingleLine(warning)))
@@ -322,7 +339,7 @@ func infoListenExposed(style textStyle, exposed int, scopes map[string]int) stri
 			parts = append(parts, fmt.Sprintf("%s %d", scope, scopes[scope]))
 		}
 	}
-	text := style.dim("Exposed") + " " + fmt.Sprint(exposed)
+	text := style.dim("Non-loopback bindings") + " " + fmt.Sprint(exposed)
 	if len(parts) > 0 {
 		text += style.dim(" (" + strings.Join(parts, " · ") + ")")
 	}
@@ -352,7 +369,7 @@ func infoCapabilityState(style textStyle, state string) string {
 }
 
 func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo, signals infoSignals, color, verbose bool) {
-	style := newTextStyle(color)
+	style := newInfoStyle(color)
 	// banner가 이미 버전을 담으므로 Version 줄을 따로 두지 않는다.
 	fmt.Fprintf(writer, "%s\n\n", formatBanner(version, color))
 	if verbose {
@@ -402,7 +419,12 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 			style.tree(writer, "├──", style.kv("Region", fmt.Sprintf("%s, %s, %s", public.City, public.Region, public.Country)+style.dim(" · ")+public.Timezone))
 		}
 	}
-	style.tree(writer, "├──", style.kv("DNS", infoDNSLine(signals.DNS)))
+	dns := signals.DNS
+	dns.Config.Search = nil
+	style.tree(writer, "├──", style.kv("DNS", infoDNSLine(dns)))
+	if len(signals.DNS.Config.Search) > 0 {
+		style.tree(writer, "├──", style.kv("Search domains", style.join(" · ", signals.DNS.Config.Search...)))
+	}
 	if signals.IPv6Default != "" {
 		style.tree(writer, "├──", style.kv("IPv6 default route", signals.IPv6Default))
 	}
@@ -420,13 +442,13 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		}
 		gateway := ""
 		if iface.Gateway != "" {
-			gateway = style.dim(",") + " " + style.kv("G/W", iface.Gateway)
+			gateway = style.dim(" · default · ") + style.kv("Gateway", iface.Gateway)
 		}
 		tags := ""
 		if kinds := infoInterfaceTags(iface); len(kinds) > 0 {
 			tags = style.dim(" · " + strings.Join(kinds, ", "))
 		}
-		style.line(writer, style.dim(indent+branch)+" "+style.kv(fmt.Sprintf("%-15s", iface.Name), iface.Address+" "+style.dim("/")+" "+iface.Mask+gateway+tags))
+		style.line(writer, style.dim(indent+branch)+" "+style.kv(fmt.Sprintf("%-15s", iface.Name), infoInterfaceCIDR(iface)+gateway+tags))
 	}
 	if showInterfaces {
 		style.tree(writer, "└──", style.dim("Interfaces"))
@@ -536,7 +558,11 @@ func collapseSharedDisks(disks []diskDetails) ([]diskDetails, map[string]int) {
 }
 
 func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]diskSignal, color, verbose bool) {
-	style := newTextStyle(color)
+	printDiskUsageStyled(writer, disks, signals, newInfoStyle(color), verbose)
+}
+
+func printDiskUsageStyled(writer io.Writer, disks []diskDetails, signals map[string]diskSignal, style infoStyle, verbose bool) {
+	color := style.color
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("💾 Disk Usage"))
 	visible := visibleDisks(disks)
@@ -544,35 +570,54 @@ func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]di
 	if !verbose {
 		visible, shared = collapseSharedDisks(visible)
 	}
-	// 열 폭을 값에서 잰다. 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 모두 밀어낸다.
-	mountWidth, deviceWidth := diskMountWidth, diskDeviceWidth
-	for _, disk := range visible {
-		mountWidth = max(mountWidth, liveWidth(disk.Mount))
-		deviceWidth = max(deviceWidth, liveWidth(disk.Device))
-	}
 	for index, disk := range visible {
 		branch := "├──"
 		if index == len(visible)-1 {
 			branch = "└──"
 		}
-		row := liveCell(disk.Mount, mountWidth) + " " + style.dim(liveCell(disk.Device, deviceWidth)+":") + " " +
-			fmt.Sprintf("%9s / %9s ", formatBytes(disk.Used), formatBytes(disk.Total)) + formatUsageBar(disk.Percent, color) + style.warn(diskSignalSuffix(signals[disk.Mount]))
-		if count := shared[disk.Mount]; count > 1 {
-			row += style.dim(fmt.Sprintf(" · %d mounts", count))
-		}
-		style.tree(writer, branch, row)
 		indent := "│   "
 		if index == len(visible)-1 {
 			indent = "    "
 		}
+		label := disk.Mount
+		if !verbose && style.width > 0 {
+			label = infoMountLabel(label, max(1, style.width-4))
+		}
+		usage := style.kv("Used", formatBytes(disk.Used)+" / "+formatBytes(disk.Total))
+		free := uint64(0)
+		if disk.Total > disk.Used {
+			free = disk.Total - disk.Used
+		}
+		usage += style.dim(" · ") + style.kv("Free", formatBytes(free))
+		bar := formatUsageBar(disk.Percent, color)
+		row := label + "  " + usage + "  " + bar
+		if style.width <= 0 || liveWidth(row)+4 <= style.width {
+			style.tree(writer, branch, row)
+		} else {
+			style.tree(writer, branch, label)
+			if liveWidth(usage+"  "+bar)+4 <= style.width {
+				style.write(writer, indent, indent, usage+"  "+bar)
+			} else {
+				style.write(writer, indent, indent, usage)
+				style.write(writer, indent, indent, bar)
+			}
+		}
+		if warning := strings.TrimSpace(diskSignalSuffix(signals[disk.Mount])); warning != "" {
+			style.write(writer, indent, indent, style.warn(warning))
+		}
+		device := style.kv("Device", disk.Device)
+		if count := shared[disk.Mount]; count > 1 {
+			device += style.dim(fmt.Sprintf(" · %d mounts", count))
+		}
+		style.write(writer, indent, indent, device)
 		// 마운트 옵션은 -v에서만 읽으므로 기본 출력에서는 비어 있다.
 		if options := signals[disk.Mount].Options; options != "" {
-			style.line(writer, style.dim(indent)+style.kv("options", options))
+			style.write(writer, indent, indent, style.kv("options", options))
 		}
-		// 지워진 파일의 목록은 길어서 -v에서만 보인다. 기본 출력은 줄 끝의 합계로 충분하다.
+		// 지워진 파일의 목록은 길어서 -v에서만 보인다.
 		if verbose {
 			for _, line := range deletedOpenLines(signals[disk.Mount].DeletedOpen) {
-				style.line(writer, style.dim(indent)+style.kv("deleted-open", line))
+				style.write(writer, indent, indent, style.kv("deleted-open", line))
 			}
 		}
 	}
@@ -600,9 +645,6 @@ const (
 	diskBarWidth = 20
 	diskBarFull  = "█"
 	diskBarEmpty = "░"
-	// diskMountWidth와 diskDeviceWidth는 두 열의 최소 폭이다. 값이 짧아도 열이 흔들리지 않는다.
-	diskMountWidth  = 12
-	diskDeviceWidth = 18
 )
 
 // diskPseudoDevices는 저장 장치를 쓰지 않는 파일 시스템이다. tmpfs는 램을 쓰고,

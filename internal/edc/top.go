@@ -24,6 +24,7 @@ func runTop(args []string, version string) (code int) {
 	config := activeConfig.Defaults.Top
 	interval := durationFlag(set, "interval", configuredDuration(config.Interval, time.Second), T("command.top.option.interval"))
 	count := set.Int("count", configuredInt(config.Count, 0), T("command.top.option.count"))
+	interactive := set.Bool("interactive", false, T("topnav.option"))
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))
 	topValue := set.Int("top", topJSONProcesses, T("command.top.option.top"))
@@ -104,7 +105,11 @@ func runTop(args []string, version string) (code int) {
 	}
 	jsonOutput := *jsonPath != ""
 	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
-	dashboard := !jsonOutput && *count == 0 && liveTerminal()
+	if *interactive && (jsonOutput || *count != 0 || !isTerminal(os.Stdin) || !isTerminal(os.Stdout) || os.Getenv("TERM") == "dumb") {
+		fmt.Fprintln(os.Stderr, T("topnav.invalid"))
+		return 2
+	}
+	dashboard := !jsonOutput && *count == 0 && (liveTerminal() || *interactive)
 	// --split 검사는 --json 파일을 열거나 --write DB를 만들기 전에 끝낸다. 실패한 실행이 파일을 비우거나 DB를 남기면 안 된다.
 	splitText := configuredString(config.Split, "")
 	if explicitSplit {

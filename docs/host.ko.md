@@ -335,6 +335,8 @@ job 하나를 볼 때는 `gui/<uid>`, `user/<uid>`, `system` domain에서 찾고
 - `svc.process`: 실행 중인 process의 CPU, 메모리, 열린 fd, 대기 포트입니다. `next`는 `edc proc <pid>`입니다.
 - `svc.log`: `StandardErrorPath` 파일의 마지막 20줄입니다. 없으면 `StandardOutPath`를 읽습니다. 둘 다 없으면 `next`로 unified log를 보는 `log show` 명령을 알려 줍니다.
 
+이 출력의 `Collection:` 줄은 [관측 명령의 수집 범위](observe-collection.ko.md)에서, 터미널 폭에 맞춘 표시는 [한 번 출력하는 관측 결과](observe-output.ko.md)에서 설명합니다.
+
 ## Process 보기 (Linux와 macOS)
 
 `edc proc <pid|이름>`은 process 하나를 한 화면에 보여 줍니다. 읽기만 하고 아무것도 바꾸지 않습니다.
@@ -357,6 +359,8 @@ edc proc -v 1234         # 명령행 전체
 
 Linux에서 `proc.process`는 process가 어디서 왔는지도 보여 줍니다. `exe`는 실행 파일입니다. `패키지`는 이 파일을 가진 dpkg 패키지와, dpkg가 그 패키지를 마지막으로 설치하거나 업그레이드한 시각입니다. 이 시각은 `/var/lib/dpkg/info`에 있는 그 패키지 파일 목록의 수정 시각입니다. 이 파일을 가진 패키지가 없으면 `없음`으로 표시하고, dpkg가 없는 host에서는 `패키지` 줄이 없습니다. `세션`은 process를 띄운 로그인 세션입니다. 사용자, 원격 host, 서비스, 시작 시각을 `/run/systemd/sessions`에서 읽습니다. 사용자가 로그아웃했는데 process가 아직 돌고 있으면 그 사실도 표시합니다. system 서비스처럼 로그인 세션 밖에서 뜬 process에는 `세션` 줄이 없습니다.
 
+이 출력의 `Collection:` 줄은 [관측 명령의 수집 범위](observe-collection.ko.md)에서, 터미널 폭에 맞춘 표시는 [한 번 출력하는 관측 결과](observe-output.ko.md)에서 설명합니다.
+
 ## 예약 작업 (Linux와 macOS)
 
 `edc jobs`는 예약 작업과 마지막 실행 결과를 보여 줍니다. 아무것도 바꾸지 않습니다.
@@ -373,6 +377,8 @@ sudo edc jobs -v   # 모든 작업, 사용자 crontab과 launchd daemon까지
 | `jobs.launchd` (macOS) | `/Library/LaunchDaemons`, `/Library/LaunchAgents`, `~/Library/LaunchAgents`에서 `StartInterval`이나 `StartCalendarInterval`이 있는 plist | `launchctl list`의 마지막 종료 상태입니다. 양수 종료 코드는 실패입니다. 신호로 끝난 job은 `check`와 같이 실패로 보지 않습니다. |
 
 실패한 작업은 맨 위에 나오고 종료 코드를 1로 만듭니다. 실패한 작업이 있으면 기본 출력은 실패한 작업만 보여 줍니다. 모든 작업은 `-v`로 봅니다. root가 아니면 사용자 crontab을 읽지 못하고, `launchctl list`는 현재 세션의 agent만 알려 줍니다.
+
+이 출력의 `Collection:` 줄은 [관측 명령의 수집 범위](observe-collection.ko.md)에서, 터미널 폭에 맞춘 표시는 [한 번 출력하는 관측 결과](observe-output.ko.md)에서 설명합니다.
 
 ## Container 보기 (Linux와 macOS)
 
@@ -481,6 +487,8 @@ edc changes --json -            # 모든 변경을 metrics.events에 담음
 
 `edc changes`는 회전된 로그 중 `.gz`와 `.zst`를 풀어 읽습니다. `.xz`나 `.bz2` 같은 다른 압축 로그는 풀지 않고, 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
 
+이 출력의 `Collection:` 줄은 [관측 명령의 수집 범위](observe-collection.ko.md)에서, 터미널 폭에 맞춘 표시는 [한 번 출력하는 관측 결과](observe-output.ko.md)에서 설명합니다.
+
 ## 커널과 systemd 이벤트 (Linux)
 
 `edc events`는 정한 기간의 커널 로그와 systemd journal을 읽어 장애 신호를 시간 순서로 정리합니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다.
@@ -542,7 +550,7 @@ macOS에서 `edc events`는 `/Library/Logs/DiagnosticReports`와 그 아래 `Ret
 
 ## Listening port
 
-`listen`으로 호스트 개요와 별도로 열린 port를 확인합니다. unix socket을 포함하려면 `--unix`나 `--all`을, 반복 관측하려면 `--watch`를 사용합니다.
+`listen`으로 호스트 개요와 별도로 열린 port를 확인합니다. unix socket을 포함하려면 `--unix`나 `--all`을, 반복 관측하려면 `--watch`를 사용합니다. 대화형 터미널에서 `edc listen`은 기본으로 socket 브라우저를 엽니다. 한 번만 출력하려면 `-B`를 사용합니다. 키와 `listen.browse` 설정은 [Listening socket 탐색](listen-browse.ko.md)에서 설명합니다.
 
 ```bash
 edc listen

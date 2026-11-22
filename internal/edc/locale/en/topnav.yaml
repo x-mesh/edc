@@ -1,0 +1,3 @@
+topnav:
+  option: "require a terminal dashboard, including with NO_COLOR"
+  invalid: "--interactive requires an interactive terminal and cannot be combined with --json or a nonzero --count"

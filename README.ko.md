@@ -18,6 +18,7 @@
 | 디스크를 차지하는 항목 찾기 | `edc du /var`, `edc clean` | [디렉터리 사용량](docs/disk-usage.ko.md#디렉터리-디스크-사용량-linux와-macos), [알려진 캐시](docs/disk-usage.ko.md#알려진-개발-캐시-사용량-linux와-macos) |
 | 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux와-macos) |
 | process 하나 들여다보기 | `edc proc <pid\|이름>` | [Process 보기](docs/host.ko.md#process-보기-linux와-macos) |
+| port마다 듣는 process 보기 | `edc listen`, `edc listen -B` | [Listening port](docs/host.ko.md#listening-port), [socket 브라우저](docs/listen-browse.ko.md) |
 | 예약 작업과 마지막 결과 보기 | `edc jobs` | [예약 작업](docs/host.ko.md#예약-작업-linux와-macos) |
 | 연결 문제 확인 | `edc dns lookup example.com`, `edc tcp check example.com:443` | [네트워크 점검](docs/network.ko.md#네트워크-점검), [종합 진단](docs/network.ko.md#doctor-실시간-화면) |
 | 애플리케이션과 커널 동작 추적 | `edc trace` | [추적과 패킷 캡처](#동작-추적과-패킷-캡처) — trace별 지원 조건 참고 |
@@ -87,7 +88,7 @@ edc top --count 5 --json -
 
 ## 호스트 점검
 
-`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux와 macOS에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크, 메모리 부족 종료 같은 지금의 문제를 찾습니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
+`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux와 macOS에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크, 메모리 부족 종료 같은 지금의 문제를 찾습니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다. socket은 docker CLI와 같은 방식으로 고르므로 OrbStack 같은 docker context에서도 동작합니다.
 
 ```bash
 edc info --public=false

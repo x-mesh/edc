@@ -65,25 +65,48 @@ func runChanges(args []string, version string) int {
 	defer deadline()
 	sources, ok := hostChangesSources()
 	if !ok {
-		return emit(options, buildReport(version, started, nil, []Result{unsupported("changes", T("changes.skip.linux_only"))}, options.redact))
+		return emit(options, buildReport(version, started, nil, []Result{withCollection(unsupported("changes", T("changes.skip.linux_only")), collectionUnsupported, nil, "")}, options.redact))
 	}
 	results := evaluateChanges(ctx, sources, *since)
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, nil, results, options.redact))
 	}
-	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	terminal := isTerminal(os.Stdout)
+	style := observeTerminalStyle(os.Stdout)
+	color := terminal && os.Getenv("NO_COLOR") == ""
 	var output io.Writer = os.Stdout
 	var buffer strings.Builder
 	if options.redact {
 		output = &buffer
 	}
-	for _, result := range results {
-		fmt.Fprint(output, formatResultLine(result, color))
-		printResultDetail(output, result, false, color)
+	events := changesEventsOf(results)
+	renderResults := results
+	if terminal && options.redact {
+		var err error
+		renderResults, err = observeOutputRedactedResults(results)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
-	if table := formatChangesTable(changesEventsOf(results), options.verbose, color); table != "" {
+	for _, result := range renderResults {
+		if terminal {
+			printObserveResult(output, result, false, style)
+		} else {
+			fmt.Fprint(output, formatResultLine(result, color))
+			printResultDetail(output, result, false, color)
+		}
+	}
+	table := ""
+	if terminal {
+		table = formatObserveChangesTable(events, options.verbose, style, options.redact)
+	} else {
+		table = formatChangesTable(events, options.verbose, color)
+	}
+	if table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
+	printCollectionSummary(output, results, color)
 	if options.redact {
 		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))
 	}
@@ -94,11 +117,13 @@ func (sources changesSources) file(path string) string { return filepath.Join(so
 
 // changesSourceResult는 원천 하나를 읽은 결과다. skip이 비어 있지 않으면 그 원천을 읽지 못한 것이다.
 type changesSourceResult struct {
-	events    []changeEvent
-	warnings  []string
-	summary   string
-	truncated bool
-	skip      string
+	collectionErr                       error
+	partial, unsupported, observedEmpty bool
+	events                              []changeEvent
+	warnings                            []string
+	summary                             string
+	truncated                           bool
+	skip                                string
 }
 
 func sortChangeEvents(events []changeEvent) {
@@ -139,7 +164,16 @@ func changesResult(id string, started time.Time, source changesSourceResult) Res
 	if source.skip != "" {
 		result.Status = StatusSkip
 		result.Summary = source.skip
-		return result
+		if source.collectionErr != nil {
+			return collectionReadError(result, source.collectionErr)
+		}
+		if source.unsupported {
+			return withCollection(result, collectionUnsupported, nil, "")
+		}
+		if source.observedEmpty {
+			return withCollection(result, collectionObserved, intPointer(0), "")
+		}
+		return withCollection(result, collectionUnavailable, nil, "")
 	}
 	sortChangeEvents(source.events)
 	if source.events == nil {
@@ -151,7 +185,11 @@ func changesResult(id string, started time.Time, source changesSourceResult) Res
 	}
 	result.Summary = source.summary
 	result.Metrics = map[string]interface{}{"count": len(source.events), "events": source.events}
-	return result
+	state := collectionObserved
+	if source.partial || source.truncated {
+		state = collectionPartial
+	}
+	return withCollection(result, state, intPointer(len(source.events)), "")
 }
 
 // changesEventsOf는 Result들에 담긴 변화를 한 목록으로 모아 최근 것부터 놓는다.
@@ -192,6 +230,9 @@ func collectPackageChanges(sources changesSources, cutoff time.Time) changesSour
 	for _, log := range changesPackageLogs {
 		checked = append(checked, log.base)
 		files, compressed, err := packageLogFiles(sources.root, log.base, cutoff)
+		if len(compressed) > 0 {
+			result.partial = true
+		}
 		for _, path := range compressed {
 			result.warnings = append(result.warnings, T("changes.warning.compressed", path))
 		}
@@ -210,10 +251,14 @@ func collectPackageChanges(sources changesSources, cutoff time.Time) changesSour
 	}
 	switch {
 	case len(read) == 0 && len(unread) > 0:
+		result.collectionErr = unreadErrs[0]
 		result.skip = changesSkip(unread[0], unreadErrs[0])
 	case len(read) == 0:
 		result.skip = T("changes.skip.none_found", strings.Join(checked, ", "))
 	default:
+		if len(unread) > 0 {
+			result.partial = true
+		}
 		for index, path := range unread {
 			result.warnings = append(result.warnings, changesSkip(path, unreadErrs[index]))
 		}
@@ -453,7 +498,11 @@ func collectEtcChanges(root string, cutoff time.Time, budget int) changesSourceR
 			return nil
 		}
 		info, err := entry.Info()
-		if err != nil || info.ModTime().Before(cutoff) {
+		if err != nil {
+			unreadable++
+			return nil
+		}
+		if info.ModTime().Before(cutoff) {
 			return nil
 		}
 		relative, err := filepath.Rel(root, path)
@@ -469,10 +518,12 @@ func collectEtcChanges(root string, cutoff time.Time, budget int) changesSourceR
 		return nil
 	})
 	if rootErr != nil {
+		result.collectionErr = rootErr
 		result.skip = changesSkip("/etc", rootErr)
 		return result
 	}
 	if unreadable > 0 {
+		result.partial = true
 		result.warnings = append(result.warnings, T("changes.warning.unreadable_dirs", unreadable))
 	}
 	if result.truncated {
@@ -571,6 +622,7 @@ func parseSystemctlUnits(text string) []string {
 func collectServiceChanges(ctx context.Context, sources changesSources, cutoff time.Time) changesSourceResult {
 	var result changesSourceResult
 	if sources.systemctl == nil {
+		result.unsupported = true
 		result.skip = T("changes.skip.no_systemd")
 		return result
 	}
@@ -580,27 +632,32 @@ func collectServiceChanges(ctx context.Context, sources changesSources, cutoff t
 	}
 	boot, err := sources.bootTime()
 	if err != nil {
+		result.collectionErr = err
 		result.skip = changesSkip("/proc/stat", err)
 		return result
 	}
 	manager, err := sources.systemctl(ctx, "show", "--property=FinishTimestampMonotonic")
 	if err != nil {
+		result.collectionErr = err
 		result.skip = changesSkip("systemctl show", err)
 		return result
 	}
 	listed, err := sources.systemctl(ctx, "list-units", "--type=service", "--all", "--plain", "--no-legend", "--no-pager")
 	if err != nil {
+		result.collectionErr = err
 		result.skip = changesSkip("systemctl list-units", err)
 		return result
 	}
 	names := parseSystemctlUnits(string(listed))
 	if len(names) == 0 {
+		result.observedEmpty = true
 		result.skip = T("changes.skip.none_found", "systemctl list-units --type=service")
 		return result
 	}
 	args := append([]string{"show", "--property=Id,ExecMainStartTimestampMonotonic,NRestarts", "--"}, names...)
 	shown, err := sources.systemctl(ctx, args...)
 	if err != nil {
+		result.collectionErr = err
 		result.skip = changesSkip("systemctl show", err)
 		return result
 	}
@@ -632,7 +689,10 @@ func collectServiceChanges(ctx context.Context, sources changesSources, cutoff t
 // formatChangesTable은 시각, 종류, 이름, 내용을 최근 것부터 그린다. all이 아니면 changesTableLimit 줄에서
 // 자르고 남은 수를 알린다. 마지막 열은 채우지 않아 줄이 필요 이상 넓어지지 않는다.
 func formatChangesTable(events []changeEvent, all, color bool) string {
-	style := newTextStyle(color)
+	return formatChangesTableWithStyle(events, all, newTextStyle(color))
+}
+
+func formatChangesTableWithStyle(events []changeEvent, all bool, style textStyle) string {
 	if len(events) == 0 {
 		return ""
 	}

@@ -383,6 +383,9 @@ command:
       verbose: "계정과 descriptor, 큐 열을 함께 엽니다"
       full: "행마다 아래에 작업 디렉터리와 명령줄을 보여 줍니다"
     notes:
+      - "기본은 대화형 터미널에서 TUI이며 파이프나 TERM=dumb에서는 한 번 출력합니다. -B/--no-browse는 한 번 출력합니다. edc setup listen.browse로 auto/always/never를 설정하며 NO_COLOR는 색상만 끕니다."
+      - "탐색 화면: 방향키 선택, Enter 소켓·프로세스 상세, r 새로고침, Esc 뒤로, q 종료. 48열·8행 대화형 터미널이 필요하며 NO_COLOR에서도 색 없이 탐색합니다."
+      - "--browse는 --watch, --json, --interval, --duration과 함께 쓸 수 없습니다."
       - "기본은 LISTEN 상태의 TCP socket과 바인드된 UDP socket입니다."
       - "종류 flag는 더하기가 아니라 filter입니다. --tcp는 TCP만 남깁니다."
       - "둘을 함께 주면 둘 다 남고 --all은 unix domain socket까지 봅니다."

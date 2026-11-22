@@ -10,8 +10,8 @@ import (
 )
 
 func setupMinimalInput(save string) string {
-	// language, seventeen configure prompts, final save prompt.
-	return "\n" + strings.Repeat("n\n", 17) + save + "\n"
+	// language, eighteen configure prompts, final save prompt.
+	return "\n" + strings.Repeat("n\n", 18) + save + "\n"
 }
 
 func TestSetupCreatesConfigWithSecureModes(t *testing.T) {
@@ -93,7 +93,7 @@ func TestSetupMigratesLinuxYAMLToTOML(t *testing.T) {
 func TestSetupOnlyAddsSelectedSections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; common no; log yes and retain its three recommended values; remaining sections no; save yes.
-	input := "\nn\ny\n" + strings.Repeat("\n", 11) + strings.Repeat("n\n", 15) + "y\n"
+	input := "\nn\ny\n" + strings.Repeat("\n", 11) + strings.Repeat("n\n", 16) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -109,7 +109,7 @@ func TestSetupOnlyAddsSelectedSections(t *testing.T) {
 
 func TestSetupCanClearOptionalDefault(t *testing.T) {
 	path := writeConfigFixture(t, "lang: en\ndefaults:\n  log: {stream: stdout, output: /tmp/old.log, command_display: name}\n")
-	input := "\nn\ny\n\n!clear\n\n" + strings.Repeat("\n", 8) + strings.Repeat("n\n", 15) + "y\n"
+	input := "\nn\ny\n\n!clear\n\n" + strings.Repeat("\n", 8) + strings.Repeat("n\n", 16) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -126,7 +126,7 @@ func TestSetupCanClearOptionalDefault(t *testing.T) {
 func TestSetupCanClearTypedDefault(t *testing.T) {
 	path := writeConfigFixture(t, "lang: en\ndefaults:\n  top: {interval: 2s, count: 10, no_header: true}\n")
 	// language; common/log no; top yes; clear interval/count/bool and retain JSON; remaining sections no; save.
-	input := "\nn\nn\ny\n!clear\n!clear\n!clear\n\n" + strings.Repeat("n\n", 14) + "y\n"
+	input := "\nn\nn\ny\n!clear\n!clear\n!clear\n\n" + strings.Repeat("n\n", 15) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -143,7 +143,7 @@ func TestSetupCanClearTypedDefault(t *testing.T) {
 func TestSetupUpdatesLogAndPreservesExistingValues(t *testing.T) {
 	path := writeConfigFixture(t, "lang: ja\ndefaults:\n  common: {timeout: 33s}\n  log: {stream: stdout, output: /tmp/old.log, command_display: name}\n")
 	// language retain; common no; log yes + three values; remaining ten sections no; save yes.
-	input := "\nn\ny\nstderr\n/tmp/new.log\nnone\n" + strings.Repeat("\n", 8) + strings.Repeat("n\n", 15) + "y\n"
+	input := "\nn\ny\nstderr\n/tmp/new.log\nnone\n" + strings.Repeat("\n", 8) + strings.Repeat("n\n", 16) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -160,7 +160,7 @@ func TestSetupUpdatesLogAndPreservesExistingValues(t *testing.T) {
 func TestSetupMigratesTheLegacyRecommendedLogPath(t *testing.T) {
 	path := writeConfigFixture(t, "lang: en\ndefaults:\n  log: {stream: stderr, output: /var/log/job.log, command_display: full}\n")
 	// language; common no; log yes, retain all migrated values; remaining sections no; save.
-	input := "\nn\ny\n" + strings.Repeat("\n", 11) + strings.Repeat("n\n", 15) + "y\n"
+	input := "\nn\ny\n" + strings.Repeat("\n", 11) + strings.Repeat("n\n", 16) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -177,7 +177,7 @@ func TestSetupMigratesTheLegacyRecommendedLogPath(t *testing.T) {
 func TestSetupRepromptsInvalidValue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// invalid language is followed by ko, then skip sections and save.
-	input := "fr\nko\n" + strings.Repeat("n\n", 17) + "y\n"
+	input := "fr\nko\n" + strings.Repeat("n\n", 18) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
@@ -213,7 +213,7 @@ func TestSetupEOFCancelsImmediately(t *testing.T) {
 
 func TestSetupRecoversInvalidConfigAndSwitchesLanguage(t *testing.T) {
 	path := writeConfigFixture(t, "lang: ko\ndefaults: {top: {interval: 10ms}}\n")
-	input := "ja\n" + strings.Repeat("n\n", 17) + "y\n"
+	input := "ja\n" + strings.Repeat("n\n", 18) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -263,7 +263,7 @@ func TestSetupSnapshotsOversizedAndNonRegularConfigWithoutReading(t *testing.T) 
 func TestSetupConfiguresQualityTimeout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; the eleven sections before quality no; quality yes with 45s and a server; the five sections after it no; save.
-	input := "\n" + strings.Repeat("n\n", 11) + "y\n45s\nrelative\nhttps://quality.example.net/config\n" + strings.Repeat("n\n", 5) + "y\n"
+	input := "\n" + strings.Repeat("n\n", 11) + "y\n45s\nrelative\nhttps://quality.example.net/config\n" + strings.Repeat("n\n", 6) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -281,7 +281,7 @@ func TestSetupConfiguresQualityTimeout(t *testing.T) {
 func TestSetupConfiguresDuWorkers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; the sixteen sections before du no; du yes with an invalid and then a valid workers value; save.
-	input := "\n" + strings.Repeat("n\n", 16) + "y\n0\n8\ny\n"
+	input := "\n" + strings.Repeat("n\n", 16) + "y\n0\n8\nn\ny\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -301,7 +301,7 @@ func TestSetupConfiguresDuWorkers(t *testing.T) {
 func TestSetupConfiguresHistoryAndLookbackDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; the twelve sections before history no; history, changes, snapshot, events yes; du no; save.
-	input := "\n" + strings.Repeat("n\n", 12) + "y\n50\ny\n12h\ny\n3h\ny\n30m\nn\ny\n"
+	input := "\n" + strings.Repeat("n\n", 12) + "y\n50\ny\n12h\ny\n3h\ny\n30m\nn\nn\ny\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -320,7 +320,7 @@ func TestSetupConfiguresHistoryAndLookbackDefaults(t *testing.T) {
 func TestSetupConfiguresLogHistoryLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; common no; log yes with ten kept fields and then an invalid and a valid history limit; fifteen sections no; save.
-	input := "\nn\ny\n" + strings.Repeat("\n", 10) + "0\n40\n" + strings.Repeat("n\n", 15) + "y\n"
+	input := "\nn\ny\n" + strings.Repeat("\n", 10) + "0\n40\n" + strings.Repeat("n\n", 16) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())

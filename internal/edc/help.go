@@ -270,6 +270,7 @@ var commandDocs = []commandDoc{
 		name: "top", group: "observe",
 		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [--full] [-d] [--interval 1s] [--json <path|->]", "edc top setup"},
 		options: []optionDoc{
+			{"--interactive", "topnav.option"},
 			{"--interval 1s", "command.top.option.interval"},
 			{"-w, --write [path]", "command.top.option.write"},
 			{"--auto-record", "command.top.option.auto_record"},
@@ -475,8 +476,10 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: listenProbeID, group: "observe",
-		usage: []string{"edc listen [options]"},
+		usage: []string{"edc listen [options]", "edc listen -b [options]"},
 		options: []optionDoc{
+			{"-b, --browse", "listenbrowse.option"},
+			{"-B, --no-browse", "listenbrowse.no_browse"},
 			{"--tcp", "command.listen.option.tcp"},
 			{"-u, --udp", "command.listen.option.udp"},
 			{"--unix", "command.listen.option.unix"},
@@ -859,6 +862,10 @@ func printHelp(writer io.Writer, version string) {
 			continue
 		}
 		fmt.Fprintf(writer, "\n%s\n", T("help.group."+group))
+		if group == "observe" {
+			printObserveHelp(writer, members, width, false)
+			continue
+		}
 		for _, doc := range members {
 			fmt.Fprintf(writer, "  %-*s  %s\n", width, doc.name, doc.summary())
 		}
@@ -913,8 +920,12 @@ func printRichHelp(writer io.Writer, version string) {
 			continue
 		}
 		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.group."+group), strconv.Itoa(len(members)), ""))
-		for _, doc := range members {
-			fmt.Fprintln(writer, richPanelLine(richPaint(padRight(doc.name, width), richCyan, true)+"  "+doc.summary(), ""))
+		if group == "observe" {
+			printObserveHelp(writer, members, width, true)
+		} else {
+			for _, doc := range members {
+				fmt.Fprintln(writer, richPanelLine(richPaint(padRight(doc.name, width), richCyan, true)+"  "+doc.summary(), ""))
+			}
 		}
 		fmt.Fprintln(writer, richPanelBottom(""))
 	}

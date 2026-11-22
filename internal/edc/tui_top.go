@@ -32,27 +32,29 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 		model.attachRecorder(recorder)
 	}
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
-	if final, ok := final.(topModel); ok {
-		final.closeAI()
-		if final.recorder != nil {
-			status := "finished"
-			if err != nil || final.recordingErr != nil {
-				status = "error"
-			}
-			if closeErr := final.recorder.Close(status); closeErr != nil {
-				fmt.Fprintln(os.Stderr, T("history.error.write", closeErr))
-				return 1
-			}
+	finished, ok := final.(topModel)
+	if ok {
+		finished.closeAI()
+		status := "finished"
+		if err != nil || finished.recordingErr != nil {
+			status = "error"
+		}
+		closeErr := finished.finishRecording(status)
+		printTopRecordingSummary(os.Stdout, finished.recordingSummary, finished.recordingsFinished, finished.width, finished.limits.color)
+		if closeErr != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.write", closeErr))
+			return 1
 		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if final.(topModel).recordingErr != nil {
-		fmt.Fprintln(os.Stderr, T("history.error.write", final.(topModel).recordingErr))
+	if ok && finished.recordingErr != nil {
+		fmt.Fprintln(os.Stderr, T("history.error.write", finished.recordingErr))
 		return 1
 	}
+
 	return 0
 }
 
@@ -196,6 +198,7 @@ var topProcessIOThreshold = topThreshold{warn: 10 << 20, danger: 50 << 20}
 // topDashboardRow는 포맷 문자열 대신 측정값을 보존한다. 같은 시점을 다른 렌즈로
 // 다시 그릴 수 있고, 선택한 과거 행의 상세도 최신 값과 섞이지 않는다.
 type topDashboardRow struct {
+	processesAt    time.Time
 	at             time.Time
 	rate           resourceRate
 	processes      []topProcess
@@ -260,16 +263,18 @@ type topModel struct {
 	processSelected int
 	// panelSort는 o로 고른 process 패널 정렬 기준이다. topViewCPU, topViewMemory, topViewDisk 중 하나이고,
 	// 비어 있으면 보기를 따른다. 보기를 바꾸면 비운다.
-	panelSort     topView
-	probeEnabled  bool
-	record        func(historyTopSample) error
-	recordFailure tea.Cmd
-	recordingErr  error
-	recorder      *topRecorder
-	recordPath    string
-	recordFrom    time.Time
-	recordCount   int
-	recordNotice  bool
+	panelSort          topView
+	probeEnabled       bool
+	record             func(historyTopSample) error
+	recordFailure      tea.Cmd
+	recordingErr       error
+	recorder           *topRecorder
+	recordPath         string
+	recordFrom         time.Time
+	recordCount        int
+	recordNotice       bool
+	recordingSummary   *topRecordingSummary
+	recordingsFinished int
 	// autoRecord는 --auto-record를 켰을 때만 있다.
 	autoRecord *topAutoRecord
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
@@ -400,7 +405,7 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, tea.Quit
 		}
 		before := len(model.rows) + 1
-		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
+		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, processesAt: value.snapshot.ProcessesAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
 		model = model.recordEvents(model.rows[len(model.rows)-1])
 		model.previous = value.snapshot
 		if model.follow {
@@ -1241,6 +1246,7 @@ func (model topModel) detailLines() []string {
 	if !model.processFilter.active() {
 		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid, model.limits.color))
 	}
+	lines = append(lines, model.processDeltaLines(row)...)
 	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid, model.limits.color) {
 		if index == 0 {
 			line = "  " + line
@@ -3155,4 +3161,25 @@ func (model topModel) networkPeakLines(last topDashboardRow) []string {
 		"softnet drop " + peak("softnet_dropped") + " · UDP buffer " + peak("udp_rcvbuf_errors"),
 		"TCP mem pressure " + peak("tcp_memory_pressures") + " · NIC rx missed " + peak("nic_rx_missed") + " · rx fifo " + peak("nic_rx_fifo"),
 	}
+}
+
+func (model topModel) processDeltaLines(row topDashboardRow) []string {
+	if !row.processesValid {
+		return []string{"  RSS change unavailable · process collection unavailable"}
+	}
+	if len(row.processes) == 0 {
+		return []string{"  RSS change unavailable · no matching process observations"}
+	}
+	lines := make([]string, 0, min(3, len(row.processes)))
+	for _, process := range row.processes[:min(3, len(row.processes))] {
+		delta := topObservedProcessDelta(model.rows, model.selected, process, model.processFilter.String())
+		line := fmt.Sprintf("  RSS pid %d: %s", process.PID, formatProcessRSS(process.RSS))
+		if delta.Unavailable != "" {
+			line += " · change unavailable: " + delta.Unavailable
+		} else {
+			line += fmt.Sprintf(" · %s over %s · %d observed samples", delta.changeText(), delta.windowText(), delta.Samples)
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }

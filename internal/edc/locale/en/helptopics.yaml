@@ -1,0 +1,7 @@
+helptopics:
+  resources: "Resources"
+  processes: "Processes"
+  logs_files: "Logs and files"
+  network: "Network"
+  tracing_changes: "Tracing and changes"
+  other: "Other"

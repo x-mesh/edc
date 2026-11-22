@@ -667,7 +667,11 @@ func emit(options commonOptions, report Report) int {
 
 func emitTo(output *os.File, options commonOptions, report Report) int {
 	if options.jsonPath == "" {
-		printTerminalWithColor(output, report.Results, options.verbose, isTerminal(output) && os.Getenv("NO_COLOR") == "")
+		if isTerminal(output) && observeOutputResults(report.Results) {
+			printObserveTerminal(output, report.Results, options.verbose, observeTerminalStyle(output))
+		} else {
+			printTerminalWithColor(output, report.Results, options.verbose, isTerminal(output) && os.Getenv("NO_COLOR") == "")
+		}
 	} else if err := writeJSONOutput(options.jsonPath, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

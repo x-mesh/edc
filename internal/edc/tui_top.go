@@ -32,27 +32,29 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 		model.attachRecorder(recorder)
 	}
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
-	if final, ok := final.(topModel); ok {
-		final.closeAI()
-		if final.recorder != nil {
-			status := "finished"
-			if err != nil || final.recordingErr != nil {
-				status = "error"
-			}
-			if closeErr := final.recorder.Close(status); closeErr != nil {
-				fmt.Fprintln(os.Stderr, T("history.error.write", closeErr))
-				return 1
-			}
+	finished, ok := final.(topModel)
+	if ok {
+		finished.closeAI()
+		status := "finished"
+		if err != nil || finished.recordingErr != nil {
+			status = "error"
+		}
+		closeErr := finished.finishRecording(status)
+		printTopRecordingSummary(os.Stdout, finished.recordingSummary, finished.recordingsFinished, finished.width, finished.limits.color)
+		if closeErr != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.write", closeErr))
+			return 1
 		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if final.(topModel).recordingErr != nil {
-		fmt.Fprintln(os.Stderr, T("history.error.write", final.(topModel).recordingErr))
+	if ok && finished.recordingErr != nil {
+		fmt.Fprintln(os.Stderr, T("history.error.write", finished.recordingErr))
 		return 1
 	}
+
 	return 0
 }
 
@@ -261,16 +263,18 @@ type topModel struct {
 	processSelected int
 	// panelSort는 o로 고른 process 패널 정렬 기준이다. topViewCPU, topViewMemory, topViewDisk 중 하나이고,
 	// 비어 있으면 보기를 따른다. 보기를 바꾸면 비운다.
-	panelSort     topView
-	probeEnabled  bool
-	record        func(historyTopSample) error
-	recordFailure tea.Cmd
-	recordingErr  error
-	recorder      *topRecorder
-	recordPath    string
-	recordFrom    time.Time
-	recordCount   int
-	recordNotice  bool
+	panelSort          topView
+	probeEnabled       bool
+	record             func(historyTopSample) error
+	recordFailure      tea.Cmd
+	recordingErr       error
+	recorder           *topRecorder
+	recordPath         string
+	recordFrom         time.Time
+	recordCount        int
+	recordNotice       bool
+	recordingSummary   *topRecordingSummary
+	recordingsFinished int
 	// autoRecord는 --auto-record를 켰을 때만 있다.
 	autoRecord *topAutoRecord
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.

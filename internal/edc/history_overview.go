@@ -48,19 +48,21 @@ type historyOverviewLog struct {
 	Path     string
 }
 type historyOverview struct {
-	Run          *historyRun              `json:"run,omitempty"`
-	From         time.Time                `json:"from"`
-	To           time.Time                `json:"to"`
-	Runs         int                      `json:"runs"`
-	SnapshotRuns int                      `json:"snapshot_runs"`
-	Samples      int                      `json:"samples"`
-	Memory       string                   `json:"memory_source"`
-	Metrics      []historyOverviewStat    `json:"metrics"`
-	Processes    []historyOverviewProcess `json:"processes"`
-	Series       map[string][]float64     `json:"series,omitempty"`
-	Disks        []historyOverviewDisk    `json:"disks"`
-	Logs         []historyOverviewLog     `json:"logs"`
-	Warnings     []string                 `json:"warnings,omitempty"`
+	Evidence        []historyOverviewEvidence `json:"evidence,omitempty"`
+	EvidenceNotices []historyEvidenceNotice   `json:"evidence_notices,omitempty"`
+	Run             *historyRun               `json:"run,omitempty"`
+	From            time.Time                 `json:"from"`
+	To              time.Time                 `json:"to"`
+	Runs            int                       `json:"runs"`
+	SnapshotRuns    int                       `json:"snapshot_runs"`
+	Samples         int                       `json:"samples"`
+	Memory          string                    `json:"memory_source"`
+	Metrics         []historyOverviewStat     `json:"metrics"`
+	Processes       []historyOverviewProcess  `json:"processes"`
+	Series          map[string][]float64      `json:"series,omitempty"`
+	Disks           []historyOverviewDisk     `json:"disks"`
+	Logs            []historyOverviewLog      `json:"logs"`
+	Warnings        []string                  `json:"warnings,omitempty"`
 }
 
 var historyOverviewLogLoader = func() (logHistorySnapshot, error) {
@@ -344,7 +346,8 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 	} else {
 		out.Warnings = append(out.Warnings, err.Error())
 	}
-	if logs, err := historyOverviewLogLoader(); err == nil {
+	logs, logsErr := historyOverviewLogLoader()
+	if logsErr == nil {
 		for _, row := range logs.Rows {
 			if row.Started.Before(out.From) || !row.Started.Before(out.To) {
 				continue
@@ -352,9 +355,17 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: historyOutcome(row), Duration: row.Duration, Key: row.Key, Path: row.Path})
 		}
 	} else {
-		out.Warnings = append(out.Warnings, err.Error())
+		out.Warnings = append(out.Warnings, logsErr.Error())
 	}
-	return out, r.Err()
+	if err := r.Err(); err != nil {
+		return out, err
+	}
+	r.Close()
+	out.Evidence, out.EvidenceNotices = loadHistoryOverviewEvidence(db, out, logs.Rows, logsErr)
+	if len(logs.Issues) > 0 {
+		out.EvidenceNotices = append(out.EvidenceNotices, historyEvidenceNotice{Code: "stored_warning", Source: "log", Detail: historyEvidenceClip(strings.Join(logs.Issues, " · "))})
+	}
+	return out, nil
 }
 func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) {
 	if v.Run != nil {
@@ -396,6 +407,9 @@ func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) 
 		for _, log := range v.Logs {
 			fmt.Fprintln(out, historyOverviewLogRow(log.Command, log.Started.In(loc).Format(time.DateTime), log.Outcome, historyShortDuration(log.Duration)))
 		}
+	}
+	for _, line := range historyOverviewEvidenceLines(v, loc) {
+		fmt.Fprintln(out, line)
 	}
 }
 

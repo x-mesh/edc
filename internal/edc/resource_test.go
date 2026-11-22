@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -681,9 +683,13 @@ overlay           104805396   76540120   23000000      77% /var/lib/docker/rootf
 }
 
 func TestPrintDiskUsagePreservesValuesWithLongPaths(t *testing.T) {
+	mount := filepath.Join(t.TempDir(), strings.Repeat("mount-", 28), "data-volume")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	disks := []diskDetails{
 		{Mount: "/", Device: "/dev/sda3", Total: 100 << 30, Used: 73 << 30, Percent: 73},
-		{Mount: t.TempDir(), Device: "/dev/mapper/ubuntu--vg-ubuntu--lv", Total: 2 << 40, Used: 1 << 40, Percent: 50},
+		{Mount: mount, Device: "/dev/mapper/ubuntu--vg-ubuntu--lv", Total: 2 << 40, Used: 1 << 40, Percent: 50},
 	}
 	for _, width := range []int{0, 80, 140} {
 		var output strings.Builder
@@ -698,6 +704,14 @@ func TestPrintDiskUsagePreservesValuesWithLongPaths(t *testing.T) {
 			t.Fatalf("width %d duplicated or omitted a disk:\n%s", width, text)
 		}
 		if width > 0 {
+			if !strings.Contains(text, "├── /\n") && !strings.Contains(text, "├── /  Used:") {
+				t.Fatalf("width %d lost root mount:\n%s", width, text)
+			}
+			_, mountRow, found := strings.Cut(text, "\n└── ")
+			mountRow, _, _ = strings.Cut(mountRow, "\n")
+			if !found || !strings.HasPrefix(mountRow, "/") || !strings.HasSuffix(mountRow, "/data-volume") || !strings.Contains(mountRow, "…") {
+				t.Fatalf("width %d lost abbreviated mount identity: %q", width, mountRow)
+			}
 			for _, line := range strings.Split(text, "\n") {
 				if liveWidth(line) > width {
 					t.Fatalf("line exceeds width %d: %q", width, line)

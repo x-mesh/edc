@@ -48,7 +48,7 @@ func (model topModel) toggleRecording() (tea.Model, tea.Cmd) {
 }
 
 func (model topModel) stopRecording() (tea.Model, tea.Cmd) {
-	automatic := model.recorder != nil && model.recorder.summary.trigger != ""
+	automatic := model.recorder != nil && model.recorder.automatic
 	err := model.finishRecording("finished")
 	if err != nil {
 		model.recordingErr = err

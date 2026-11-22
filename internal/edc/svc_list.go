@@ -283,15 +283,36 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, target, []Result{result}, options.redact))
 	}
-	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	terminal := isTerminal(os.Stdout)
+	style := observeTerminalStyle(os.Stdout)
+	color := terminal && os.Getenv("NO_COLOR") == ""
 	var output io.Writer = os.Stdout
 	var buffer strings.Builder
 	if options.redact {
 		output = &buffer
 	}
-	fmt.Fprint(output, formatResultLine(result, color))
-	printResultDetail(output, result, false, color)
-	if table := formatSvcListTable(items, newTextStyle(color)); table != "" {
+	if terminal {
+		rendered := result
+		if options.redact {
+			redacted, err := observeOutputRedactedResults([]Result{result})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 2
+			}
+			rendered = redacted[0]
+		}
+		printObserveResult(output, rendered, false, style)
+	} else {
+		fmt.Fprint(output, formatResultLine(result, color))
+		printResultDetail(output, result, false, color)
+	}
+	table := ""
+	if terminal {
+		table = formatObserveSvcTable(items, style, options.redact)
+	} else {
+		table = formatSvcListTable(items, newTextStyle(color))
+	}
+	if table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
 	if options.redact {

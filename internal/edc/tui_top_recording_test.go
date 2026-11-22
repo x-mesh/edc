@@ -122,6 +122,9 @@ func TestTopAutoRecordKeepsBacklogAndStopsAfterCalmTail(t *testing.T) {
 	if model.recorder != nil || model.autoRecord.trigger != "" {
 		t.Fatalf("recording did not stop after the calm tail: calm=%v trigger=%q rec=%v", model.autoRecord.calmSince, model.autoRecord.trigger, model.recorder != nil)
 	}
+	if summary := model.recordingSummary; summary == nil || summary.samples != 364 || summary.started.Unix() != 100 || summary.first.Unix() != 101 || summary.last.Unix() != 464 || summary.trigger != "load 20 > 2×8" {
+		t.Fatalf("automatic completion summary: %+v", summary)
+	}
 	db, err := openHistoryDB(model.recordPath, false)
 	if err != nil {
 		t.Fatal(err)

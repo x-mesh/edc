@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/json"
 	"errors"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"strings"
 	"testing"
@@ -62,5 +63,38 @@ func TestCollectionReasonUsesExistingReportRedaction(t *testing.T) {
 	data, _ := json.Marshal(report)
 	if strings.Contains(string(data), "192.0.2.1") || report.Results[0].Collection == nil {
 		t.Fatalf("redaction: %s", data)
+	}
+}
+
+func TestCollectionSummaryPreservesStatesAtTerminalWidths(t *testing.T) {
+	language := currentLanguage()
+	defer setLanguage(language)
+	states := []collectionState{collectionObserved, collectionPartial, collectionPermissionDenied, collectionUnsupported, collectionUnavailable}
+	var results []Result
+	for _, state := range states {
+		results = append(results, withCollection(Result{}, state, nil, ""))
+	}
+	for _, lang := range supportedLanguages {
+		setLanguage(lang)
+		for _, width := range []int{48, 80, 140} {
+			for _, color := range []bool{false, true} {
+				var output strings.Builder
+				printCollectionSummaryWithStyle(&output, results, infoStyle{textStyle{color: color, width: width}})
+				text := ansi.Strip(output.String())
+				for _, state := range states {
+					if !strings.Contains(text, collectionStateText(state)) {
+						t.Fatalf("lost %s: %s", state, text)
+					}
+				}
+				for _, line := range strings.Split(text, "\n") {
+					if liveWidth(line) > width {
+						t.Fatalf("%s width %d exceeded: %q", lang, width, line)
+					}
+				}
+				if !color && strings.Contains(output.String(), "\x1b") {
+					t.Fatal("plain output gained escapes")
+				}
+			}
+		}
 	}
 }

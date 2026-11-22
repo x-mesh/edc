@@ -60,18 +60,21 @@ func collectionText(observation *collectionObservation) string {
 }
 
 func printCollectionDetail(writer io.Writer, result Result, verbose, color bool) {
+	printCollectionDetailWithStyle(writer, result, verbose, newInfoStyle(color))
+}
+
+func printCollectionDetailWithStyle(writer io.Writer, result Result, verbose bool, style infoStyle) {
 	observation := result.Collection
 	if observation == nil || (observation.State == collectionObserved && !verbose) {
 		return
 	}
-	style := newTextStyle(color)
 	text := T("collection.detail", collectionText(observation))
 	if observation.State != collectionObserved {
 		text = style.warn(text)
 	} else {
 		text = style.dim(text)
 	}
-	style.line(writer, "      "+text)
+	style.write(writer, "      ", "      ", text)
 }
 
 func collectionSummary(results []Result) []string {
@@ -91,11 +94,14 @@ func collectionSummary(results []Result) []string {
 }
 
 func printCollectionSummary(writer io.Writer, results []Result, color bool) {
+	printCollectionSummaryWithStyle(writer, results, newInfoStyle(color))
+}
+
+func printCollectionSummaryWithStyle(writer io.Writer, results []Result, style infoStyle) {
 	parts := collectionSummary(results)
 	if len(parts) == 0 {
 		return
 	}
-	style := newTextStyle(color)
 	parts[0] = T("collection.summary", parts[0])
-	fmt.Fprintln(writer, style.wrap(parts, " · ", "      "))
+	style.line(writer, style.join(" · ", parts...))
 }

@@ -680,25 +680,32 @@ overlay           104805396   76540120   23000000      77% /var/lib/docker/rootf
 	}
 }
 
-// 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 밀어낸다. 열 폭을 값에서 재야 표가 선다.
-func TestPrintDiskUsageKeepsColumnsAligned(t *testing.T) {
+func TestPrintDiskUsagePreservesValuesWithLongPaths(t *testing.T) {
 	disks := []diskDetails{
 		{Mount: "/", Device: "/dev/sda3", Total: 100 << 30, Used: 73 << 30, Percent: 73},
 		{Mount: t.TempDir(), Device: "/dev/mapper/ubuntu--vg-ubuntu--lv", Total: 2 << 40, Used: 1 << 40, Percent: 50},
 	}
-	var output strings.Builder
-	printDiskUsage(&output, disks, nil, false, false)
-	columns, rows := map[int]bool{}, 0
-	for _, line := range strings.Split(output.String(), "\n") {
-		index := strings.Index(line, ": ")
-		if index < 0 {
-			continue
+	for _, width := range []int{0, 80, 140} {
+		var output strings.Builder
+		printDiskUsageStyled(&output, disks, nil, infoStyle{textStyle{width: width}}, false)
+		text := output.String()
+		for _, want := range []string{"Used: 73.00 GB / 100.00 GB", "Free: 27.00 GB", "73.00%", "Used: 1.00 TB / 2.00 TB", "Free: 1.00 TB", "50.00%", "Device: /dev/sda3", "Device: /dev/mapper/ubuntu--vg-ubuntu--lv"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("width %d lost %q:\n%s", width, want, text)
+			}
 		}
-		rows++
-		columns[liveWidth(line[:index])] = true
-	}
-	if rows != 2 || len(columns) != 1 {
-		t.Fatalf("disk columns are not aligned (rows %d, columns %v):\n%s", rows, columns, output.String())
+		if strings.Count(text, "Used:") != 2 || strings.Count(text, "Device:") != 2 {
+			t.Fatalf("width %d duplicated or omitted a disk:\n%s", width, text)
+		}
+		if width > 0 {
+			for _, line := range strings.Split(text, "\n") {
+				if liveWidth(line) > width {
+					t.Fatalf("line exceeds width %d: %q", width, line)
+				}
+			}
+		} else if !strings.Contains(text, disks[1].Mount) {
+			t.Fatalf("piped output lost full mount path:\n%s", text)
+		}
 	}
 }
 

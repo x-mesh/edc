@@ -270,6 +270,7 @@ var commandDocs = []commandDoc{
 		name: "top", group: "observe",
 		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [--full] [-d] [--interval 1s] [--json <path|->]", "edc top setup"},
 		options: []optionDoc{
+			{"--interactive", "topnav.option"},
 			{"--interval 1s", "command.top.option.interval"},
 			{"-w, --write [path]", "command.top.option.write"},
 			{"--auto-record", "command.top.option.auto_record"},

@@ -1,0 +1,3 @@
+topnav:
+  option: "NO_COLORでも対話型端末のダッシュボードを開く"
+  invalid: "--interactiveには対話型端末が必要です。--jsonや0以外の--countとは併用できません"

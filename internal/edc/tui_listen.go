@@ -13,6 +13,8 @@ import (
 )
 
 type listenBrowser struct {
+	openTop                            func(string) tea.Cmd
+	notice                             string
 	work                               chan struct{}
 	full                               bool
 	ctx                                context.Context
@@ -64,6 +66,7 @@ func runListenBrowser(options commonOptions, families listenFamilies, full bool)
 		return result
 	}
 	model.inspect = inspectListenSocket
+	model.openTop = listenBrowserOpenTop
 	model.full = full
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -128,6 +131,13 @@ func (model *listenBrowser) keepCursor() {
 
 func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := message.(type) {
+	case listenBrowserTopDoneMsg:
+		if value.err != nil {
+			model.notice = T("listenbrowse.navigation_failed", infoSingleLine(value.err.Error()))
+		} else {
+			model.notice = T("listenbrowse.navigation_returned")
+		}
+		return model, nil
 	case tea.WindowSizeMsg:
 		model.width, model.height = max(1, value.Width), max(1, value.Height)
 		model.keepCursor()
@@ -172,6 +182,10 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		key := value.String()
 		if key == "q" || key == "ctrl+c" {
 			return model, tea.Quit
+		}
+		model.notice = ""
+		if key == "t" || key == "x" {
+			return model.navigateProcess(key)
 		}
 		if model.detail != nil {
 			detail := *model.detail
@@ -255,7 +269,7 @@ func (model listenBrowser) View() tea.View {
 		if model.redact {
 			title = redactIPAddresses(title)
 		}
-		lines = append(lines, svcBrowserHeading("edc listen", []string{viewSanitize(title)}, model.color), liveKeyHints(T("listenbrowse.detail_keys"), model.color), "")
+		lines = append(lines, svcBrowserHeading("edc listen", []string{viewSanitize(title)}, model.color), liveKeyHints(T("listenbrowse.detail_keys"), model.color), model.notice)
 		if model.detail.loading {
 			lines = append(lines, T("listenbrowse.loading"))
 		} else {
@@ -273,7 +287,9 @@ func (model listenBrowser) View() tea.View {
 		}
 		lines = append(lines, svcBrowserHeading("edc listen", []string{T("listenbrowse.count", len(model.items)), state}, model.color), liveKeyHints(T("listenbrowse.keys"), model.color))
 		notice := T("listenbrowse.reachability")
-		if model.err != "" {
+		if model.notice != "" {
+			notice = model.notice
+		} else if model.err != "" {
 			notice = T("listenbrowse.refresh_failed", model.err)
 		} else if len(model.warnings) > 0 {
 			notice = strings.Join(model.warnings, " · ")

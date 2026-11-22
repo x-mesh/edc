@@ -1,0 +1,3 @@
+topnav:
+  option: "NO_COLOR에서도 대화형 터미널 대시보드 사용"
+  invalid: "--interactive는 대화형 터미널이 필요하며 --json 또는 0이 아닌 --count와 함께 사용할 수 없습니다"

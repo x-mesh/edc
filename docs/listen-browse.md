@@ -20,6 +20,8 @@ The browser requires interactive stdin and stdout, UTF-8, a terminal other than 
 | PgUp/PgDn | Move one page | Scroll one page |
 | Home/End, g/G | First/last socket | Beginning/end |
 | Enter | Read socket and process details | — |
+| t | Open `edc top --interactive --process <pid>` | Open the selected process in top |
+| x | Show a CPU trace command | Show a CPU trace command |
 | r | Refresh the socket list | Reload selected socket's process details |
 | Esc, Backspace | — | Return to the same selection and viewport |
 | q, Ctrl-C | Exit | Exit |
@@ -61,3 +63,9 @@ defaults:
 ```
 
 `-b` and `-B` override the stored preference and cannot be combined. `--browse=false` also forces one-shot output. `--watch` and JSON output override configured browsing, including `always`; explicitly combining `-b` with either is an error. `NO_COLOR` changes only the colors, not the choice between TUI and one-shot output. `--interval`/`--duration` are not browser refresh settings.
+
+Process navigation uses the current edc executable and passes the PID as a separate argument. Leaving top returns to the same socket selection and detail offset. The list remains a snapshot until manually refreshed. The trace key shows a command without running it or elevating privileges. Navigation is disabled with `--redact` so a child command cannot silently reveal unredacted data.
+
+`top --interactive` explicitly requests a terminal dashboard even with `NO_COLOR`; it preserves monochrome rendering and rejects JSON, counted batch output, pipes, and TERM=dumb. Normal top defaults are unchanged.
+
+The process-navigation child explicitly clears saved top count and JSON defaults so the selected process always opens as a dashboard rather than a batch export.

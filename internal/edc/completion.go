@@ -167,7 +167,7 @@ _edc() {
           _arguments "1:shell:(zsh bash)" "--no-alias[completion only]"
           ;;
         top)
-          _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
+          _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--interactive[NO_COLOR에서도 터미널 대시보드]' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         history)
           if [[ $words[2] == log ]]; then _arguments '*:command:_command_names -e'; return; fi
@@ -410,7 +410,7 @@ _edc() {
         --columns) COMPREPLY=($(compgen -W "all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+" -- "$cur")); return ;;
       esac
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "setup" -- "$cur")); return; fi
-      COMPREPLY=($(compgen -W "--interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
+      COMPREPLY=($(compgen -W "--interactive --interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process overview export trend growth prune log" -- "$cur"))
       elif [[ ${COMP_WORDS[2]} == log ]]; then COMPREPLY=($(compgen -c -- "$cur"))

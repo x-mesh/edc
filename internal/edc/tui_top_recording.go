@@ -48,16 +48,16 @@ func (model topModel) toggleRecording() (tea.Model, tea.Cmd) {
 }
 
 func (model topModel) stopRecording() (tea.Model, tea.Cmd) {
-	err := model.recorder.Close("finished")
-	model.recorder, model.record, model.recordFailure = nil, nil, nil
-	if model.autoRecord != nil {
-		model.autoRecord.trigger, model.autoRecord.calmSince = "", time.Time{}
-	}
+	automatic := model.recorder != nil && model.recorder.summary.trigger != ""
+	err := model.finishRecording("finished")
 	if err != nil {
 		model.recordingErr = err
 		return model, tea.Quit
 	}
 	model.notice = T("history.recording.stopped", model.recordCount)
+	if automatic && model.recordingSummary != nil {
+		model.notice = T("history.recording.summary.stopped", model.recordingSummary.runID, model.recordingSummary.samples)
+	}
 	return model, nil
 }
 

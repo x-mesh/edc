@@ -2,6 +2,7 @@ package edc
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -83,5 +84,22 @@ func TestTopInteractiveRejectsNonTerminalAndBatchModes(t *testing.T) {
 		if code := runTop(args, "test"); code != 2 {
 			t.Fatalf("%v exit %d", args, code)
 		}
+	}
+}
+
+func TestTopInteractiveRejectsNonTerminalWithoutBatchFlags(t *testing.T) {
+	previous := activeConfig
+	activeConfig = edcConfig{}
+	defer func() { activeConfig = previous }()
+	input, output := os.Stdin, os.Stdout
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	os.Stdin, os.Stdout = null, null
+	defer func() { os.Stdin, os.Stdout = input, output }()
+	if code := runTop([]string{"--interactive"}, "test"); code != 2 {
+		t.Fatalf("non-terminal interactive exit %d", code)
 	}
 }

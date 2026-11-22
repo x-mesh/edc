@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -131,13 +132,51 @@ func procCandidatesResult(target string, matches []topProcess) Result {
 }
 
 func evaluateProc(process topProcess, details procDetails, now time.Time, verbose bool) []Result {
-	return []Result{
+	results := []Result{
 		procProcessResult(process, details, now, verbose),
 		procResourcesResult(process),
 		procFDResult(process, details),
 		procSocketsResult(details),
 		procCgroupResult(process),
 	}
+	results[0] = withCollection(results[0], collectionObserved, intPointer(1), "")
+	results[1] = withCollection(results[1], collectionObserved, intPointer(1), "")
+	fdCount := 0
+	for _, count := range details.FDTypes {
+		fdCount += count
+	}
+	results[2] = procSourceCollection(results[2], details.FDErr, fdCount)
+	socketCount := len(details.Listen)
+	for _, count := range details.Conns {
+		socketCount += count
+	}
+	results[3] = procSourceCollection(results[3], details.SocketErr, socketCount)
+	state := collectionUnavailable
+	if runtime.GOOS != "linux" {
+		state = collectionUnsupported
+	}
+	if limits := process.Limits; limits != nil {
+		switch limits.Cgroup.Status {
+		case "available":
+			state = collectionObserved
+		case "permission_denied":
+			state = collectionPermissionDenied
+		case "unsupported":
+			state = collectionUnsupported
+		}
+	}
+	results[4] = withCollection(results[4], state, nil, "")
+	return results
+}
+
+func procSourceCollection(result Result, err error, count int) Result {
+	if errors.Is(err, errProcUnsupported) {
+		return withCollection(result, collectionUnsupported, nil, "")
+	}
+	if err != nil {
+		return collectionReadError(result, err)
+	}
+	return withCollection(result, collectionObserved, intPointer(count), "")
 }
 
 func procProcessResult(process topProcess, details procDetails, now time.Time, verbose bool) Result {

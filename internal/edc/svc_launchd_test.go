@@ -121,3 +121,22 @@ func TestLaunchdLabelAndDomains(t *testing.T) {
 		t.Fatalf("user domain = %s", got)
 	}
 }
+
+func TestLaunchdCollectionSeparatesExitFailureFromCollection(t *testing.T) {
+	failed := launchdStateResult("bad", launchdJobInfo{State: "not running", ExitCode: "1"})
+	if failed.Status != StatusFail || failed.Collection.State != collectionObserved {
+		t.Fatalf("state: %+v", failed)
+	}
+	empty := launchdListResult(nil, false)
+	if c := empty.Collection; c.State != collectionObserved || *c.Observed != 0 {
+		t.Fatalf("list: %+v", c)
+	}
+	stopped := launchdProcessResult(launchdJobInfo{}, topProcess{}, false, procDetails{})
+	if c := stopped.Collection; c.State != collectionObserved || *c.Observed != 0 || stopped.Status != StatusSkip {
+		t.Fatalf("stopped: %+v", c)
+	}
+	missing := launchdLogResult(launchdJobInfo{}, nil)
+	if c := missing.Collection; c.State != collectionUnavailable || c.Observed != nil {
+		t.Fatalf("unconfigured: %+v", c)
+	}
+}

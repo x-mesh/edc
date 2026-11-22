@@ -479,3 +479,37 @@ func TestRunSvcAcceptsOptionsAfterTheUnit(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 }
+
+func TestSvcCollectionSeparatesFailedHealthAndPartialSources(t *testing.T) {
+	used := 0
+	facts := svcFacts{Systemd: true, Root: false, Show: svcShow{LoadState: "loaded", ActiveState: "failed", SubState: "failed"}, Processes: []topProcess{{PID: 1}, {PID: 2}}, FD: map[int]topFDLimit{1: {topLimitStatus: topLimitStatus{Status: "available"}, Used: &used}, 2: {topLimitStatus: topLimitStatus{Status: "permission_denied"}}}, Journal: svcJournal{Hidden: true, Lines: []string{"visible error"}}, JournalErr: errSvcNeedsRoot}
+	results := evaluateSvc(facts)
+	byID := map[string]Result{}
+	for _, result := range results {
+		byID[result.Probe] = result
+	}
+	if c := byID["svc.state"].Collection; c.State != collectionObserved || byID["svc.state"].Status != StatusFail {
+		t.Fatalf("state: %+v", byID["svc.state"])
+	}
+	if c := byID["svc.fd"].Collection; c.State != collectionPartial || c.Observed == nil || *c.Observed != 1 {
+		t.Fatalf("fd: %+v", c)
+	}
+	if c := byID["svc.listen"].Collection; c.State != collectionPermissionDenied || c.Observed != nil {
+		t.Fatalf("listen: %+v", c)
+	}
+	if c := byID["svc.journal"].Collection; c.State != collectionPartial || c.Observed == nil || *c.Observed != 1 {
+		t.Fatalf("journal: %+v", c)
+	}
+	facts.Probe = "ctr"
+	for _, result := range evaluateSvc(facts) {
+		if result.Collection != nil {
+			t.Fatal("shared ctr builders changed")
+		}
+	}
+	if c := evaluateSvcList(nil, nil).Collection; c.State != collectionObserved || *c.Observed != 0 {
+		t.Fatalf("list zero: %+v", c)
+	}
+	if c := evaluateSvcList(nil, errSvcNoSystemd).Collection; c.State != collectionUnsupported || c.Observed != nil {
+		t.Fatalf("no backend: %+v", c)
+	}
+}

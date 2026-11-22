@@ -165,10 +165,10 @@ func collectSvcList(ctx context.Context, sources svcSources, all bool) ([]svcLis
 // unit이 있으면 warn이다. 예전에 재시작한 적만 있는 unit은 위에 보이지만 경고하지 않는다. 오래 돈 host에서는 흔하다.
 func evaluateSvcList(items []svcListItem, err error) Result {
 	if errors.Is(err, errSvcNoSystemd) {
-		return unsupported(svcProbeID, T("svc.skip.no_systemd"))
+		return withCollection(unsupported(svcProbeID, T("svc.skip.no_systemd")), collectionUnsupported, nil, "")
 	}
 	if err != nil {
-		return svcFailed(svcResult("list", StatusFail, T("svc.list.failed", infoSingleLine(err.Error()))))
+		return collectionReadError(svcFailed(svcResult("list", StatusFail, T("svc.list.failed", infoSingleLine(err.Error())))), err)
 	}
 	var failed []string
 	changing := 0
@@ -194,7 +194,7 @@ func evaluateSvcList(items []svcListItem, err error) Result {
 		}
 	}
 	result.Metrics = map[string]interface{}{"services": items, "failed": len(failed), "changing": changing}
-	return result
+	return withCollection(result, collectionObserved, intPointer(len(items)), "")
 }
 
 // svcListCells는 표와 대화형 화면이 같이 쓰는 칸이다.
@@ -270,7 +270,7 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	started := time.Now()
 	target := map[string]interface{}{"all": all}
 	if !ok {
-		return emit(options, buildReport(version, started, target, []Result{unsupported(svcProbeID, T("svc.skip.linux_only"))}, options.redact))
+		return emit(options, buildReport(version, started, target, []Result{withCollection(unsupported(svcProbeID, T("svc.skip.linux_only")), collectionUnsupported, nil, "")}, options.redact))
 	}
 	if options.jsonPath == "" && liveTerminal() && sources.systemd() {
 		return runSvcBrowser(sources, options.timeout, all)

@@ -100,7 +100,7 @@ func launchdListResult(items []launchdItem, all bool) Result {
 	if len(shown) > 0 {
 		result.Evidence = []Evidence{{Label: T("svc.launchd.jobs", len(shown)), Value: strings.Join(lines, "\n")}}
 	}
-	return result
+	return withCollection(result, collectionObserved, intPointer(len(items)), "")
 }
 
 // launchdJobInfo는 launchctl print의 맨 위 칸이다. 들여쓴 하위 블록(environment, endpoints)은 읽지 않는다.
@@ -205,16 +205,16 @@ func launchdStateResult(label string, info launchdJobInfo) Result {
 		result.Error = &DiagnosticError{Kind: "state", Message: result.Summary}
 		result.Next = "launchctl print " + info.Domain + "/" + label
 	}
-	return result
+	return withCollection(result, collectionObserved, intPointer(1), "")
 }
 
 // launchdProcessResult는 돌고 있는 job의 process 하나를 proc과 같은 원천으로 읽는다.
 func launchdProcessResult(info launchdJobInfo, process topProcess, found bool, details procDetails) Result {
 	if info.PID == 0 {
-		return svcResult("process", StatusSkip, T("svc.launchd.not_running"))
+		return withCollection(svcResult("process", StatusSkip, T("svc.launchd.not_running")), collectionObserved, intPointer(0), "")
 	}
 	if !found {
-		return svcResult("process", StatusSkip, T("proc.error.not_found", strconv.Itoa(info.PID)))
+		return withCollection(svcResult("process", StatusSkip, T("proc.error.not_found", strconv.Itoa(info.PID))), collectionUnavailable, nil, "")
 	}
 	parts := []string{T("proc.resources", process.CPU, traceBytes(process.RSS))}
 	if details.FDErr == nil {
@@ -229,7 +229,11 @@ func launchdProcessResult(info launchdJobInfo, process topProcess, found bool, d
 	}
 	result := svcResult("process", StatusPass, strings.Join(parts, " · "))
 	result.Next = fmt.Sprintf("edc proc %d", info.PID)
-	return result
+	state := collectionObserved
+	if details.FDErr != nil || details.SocketErr != nil {
+		state = collectionPartial
+	}
+	return withCollection(result, state, intPointer(1), "")
 }
 
 // launchdLogResult는 job이 적어 둔 stderr, 없으면 stdout 파일의 끝이다. launchd는 log를 따로 모으지 않으므로 이 경로가
@@ -241,22 +245,22 @@ func launchdLogResult(info launchdJobInfo, read func(path string) ([]string, err
 		if name := procName(info.Program); name != "" && name != "." {
 			result.Next = fmt.Sprintf("log show --last 1h --predicate 'process == %q'", name)
 		}
-		return result
+		return withCollection(result, collectionUnavailable, nil, "")
 	}
 	lines, err := read(path)
 	switch {
 	case errors.Is(err, os.ErrPermission):
-		return svcResult("log", StatusSkip, T("svc.skip.needs_root", path))
+		return withCollection(svcResult("log", StatusSkip, T("svc.skip.needs_root", path)), collectionPermissionDenied, nil, "")
 	case errors.Is(err, os.ErrNotExist):
-		return svcResult("log", StatusSkip, T("svc.launchd.log_missing", path))
+		return collectionReadError(svcResult("log", StatusSkip, T("svc.launchd.log_missing", path)), err)
 	case err != nil:
-		return svcResult("log", StatusSkip, T("svc.skip.unreadable", path, infoSingleLine(err.Error())))
+		return collectionReadError(svcResult("log", StatusSkip, T("svc.skip.unreadable", path, infoSingleLine(err.Error()))), err)
 	case len(lines) == 0:
-		return svcResult("log", StatusPass, T("svc.launchd.log_empty", path))
+		return withCollection(svcResult("log", StatusPass, T("svc.launchd.log_empty", path)), collectionObserved, intPointer(0), "")
 	}
 	result := svcResult("log", StatusPass, T("svc.launchd.log", len(lines), path))
 	result.Evidence = []Evidence{{Label: path, Value: strings.Join(lines, "\n")}}
-	return result
+	return withCollection(result, collectionObserved, intPointer(len(lines)), "")
 }
 
 // tailLogFile은 파일 끝 launchdLogTail byte에서 마지막 launchdLogLines 줄을 읽는다. 큰 log를 처음부터 읽지 않는다.
@@ -334,7 +338,7 @@ func runSvcLaunchd(args []string, version string) int {
 		output, err := runLaunchctl(ctx, "list")
 		result := launchdListResult(parseLaunchdList(output), *all)
 		if err != nil {
-			result = svcFailed(svcResult("list", StatusFail, T("svc.list.failed", infoSingleLine(err.Error()))))
+			result = collectionReadError(svcFailed(svcResult("list", StatusFail, T("svc.list.failed", infoSingleLine(err.Error())))), err)
 		}
 		return emit(options, buildReport(version, started, map[string]interface{}{"all": *all}, []Result{result}, options.redact))
 	}

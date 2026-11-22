@@ -97,6 +97,17 @@ func historyEvidenceInWindow(at, from, to time.Time) bool {
 
 func loadHistoryOverviewEvidence(db *sql.DB, view historyOverview, logs []logHistoryAttempt, logsErr error) ([]historyOverviewEvidence, []historyEvidenceNotice) {
 	acc := newHistoryEvidenceAccumulator()
+	has, err := historyHasSnapshots(db)
+	switch {
+	case err != nil:
+		acc.notice("snapshots_unavailable", "snapshot", "", err.Error())
+	case !has:
+		acc.notice("snapshots_unavailable", "snapshot", "", "")
+	case view.Run != nil && view.Run.Hostname == "":
+		acc.notice("run_host_unknown", "snapshot", view.Run.ID, "")
+	default:
+		loadHistorySnapshotEvidence(db, view, acc)
+	}
 	if logsErr != nil {
 		acc.notice("logs_unavailable", "log", "", logsErr.Error())
 	}
@@ -119,17 +130,6 @@ func loadHistoryOverviewEvidence(db *sql.DB, view historyOverview, logs []logHis
 		}
 		acc.add(entry)
 		acc.notice("logs_host_unknown", "log", "", "")
-	}
-	has, err := historyHasSnapshots(db)
-	switch {
-	case err != nil:
-		acc.notice("snapshots_unavailable", "snapshot", "", err.Error())
-	case !has:
-		acc.notice("snapshots_unavailable", "snapshot", "", "")
-	case view.Run != nil && view.Run.Hostname == "":
-		acc.notice("run_host_unknown", "snapshot", view.Run.ID, "")
-	default:
-		loadHistorySnapshotEvidence(db, view, acc)
 	}
 	sort.SliceStable(acc.entries, func(i, j int) bool {
 		a, b := acc.entries[i], acc.entries[j]
@@ -335,7 +335,10 @@ func historyOverviewEvidenceLines(view historyOverview, loc *time.Location) []st
 		if notice.Detail != "" {
 			message += " · " + historyTerminalText(notice.Detail)
 		}
-		lines = append(lines, "  ["+source+"] "+message)
+		if source != "" {
+			message = "[" + source + "] " + message
+		}
+		lines = append(lines, "  "+message)
 	}
 	return lines
 }

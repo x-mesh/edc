@@ -230,3 +230,29 @@ func TestHistoryOverviewEvidenceRetainsSkippedEventSources(t *testing.T) {
 		t.Fatalf("lost coverage or treated health failure as collection failure: %+v %+v", entries, notices)
 	}
 }
+
+func TestHistoryOverviewEvidencePrefersTargetHostOverUnscopedLogs(t *testing.T) {
+	db := historyEvidenceDB(t)
+	from := time.Unix(1000, 0).UTC()
+	captured := from.Add(30 * time.Minute)
+	addHistoryEvidenceSnapshot(t, db, "target-oom", "db-01", captured, evidenceWindow(captured, eventsSignal{Time: from.Add(time.Minute), Kind: "oom", Subject: "postgres", Brief: "postgres killed"}))
+	logs := make([]logHistoryAttempt, historyEvidenceMaxEntries)
+	for i := range logs {
+		logs[i] = logHistoryAttempt{Started: from.Add(time.Duration(i) * time.Second), Command: []string{fmt.Sprintf("job-%d", i)}, Path: fmt.Sprintf("/archive/%d.log", i)}
+	}
+	entries, notices := loadHistoryOverviewEvidence(db, historyOverview{From: from, To: from.Add(time.Hour), Run: &historyRun{Hostname: "db-01"}}, logs, nil)
+	found := false
+	for _, entry := range entries {
+		if entry.RunID == "target-oom" && entry.Kind == "oom" && entry.Host == "db-01" && !entry.HostUnknown {
+			found = true
+		}
+	}
+	if !found || len(entries) != historyEvidenceMaxEntries || !hasHistoryEvidenceNotice(notices, "entries_limit") {
+		t.Fatalf("unscoped archive displaced target-host evidence: %+v %+v", entries, notices)
+	}
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Time.Before(entries[i-1].Time) {
+			t.Fatal("priority changed final chronological order")
+		}
+	}
+}

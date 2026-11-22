@@ -461,3 +461,42 @@ func TestFormatChangesTableCapsRows(t *testing.T) {
 		t.Fatal("변화가 없는데 표를 그렸다")
 	}
 }
+
+func TestObserveOutputChangesTableKeepsRowsLimitsAndDetails(t *testing.T) {
+	events := make([]changeEvent, changesTableLimit+2)
+	for i := range events {
+		events[i] = changeEvent{Time: time.Unix(int64(100-i), 0), Kind: "etc", Name: fmt.Sprintf("row-%02d-", i) + strings.Repeat("long-path/", 20), Detail: fmt.Sprintf("restarts %d DETAIL_END", i)}
+	}
+	before := append([]changeEvent(nil), events...)
+	for _, width := range []int{32, 48, 80, 140} {
+		for _, color := range []bool{false, true} {
+			text := formatObserveChangesTable(events, false, infoStyle{textStyle{width: width, color: color}}, false)
+			compact := observeOutputCompact(text)
+			for _, want := range []string{events[0].Name, events[49].Name, events[0].Detail, events[49].Detail, T("changes.more", 2)} {
+				if !strings.Contains(compact, observeOutputCompact(want)) {
+					t.Fatalf("width %d lost %q", width, want)
+				}
+			}
+			if strings.Contains(compact, "row-50-") || strings.Index(compact, "row-00-") > strings.Index(compact, "row-01-") {
+				t.Fatal("row limit or sort order changed")
+			}
+			assertObserveOutputWidth(t, text, width)
+			all := formatObserveChangesTable(events, true, infoStyle{textStyle{width: width, color: color}}, false)
+			if !strings.Contains(observeOutputCompact(all), "row-51-") {
+				t.Fatal("verbose omitted rows")
+			}
+		}
+	}
+	for i := range events {
+		if events[i] != before[i] {
+			t.Fatal("events mutated")
+		}
+	}
+	short := []changeEvent{{Time: time.Unix(1, 0), Kind: "etc", Name: "/etc/a", Detail: "changed"}}
+	if got, want := formatObserveChangesTable(short, true, infoStyle{textStyle{width: 140}}, false), formatChangesTable(short, true, false); got != want {
+		t.Fatalf("wide table changed:\n%s\n%s", got, want)
+	}
+	if got, want := formatObserveChangesTable(events, true, infoStyle{}, false), formatChangesTable(events, true, false); got != want {
+		t.Fatal("legacy changes table changed")
+	}
+}

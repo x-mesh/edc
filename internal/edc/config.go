@@ -24,7 +24,7 @@ const maxConfigBytes = 1024 * 1024
 const legacyRecommendedLogOutput = "/var/log/job.log"
 
 var configScalarTypes = map[string]string{
-	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
+	"defaults.listen.browse": "!!str", "lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
 	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.top.interface": "!!str",
 	"defaults.top.view": "!!str", "defaults.top.panels": "!!str", "defaults.top.process_sort": "!!str", "defaults.top.columns": "!!str", "defaults.top.retain": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
@@ -137,6 +137,7 @@ type auditConfig struct {
 }
 
 type configDefaults struct {
+	Listen   listenConfig   `yaml:"listen,omitempty" toml:"listen,omitempty"`
 	Common   commonConfig   `yaml:"common,omitempty" toml:"common,omitempty"`
 	Doctor   doctorConfig   `yaml:"doctor,omitempty" toml:"doctor,omitempty"`
 	TLS      tlsConfig      `yaml:"tls,omitempty" toml:"tls,omitempty"`
@@ -155,6 +156,10 @@ type configDefaults struct {
 	Changes  changesConfig  `yaml:"changes,omitempty" toml:"changes,omitempty"`
 	Snapshot snapshotConfig `yaml:"snapshot,omitempty" toml:"snapshot,omitempty"`
 	Events   eventsConfig   `yaml:"events,omitempty" toml:"events,omitempty"`
+}
+
+type listenConfig struct {
+	Browse *string `yaml:"browse,omitempty" toml:"browse,omitempty"`
 }
 
 type commonConfig struct {
@@ -579,6 +584,9 @@ func validateConfig(config edcConfig) error {
 			return invalidConfig("defaults.top.retain", "must be an age such as 30d, 2w, or 12h")
 		}
 	}
+	if d.Listen.Browse != nil && !validListenBrowseMode(*d.Listen.Browse) {
+		return invalidConfig("defaults.listen.browse", "must be auto, always, or never")
+	}
 	if d.Info.Timeout != nil && d.Info.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.info.timeout", "must be greater than 0")
 	}
@@ -732,6 +740,7 @@ func recommendedConfig() edcConfig {
 		lang = defaultLanguage
 	}
 	return edcConfig{Lang: lang, Defaults: configDefaults{
+		Listen: listenConfig{Browse: stringPointer("auto")},
 		Common: commonConfig{Timeout: durationPointer(15 * time.Second), JSON: stringPointer(""), Verbose: boolPointer(false), Redact: boolPointer(false)},
 		Doctor: doctorConfig{Profile: stringPointer("default")}, TLS: tlsConfig{MinDays: intPointer(14)}, HTTP: httpConfig{ExpectStatus: intPointer(200)},
 		Top:      topConfig{Interval: durationPointer(2 * time.Second), Count: intPointer(10), NoHeader: boolPointer(false), JSON: stringPointer("")},

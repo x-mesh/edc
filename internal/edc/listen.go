@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"errors"
 	"net/netip"
 	"os"
 	"os/user"
@@ -383,4 +384,36 @@ func listenQueueCell(socket listenSocket) string {
 		return "-"
 	}
 	return strconv.Itoa(socket.RecvQ) + "/" + strconv.Itoa(socket.SendQ)
+}
+
+func validListenBrowseMode(mode string) bool {
+	return mode == "auto" || mode == "always" || mode == "never"
+}
+
+func resolveListenBrowse(mode string, override *bool, terminal, watch, jsonOutput bool) (bool, error) {
+	if override != nil {
+		if !*override {
+			return false, nil
+		}
+		if watch || jsonOutput {
+			return false, errors.New(T("listenbrowse.conflict"))
+		}
+		mode = "always"
+	}
+	if watch || jsonOutput {
+		return false, nil
+	}
+	switch mode {
+	case "never":
+		return false, nil
+	case "auto":
+		return terminal, nil
+	case "always":
+		if !terminal {
+			return false, errors.New(T("listenbrowse.terminal"))
+		}
+		return true, nil
+	default:
+		return false, errors.New(T("listenbrowse.invalid_mode"))
+	}
 }

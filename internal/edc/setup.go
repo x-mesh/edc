@@ -149,9 +149,18 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 			config.Defaults.Du = mergeConfigSection(config.Defaults.Du, recommended.Defaults.Du)
 			return editDuSetup(reader, output, &config.Defaults.Du)
 		}},
+		{"listen", func() error {
+			config.Defaults.Listen = mergeConfigSection(config.Defaults.Listen, recommended.Defaults.Listen)
+			return setupOptionalString(reader, output, T("listenbrowse.setup_field"), &config.Defaults.Listen.Browse, func(value string) error {
+				if !validListenBrowseMode(value) {
+					return errors.New(T("listenbrowse.invalid_mode"))
+				}
+				return nil
+			})
+		}},
 	}
 	for _, section := range sections {
-		configure, err := setupYesNo(reader, output, T("cli.setup.section."+section.key), false)
+		configure, err := setupYesNo(reader, output, setupSectionLabel(section.key), false)
 		if err != nil {
 			return setupInputError(stderr, err)
 		}
@@ -771,4 +780,11 @@ func writeConfigIfUnchanged(path string, data []byte, original configSnapshot) e
 		return errConfigChanged
 	}
 	return writeConfigAtomic(path, data)
+}
+
+func setupSectionLabel(key string) string {
+	if key == "listen" {
+		return T("listenbrowse.setup_section")
+	}
+	return T("cli.setup.section." + key)
 }

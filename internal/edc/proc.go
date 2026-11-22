@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -399,6 +400,24 @@ func runProc(args []string, version string) int {
 	}
 	started := time.Now()
 	target := set.Arg(0)
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	defer cancel()
+	results, pid, err := collectProcResults(ctx, target, options.verbose)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	targetInfo := map[string]interface{}{"process": target}
+	if pid > 0 {
+		targetInfo["pid"] = pid
+	}
+	return emit(options, buildReport(version, started, targetInfo, results, options.redact))
+}
+
+func collectProcResults(ctx context.Context, target string, verbose bool) ([]Result, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	// PID를 주면 표본을 뜨기 전에 그 process를 열어 둔다. 끝에 같은 process이면 표본과 세부 정보가 모두 그 process 것이다.
 	handle, opened := procHandle{}, false
 	if pid, err := strconv.Atoi(target); err == nil {
@@ -409,19 +428,21 @@ func runProc(args []string, version string) int {
 	read := newTopProcessReader()
 	// CPU 사용률은 두 번 읽은 차이다. 첫 읽기는 기준만 남기고, Linux는 이때 결과가 없다고 답한다.
 	read()
-	time.Sleep(procSampleWindow)
+	select {
+	case <-ctx.Done():
+		return nil, 0, ctx.Err()
+	case <-time.After(procSampleWindow):
+	}
 	processes, ok := read()
 	if !ok {
-		fmt.Fprintln(os.Stderr, T("proc.error.unreadable"))
-		return 1
+		return nil, 0, errors.New(T("proc.error.unreadable"))
 	}
 	process, matches, err := selectProc(processes, target)
 	switch {
 	case errors.Is(err, errProcNotFound):
-		fmt.Fprintln(os.Stderr, T("proc.error.not_found", target))
-		return 1
+		return nil, 0, errors.New(T("proc.error.not_found", target))
 	case len(matches) > 0:
-		return emit(options, buildReport(version, started, map[string]interface{}{"process": target}, []Result{procCandidatesResult(target, matches)}, options.redact))
+		return []Result{procCandidatesResult(target, matches)}, 0, nil
 	}
 	// 이름으로 고르면 표본을 뜬 뒤에야 PID를 안다. 표본과 이 열기 사이에 같은 tick으로 PID를 다시 쓴 process는 가르지 못한다.
 	if !opened {
@@ -432,11 +453,12 @@ func runProc(args []string, version string) int {
 	selected := []topProcess{process}
 	newTopProcessEnricher()(selected)
 	details := readProcDetails(process.PID)
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	// 열어 둔 process가 끝나 PID가 다른 process에 넘어갔으면 위에서 읽은 limit, 명령행, fd, 출처가 섞인다.
 	if !handle.sameProcess(process) {
-		fmt.Fprintln(os.Stderr, T("proc.error.replaced", process.PID))
-		return 1
+		return nil, 0, errors.New(T("proc.error.replaced", process.PID))
 	}
-	results := evaluateProc(selected[0], details, time.Now(), options.verbose)
-	return emit(options, buildReport(version, started, map[string]interface{}{"process": target, "pid": process.PID}, results, options.redact))
+	return evaluateProc(selected[0], details, time.Now(), verbose), process.PID, nil
 }

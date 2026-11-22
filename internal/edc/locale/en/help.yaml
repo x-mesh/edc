@@ -383,6 +383,9 @@ command:
       verbose: "add the account, the descriptor and the queue columns"
       full: "show the working directory and the command line below each row"
     notes:
+      - "By default, listen opens a browser in an interactive terminal and prints once in pipes or TERM=dumb. -B/--no-browse always prints once. Configure auto/always/never with edc setup listen.browse; NO_COLOR only disables colors."
+      - "In browse: arrows select, Enter reads socket and process details, r refreshes, Esc returns, q quits. Requires a 48x8 interactive terminal; NO_COLOR keeps navigation without colors."
+      - "--browse cannot be combined with --watch, --json, --interval, or --duration."
       - "It shows TCP LISTEN sockets and bound UDP sockets."
       - "A family flag is a filter. --tcp keeps TCP and drops the rest."
       - "Two flags keep both. --all adds unix domain sockets."

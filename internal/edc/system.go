@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -457,6 +458,10 @@ func runListen(args []string, version string) int {
 	unix := set.Bool("unix", false, T("command.listen.option.unix"))
 	all := set.Bool("all", false, T("command.listen.option.all"))
 	watch := set.Bool("watch", false, T("command.listen.option.watch"))
+	browse := set.Bool("browse", false, T("listenbrowse.option"))
+	set.BoolVar(browse, "b", false, T("listenbrowse.option"))
+	noBrowse := set.Bool("no-browse", false, T("listenbrowse.no_browse"))
+	set.BoolVar(noBrowse, "B", false, T("listenbrowse.no_browse"))
 	full := set.Bool("full", false, T("command.listen.option.full"))
 	intervalText := "1"
 	set.StringVar(&intervalText, "i", intervalText, T("command.watch.option.interval"))
@@ -468,6 +473,42 @@ func runListen(args []string, version string) int {
 	if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", listenProbeID))
 		return 2
+	}
+	browseSet, noBrowseSet, specifiedWatchOption := false, false, false
+	set.Visit(func(flag *flag.Flag) {
+		switch flag.Name {
+		case "browse", "b":
+			browseSet = true
+		case "no-browse", "B":
+			noBrowseSet = true
+		case "i", "interval", "duration":
+			specifiedWatchOption = true
+		}
+	})
+	if browseSet && noBrowseSet {
+		fmt.Fprintln(os.Stderr, T("listenbrowse.opposite_flags"))
+		return 2
+	}
+	var override *bool
+	if browseSet {
+		override = browse
+	}
+	if noBrowseSet && *noBrowse {
+		value := false
+		override = &value
+	}
+	terminal := isTerminal(os.Stdin) && isTerminal(os.Stdout) && os.Getenv("TERM") != "dumb"
+	useBrowser, err := resolveListenBrowse(configuredString(activeConfig.Defaults.Listen.Browse, "auto"), override, terminal, *watch, options.jsonPath != "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if useBrowser {
+		if specifiedWatchOption {
+			fmt.Fprintln(os.Stderr, T("listenbrowse.watch_options"))
+			return 2
+		}
+		return runListenBrowser(options, selectedListenFamilies(*tcp, *udp, *unix, *all), *full)
 	}
 	if *watch && *full {
 		// watch의 변화 줄에는 명령줄을 둘 자리가 없다. 받고 무시하면 켠 줄 알고 기다리게 된다.

@@ -56,7 +56,7 @@ func TestListenBrowserNavigationRejectsUnknownOwnerAndRedaction(t *testing.T) {
 		}
 	}
 	model.redact = false
-	model.items[0].PID = ""
+	model.items[0].Sockets[0].PID = ""
 	updated, cmd := listenBrowserKey(model, "t")
 	if cmd != nil || updated.notice == "" {
 		t.Fatal("unknown owner launched a child")

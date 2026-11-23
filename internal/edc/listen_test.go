@@ -96,11 +96,11 @@ func TestFormatListenTableDetailColumns(t *testing.T) {
 		{Proto: "tcp", Address: "0.0.0.0", Port: 22, Process: "sshd", PID: "1", User: "root", FD: "3", RecvQ: 0, SendQ: 4096, HasQueue: true},
 		{Proto: "unix", Address: "/run/docker.sock", Process: "dockerd", PID: "895"},
 	}
-	plain := formatListenTable(sockets, false, nil)
+	plain := formatListenTable(sockets, false, textStyle{}, nil)
 	if strings.Contains(plain, "4096") {
 		t.Fatalf("-v가 없는데 상세 열이 나왔다:\n%s", plain)
 	}
-	detail := formatListenTable(sockets, true, nil)
+	detail := formatListenTable(sockets, true, textStyle{}, nil)
 	if !strings.Contains(detail, "0/4096") {
 		t.Fatalf("큐 열이 없다:\n%s", detail)
 	}
@@ -147,7 +147,7 @@ func TestFormatListenBindingScopeLocales(t *testing.T) {
 	for _, lang := range []string{"en", "ko", "ja"} {
 		setLanguage(lang)
 		for _, detail := range []bool{false, true} {
-			table := formatListenTable(sockets, detail, nil)
+			table := formatListenTable(sockets, detail, textStyle{}, nil)
 			lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
 			if len(lines) != 4 {
 				t.Fatalf("%s rows = %d", lang, len(lines))
@@ -181,7 +181,7 @@ func TestFormatListenBindingScopeLocales(t *testing.T) {
 
 func TestListenBindingSocketJSONUnchanged(t *testing.T) {
 	socket := listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "app", PID: "42"}
-	formatListenTable([]listenSocket{socket}, true, nil)
+	formatListenTable([]listenSocket{socket}, true, textStyle{}, nil)
 	got, err := json.Marshal(socket)
 	want := `{"proto":"tcp","address":"127.0.0.1","port":80,"process":"app","pid":"42","recv_q":0,"send_q":0,"has_queue":false}`
 	if err != nil || string(got) != want {
@@ -247,7 +247,7 @@ func TestFormatListenTableCommandLines(t *testing.T) {
 		{Proto: "tcp", Address: "*", Port: 5173, Process: "node", PID: "7", Args: []string{"node", "vite"}, Cwd: "/srv/web"},
 		{Proto: "tcp", Address: "127.0.0.1", Port: 6379, Process: "redis", PID: "8"},
 	}
-	table := formatListenTable(sockets, false, func(text string) string { return "<" + text + ">" })
+	table := formatListenTable(sockets, false, textStyle{}, func(text string) string { return "<" + text + ">" })
 	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
 	if len(lines) != 4 {
 		t.Fatalf("lines = %d, want header, two rows and one command:\n%s", len(lines), table)
@@ -255,7 +255,7 @@ func TestFormatListenTableCommandLines(t *testing.T) {
 	if want := strings.Repeat(" ", len("PORT")+2) + "<↳ /srv/web   vite>"; lines[2] != want {
 		t.Fatalf("command line %q, want %q", lines[2], want)
 	}
-	if plain := formatListenTable(sockets, false, nil); strings.Contains(plain, "vite") {
+	if plain := formatListenTable(sockets, false, textStyle{}, nil); strings.Contains(plain, "vite") {
 		t.Fatalf("command lines without --full:\n%s", plain)
 	}
 }

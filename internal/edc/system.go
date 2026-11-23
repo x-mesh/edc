@@ -549,7 +549,7 @@ func runListen(args []string, version string) int {
 	fmt.Fprint(output, formatResultLine(result, color))
 	printResultDetail(output, result, false, color)
 	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
-	if table := listenTableOf(result, options.verbose, note); table != "" {
+	if table := listenTableOf(result, options.verbose, style, note); table != "" {
 		fmt.Fprint(output, "\n"+style.table(table))
 	}
 	if options.redact {
@@ -559,10 +559,10 @@ func runListen(args []string, version string) int {
 }
 
 // listenTableOf는 결과의 metrics에 담아 둔 목록으로 표를 만든다.
-func listenTableOf(result Result, detail bool, note func(string) string) string {
+func listenTableOf(result Result, detail bool, style textStyle, note func(string) string) string {
 	sockets, ok := result.Metrics["sockets"].([]listenSocket)
 	if !ok || len(sockets) == 0 {
 		return ""
 	}
-	return formatListenTable(sockets, detail, note)
+	return formatListenTable(sockets, detail, style, note)
 }

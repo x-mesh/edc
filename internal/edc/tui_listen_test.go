@@ -22,8 +22,8 @@ func listenBrowserFixture(t *testing.T) listenBrowser {
 			{Proto: "tcp", Port: 5432, Address: "127.0.0.1", Process: "postgres", PID: "200"},
 		}}}
 	}
-	model.inspect = func(_ context.Context, socket listenSocket) []string {
-		return append([]string{"owner PID " + socket.PID}, strings.Split(strings.Repeat("detail\n", 30), "\n")...)
+	model.inspect = func(_ context.Context, row listenRow) []string {
+		return append([]string{"owner PID " + row.first().PID}, strings.Split(strings.Repeat("detail\n", 30), "\n")...)
 	}
 	next, cmd := model.Update(model.Init()())
 	if cmd != nil {
@@ -45,7 +45,7 @@ func TestListenBrowserDetailsReturnToSameSelection(t *testing.T) {
 	model := listenBrowserFixture(t)
 	model, _ = listenBrowserKey(model, "down")
 	model, cmd := listenBrowserKey(model, "enter")
-	if model.detail == nil || model.detail.socket.PID != "200" || cmd == nil {
+	if model.detail == nil || model.detail.row.first().PID != "200" || cmd == nil {
 		t.Fatal("Enter must inspect selected owner")
 	}
 	next, _ := model.Update(cmd())
@@ -96,7 +96,7 @@ func TestListenBrowserManualRefreshKeepsIdentityAndSnapshotOnError(t *testing.T)
 	if len(model.items) != 2 || !model.loading {
 		t.Fatal("stale list replaced current snapshot")
 	}
-	next, automatic := model.Update(listenBrowserListMsg{seq: model.seq, result: Result{Status: StatusPass, Metrics: map[string]interface{}{"sockets": []listenSocket{selected, model.items[0]}}}, at: time.Now()})
+	next, automatic := model.Update(listenBrowserListMsg{seq: model.seq, result: Result{Status: StatusPass, Metrics: map[string]interface{}{"sockets": []listenSocket{selected, model.items[0].first()}}}, at: time.Now()})
 	model = next.(listenBrowser)
 	if model.cursor != 0 || automatic != nil {
 		t.Fatal("refresh must retain socket identity without automatic reload")
@@ -124,8 +124,9 @@ func TestListenBrowserResizeUnicodeAndRedaction(t *testing.T) {
 	model := listenBrowserFixture(t)
 	model.redact = true
 	for i := 0; i < 60; i++ {
-		model.items = append(model.items, listenSocket{Proto: "unix", Address: "/tmp/서비스.sock", Process: "프로세스🙂", PID: fmt.Sprint(4194245 + i)})
+		model.sockets = append(model.sockets, listenSocket{Proto: "unix", Address: "/tmp/서비스.sock", Process: "프로세스🙂", PID: fmt.Sprint(4194245 + i)})
 	}
+	model.rebuild()
 	model, _ = listenBrowserKey(model, "end")
 	for _, color := range []bool{false, true} {
 		t.Setenv("NO_COLOR", "")
@@ -155,7 +156,7 @@ func TestListenBrowserResizeUnicodeAndRedaction(t *testing.T) {
 	if strings.Contains(text, "0.0.0.0") {
 		t.Fatal("list leaked address")
 	}
-	model.detail = &listenBrowserDetail{socket: model.items[0], lines: []string{"peer 192.0.2.1 " + strings.Repeat("한글", 1000)}}
+	model.detail = &listenBrowserDetail{row: model.items[0], lines: []string{"peer 192.0.2.1 " + strings.Repeat("한글", 1000)}}
 	if text = model.View().Content; strings.Contains(text, "192.0.2.1") || strings.Contains(text, "0.0.0.0") {
 		t.Fatal("detail leaked address")
 	}
@@ -200,7 +201,7 @@ func TestCollectProcResultsHonorsCancellation(t *testing.T) {
 }
 
 func TestListenSocketWithoutOwnerStillHasDetails(t *testing.T) {
-	lines := inspectListenSocket(context.Background(), listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80})
+	lines := inspectListenSocket(context.Background(), listenRow{Sockets: []listenSocket{{Proto: "tcp", Address: "127.0.0.1", Port: 80}}})
 	text := strings.Join(lines, "\n")
 	if !strings.Contains(text, "127.0.0.1") || !strings.Contains(text, T("listenbrowse.no_owner")) {
 		t.Fatalf("details: %s", text)

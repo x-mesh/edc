@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,6 +108,22 @@ func viewSanitize(raw string) string {
 			column++
 		}
 	}
+	return builder.String()
+}
+
+// viewSGRPattern은 글자 색과 굵기만 바꾸는 escape다. 화면을 움직이거나 터미널 설정을 바꾸지 못한다.
+var viewSGRPattern = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+
+// viewSanitizeKeepColor는 viewSanitize와 같지만 색 escape는 남긴다. edc가 직접 입힌 결과 색을 보이려고 쓴다.
+func viewSanitizeKeepColor(raw string) string {
+	var builder strings.Builder
+	last := 0
+	for _, match := range viewSGRPattern.FindAllStringIndex(raw, -1) {
+		builder.WriteString(viewSanitize(raw[last:match[0]]))
+		builder.WriteString(raw[match[0]:match[1]])
+		last = match[1]
+	}
+	builder.WriteString(viewSanitize(raw[last:]))
 	return builder.String()
 }
 

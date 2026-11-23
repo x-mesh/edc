@@ -481,6 +481,9 @@ func inspectListenSocket(ctx context.Context, row listenRow, color bool) []strin
 	if first.Container != nil {
 		lines = append(lines, T("listenbrowse.container", listenContainerLabel(*first.Container)))
 	}
+	for i := range lines {
+		lines[i] = viewSanitize(lines[i])
+	}
 	pids := row.pids()
 	if len(pids) == 0 {
 		return append(lines, "", T("listenbrowse.no_owner"))
@@ -492,14 +495,50 @@ func inspectListenSocket(ctx context.Context, row listenRow, color bool) []strin
 		}
 		results, _, err := collectProcResults(ctx, pid, true)
 		if err != nil {
-			lines = append(lines, "", T("listenbrowse.process_failed", infoSingleLine(err.Error())))
+			lines = append(lines, "", viewSanitize(T("listenbrowse.process_failed", infoSingleLine(err.Error()))))
 			continue
 		}
 		var buffer strings.Builder
-		printTerminalWithColor(&buffer, results, true, color)
+		printTerminalWithColor(&buffer, viewSanitizeResults(results), true, color)
 		lines = append(lines, "", strings.TrimRight(buffer.String(), "\n"))
 	}
 	return strings.Split(strings.Join(lines, "\n"), "\n")
+}
+
+// viewSanitizeResults는 결과에 든 escape와 제어 문자를 출력 전에 지운다. 상세 화면은 edc가 입힌 색을 남기는데,
+// 프로세스 이름이나 명령줄에 든 색 escape는 그것과 구별할 수 없어서 미리 지운다. 여러 줄 값은 줄바꿈을 유지한다.
+func viewSanitizeResults(results []Result) []Result {
+	clean := func(value string) string {
+		lines := strings.Split(value, "\n")
+		for i := range lines {
+			lines[i] = viewSanitize(lines[i])
+		}
+		return strings.Join(lines, "\n")
+	}
+	sanitized := make([]Result, len(results))
+	for i, result := range results {
+		result.Summary, result.Next = clean(result.Summary), clean(result.Next)
+		result.Warnings = append([]string(nil), result.Warnings...)
+		for j := range result.Warnings {
+			result.Warnings[j] = clean(result.Warnings[j])
+		}
+		result.Evidence = append([]Evidence(nil), result.Evidence...)
+		for j := range result.Evidence {
+			result.Evidence[j].Label, result.Evidence[j].Value = clean(result.Evidence[j].Label), clean(result.Evidence[j].Value)
+		}
+		if result.Error != nil {
+			diagnostic := *result.Error
+			diagnostic.Kind, diagnostic.Message = clean(diagnostic.Kind), clean(diagnostic.Message)
+			result.Error = &diagnostic
+		}
+		if result.Collection != nil {
+			observation := *result.Collection
+			observation.Reason = clean(observation.Reason)
+			result.Collection = &observation
+		}
+		sanitized[i] = result
+	}
+	return sanitized
 }
 
 var _ tea.Model = listenBrowser{}

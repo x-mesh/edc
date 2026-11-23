@@ -201,9 +201,42 @@ func TestCollectProcResultsHonorsCancellation(t *testing.T) {
 }
 
 func TestListenSocketWithoutOwnerStillHasDetails(t *testing.T) {
-	lines := inspectListenSocket(context.Background(), listenRow{Sockets: []listenSocket{{Proto: "tcp", Address: "127.0.0.1", Port: 80}}})
+	lines := inspectListenSocket(context.Background(), listenRow{Sockets: []listenSocket{{Proto: "tcp", Address: "127.0.0.1", Port: 80}}}, false)
 	text := strings.Join(lines, "\n")
 	if !strings.Contains(text, "127.0.0.1") || !strings.Contains(text, T("listenbrowse.no_owner")) {
 		t.Fatalf("details: %s", text)
+	}
+}
+
+func TestListenBrowserDetailKeepsResultColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	model := listenBrowserFixture(t)
+	model.color = true
+	var buffer strings.Builder
+	printTerminalWithColor(&buffer, []Result{{Probe: "proc.process", Status: StatusPass, Summary: "cmd \x1b]0;title\x07 \x1b[2Jok"}}, false, true)
+	status := strings.Split(buffer.String(), "\n")[0]
+	line := model.detailLine(status)
+	if !strings.Contains(line, richStatusBadge(StatusPass)) {
+		t.Fatalf("PASS badge lost its color: %q", line)
+	}
+	if strings.Contains(line, "\x1b]") || strings.Contains(line, "\x1b[2J") || strings.Contains(line, "\x07") {
+		t.Fatalf("non-color escape survived: %q", line)
+	}
+	model.color = false
+	if line := model.detailLine(status); strings.Contains(line, "\x1b") {
+		t.Fatalf("color off kept escapes: %q", line)
+	}
+}
+
+func TestListenBrowserDetailRedactsAcrossColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	model := listenBrowserFixture(t)
+	model.color, model.redact = true, true
+	line := model.detailLine("peer 10.0." + richPaint("0.1", richGreen, false))
+	if strings.Contains(ansi.Strip(line), "10.0.0.1") {
+		t.Fatalf("address split by color was not redacted: %q", line)
+	}
+	if !strings.Contains(model.detailLine(richStatusBadge(StatusPass)+" proc.fd"), richStatusBadge(StatusPass)) {
+		t.Fatal("line without address lost its color under --redact")
 	}
 }

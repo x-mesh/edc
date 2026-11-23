@@ -68,7 +68,8 @@ func runListenBrowser(options commonOptions, families listenFamilies, full bool)
 		}
 		return result
 	}
-	model.inspect = inspectListenSocket
+	color := model.color
+	model.inspect = func(ctx context.Context, row listenRow) []string { return inspectListenSocket(ctx, row, color) }
 	model.openTop = listenBrowserOpenTop
 	model.full = full
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
@@ -283,12 +284,24 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (model listenBrowser) detailLines() []string {
 	var lines []string
 	for _, line := range model.detail.lines {
-		if model.redact {
-			line = redactIPAddresses(line)
-		}
-		lines = append(lines, strings.Split(ansi.Hardwrap(viewSanitize(line), max(1, model.width), true), "\n")...)
+		lines = append(lines, strings.Split(ansi.Hardwrap(model.detailLine(line), max(1, model.width), true), "\n")...)
 	}
 	return lines
+}
+
+// detailLine은 상세 결과 한 줄을 화면에 맞게 정리한다. 색이 켜져 있으면 결과 색만 남긴다.
+// --redact에서 주소가 색 경계에 걸리면 가려지지 않을 수 있으므로, 주소가 있는 줄은 색을 빼고 가린다.
+func (model listenBrowser) detailLine(line string) string {
+	plain := viewSanitize(line)
+	if model.redact {
+		if redacted := redactIPAddresses(plain); redacted != plain {
+			return redacted
+		}
+	}
+	if !liveRich(model.color) {
+		return plain
+	}
+	return viewSanitizeKeepColor(line)
 }
 
 func (model listenBrowser) View() tea.View {
@@ -455,7 +468,7 @@ func listenBrowserRowName(row listenRow) string {
 	return fmt.Sprintf("%d/%s · %s · PID %s", first.Port, first.Proto, strings.Join(row.addresses(), ", "), row.joined(func(socket listenSocket) string { return socket.PID }))
 }
 
-func inspectListenSocket(ctx context.Context, row listenRow) []string {
+func inspectListenSocket(ctx context.Context, row listenRow, color bool) []string {
 	first := row.first()
 	lines := []string{T("listenbrowse.address", strings.Join(row.addresses(), ", ")), T("listenbrowse.owner", listenCell(first.Process), row.joined(func(socket listenSocket) string { return socket.PID }))}
 	if len(row.Sockets) == 1 {
@@ -483,7 +496,7 @@ func inspectListenSocket(ctx context.Context, row listenRow) []string {
 			continue
 		}
 		var buffer strings.Builder
-		printTerminalWithColor(&buffer, results, true, false)
+		printTerminalWithColor(&buffer, results, true, color)
 		lines = append(lines, "", strings.TrimRight(buffer.String(), "\n"))
 	}
 	return strings.Split(strings.Join(lines, "\n"), "\n")

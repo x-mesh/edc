@@ -257,3 +257,32 @@ func TestExecOOMJoinerReleasesHeldExitsInOrder(t *testing.T) {
 		t.Fatalf("final flush = %+v", ready)
 	}
 }
+
+func TestExecOOMJoinerClearsReleasedExits(t *testing.T) {
+	start := time.Unix(100, 0)
+	joiner := &execOOMJoiner{}
+	for i := uint32(0); i < 4; i++ {
+		joiner.add(execEvent{Event: execEventExit, PID: 10 + i, Signal: "SIGKILL", Process: "worker"}, start.Add(time.Duration(i)*time.Millisecond))
+	}
+	backing := joiner.held
+	ready := joiner.add(execEvent{Event: execEventOOM, PID: 12}, start.Add(4*time.Millisecond))
+	if len(ready) != 2 || ready[1].PID != 12 || !ready[1].OOMKilled {
+		t.Fatalf("joined = %+v", ready)
+	}
+	if backing[3].event.Process != "" {
+		t.Fatalf("joined exit left a copy in the array: %+v", backing[3])
+	}
+	ready = joiner.flush(start.Add(execOOMHold+time.Millisecond), false)
+	if len(ready) != 2 || ready[0].PID != 10 || ready[1].PID != 11 {
+		t.Fatalf("expired = %+v", ready)
+	}
+	if backing[0].event.Process != "" || backing[1].event.Process != "" {
+		t.Fatalf("released exits stay in the array: %+v", backing[:2])
+	}
+	if deadline, ok := joiner.nextDeadline(); !ok || !deadline.Equal(start.Add(3*time.Millisecond+execOOMHold)) {
+		t.Fatalf("next deadline = %v %v", deadline, ok)
+	}
+	if ready := joiner.flush(start.Add(time.Hour), false); len(ready) != 1 || ready[0].PID != 13 || joiner.held != nil {
+		t.Fatalf("last flush = %+v, held %+v", ready, joiner.held)
+	}
+}

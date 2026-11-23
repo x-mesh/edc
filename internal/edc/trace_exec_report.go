@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -524,7 +525,7 @@ func (joiner *execOOMJoiner) add(event execEvent, now time.Time) []execEvent {
 	case event.Event == execEventOOM:
 		for i, held := range joiner.held {
 			if held.event.PID == event.PID {
-				joiner.held = append(joiner.held[:i], joiner.held[i+1:]...)
+				joiner.held = slices.Delete(joiner.held, i, i+1)
 				held.event.OOMKilled = true
 				return append(ready, event, held.event)
 			}
@@ -534,17 +535,29 @@ func (joiner *execOOMJoiner) add(event execEvent, now time.Time) []execEvent {
 }
 
 // flush는 기한이 지난 exit을 받은 순서대로 내보낸다. all이면 기한과 상관없이 모두 내보낸다.
+// 기한은 받은 시각에 같은 시간을 더한 값이라 받은 순서대로 늘어난다. 그래서 앞에서부터 기한이 남은 첫 exit까지만 본다.
+// SIGKILL exit이 몰려도 event마다 붙잡은 exit 전부를 다시 보지 않는다.
 func (joiner *execOOMJoiner) flush(now time.Time, all bool) []execEvent {
-	var ready []execEvent
-	kept := joiner.held[:0]
-	for _, held := range joiner.held {
-		if all || !now.Before(held.deadline) {
-			ready = append(ready, held.event)
-		} else {
-			kept = append(kept, held)
+	expired := len(joiner.held)
+	if !all {
+		expired = 0
+		for expired < len(joiner.held) && !now.Before(joiner.held[expired].deadline) {
+			expired++
 		}
 	}
-	joiner.held = kept
+	if expired == 0 {
+		return nil
+	}
+	ready := make([]execEvent, expired)
+	for i, held := range joiner.held[:expired] {
+		ready[i] = held.event
+	}
+	// 내보낸 exit을 배열에 남기면 긴 trace에서 지난 event의 문자열을 GC가 거두지 못한다.
+	clear(joiner.held[:expired])
+	joiner.held = joiner.held[expired:]
+	if len(joiner.held) == 0 {
+		joiner.held = nil
+	}
 	return ready
 }
 

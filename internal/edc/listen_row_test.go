@@ -225,7 +225,7 @@ func TestListenBrowserDetailListsEverySocket(t *testing.T) {
 	// 끝난 context로 읽으면 실제 PID를 읽지 않는다. 상세의 소켓 줄만 본다.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	text := strings.Join(inspectListenSocket(ctx, row), "\n")
+	text := strings.Join(inspectListenSocket(ctx, row, false), "\n")
 	for _, want := range []string{"0.0.0.0, ::", "50, 51", T("listenbrowse.socket", "::", "51", "-")} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q:\n%s", want, text)

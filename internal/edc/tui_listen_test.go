@@ -201,9 +201,75 @@ func TestCollectProcResultsHonorsCancellation(t *testing.T) {
 }
 
 func TestListenSocketWithoutOwnerStillHasDetails(t *testing.T) {
-	lines := inspectListenSocket(context.Background(), listenRow{Sockets: []listenSocket{{Proto: "tcp", Address: "127.0.0.1", Port: 80}}})
+	lines := inspectListenSocket(context.Background(), listenRow{Sockets: []listenSocket{{Proto: "tcp", Address: "127.0.0.1", Port: 80}}}, false)
 	text := strings.Join(lines, "\n")
 	if !strings.Contains(text, "127.0.0.1") || !strings.Contains(text, T("listenbrowse.no_owner")) {
 		t.Fatalf("details: %s", text)
+	}
+}
+
+func TestListenBrowserDetailKeepsResultColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	model := listenBrowserFixture(t)
+	model.color = true
+	var buffer strings.Builder
+	printTerminalWithColor(&buffer, []Result{{Probe: "proc.process", Status: StatusPass, Summary: "cmd \x1b]0;title\x07 \x1b[2Jok"}}, false, true)
+	status := strings.Split(buffer.String(), "\n")[0]
+	line := model.detailLine(status)
+	if !strings.Contains(line, richStatusBadge(StatusPass)) {
+		t.Fatalf("PASS badge lost its color: %q", line)
+	}
+	if strings.Contains(line, "\x1b]") || strings.Contains(line, "\x1b[2J") || strings.Contains(line, "\x07") {
+		t.Fatalf("non-color escape survived: %q", line)
+	}
+	model.color = false
+	if line := model.detailLine(status); strings.Contains(line, "\x1b") {
+		t.Fatalf("color off kept escapes: %q", line)
+	}
+}
+
+func TestListenBrowserDetailRedactsAcrossColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	model := listenBrowserFixture(t)
+	model.color, model.redact = true, true
+	line := model.detailLine("peer 10.0." + richPaint("0.1", richGreen, false))
+	if strings.Contains(ansi.Strip(line), "10.0.0.1") {
+		t.Fatalf("address split by color was not redacted: %q", line)
+	}
+	if !strings.Contains(model.detailLine(richStatusBadge(StatusPass)+" proc.fd"), richStatusBadge(StatusPass)) {
+		t.Fatal("line without address lost its color under --redact")
+	}
+}
+
+func TestListenBrowserDetailDropsColorFromResultText(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	model := listenBrowserFixture(t)
+	model.color = true
+	results := []Result{{
+		Probe: "proc.process", Status: StatusWarn, Summary: "name \x1b[8mhidden", Next: "edc \x1b[31mtop",
+		Warnings: []string{"warn \x1b[0mreset"},
+		Evidence: []Evidence{{Label: "process", Value: "command \x1b[8mx\ncwd \x1b[41m/"}},
+		Error:    &DiagnosticError{Kind: "read", Message: "\x1b[8mgone"},
+	}}
+	var buffer strings.Builder
+	printTerminalWithColor(&buffer, viewSanitizeResults(results), true, true)
+	for _, line := range strings.Split(buffer.String(), "\n") {
+		shown := model.detailLine(line)
+		for _, injected := range []string{"\x1b[8m", "\x1b[31m", "\x1b[41m", "reset\x1b", "\x1b[0mreset"} {
+			if strings.Contains(shown, injected) {
+				t.Fatalf("result text kept its escape %q: %q", injected, shown)
+			}
+		}
+	}
+	if !strings.Contains(ansi.Strip(buffer.String()), "cwd") || !strings.Contains(buffer.String(), richStatusBadge(StatusWarn)) {
+		t.Fatalf("sanitizing lost content or edc color: %q", buffer.String())
+	}
+	if results[0].Evidence[0].Value != "command \x1b[8mx\ncwd \x1b[41m/" {
+		t.Fatal("sanitizing changed the caller's results")
+	}
+	for probe := range richDetailRenderers {
+		if strings.HasPrefix(probe, "proc.") {
+			t.Fatalf("%s draws from Metrics, which viewSanitizeResults does not clean", probe)
+		}
 	}
 }

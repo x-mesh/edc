@@ -205,3 +205,55 @@ func TestExecEventDetailAndProcessFilter(t *testing.T) {
 		t.Fatal("signal names")
 	}
 }
+
+func TestExecOOMJoinerMarksAnExitThatCameBeforeItsOOM(t *testing.T) {
+	start := time.Unix(100, 0)
+	joiner := &execOOMJoiner{}
+	killed := execEvent{Event: execEventExit, PID: 42, Signal: "SIGKILL"}
+	if ready := joiner.add(killed, start); len(ready) != 0 {
+		t.Fatalf("SIGKILL exit was not held: %+v", ready)
+	}
+	other := execEvent{Event: execEventExec, PID: 7}
+	if ready := joiner.add(other, start.Add(time.Millisecond)); len(ready) != 1 || ready[0].PID != 7 {
+		t.Fatalf("unrelated event was held: %+v", ready)
+	}
+	if ready := joiner.add(execEvent{Event: execEventOOM, PID: 99}, start.Add(2*time.Millisecond)); len(ready) != 1 || ready[0].Event != execEventOOM {
+		t.Fatalf("OOM of another PID joined the exit: %+v", ready)
+	}
+	ready := joiner.add(execEvent{Event: execEventOOM, PID: 42}, start.Add(3*time.Millisecond))
+	if len(ready) != 2 || ready[0].Event != execEventOOM || ready[1].Event != execEventExit || !ready[1].OOMKilled {
+		t.Fatalf("want OOM then the OOM-killed exit, got %+v", ready)
+	}
+	if _, ok := joiner.nextDeadline(); ok {
+		t.Fatal("joined exit is still held")
+	}
+}
+
+func TestExecOOMJoinerReleasesHeldExitsInOrder(t *testing.T) {
+	start := time.Unix(100, 0)
+	joiner := &execOOMJoiner{}
+	for _, event := range []execEvent{
+		{Event: execEventExit, PID: 1},
+		{Event: execEventExit, PID: 2, Signal: "SIGTERM"},
+		{Event: execEventExit, PID: 3, Signal: "SIGKILL", OOMKilled: true},
+	} {
+		if ready := joiner.add(event, start); len(ready) != 1 {
+			t.Fatalf("exit %d was held: %+v", event.PID, ready)
+		}
+	}
+	joiner.add(execEvent{Event: execEventExit, PID: 10, Signal: "SIGKILL"}, start)
+	joiner.add(execEvent{Event: execEventExit, PID: 11, Signal: "SIGKILL"}, start.Add(10*time.Millisecond))
+	if deadline, ok := joiner.nextDeadline(); !ok || !deadline.Equal(start.Add(execOOMHold)) {
+		t.Fatalf("next deadline = %v %v", deadline, ok)
+	}
+	if ready := joiner.flush(start.Add(execOOMHold-time.Nanosecond), false); len(ready) != 0 {
+		t.Fatalf("exit released before its deadline: %+v", ready)
+	}
+	ready := joiner.add(execEvent{Event: execEventExec, PID: 20}, start.Add(execOOMHold))
+	if len(ready) != 2 || ready[0].PID != 10 || ready[1].PID != 20 || ready[0].OOMKilled {
+		t.Fatalf("want the expired exit before the new event, got %+v", ready)
+	}
+	if ready := joiner.flush(start, true); len(ready) != 1 || ready[0].PID != 11 {
+		t.Fatalf("final flush = %+v", ready)
+	}
+}

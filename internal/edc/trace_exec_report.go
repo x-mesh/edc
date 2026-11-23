@@ -498,3 +498,60 @@ func execOptionalLifetime(value *float64) string {
 	}
 	return execLifetimeText(*value)
 }
+
+// execOOMHold는 OOM 표시 없이 SIGKILL로 끝난 exit을 OOM 기록이 따라오는지 보려고 붙잡는 시간이다. 커널은 victim에
+// SIGKILL을 보낸 뒤에 oom_mm을 남기고 mark_victim을 부른다. 그 사이에 대표 스레드가 먼저 끝나면 BPF가 본 exit에는 OOM 표시가
+// 없고 OOM 기록은 수십 µs 뒤에 온다.
+const execOOMHold = 50 * time.Millisecond
+
+type execHeldExit struct {
+	event    execEvent
+	deadline time.Time
+}
+
+// execOOMJoiner는 OOM 기록보다 먼저 온 exit을 OOM 기록과 이어 붙인다. 이어 붙인 exit은 OOM 기록 뒤에 내보내서, 커널이
+// 순서대로 기록했을 때와 같은 순서가 되게 한다.
+type execOOMJoiner struct {
+	held []execHeldExit
+}
+
+func (joiner *execOOMJoiner) add(event execEvent, now time.Time) []execEvent {
+	ready := joiner.flush(now, false)
+	switch {
+	case event.Event == execEventExit && event.Signal == "SIGKILL" && !event.OOMKilled:
+		joiner.held = append(joiner.held, execHeldExit{event: event, deadline: now.Add(execOOMHold)})
+		return ready
+	case event.Event == execEventOOM:
+		for i, held := range joiner.held {
+			if held.event.PID == event.PID {
+				joiner.held = append(joiner.held[:i], joiner.held[i+1:]...)
+				held.event.OOMKilled = true
+				return append(ready, event, held.event)
+			}
+		}
+	}
+	return append(ready, event)
+}
+
+// flush는 기한이 지난 exit을 받은 순서대로 내보낸다. all이면 기한과 상관없이 모두 내보낸다.
+func (joiner *execOOMJoiner) flush(now time.Time, all bool) []execEvent {
+	var ready []execEvent
+	kept := joiner.held[:0]
+	for _, held := range joiner.held {
+		if all || !now.Before(held.deadline) {
+			ready = append(ready, held.event)
+		} else {
+			kept = append(kept, held)
+		}
+	}
+	joiner.held = kept
+	return ready
+}
+
+// nextDeadline은 붙잡은 exit 중 가장 먼저 내보낼 시각이다. 붙잡은 것이 없으면 false다.
+func (joiner *execOOMJoiner) nextDeadline() (time.Time, bool) {
+	if len(joiner.held) == 0 {
+		return time.Time{}, false
+	}
+	return joiner.held[0].deadline, true
+}

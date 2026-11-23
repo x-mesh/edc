@@ -56,7 +56,7 @@ func observeOutputLine(writer io.Writer, style infoStyle, indent int, text strin
 func printObserveResult(writer io.Writer, result Result, verbose bool, style infoStyle) {
 	if style.width <= 0 {
 		fmt.Fprint(writer, formatResultLine(result, style.color))
-		printResultDetail(writer, result, verbose, style.color)
+		printResultDetailBelowLine(writer, result, verbose, style.color)
 		return
 	}
 	label := observeOutputText(resultLabel(result))
@@ -75,7 +75,7 @@ func printObserveResult(writer io.Writer, result Result, verbose bool, style inf
 	details := result
 	details.Next = ""
 	var buffer strings.Builder
-	printResultDetail(&buffer, details, verbose, false)
+	printResultDetailBelowLine(&buffer, details, verbose, false)
 	for _, line := range strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n") {
 		if line == "" {
 			continue

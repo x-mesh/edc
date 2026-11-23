@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -432,5 +433,30 @@ func TestPromptMissingChoiceRefusesAnEmptyList(t *testing.T) {
 	}
 	if got := subcommandChoices("nope"); len(got) != 0 {
 		t.Errorf("an unknown command has no subcommands: %q", got)
+	}
+}
+
+func TestListenHelpNamesEveryBrowserKey(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	doc, ok := findCommandDoc("listen")
+	if !ok {
+		t.Fatal("no listen help")
+	}
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		notes := strings.Join(doc.notes(), "\n")
+		for _, hint := range []string{"listenbrowse.keys", "listenbrowse.detail_keys"} {
+			for _, group := range liveHintSeparator.Split(T(hint), -1) {
+				key, _, _ := strings.Cut(strings.TrimSpace(group), " ")
+				if len(key) != 1 || key[0] < 'a' || key[0] > 'z' {
+					continue
+				}
+				// 48x8의 x처럼 다른 낱말 안의 글자는 키 설명이 아니다.
+				if !regexp.MustCompile(`(^|[^A-Za-z0-9])` + key + `([^A-Za-z0-9]|$)`).MatchString(notes) {
+					t.Errorf("%s: edc help listen does not name the %s key of %s", language, key, hint)
+				}
+			}
+		}
 	}
 }

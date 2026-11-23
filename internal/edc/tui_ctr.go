@@ -85,7 +85,7 @@ func (model ctrBrowser) loadDetail(reference string, seq int) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		var buffer strings.Builder
-		printTerminalWithColor(&buffer, evaluateCtr(collectCtrFacts(ctx, reference, sources)), true, color)
+		printTerminalCut(&buffer, evaluateCtr(collectCtrFacts(ctx, reference, sources)), true, color)
 		return ctrDetailMsg{seq: seq, lines: strings.Split(strings.TrimRight(buffer.String(), "\n"), "\n")}
 	}
 }

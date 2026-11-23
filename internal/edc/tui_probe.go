@@ -88,15 +88,25 @@ func (model probeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (model probeModel) View() tea.View {
 	if model.done {
-		line := formatResultLine(model.result, model.color)
-		if model.redact {
-			line = redactIPAddresses(line)
-		}
 		// 폭보다 긴 결과 줄은 terminal이 표시 없이 자른다. 진행 줄처럼 "…"를 붙여 잘린 것을 보인다.
-		return liveFrame(truncateLine(line, model.width), 1)
+		return liveFrame(truncateLine(model.resultLine(), model.width), 1)
 	}
 	line := fmt.Sprintf(resultLineFormat, resultPendingStatus(model.spinner.View(), model.color), model.name, model.detail())
 	return liveFrame(truncateLine(line, model.width), 1)
+}
+
+// resultLine은 끝난 화면에 남기는 결과 줄이다.
+func (model probeModel) resultLine() string {
+	line := formatResultLine(model.result, model.color)
+	if model.redact {
+		line = redactIPAddresses(line)
+	}
+	return line
+}
+
+// resultLineWhole은 결과 줄이 폭에서 잘리지 않고 화면에 남았는지다.
+func (model probeModel) resultLineWhole() bool {
+	return model.done && (model.width <= 0 || liveWidth(strings.TrimRight(model.resultLine(), "\n")) <= model.width)
 }
 
 func (model probeModel) detail() string {
@@ -240,11 +250,18 @@ func runProbeLive(ctx context.Context, cancel context.CancelFunc, probeID, targe
 	result := <-finished
 	// finish가 Run을 끝내면 onExit이 cancel을 부르므로, 사용자 취소 여부는 그 전에 읽는다.
 	cancelled := probeCancelledByUser(ctx)
-	if _, err := live.finish(probeResultMsg{result: result}); err != nil {
+	final, err := live.finish(probeResultMsg{result: result})
+	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
 	}
 	report := buildReport(version, started, targetInfo, []Result{result}, options.redact)
-	printResultTail(os.Stdout, report.Results, options.verbose, true)
+	// 화면에 남은 결과 줄이 잘리지 않았으면, probeLiveDelay 안에 끝나 emit으로 나간 실행과 같은 상세를 낸다.
+	if shown, ok := final.(probeModel); ok && shown.resultLineWhole() {
+		printResultDetailBelowLine(os.Stdout, report.Results[0], options.verbose, true)
+		printResultSummary(os.Stdout, report.Results, true)
+	} else {
+		printResultTail(os.Stdout, report.Results, options.verbose, true)
+	}
 	if cancelled {
 		fmt.Fprintln(os.Stderr, errProbeCancelled)
 		return 4

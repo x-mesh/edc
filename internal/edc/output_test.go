@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -179,5 +180,105 @@ func TestEvidenceShownProbesAreRegisteredByTheProbes(t *testing.T) {
 	printResultDetail(&withoutEvidence, hidden, false, false)
 	if !strings.Contains(withEvidence.String(), "1.1.1.1") || withoutEvidence.Len() != 0 {
 		t.Errorf("shown = %q, hidden = %q", withEvidence.String(), withoutEvidence.String())
+	}
+}
+
+func TestFailureBoxLeavesOutWhatTheResultLineSays(t *testing.T) {
+	repeated := Result{
+		Probe: "check.service", Status: StatusFail, Summary: "2 failed units: a.service, b.service", Next: "edc svc a.service",
+		Error: &DiagnosticError{Kind: "check", Message: "2 failed units: a.service, b.service"},
+	}
+	for _, color := range []bool{false, true} {
+		var output strings.Builder
+		printTerminalWithColor(&output, []Result{repeated}, false, color)
+		text := ansi.Strip(output.String())
+		if strings.Contains(text, "ERROR") || strings.Contains(text, "cause") || strings.Count(text, "2 failed units") != 1 {
+			t.Errorf("color %v: the box repeats the result line:\n%s", color, text)
+		}
+		if !strings.Contains(text, "next: edc svc a.service") {
+			t.Errorf("color %v: next line is gone:\n%s", color, text)
+		}
+	}
+
+	withEvidence := repeated
+	withEvidence.Evidence = []Evidence{{Label: "issues", Value: "a.service\nb.service"}, {Label: "units", Value: "2"}}
+	var plain strings.Builder
+	printTerminal(&plain, []Result{withEvidence}, false)
+	if want := "┌─ ERROR  check.service\n│ issues\n│   a.service\n│   b.service\n│\n│ units\n│   2\n└─\n"; !strings.Contains(plain.String(), want) {
+		t.Errorf("plain box = %q, want it to contain %q", plain.String(), want)
+	}
+	var colored strings.Builder
+	printTerminalWithColor(&colored, []Result{withEvidence}, false, true)
+	if want := "╭─ ERROR  check.service ───\n│ issues\n│   a.service\n│   b.service\n│\n│ units\n│   2\n╰─\n"; !strings.Contains(ansi.Strip(colored.String()), want) {
+		t.Errorf("color box = %q, want it to contain %q", ansi.Strip(colored.String()), want)
+	}
+}
+
+func TestFailureBoxStaysWhenTheErrorAddsSomething(t *testing.T) {
+	message := "dial tcp 127.0.0.1:1: connect: connection refused"
+	for name, result := range map[string]Result{
+		"phase names the failure": {Probe: "tcp.check", Status: StatusFail, Summary: message, Error: &DiagnosticError{Kind: "connection_refused", Message: message}},
+		"cause is longer":         {Probe: "check.service", Status: StatusFail, Summary: "service failed", Error: &DiagnosticError{Kind: "check", Message: "service failed: exit 3"}},
+		"summary has more lines":  {Probe: "check.run", Status: StatusFail, Summary: "first\nsecond", Error: &DiagnosticError{Kind: "check", Message: "first\nsecond"}},
+	} {
+		var output strings.Builder
+		printTerminal(&output, []Result{result}, false)
+		for _, want := range []string{"┌─ ERROR  " + result.Probe, "│ phase   " + result.Error.Kind, "│ cause   " + result.Error.Message} {
+			if !strings.Contains(output.String(), want) {
+				t.Errorf("%s: output lacks %q:\n%s", name, want, output.String())
+			}
+		}
+	}
+}
+
+func TestFailureBoxStaysAfterALiveScreen(t *testing.T) {
+	// 실시간 화면은 결과 줄을 화면 폭에서 자른다. 그 뒤의 상세에서 상자를 빼면 원인의 뒷부분을 볼 곳이 없다.
+	result := Result{Probe: "dns.lookup", Status: StatusFail, Summary: "lookup example.invalid: no such host", Error: &DiagnosticError{Kind: "dns", Message: "lookup example.invalid: no such host"}}
+	var output strings.Builder
+	printResultTail(&output, []Result{result}, false, false)
+	if !strings.Contains(output.String(), "│ cause   lookup example.invalid: no such host") {
+		t.Fatalf("tail lost the cause:\n%s", output.String())
+	}
+}
+
+func TestRepeatedErrorStaysInTheReport(t *testing.T) {
+	result := Result{Probe: "check.service", Status: StatusFail, Summary: "1 failed unit: a.service", Error: &DiagnosticError{Kind: "check", Message: "1 failed unit: a.service"}}
+	report := buildReport("test", time.Now(), nil, []Result{result}, false)
+	var output strings.Builder
+	if err := writeJSON(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"kind": "check"`, `"message": "1 failed unit: a.service"`} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("JSON lacks %s:\n%s", want, output.String())
+		}
+	}
+	if exitCode(report.Results) != 1 {
+		t.Fatal("a failed probe must produce exit code 1")
+	}
+}
+
+func TestFailureBoxStaysInAViewThatCutsLines(t *testing.T) {
+	// svc와 ctr 탐색 화면의 상세는 긴 줄을 폭에서 자른다. cause 줄은 결과 줄보다 앞머리가 짧아 원인을 더 길게 보인다.
+	result := Result{Probe: "svc.state", Status: StatusFail, Summary: "failed (Result: exit-code)", Error: &DiagnosticError{Kind: "state", Message: "failed (Result: exit-code)"}}
+	var output strings.Builder
+	printTerminalCut(&output, []Result{result}, true, false)
+	if !strings.Contains(output.String(), "│ cause   failed (Result: exit-code)") {
+		t.Fatalf("cut view lost the cause:\n%s", output.String())
+	}
+}
+
+func TestProbeModelKnowsWhenItsResultLineIsCut(t *testing.T) {
+	model := newProbeModel("dns.lookup", "example.invalid", "", false, false, nil)
+	if model.resultLineWhole() {
+		t.Fatal("a running probe has no result line yet")
+	}
+	model.result, model.done = Result{Probe: "dns.lookup", Status: StatusFail, Summary: "lookup example.invalid: no such host"}, true
+	whole := liveWidth(strings.TrimRight(formatResultLine(model.result, false), "\n"))
+	for width, want := range map[int]bool{0: true, whole: true, whole + 20: true, whole - 1: false} {
+		model.width = width
+		if got := model.resultLineWhole(); got != want {
+			t.Errorf("width %d (line %d): whole = %v, want %v", width, whole, got, want)
+		}
 	}
 }

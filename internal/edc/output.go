@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -50,12 +51,22 @@ func printTerminal(writer io.Writer, results []Result, verbose bool) {
 }
 
 func printTerminalWithColor(writer io.Writer, results []Result, verbose, color bool) {
+	printTerminalLines(writer, results, verbose, color, true)
+}
+
+// printTerminalCut은 긴 줄을 폭에서 자르는 화면에 쓴다. 그런 화면에서는 오류 상자의 cause 줄이 결과 줄보다 원인을 더
+// 길게 보이므로 상자를 줄이지 않는다.
+func printTerminalCut(writer io.Writer, results []Result, verbose, color bool) {
+	printTerminalLines(writer, results, verbose, color, false)
+}
+
+func printTerminalLines(writer io.Writer, results []Result, verbose, color, whole bool) {
 	if len(results) > 0 && isRemoteResult(results[0]) {
 		fmt.Fprintln(writer)
 	}
 	for _, result := range results {
 		fmt.Fprint(writer, formatResultLine(result, color))
-		printResultDetail(writer, result, verbose, color)
+		printResultDetailWith(writer, result, verbose, color, whole)
 	}
 	printResultSummary(writer, results, color)
 }
@@ -108,10 +119,37 @@ var evidenceShownProbes = map[string]bool{}
 // 판정과 무관한 참고 값이라 -v에 남긴다.
 var warnEvidenceProbes = map[string]bool{}
 
+// printResultDetail은 결과 줄 뒤의 상세다. 실시간 화면이 남긴 결과 줄은 화면 폭에서 잘리므로, 오류 상자가 원인 전문을
+// 보이는 유일한 자리일 수 있다. 그래서 여기서는 상자를 줄이지 않는다.
 func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
+	printResultDetailWith(writer, result, verbose, color, false)
+}
+
+// printResultDetailBelowLine은 결과 줄 전체를 바로 위에 적은 caller가 쓴다. 오류가 그 줄을 되풀이할 뿐이면 상자에 적지 않는다.
+func printResultDetailBelowLine(writer io.Writer, result Result, verbose, color bool) {
+	printResultDetailWith(writer, result, verbose, color, true)
+}
+
+// errorRepeatsResultLine은 오류가 결과 줄에 이미 있는 말뿐인지 본다. phase가 probe 이름의 한 마디이고 cause가 요약과 같으면
+// 그렇다. 요약이 여러 줄이면 결과 줄에는 첫 줄만 있으므로 상자에 전문을 남긴다.
+func errorRepeatsResultLine(result Result) bool {
+	if result.Error == nil || result.Summary == "" || strings.Contains(result.Summary, "\n") || result.Error.Message != result.Summary {
+		return false
+	}
+	return result.Error.Kind == "" || slices.Contains(strings.Split(result.Probe, "."), result.Error.Kind)
+}
+
+func printResultDetailWith(writer io.Writer, result Result, verbose, color, lineAbove bool) {
 	printCollectionDetail(writer, result, verbose, color)
 	if result.Status == StatusFail {
-		printFailureBox(writer, resultLabel(result), result, color)
+		box := result
+		if lineAbove && errorRepeatsResultLine(result) {
+			box.Error = nil
+		}
+		// 뺀 오류 말고 적을 것이 없으면 상자도 그리지 않는다.
+		if box.Error != nil || len(box.Evidence) > 0 || result.Error == nil {
+			printFailureBox(writer, resultLabel(result), box, color)
+		}
 	}
 	if result.Next != "" {
 		if color {
@@ -226,8 +264,12 @@ func printFailureBox(writer io.Writer, probe string, result Result, color bool) 
 		fmt.Fprintf(writer, "│ phase   %s\n", result.Error.Kind)
 		fmt.Fprintf(writer, "│ cause   %s\n", result.Error.Message)
 	}
-	for _, evidence := range result.Evidence {
-		fmt.Fprintf(writer, "│\n│ %s\n", evidence.Label)
+	for index, evidence := range result.Evidence {
+		// 빈 줄은 묶음 사이에만 둔다. 오류 줄이 없으면 첫 evidence가 제목 바로 아래에 온다.
+		if index > 0 || result.Error != nil {
+			fmt.Fprintln(writer, "│")
+		}
+		fmt.Fprintf(writer, "│ %s\n", evidence.Label)
 		for _, line := range strings.Split(strings.TrimRight(evidence.Value, "\n"), "\n") {
 			fmt.Fprintf(writer, "│   %s\n", line)
 		}
@@ -248,13 +290,17 @@ func printFailurePanel(writer io.Writer, probe string, result Result) {
 	}
 	// 줄 앞에 "│ "가 붙으므로 그림은 그만큼 좁게 그린다.
 	if lines := richEvidenceLinesWidth(true, result, writerWidth(writer)-2); lines != nil {
-		fmt.Fprintln(writer, richPanelLine("", richRed))
+		if result.Error != nil {
+			fmt.Fprintln(writer, richPanelLine("", richRed))
+		}
 		for _, line := range lines {
 			fmt.Fprintln(writer, richPanelLine(line, richRed))
 		}
 	} else {
-		for _, evidence := range result.Evidence {
-			fmt.Fprintln(writer, richPanelLine("", richRed))
+		for index, evidence := range result.Evidence {
+			if index > 0 || result.Error != nil {
+				fmt.Fprintln(writer, richPanelLine("", richRed))
+			}
 			fmt.Fprintln(writer, richPanelLine(richBold(evidence.Label), richRed))
 			for _, line := range evidenceValueLines(evidence.Value) {
 				fmt.Fprintln(writer, richPanelLine("  "+line, richRed))

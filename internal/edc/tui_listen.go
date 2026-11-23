@@ -19,9 +19,12 @@ type listenBrowser struct {
 	full                               bool
 	ctx                                context.Context
 	load                               func(context.Context) Result
-	inspect                            func(context.Context, listenSocket) []string
+	inspect                            func(context.Context, listenRow) []string
 	timeout                            time.Duration
-	items                              []listenSocket
+	// sockets는 마지막으로 읽은 소켓 전부이고, items는 그것을 모으고 거른 화면의 줄이다.
+	sockets                            []listenSocket
+	items                              []listenRow
+	hideLoopback                       bool
 	warnings                           []string
 	err                                string
 	loaded, loading                    bool
@@ -33,7 +36,7 @@ type listenBrowser struct {
 }
 
 type listenBrowserDetail struct {
-	socket      listenSocket
+	row         listenRow
 	lines       []string
 	offset, seq int
 	loading     bool
@@ -106,15 +109,48 @@ func (model listenBrowser) loadDetail() tea.Cmd {
 		case <-ctx.Done():
 			return listenBrowserDetailMsg{seq: detail.seq, lines: []string{ctx.Err().Error()}}
 		}
-		return listenBrowserDetailMsg{seq: detail.seq, lines: model.inspect(ctx, detail.socket)}
+		return listenBrowserDetailMsg{seq: detail.seq, lines: model.inspect(ctx, detail.row)}
 	}
 }
 
-func (model listenBrowser) selected() (listenSocket, bool) {
+func (model listenBrowser) selectedRow() (listenRow, bool) {
 	if model.cursor < 0 || model.cursor >= len(model.items) {
-		return listenSocket{}, false
+		return listenRow{}, false
 	}
 	return model.items[model.cursor], true
+}
+
+// selected는 고른 줄의 첫 소켓이다. 한 줄에 PID가 여럿이면 t와 x는 첫 PID를 연다.
+func (model listenBrowser) selected() (listenSocket, bool) {
+	row, ok := model.selectedRow()
+	if !ok {
+		return listenSocket{}, false
+	}
+	return row.first(), true
+}
+
+// rebuild는 소켓을 줄로 모으고 loopback 숨김을 적용한다. 고른 줄이 남아 있으면 그 줄에 커서를 두고 true를 돌려준다.
+// 남아 있지 않으면 커서는 같은 위치에 머문다.
+func (model *listenBrowser) rebuild() bool {
+	selected, hadSelection := model.selectedRow()
+	model.items = model.items[:0:0]
+	for _, row := range groupListenSockets(model.sockets) {
+		if model.hideLoopback && row.scope() == "loopback" {
+			continue
+		}
+		model.items = append(model.items, row)
+	}
+	found := false
+	if hadSelection {
+		for i, row := range model.items {
+			if row.key() == selected.key() {
+				model.cursor, found = i, true
+				break
+			}
+		}
+	}
+	model.keepCursor()
+	return found
 }
 
 func (model *listenBrowser) keepCursor() {
@@ -160,18 +196,11 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return model, nil
 		}
-		selected, hadSelection := model.selected()
-		model.items, model.warnings, model.loaded, model.updated, model.err = sockets, value.result.Warnings, true, value.at, ""
-		model.cursor = 0
-		if hadSelection {
-			for i, item := range sockets {
-				if listenKeyOf(item) == listenKeyOf(selected) {
-					model.cursor = i
-					break
-				}
-			}
+		model.sockets, model.warnings, model.loaded, model.updated, model.err = sockets, value.result.Warnings, true, value.at, ""
+		if !model.rebuild() {
+			model.cursor = 0
+			model.keepCursor()
 		}
-		model.keepCursor()
 	case listenBrowserDetailMsg:
 		if model.detail == nil || model.detail.seq != value.seq {
 			return model, nil
@@ -236,11 +265,15 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.loadList()
 			}
 		case "enter":
-			if socket, ok := model.selected(); ok {
+			if row, ok := model.selectedRow(); ok {
 				model.detailSeq++
-				model.detail = &listenBrowserDetail{socket: socket, loading: true, seq: model.detailSeq}
+				model.detail = &listenBrowserDetail{row: row, loading: true, seq: model.detailSeq}
 				return model, model.loadDetail()
 			}
+		case "l":
+			model.hideLoopback = !model.hideLoopback
+			model.rebuild()
+			return model, nil
 		}
 		model.keepCursor()
 	}
@@ -266,7 +299,7 @@ func (model listenBrowser) View() tea.View {
 	}
 	lines := []string{}
 	if model.detail != nil {
-		title := listenBrowserSocketName(model.detail.socket)
+		title := listenBrowserRowName(model.detail.row)
 		if model.redact {
 			title = redactIPAddresses(title)
 		}
@@ -286,7 +319,14 @@ func (model listenBrowser) View() tea.View {
 		} else if !model.updated.IsZero() {
 			state = T("listenbrowse.updated", model.updated.Format("15:04:05"))
 		}
-		lines = append(lines, svcBrowserHeading("edc listen", []string{T("listenbrowse.count", len(model.items)), state}, model.color), liveKeyHints(T("listenbrowse.keys"), model.color))
+		counts := []string{T("listenbrowse.count", len(model.sockets))}
+		if len(model.items) != len(model.sockets) {
+			counts = append(counts, T("listenbrowse.rows", len(model.items)))
+		}
+		if model.hideLoopback {
+			counts = append(counts, T("listenbrowse.loopback_hidden"))
+		}
+		lines = append(lines, svcBrowserHeading("edc listen", append(counts, state), model.color), liveKeyHints(T("listenbrowse.keys"), model.color, liveHintItem{key: "l", on: model.hideLoopback}))
 		notice := T("listenbrowse.reachability")
 		if model.notice != "" {
 			notice = model.notice
@@ -298,42 +338,52 @@ func (model listenBrowser) View() tea.View {
 		if model.redact {
 			notice = redactIPAddresses(notice)
 		}
-		lines = append(lines, viewSanitize(notice))
+		// 범례는 정리한 안내 뒤가 아니라 앞에 붙인다. viewSanitize가 색을 지운다.
+		lines = append(lines, listenBrowserLegend(model.color)+viewSanitize(notice))
 		if len(model.items) == 0 {
 			if model.loaded {
 				lines = append(lines, T("listenbrowse.empty"))
 			}
 		} else {
-			processWidth := max(7, model.width-41)
-			row := func(port, scope, process, pid string) string {
-				return svcBrowserCell(port, 10) + "  " + svcBrowserCell(scope, 16) + "  " + svcBrowserCell(process, processWidth) + "  " + svcBrowserCell(pid, 7)
+			// 고정 칸(PORT/PROTO 10, PID 10, 간격과 선택 표시 8)을 뺀 폭에서 주소 칸은 보이는 주소만큼, 많아야 절반을 쓴다.
+			// 나머지는 프로세스 칸이다. 더 긴 주소는 잘리고 목록 아래쪽에 모두 나온다.
+			addressWidth := liveWidth("ADDRESS")
+			for _, item := range model.items[model.offset:min(len(model.items), model.offset+max(1, model.height-5))] {
+				addressWidth = max(addressWidth, liveWidth(topPrintableText(model.rowAddresses(item))))
 			}
-			lines = append(lines, liveMuted("  "+row("PORT/PROTO", "BINDING", "PROCESS", "PID"), model.color))
+			addressWidth = max(9, min(addressWidth, (model.width-28)/2))
+			processWidth := max(7, model.width-28-addressWidth)
+			row := func(port, address, process, pid string) string {
+				return svcBrowserCell(port, 10) + "  " + address + "  " + svcBrowserCell(process, processWidth) + "  " + svcBrowserCell(pid, 10)
+			}
+			lines = append(lines, liveMuted("  "+row("PORT/PROTO", svcBrowserCell("ADDRESS", addressWidth), "PROCESS", "PID"), model.color))
 			end := min(len(model.items), model.offset+max(1, model.height-5))
 			for i := model.offset; i < end; i++ {
 				item := model.items[i]
-				port := fmt.Sprintf("%d/%s", item.Port, item.Proto)
-				if item.Port == 0 {
-					port = item.Proto
+				first := item.first()
+				port := fmt.Sprintf("%d/%s", first.Port, first.Proto)
+				if first.Port == 0 {
+					port = first.Proto
 				}
-				process := listenCell(item.Process)
-				if item.Container != nil {
-					process += " → " + listenContainerLabel(*item.Container)
+				// 글자는 가린 뒤에 칠하고 자른다. 잘린 IPv6 주소는 가리는 패턴에 맞지 않을 수 있고, 칠한 뒤에는 색 코드가
+				// 주소에 붙는다. svcBrowserCell은 색 코드를 폭에 세지 않고 자른다.
+				process := topPrintableText(listenCell(first.Process))
+				container := ""
+				if first.Container != nil {
+					container = topPrintableText(" → " + listenContainerLabel(*first.Container))
 				}
 				if model.redact {
-					process = redactIPAddresses(process)
+					process, container = redactIPAddresses(process), redactIPAddresses(container)
 				}
-				lines = append(lines, svcBrowserRow(row(port, T("observe.listen.scope."+listenBindingScope(item.Proto, item.Address)), topPrintableText(process), listenCell(item.PID)), i == model.cursor, model.color, model.width))
+				process += model.paint(container, richCyan, false)
+				address := model.paint(topPrintableText(model.rowAddresses(item)), listenScopeColor(item.scope()), false)
+				lines = append(lines, svcBrowserRow(row(model.paint(port, "", true), svcBrowserCell(address, addressWidth), process, model.paint(listenBrowserPIDCell(item), richGray, false)), i == model.cursor, model.color, model.width))
 			}
-			if item, ok := model.selected(); ok {
-				address := item.Address
-				if model.redact {
-					address = redactIPAddresses(address)
-				}
-				footer := T("listenbrowse.address", address)
+			if item, ok := model.selectedRow(); ok {
+				footer := T("listenbrowse.address", model.rowAddresses(item))
 				if model.full {
 					home, _ := os.UserHomeDir()
-					if command := listenCommandLine(item, home); command != "" {
+					if command := listenCommandLine(item.first(), home); command != "" {
 						footer += " · " + command
 					}
 				}
@@ -352,29 +402,90 @@ func (model listenBrowser) View() tea.View {
 	return view
 }
 
-func listenBrowserSocketName(socket listenSocket) string {
-	if socket.Port == 0 {
-		return socket.Proto + " " + socket.Address
+// rowAddresses는 줄의 주소를 잇는다. --redact면 주소마다 가린다.
+func (model listenBrowser) rowAddresses(row listenRow) string {
+	addresses := row.addresses()
+	if model.redact {
+		for i, address := range addresses {
+			addresses[i] = redactIPAddresses(address)
+		}
 	}
-	return fmt.Sprintf("%d/%s · %s · PID %s", socket.Port, socket.Proto, socket.Address, listenCell(socket.PID))
+	return strings.Join(addresses, ", ")
 }
 
-func inspectListenSocket(ctx context.Context, socket listenSocket) []string {
-	lines := []string{T("listenbrowse.address", socket.Address), T("listenbrowse.owner", listenCell(socket.Process), listenCell(socket.PID)), T("listenbrowse.queue", listenQueueCell(socket))}
-	if socket.Container != nil {
-		lines = append(lines, T("listenbrowse.container", listenContainerLabel(*socket.Container)))
+// paint는 색을 쓸 때만 칠한다. 색이 없는 범위(unix, unknown)는 굵기만 적용하거나 그대로 둔다.
+func (model listenBrowser) paint(text, color string, bold bool) string {
+	switch {
+	case !liveRich(model.color) || text == "":
+		return text
+	case color == "" && bold:
+		return richBold(text)
+	case color == "":
+		return text
 	}
-	pid, err := strconv.Atoi(socket.PID)
-	if err != nil || pid <= 0 {
+	return richPaint(text, color, bold)
+}
+
+// listenBrowserPIDCell은 PID 칸이다. PID가 여럿이면 첫 PID 뒤에 나머지 개수를 붙인다.
+func listenBrowserPIDCell(row listenRow) string {
+	pids := row.pids()
+	if len(pids) > 1 {
+		return fmt.Sprintf("%s +%d", pids[0], len(pids)-1)
+	}
+	return listenCell(row.first().PID)
+}
+
+// listenBrowserLegend는 주소 색의 뜻이다. 색이 없으면 범례도 없다.
+func listenBrowserLegend(color bool) string {
+	if !liveRich(color) {
+		return ""
+	}
+	var parts []string
+	for _, scope := range []string{"all", "specific", "loopback"} {
+		parts = append(parts, richPaint("●", listenScopeColor(scope), false)+" "+T("observe.listen.scope."+scope))
+	}
+	return strings.Join(parts, "  ") + " · "
+}
+
+func listenBrowserRowName(row listenRow) string {
+	first := row.first()
+	if first.Port == 0 {
+		return first.Proto + " " + first.Address
+	}
+	return fmt.Sprintf("%d/%s · %s · PID %s", first.Port, first.Proto, strings.Join(row.addresses(), ", "), row.joined(func(socket listenSocket) string { return socket.PID }))
+}
+
+func inspectListenSocket(ctx context.Context, row listenRow) []string {
+	first := row.first()
+	lines := []string{T("listenbrowse.address", strings.Join(row.addresses(), ", ")), T("listenbrowse.owner", listenCell(first.Process), row.joined(func(socket listenSocket) string { return socket.PID }))}
+	if len(row.Sockets) == 1 {
+		lines = append(lines, T("listenbrowse.queue", listenQueueCell(first)))
+	} else {
+		for _, socket := range row.Sockets {
+			lines = append(lines, T("listenbrowse.socket", socket.Address, listenCell(socket.PID), listenQueueCell(socket)))
+		}
+	}
+	if first.Container != nil {
+		lines = append(lines, T("listenbrowse.container", listenContainerLabel(*first.Container)))
+	}
+	pids := row.pids()
+	if len(pids) == 0 {
 		return append(lines, "", T("listenbrowse.no_owner"))
 	}
-	results, _, err := collectProcResults(ctx, socket.PID, true)
-	if err != nil {
-		return append(lines, "", T("listenbrowse.process_failed", infoSingleLine(err.Error())))
+	for _, pid := range pids {
+		if value, err := strconv.Atoi(pid); err != nil || value <= 0 {
+			lines = append(lines, "", T("listenbrowse.no_owner"))
+			continue
+		}
+		results, _, err := collectProcResults(ctx, pid, true)
+		if err != nil {
+			lines = append(lines, "", T("listenbrowse.process_failed", infoSingleLine(err.Error())))
+			continue
+		}
+		var buffer strings.Builder
+		printTerminalWithColor(&buffer, results, true, false)
+		lines = append(lines, "", strings.TrimRight(buffer.String(), "\n"))
 	}
-	var buffer strings.Builder
-	printTerminalWithColor(&buffer, results, true, false)
-	lines = append(lines, "", strings.TrimRight(buffer.String(), "\n"))
 	return strings.Split(strings.Join(lines, "\n"), "\n")
 }
 

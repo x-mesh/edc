@@ -22,13 +22,16 @@ The browser requires interactive stdin and stdout, UTF-8, a terminal other than 
 | Enter | Read socket and process details | — |
 | t | Open `edc top --interactive --process <pid>` | Open the selected process in top |
 | x | Show a CPU trace command | Show a CPU trace command |
+| l | Hide or show loopback rows | — |
 | r | Refresh the socket list | Reload selected socket's process details |
 | Esc, Backspace | — | Return to the same selection and viewport |
 | q, Ctrl-C | Exit | Exit |
 
-Refresh preserves the selected socket by protocol, address, port, process name, and PID. If it disappears, selection moves to the first remaining socket. A failed refresh retains the last successful snapshot and shows an error. It does not imply that the old snapshot is current.
+The list puts sockets that differ only by address or PID in one row, as `edc listen -B` does. The header shows the number of sockets and the number of rows. The ADDRESS column shows the addresses of the row. In color, the address is yellow for all addresses, cyan for a specific address, and gray for loopback. The notice line starts with this legend. The port is bold, the PID is gray, and the container after `→` is cyan. The ADDRESS column uses at most half of the free width. A longer address list is cut, and the footer shows all addresses. If a row has two or more PIDs, the PID column shows the first PID and the number of other PIDs, for example `1682348 +1`. `t` and `x` use the first PID. The footer shows all addresses of the selected row.
 
-Enter shows the address, owner PID, receive/send queue, container association when available, and the same process facts as `edc proc <pid> -v`. An unknown owner or an exited process leaves the socket details accessible with an explanation. Process details are read on demand and remain a snapshot until reloaded. Esc returns to the socket list without automatically refreshing it.
+Refresh preserves the selected row by protocol, port, process name, binding scope, and container. If it disappears, selection moves to the first remaining row. `l` hides the loopback rows until you press `l` again, also after a refresh. If the selected row is a loopback row, the selection stays at the same position. A failed refresh retains the last successful snapshot and shows an error. It does not imply that the old snapshot is current.
+
+Enter shows the addresses, owner PIDs, receive/send queue of each socket, container association when available, and the same process facts as `edc proc <pid> -v` for each PID. An unknown owner or an exited process leaves the socket details accessible with an explanation. Process details are read on demand and remain a snapshot until reloaded. Esc returns to the socket list without automatically refreshing it.
 
 `--full` adds the selected process's command and working directory to the list footer. The details screen wraps long content and can be scrolled. Terminal display of Arabic and other bidirectional text depends on the terminal emulator.
 

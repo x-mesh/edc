@@ -22,13 +22,16 @@ edc listen -b --redact
 | Enter | socket과 process 상세 읽기 | — |
 | t | `edc top --interactive --process <pid>` 열기 | 선택한 process를 top에서 열기 |
 | x | CPU trace 명령 보기 | CPU trace 명령 보기 |
+| l | loopback 행 숨기기·보이기 | — |
 | r | socket 목록 새로 읽기 | 선택한 socket의 process 상세 다시 읽기 |
 | Esc, Backspace | — | 같은 선택과 화면 위치로 돌아가기 |
 | q, Ctrl-C | 끝내기 | 끝내기 |
 
-새로 읽을 때는 프로토콜, 주소, port, process 이름, PID로 선택한 socket을 유지합니다. 그 socket이 사라지면 남은 socket 중 첫 번째를 선택합니다. 새로 읽기에 실패하면 마지막으로 성공한 snapshot을 그대로 두고 오류를 보여 줍니다. 이 snapshot이 지금도 맞다는 뜻은 아닙니다.
+목록은 `edc listen -B`처럼 주소나 PID만 다른 socket을 한 행으로 묶습니다. 머리줄에는 socket 수와 행 수가 나옵니다. ADDRESS 열은 행에 묶인 주소를 보여 줍니다. 색을 쓰면 주소를 모든 주소는 노랑, 특정 주소는 청록, loopback은 회색으로 칠하고, 안내 줄 앞에 이 범례가 나옵니다. port는 굵게, PID는 회색, `→` 뒤의 container는 청록으로 표시합니다. ADDRESS 열은 남는 폭의 절반까지만 쓰고, 더 긴 주소 목록은 잘립니다. 목록 아래쪽에는 주소가 모두 나옵니다. 한 행에 PID가 둘 이상이면 PID 열은 첫 PID와 나머지 PID 수를 `1682348 +1`처럼 보여 주고, `t`와 `x`는 첫 PID를 씁니다. 목록 아래쪽에는 선택한 행의 주소가 모두 나옵니다.
 
-Enter는 주소, 소유 PID, 수신·송신 queue, 알 수 있을 때는 연결된 container, 그리고 `edc proc <pid> -v`와 같은 process 정보를 보여 줍니다. 소유자를 모르거나 process가 끝났어도 socket 상세는 설명과 함께 볼 수 있습니다. process 상세는 필요할 때 읽고, 다시 읽기 전까지 snapshot으로 남습니다. Esc는 socket 목록으로 돌아가며, 목록을 자동으로 새로 읽지 않습니다.
+새로 읽을 때는 프로토콜, port, process 이름, 바인딩 범위, container로 선택한 행을 유지합니다. 그 행이 사라지면 남은 행 중 첫 번째를 선택합니다. `l`은 다시 누를 때까지 loopback 행을 숨기고, 새로 읽어도 숨김을 유지합니다. loopback 행을 선택한 채 숨기면 선택은 같은 위치에 머뭅니다. 새로 읽기에 실패하면 마지막으로 성공한 snapshot을 그대로 두고 오류를 보여 줍니다. 이 snapshot이 지금도 맞다는 뜻은 아닙니다.
+
+Enter는 주소, 소유 PID, socket마다의 수신·송신 queue, 알 수 있을 때는 연결된 container, 그리고 PID마다 `edc proc <pid> -v`와 같은 process 정보를 보여 줍니다. 소유자를 모르거나 process가 끝났어도 socket 상세는 설명과 함께 볼 수 있습니다. process 상세는 필요할 때 읽고, 다시 읽기 전까지 snapshot으로 남습니다. Esc는 socket 목록으로 돌아가며, 목록을 자동으로 새로 읽지 않습니다.
 
 `--full`은 선택한 process의 명령과 작업 디렉터리를 목록 아래쪽에 더합니다. 상세 화면은 긴 내용을 줄바꿈하고 스크롤할 수 있습니다. 아랍어 같은 양방향 문자의 표시는 터미널 에뮬레이터에 따라 다릅니다.
 

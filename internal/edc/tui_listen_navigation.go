@@ -31,18 +31,20 @@ func listenBrowserOpenTop(pid string) tea.Cmd {
 	return tea.ExecProcess(command, func(err error) tea.Msg { return listenBrowserTopDoneMsg{err: err} })
 }
 
-func (model listenBrowser) navigationSocket() (listenSocket, bool) {
+// navigationRow는 t와 x가 다룰 줄이다. 한 줄에 PID가 여럿이면 첫 소켓의 PID를 연다.
+func (model listenBrowser) navigationRow() (listenRow, bool) {
 	if model.detail != nil {
-		return model.detail.socket, true
+		return model.detail.row, true
 	}
-	return model.selected()
+	return model.selectedRow()
 }
 
 func (model listenBrowser) navigateProcess(key string) (listenBrowser, tea.Cmd) {
-	socket, ok := model.navigationSocket()
+	row, ok := model.navigationRow()
 	if !ok {
 		return model, nil
 	}
+	socket := row.first()
 	if _, err := listenBrowserTopCommand("edc", socket.PID); err != nil {
 		model.notice = T("listenbrowse.no_owner")
 		return model, nil
@@ -58,7 +60,7 @@ func (model listenBrowser) navigateProcess(key string) (listenBrowser, tea.Cmd) 
 		}
 	case "x":
 		model.detailSeq++
-		model.detail = &listenBrowserDetail{socket: socket, seq: model.detailSeq, lines: []string{
+		model.detail = &listenBrowserDetail{row: row, seq: model.detailSeq, lines: []string{
 			T("listenbrowse.trace_hint", socket.PID),
 			"",
 			"edc trace cpu --process " + socket.PID + " --duration 15s",

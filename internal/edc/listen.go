@@ -79,6 +79,93 @@ func listenKeyOf(socket listenSocket) listenSocketKey {
 	return listenSocketKey{socket.Proto, socket.Address, socket.Port, socket.Process, socket.PID}
 }
 
+// listenRow는 화면의 한 줄이다. 포트, 프로세스, 바인딩 범위, container가 같고 주소나 PID만 다른 소켓을 모은다. IPv4와
+// IPv6로 함께 연 포트나 127.0.0.53과 127.0.0.54처럼 범위가 같은 주소 여럿이 한 줄이 된다. JSON은 소켓 단위 그대로 둔다.
+type listenRow struct {
+	Sockets []listenSocket
+}
+
+// listenRowKey는 한 줄로 모을 소켓을 정한다. 범위를 넣어 loopback과 노출된 주소가 한 줄에 섞이지 않게 한다.
+type listenRowKey struct {
+	Proto, Process, Scope string
+	Port                  int
+	// Address와 PID는 포트가 없는 유닉스 소켓에만 채운다. 유닉스 소켓은 모으지 않는다.
+	Address, PID string
+	Container listenContainer
+	Published bool
+}
+
+func listenRowKeyOf(socket listenSocket) listenRowKey {
+	key := listenRowKey{Proto: socket.Proto, Process: socket.Process, Scope: listenBindingScope(socket.Proto, socket.Address), Port: socket.Port}
+	if socket.Port == 0 {
+		key.Address, key.PID = socket.Address, socket.PID
+	}
+	if socket.Container != nil {
+		key.Container, key.Published = *socket.Container, true
+	}
+	return key
+}
+
+// groupListenSockets는 소켓을 화면의 줄로 모은다. 줄의 순서는 각 줄의 첫 소켓이 나온 순서다. 주소 순으로 정렬한 목록에서는
+// 같은 줄의 소켓 사이에 다른 process의 소켓이 끼어 있을 수 있어서, 이웃한 소켓만 모으지 않는다.
+func groupListenSockets(sockets []listenSocket) []listenRow {
+	index := map[listenRowKey]int{}
+	var rows []listenRow
+	for _, socket := range sockets {
+		key := listenRowKeyOf(socket)
+		if at, found := index[key]; found {
+			rows[at].Sockets = append(rows[at].Sockets, socket)
+			continue
+		}
+		index[key] = len(rows)
+		rows = append(rows, listenRow{Sockets: []listenSocket{socket}})
+	}
+	return rows
+}
+
+func (row listenRow) first() listenSocket { return row.Sockets[0] }
+
+func (row listenRow) key() listenRowKey { return listenRowKeyOf(row.first()) }
+
+func (row listenRow) scope() string { return listenBindingScope(row.first().Proto, row.first().Address) }
+
+// values는 소켓마다 읽은 값을 처음 나온 순서로, 겹치지 않게 모은다. 빈 값은 뺀다.
+func (row listenRow) values(read func(listenSocket) string) []string {
+	var values []string
+	for _, socket := range row.Sockets {
+		if value := read(socket); value != "" && !slices.Contains(values, value) {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func (row listenRow) addresses() []string {
+	return row.values(func(socket listenSocket) string { return socket.Address })
+}
+
+func (row listenRow) pids() []string {
+	return row.values(func(socket listenSocket) string { return socket.PID })
+}
+
+// joined는 소켓마다 다른 값을 ", "로 잇는다. 값이 없으면 "-"다.
+func (row listenRow) joined(read func(listenSocket) string) string {
+	return listenCell(strings.Join(row.values(read), ", "))
+}
+
+// listenScopeColor는 바인딩 범위의 색이다. 모든 주소에 바인딩한 소켓은 밖에서 닿을 수 있는 후보라 가장 눈에 띄게 둔다.
+func listenScopeColor(scope string) string {
+	switch scope {
+	case "all":
+		return richYellow
+	case "specific":
+		return richCyan
+	case "loopback":
+		return richGray
+	}
+	return ""
+}
+
 // listenFamilies는 어떤 소켓 종류를 볼지 정한다. 플래그는 더하기가 아니라 필터이고, 아무것도 주지
 // 않으면 포트를 가진 종류를 모두 본다. 포트를 가진 것을 기본에서 숨기면 "열린 포트"를 묻는 사람이
 // 답을 못 얻는다.
@@ -174,33 +261,52 @@ func dedupeListenSockets(sockets []listenSocket) []listenSocket {
 //
 // note가 있으면 각 행 아래에 명령줄을 note로 칠한 줄로 붙인다. 명령줄은 길이가 process마다 크게 달라 열로
 // 두면 표 폭이 가장 긴 명령줄을 따라간다.
-func formatListenTable(sockets []listenSocket, detail bool, note func(string) string) string {
+//
+// 주소만 다른 소켓은 한 행에 모은다(listenRow). -v의 USER, FD, QUEUE도 행 안에서 값을 이어 적어 행 수가 -v와 무관하게
+// 같다. style은 ADDRESS와 SCOPE 칸을 범위의 색으로 칠한다. 색이 없어도 SCOPE 칸이 범위를 글자로 남긴다.
+//
+// ADDRESS 칸은 가장 긴 주소 하나의 폭이다. 한 행의 주소가 그 폭을 넘으면 넘는 주소를 아랫줄에 적는다. 긴 IPv6 주소 쌍
+// 하나가 모든 행을 넓혀 PROCESS 칸을 화면 밖으로 밀어내지 않게 한다.
+func formatListenTable(sockets []listenSocket, detail bool, style textStyle, note func(string) string) string {
 	headers := []string{T("observe.listen.column.port"), T("observe.listen.column.proto"), T("observe.listen.column.address"), T("observe.listen.column.scope"), T("observe.listen.column.process")}
 	if detail {
 		headers = append(headers, T("observe.listen.column.user"), T("observe.listen.column.fd"), T("observe.listen.column.queue"))
 	}
 	home, _ := os.UserHomeDir()
-	rows := make([][]string, 0, len(sockets))
-	commands := make([]string, 0, len(sockets))
+	grouped := groupListenSockets(sockets)
+	widest := 0
 	for _, socket := range sockets {
+		widest = max(widest, liveWidth(socket.Address))
+	}
+	rows := make([][]string, 0, len(grouped))
+	commands := make([]string, 0, len(grouped))
+	addressLines := make([][]string, 0, len(grouped))
+	for _, group := range grouped {
+		socket := group.first()
 		if note != nil {
 			commands = append(commands, listenCommandLine(socket, home))
 		}
 		process := socket.Process
-		if socket.PID != "" {
-			process += " (" + socket.PID + ")"
+		if pids := group.pids(); len(pids) > 0 {
+			process += style.dim(" (" + strings.Join(pids, ", ") + ")")
 		}
 		if container := socket.Container; container != nil {
-			process += " → " + topPrintableText(listenContainerLabel(*container))
+			process += style.paint(" → "+topPrintableText(listenContainerLabel(*container)), richCyan)
 		}
 		port := strconv.Itoa(socket.Port)
 		if socket.Port == 0 {
 			// 유닉스 소켓은 포트가 없다. 빈 칸 대신 없음을 그대로 적는다.
 			port = "-"
 		}
-		row := []string{port, socket.Proto, socket.Address, T("observe.listen.scope." + listenBindingScope(socket.Proto, socket.Address)), process}
+		color := listenScopeColor(group.scope())
+		addresses := packListenAddresses(group.addresses(), widest)
+		for index := range addresses {
+			addresses[index] = style.paint(addresses[index], color)
+		}
+		addressLines = append(addressLines, addresses[1:])
+		row := []string{port, socket.Proto, addresses[0], style.paint(T("observe.listen.scope."+group.scope()), color), process}
 		if detail {
-			row = append(row, listenCell(socket.User), listenCell(socket.FD), listenQueueCell(socket))
+			row = append(row, group.joined(func(socket listenSocket) string { return socket.User }), group.joined(func(socket listenSocket) string { return socket.FD }), group.joined(listenQueueValue))
 		}
 		rows = append(rows, row)
 	}
@@ -229,10 +335,13 @@ func formatListenTable(sockets []listenSocket, detail bool, note func(string) st
 	writeRow(headers)
 	for index, row := range rows {
 		writeRow(row)
+		for _, line := range addressLines[index] {
+			builder.WriteString(strings.Repeat(" ", widths[0]+2+widths[1]+2) + line + "\n")
+		}
 		if note != nil && commands[index] != "" {
 			builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+commands[index]) + "\n")
 		}
-		if container := sockets[index].Container; note != nil && container != nil {
+		if container := grouped[index].first().Container; note != nil && container != nil {
 			line := T("observe.listen.container_port", container.Port, container.Proto, container.Image)
 			if container.Command != "" {
 				line += ": " + container.Command
@@ -241,6 +350,24 @@ func formatListenTable(sockets []listenSocket, detail bool, note func(string) st
 		}
 	}
 	return builder.String()
+}
+
+// packListenAddresses는 주소를 ", "로 이으면서 width를 넘기 전에 줄을 나눈다. 나눈 줄의 끝에는 ","를 남긴다.
+func packListenAddresses(addresses []string, width int) []string {
+	if len(addresses) == 0 {
+		return []string{"-"}
+	}
+	var lines []string
+	current := addresses[0]
+	for _, address := range addresses[1:] {
+		if next := current + ", " + address; liveWidth(next) <= width {
+			current = next
+			continue
+		}
+		lines = append(lines, current+",")
+		current = address
+	}
+	return append(lines, current)
 }
 
 // listenInterpreters는 첫 인자가 실제 프로그램인 실행 파일이다. node 여럿은 이름으로 가를 수 없고 스크립트
@@ -380,8 +507,13 @@ func listenCell(value string) string {
 
 // listenQueueCell은 Recv-Q/Send-Q를 한 칸에 적는다.
 func listenQueueCell(socket listenSocket) string {
+	return listenCell(listenQueueValue(socket))
+}
+
+// listenQueueValue는 큐를 모르면 빈 문자열이다. 한 행에 모은 소켓의 큐를 이을 때 모르는 값을 뺀다.
+func listenQueueValue(socket listenSocket) string {
 	if !socket.HasQueue {
-		return "-"
+		return ""
 	}
 	return strconv.Itoa(socket.RecvQ) + "/" + strconv.Itoa(socket.SendQ)
 }

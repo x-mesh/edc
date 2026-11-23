@@ -31,7 +31,7 @@ The process snapshot shows observed process and thread counts, plus the three pr
 
 `-v` adds the system-wide open files, the IPv6 default route (Linux), the MTU, MAC, link speed (Linux), and IPv6 addresses of each interface, and the options of each mount. It lists only interfaces with an IPv4 address or a non-link-local IPv6 address.
 
-`Listening Ports` shows the count of TCP and UDP sockets that wait for connections. A socket on a loopback address adds to the count only. The other sockets show in a list of up to five rows with the port, the address, and the process. `-v` lists all TCP and UDP sockets. `edc listen` shows the full table. On macOS without root, the list does not include the sockets of other accounts.
+`Listening Ports` shows the count of TCP and UDP sockets that wait for connections. A socket on a loopback address adds to the count only. The other sockets show in a list of up to five rows with the port, the address, and the process. Sockets that differ only by address or PID show in one row, as in `edc listen`. If the addresses of a row are wider than the longest single address, the row shows the first address and the number of other addresses, for example `100.83.200.248 +1`. `-v` lists all TCP and UDP sockets. `edc listen` shows the full table. On macOS without root, the list does not include the sockets of other accounts.
 
 Diagnostic support tests process I/O access for the current process and PSI availability. Access to other PIDs can differ.
 
@@ -564,6 +564,8 @@ edc listen
 edc listen --full
 edc listen --watch -i 0.5 --duration 10s
 ```
+
+A row holds the sockets that have the same port, protocol, process, binding scope, and container. Only the address and the PID can differ. For example, `sshd` on `0.0.0.0` and on `::` shows as one row with `0.0.0.0, ::`. A loopback socket and a socket on all addresses do not share a row. Unix sockets always have their own rows. The ADDRESS column has the width of the longest single address. If the addresses of a row do not fit, the other addresses go on the next lines below the first address. `-v` joins the user, fd, and queue values of the row, so the number of rows does not change. In color, the address and the scope are yellow for all addresses, cyan for a specific address, and gray for loopback. `--json` and the change lines of `--watch` still give one entry for each socket.
 
 `--full` adds a gray line below each row. The line shows the working directory and then the command line of the process, so you can tell apart several `node` or `python` servers. For `node`, `python`, `ruby`, `perl`, and `php`, the line starts with the script name. In a terminal, the line is cut at the screen width, so the command line loses its end first. The values of options such as `--password`, `--token`, and the redis `--requirepass` and the password in a URL show as `***`. With `--json`, `edc listen` includes `args` and `cwd` when edc can read them. Without root, edc cannot read the processes of other accounts on macOS, or their working directories on Linux. `--full` does not work with `--watch`.
 

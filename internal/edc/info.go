@@ -250,7 +250,7 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 	}
 }
 
-// infoListenRows는 -v 없이 보여 줄 노출 포트의 수다. info는 요약이고 전체 목록은 edc listen이 맡는다.
+// infoListenRows는 -v 없이 보여 줄 노출 포트의 줄 수다. info는 요약이고 전체 목록은 edc listen이 맡는다.
 const infoListenRows = 5
 
 // printInfoListen은 TCP와 UDP의 대기 소켓을 요약한다. 밖에서 닿을 수 있는지가 요약에서 묻는 것이므로
@@ -288,24 +288,43 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 	count := func(label string, value int) string { return style.dim(label) + " " + fmt.Sprint(value) }
 	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), infoListenExposed(style.textStyle, len(sockets)-loopback, scopes), count("Loopback", loopback))}
 	lines = append(lines, style.dim("External reachability is not checked"))
-	limit := len(shown)
+	// 개수는 소켓 단위로 세고, 목록은 주소만 다른 소켓을 한 줄로 모아 그린다.
+	rows := groupListenSockets(shown)
+	limit := len(rows)
 	if !verbose {
 		limit = min(limit, infoListenRows)
 	}
-	addressWidth, scopeWidth := 0, 0
-	for _, socket := range shown[:limit] {
-		addressWidth = max(addressWidth, len(socket.Address))
-		scopeWidth = max(scopeWidth, len(infoListenScopeLabels[listenBindingScope(socket.Proto, socket.Address)]))
-	}
-	for _, socket := range shown[:limit] {
-		process := listenCell(socket.Process)
-		if socket.PID != "" {
-			process += style.dim(" (" + socket.PID + ")")
+	// 주소 칸은 가장 긴 주소 하나의 폭이다. 넘치는 주소는 개수로 줄인다. 요약에서 긴 IPv6 주소 쌍이 모든 줄을 넓히지 않게 한다.
+	widest := 0
+	for _, row := range rows[:limit] {
+		for _, address := range row.addresses() {
+			widest = max(widest, len(address))
 		}
-		scope := style.dim(fmt.Sprintf("%-*s", scopeWidth, infoListenScopeLabels[listenBindingScope(socket.Proto, socket.Address)]))
-		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+scope+"  "+process)
 	}
-	if hidden := len(shown) - limit; hidden > 0 {
+	addresses := make([]string, limit)
+	addressWidth, scopeWidth := 0, 0
+	for index, row := range rows[:limit] {
+		all := row.addresses()
+		first := packListenAddresses(all, widest)[0]
+		addresses[index] = first
+		if shown := strings.Count(first, ", ") + 1; shown < len(all) {
+			addresses[index] = strings.TrimSuffix(first, ",") + fmt.Sprintf(" +%d", len(all)-shown)
+		}
+		addressWidth = max(addressWidth, len(addresses[index]))
+		scopeWidth = max(scopeWidth, len(infoListenScopeLabels[row.scope()]))
+	}
+	for index, row := range rows[:limit] {
+		socket := row.first()
+		process := listenCell(socket.Process)
+		if pids := row.pids(); len(pids) > 0 {
+			process += style.dim(" (" + strings.Join(pids, ", ") + ")")
+		}
+		color := listenScopeColor(row.scope())
+		address := style.paint(fmt.Sprintf("%-*s", addressWidth, addresses[index]), color)
+		scope := style.paint(fmt.Sprintf("%-*s", scopeWidth, infoListenScopeLabels[row.scope()]), color)
+		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+" "+address+"  "+scope+"  "+process)
+	}
+	if hidden := len(rows) - limit; hidden > 0 {
 		lines = append(lines, style.dim(fmt.Sprintf("… %d more · ", hidden))+style.command("edc listen"))
 	}
 	for _, warning := range result.Warnings {

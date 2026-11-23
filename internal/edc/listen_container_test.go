@@ -88,7 +88,7 @@ func TestAttachListenContainersReadsTheEngine(t *testing.T) {
 		t.Fatalf("containers: %+v %+v %+v, inspects %q", sockets[0].Container, sockets[1].Container, sockets[2].Container, inspects)
 	}
 	// 기본 표의 PROCESS 칸은 container 이름과 명령이다. 긴 명령은 자르고, --full의 아랫줄에 포트, 이미지, 명령 전체를 적는다.
-	plainTable := formatListenTable(sockets, true, nil)
+	plainTable := formatListenTable(sockets, true, textStyle{}, nil)
 	for _, want := range []string{"OrbStack Helper (9378) → pg: docker-entrypoint.sh postgres -c config_…", "OrbStack Helper (9378) → cache: redis-server *:6379 --requirepass ***"} {
 		if !strings.Contains(plainTable, want) {
 			t.Fatalf("table has no %q:\n%s", want, plainTable)
@@ -97,7 +97,7 @@ func TestAttachListenContainersReadsTheEngine(t *testing.T) {
 	if strings.Contains(plainTable, "postgres:16") || strings.Contains(plainTable, "↳") {
 		t.Fatalf("the table without --full must not show the image or the lines below:\n%s", plainTable)
 	}
-	table := formatListenTable(sockets, false, func(text string) string { return text })
+	table := formatListenTable(sockets, false, textStyle{}, func(text string) string { return text })
 	for _, want := range []string{"↳ " + T("observe.listen.container_port", 5432, "tcp", "postgres:16") + ": docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf\n",
 		"↳ " + T("observe.listen.container_port", 6379, "tcp", "redis:7") + ": redis-server *:6379 --requirepass ***\n", "OrbStack Helper (9378)\n"} {
 		if !strings.Contains(table, want) {
@@ -120,7 +120,7 @@ func TestAttachListenContainersReadsTheEngine(t *testing.T) {
 		t.Fatalf("a container that ended: %v %+v", err, gone[0].Container)
 	}
 	// 명령을 모르면 이름만 적는다.
-	if table := formatListenTable(gone, false, nil); !strings.Contains(table, "→ pg\n") {
+	if table := formatListenTable(gone, false, textStyle{}, nil); !strings.Contains(table, "→ pg\n") {
 		t.Fatalf("a container without a command:\n%s", table)
 	}
 	busy := []listenSocket{{Proto: "tcp", Address: "*", Port: 5432}}

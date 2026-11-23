@@ -68,7 +68,7 @@ func Run(args []string, version string) int {
 		}
 		if len(args) > 1 {
 			if !printCommandHelp(os.Stdout, args[1]) {
-				fmt.Fprintln(os.Stderr, T("cli.error.unknown_command", args[1]))
+				printUnknownCommand(os.Stderr, args[1], false)
 				return 2
 			}
 			return 0
@@ -169,8 +169,7 @@ func Run(args []string, version string) int {
 	case "update":
 		return runUpdate(args[1:], version)
 	default:
-		fmt.Fprintln(os.Stderr, T("cli.error.unknown_command", args[0]))
-		fmt.Fprintln(os.Stderr, T("cli.error.help_hint"))
+		printUnknownCommand(os.Stderr, args[0], true)
 		return 2
 	}
 }

@@ -21,6 +21,7 @@ cli:
     invalid: "config が正しくありません: %v"
   error:
     unknown_command: "不明な command: %s"
+    did_you_mean: "もしかして: %s"
     help_hint: "edc help で command の一覧を表示します"
     flag_help: "オプションは %s で確認できます"
     host_port_required: "host:port の形式が必要です: %s"

@@ -410,6 +410,7 @@ cli:
     syscall_command_empty: "give a command after --, for example: edc trace syscall -- ls -l"
     syscall_command_json_stdout: "--json - cannot be used with a command, because the output of the command goes to the same stdout. Give a file path"
     syscall_files_conflict: "--files and --no-files cannot be used together"
+    syscall_fd_path_requires_lines: "--fd-path requires --slow or --errors and detailed text or --raw output"
     syscall_command_conflict: "--process, --container, and --duration cannot be used with a command. The trace lasts as long as the command runs"
     syscall_command_failed: "trace syscall: cannot run %s: %v"
     syscall_command_pid_only: "warning: edc cannot use cgroup v2 (%s), so it counts only the command itself, not the processes that it starts"

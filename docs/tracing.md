@@ -195,6 +195,12 @@ edc reads the path only for the calls that it prints, when the call returns. It 
 
 Detailed native syscall events include the descriptor for supported FD-based calls such as `read`, `write`, `fsync`, and `fdatasync`. Text shows `fd=0` for descriptor 0, and raw JSON has an `fd` field. This is the caller’s descriptor number.
 
+Add `--fd-path` with `--slow` or `--errors` to look up the FD target in host procfs when edc reads the event. Use detailed text or `--raw` output. The result is labeled `fd_target_at_read` because the descriptor may have been reused after the call. A missing descriptor or inaccessible host procfs is shown as unavailable.
+
+```bash
+sudo edc trace syscall --process postgres --syscall fsync,fdatasync --slow 5ms --fd-path
+```
+
 Rename events include the destination path. Supported `*at` calls also report the directory descriptor that accompanies the path, and `renameat` and `renameat2` report both descriptors. Paths retain their original spelling, and FILES rows for renames still use the source path.
 
 edc prints at most 1,000 lines per second on each CPU. The summary counts the other lines as `sampled_out`, and the table still counts all calls. `ring_lost` counts the lines that did not fit in the event buffer. With `--json`, edc counts the lines but does not print them. Use `--raw` to print each line as JSON, with the summary as the last line.

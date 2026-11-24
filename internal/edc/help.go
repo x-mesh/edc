@@ -720,6 +720,7 @@ var commandDocs = []commandDoc{
 			{"--errors <all|names>", "command.trace.option.errors"},
 			{"--files", "command.trace.option.files"},
 			{"--no-files", "command.trace.option.no_files"},
+			{"--fd-path", "command.trace.option.fd_path"},
 			{"--all", "command.trace.option.all"},
 			{"--denied", "command.trace.option.denied"},
 			{"--frequency 99", "command.trace.option.frequency"},

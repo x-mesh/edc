@@ -830,6 +830,12 @@ edc trace syscall --syscall openat,statx --slow 10ms --raw
 
 상세 이벤트는 `read`, `write`, `fsync`, `fdatasync` 등 지원하는 네이티브 호출의 파일 디스크립터 번호를 보여 줍니다. 번호가 0이면 텍스트에 `fd=0`으로 표시하고, raw JSON에는 `fd` 필드를 넣습니다.
 
+`--slow` 또는 `--errors`에 `--fd-path`를 추가하면 상세 텍스트나 `--raw`에서 edc가 이벤트를 읽는 시점에 호스트 procfs로 FD 대상을 조회합니다. 호출 뒤 번호가 재사용될 수 있으므로 결과는 `fd_target_at_read`로 표시합니다. FD가 사라졌거나 호스트 procfs에 접근할 수 없으면 조회 불가로 표시합니다.
+
+```bash
+sudo edc trace syscall --process postgres --syscall fsync,fdatasync --slow 5ms --fd-path
+```
+
 이름 변경 상세 이벤트에는 목적지 경로도 표시합니다. 지원하는 `*at` 호출은 경로에 대응하는 디렉터리 디스크립터를 보여 주며, `renameat`과 `renameat2`는 양쪽 디스크립터를 표시합니다. 경로는 호출의 원래 표기를 유지하며, FILES의 이름 변경 행은 출발 경로로 집계합니다.
 
 edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약의 `sampled_out`으로 세고, 표는 모든 호출을 계속 셉니다. event buffer에 들어가지 못한 줄은 `ring_lost`로 셉니다. `--json`을 주면 줄 수만 세고 출력하지 않습니다. `--raw`를 주면 줄마다 JSON으로 출력하고, 마지막 줄에 요약을 붙입니다.

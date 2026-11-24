@@ -20,7 +20,10 @@ test:
 
 check:
 # 포맷은 test보다 먼저 본다. 몇 분 걸리는 test를 다 돌린 뒤에 포맷 때문에 실패하지 않게 한다.
-	@unformatted="$$(gofmt -l cmd internal)"; if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+# 파일을 직접 넘기고 gofmt의 종료 코드도 본다. 문법 오류로 gofmt가 실패하면 목록이 비어도 여기서 멈춘다.
+	@files="$$(find cmd internal -type f -name '*.go')"; \
+	unformatted="$$(gofmt -l $$files)" || { echo "gofmt failed"; exit 1; }; \
+	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	go test ./...
 	go vet ./...
 # release 빌드는 test 파일을 컴파일하지 않는다. 공용 test가 다른 OS의 분기 파일을 참조하면 그 OS의 job에서만 깨진다.

@@ -10,7 +10,7 @@ import (
 var traceNoteGroups = []string{
 	"screen", "grouped", "stop", "raw", "slow", "container", "flow", "side", "dns", "arp", "ndp", "http",
 	"mysql", "clickhouse", "postgres", "redis", "socket", "drop", "io", "sched", "exec", "syscall", "priv",
-	"reclaim", "cpu", "lock", "show",
+	"reclaim", "cpu", "lock", "why", "show",
 }
 
 // traceSubDoc는 edc help trace <하위 명령>의 뼈대다. options는 trace 도움말의 option 중 이 하위 명령의 parser가 받는 것이다.
@@ -116,10 +116,16 @@ var traceSubDocs = []traceSubDoc{
 		examples:   []string{"edc trace lock --duration 10s", "edc trace lock --process api --kind futex"},
 	},
 	{
+		name: "why", usage: traceWhyUsage,
+		options:    []string{"duration", "process", "port", "with", "out"},
+		noteGroups: []string{"stop", "why"},
+		examples:   []string{"edc trace why --duration 30s", "edc trace why --port 8080 --with mysql,redis:6380 --duration 30s", "edc trace why --process gunicorn --out incident", "edc trace show incident"},
+	},
+	{
 		name: "show", usage: traceShowUsage,
 		options:    []string{"group-by", "process", "destination", "json", "detail"},
 		noteGroups: []string{"show"},
-		examples:   []string{"edc trace show http.jsonl", "edc trace show http.jsonl --group-by path -d", "edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl"},
+		examples:   []string{"edc trace show http.jsonl", "edc trace show http.jsonl --group-by path -d", "edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl", "edc trace show edc-why-20261124-220600"},
 	},
 }
 

@@ -22,6 +22,7 @@
 | port마다 듣는 process 보기 | `edc listen`, `edc listen -B` | [Listening port](docs/host.ko.md#listening-port), [socket 브라우저](docs/listen-browse.ko.md) |
 | 예약 작업과 마지막 결과 보기 | `edc jobs` | [예약 작업](docs/host.ko.md#예약-작업-linux와-macos) |
 | 연결 문제 확인 | `edc dns lookup example.com`, `edc tcp check example.com:443` | [네트워크 점검](docs/network.ko.md#네트워크-점검), [종합 진단](docs/network.ko.md#doctor-실시간-화면) |
+| HTTP 요청이 느린 이유 찾기 | `edc trace why --duration 30s` | [요청별 분석](docs/tracing.ko.md#trace-why) — Linux |
 | 애플리케이션과 커널 동작 추적 | `edc trace` | [추적과 패킷 캡처](#동작-추적과-패킷-캡처) — trace별 지원 조건 참고 |
 | 실행 기록과 비교 | `edc top -w`, `edc history`, `edc log -- <command>` | [자원 사용 이력](docs/history.ko.md#top-저장과-이력-조회), [명령 로그](docs/history.ko.md#cron과-애플리케이션-로그) |
 | 여러 호스트에서 작업 | `edc remote`, `edc clean --group <group>` | [원격 recipe](docs/remote.ko.md#remote-recipe), [원격 디스크 조사](docs/disk-usage.ko.md#여러-호스트의-clean) |

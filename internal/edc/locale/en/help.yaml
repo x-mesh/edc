@@ -508,9 +508,11 @@ command:
       payload: "http, socket: first 4 KiB. =all: up to 1 MiB"
       show_secrets: "http: masked headers. databases: SQL, values"
       stats_only: "http: only cumulative group stats, no events or payload"
+      with: "why: also record mysql, postgres, or redis. name:port sets the server port"
+      out: "why: directory for the recordings. Default: ./edc-why-<time>"
       tls: "TLS plaintext. HTTP: auto by default. macOS MySQL/Redis: opt in. =<path>: one file"
       tls_keylog: "http on macOS: decrypt TLS with an SSLKEYLOGFILE file"
-      port: "http: only this port. databases: the server port"
+      port: "http: only this port. databases: the server port. why: requests to this local port"
       http_port: "clickhouse: HTTP port, default 8123"
       container: "only this docker container, by name or ID"
       reason: "trace drop: only these reasons, comma separated"
@@ -675,9 +677,20 @@ command:
         - "trace cpu samples the stacks on each CPU and prints the hot functions."
       lock:
         - "trace lock shows kernel lock contention and futex waits by address."
+      why:
+        - "trace why records http, dns, and tcp together on Linux, then shows where the time of each HTTP request went."
+        - "Each row is a process and a request path that a local server received. The rows below it are the calls of that request: DNS queries, outgoing HTTP requests, and database commands."
+        - "edc assigns a call to a request when the same process made the call and the call started and ended during that request."
+        - "(ambiguous) is the request time that only calls of an unknown request cover. Such a call occurred during several requests of one process, so edc adds it to no request. A server that handles many requests in one process has more of it."
+        - "self is the time of the request that no assigned call covers."
+        - "--with adds database traces, for example --with mysql,redis:6380. --port keeps only the requests to that local server port."
+        - "--process limits each trace to that process. Use it on a busy host."
+        - "edc compares only the time range that all the traces recorded. If a trace fails, edc stops and prints no breakdown."
+        - "The recordings stay in a directory. edc trace show <dir> prints the same breakdown again. HTTP payload is not recorded."
       show:
         - "trace show <raw.jsonl> prints the summary of a saved --raw file, without root."
         - "Pass several files to see their shared UTC event range and individual summaries. Multi-file mode accepts --process, --destination and -d."
+        - "Pass a trace why directory alone to print its breakdown again."
   ai:
     summary: "AI coding tool usage and reset times"
     option:

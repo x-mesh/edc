@@ -508,9 +508,11 @@ command:
       payload: "http、socket: 先頭 4 KiB。=all は 1 MiB まで"
       show_secrets: "http: マスクした header。DB: SQL、redis の値"
       stats_only: "http: event を保持せずグループ別の累積統計だけ、payload なし"
+      with: "why: mysql、postgres、redis も記録。名前:port で server の port を指定"
+      out: "why: 記録を置くディレクトリ。既定: ./edc-why-<時刻>"
       tls: "TLS 平文。HTTP: 既定は自動検出。macOS MySQL/Redis: 明示指定。=パス: ファイル 1 つ"
       tls_keylog: "macOS http: SSLKEYLOGFILE ファイルで TLS を復号"
-      port: "http: この port。DB: server の port"
+      port: "http: この port。DB: server の port。why: このローカル port へのリクエスト"
       http_port: "clickhouse: HTTP の port、既定 8123"
       container: "この docker container だけ、名前か ID"
       reason: "trace drop: この理由だけ、カンマ区切り"
@@ -675,9 +677,20 @@ command:
         - "trace cpu は CPU ごとに stack を sampling し、CPU を多く使う関数を表示します。"
       lock:
         - "trace lock は kernel lock の競合とアドレスごとの futex 待ちを表示します。"
+      why:
+        - "trace why は Linux で http、dns、tcp を同時に記録し、HTTP リクエストごとに時間の内訳を表示します。"
+        - "1 行はローカルの server が受けたリクエストの process と path です。その下の行はそのリクエストの呼び出しです: DNS クエリ、外向きの HTTP リクエスト、DB コマンド。"
+        - "同じ process の呼び出しで、そのリクエストの処理中に始まって終わったものを、そのリクエストの呼び出しとします。"
+        - "(ambiguous) は、どのリクエストのものか判別できない呼び出しだけが占めるリクエスト時間です。その呼び出しは 1 つの process の複数のリクエストの処理中に起きたため、どのリクエストにも加えません。1 つの process が多くのリクエストを同時に処理するほど増えます。"
+        - "self はリクエストの時間のうち、どの呼び出しにも含まれない時間です。"
+        - "--with で DB trace を追加します。例: --with mysql,redis:6380。--port はそのローカル server port へのリクエストだけを残します。"
+        - "--process はすべての trace をその process に限定します。負荷の高い host で使ってください。"
+        - "すべての trace が記録した時間範囲だけを比較します。trace が 1 つ失敗すると中断し、内訳を出しません。"
+        - "記録はディレクトリに残ります。edc trace show <dir> で同じ内訳をもう一度表示します。HTTP payload は記録しません。"
       show:
         - "trace show <raw.jsonl> は保存した --raw の要約を root なしで出します。"
         - "複数のファイルを指定すると、共通するイベントの時間範囲（UTC）と各ファイルの要約を表示します。--process、--destination、-d を使えます。"
+        - "trace why のディレクトリを 1 つだけ指定すると、その内訳をもう一度出します。"
   ai:
     summary: "AI コーディングツールの使用量とリセット時刻"
     option:

@@ -84,6 +84,18 @@ func runTraceShow(args []string) int {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
+	// trace why가 남긴 디렉터리는 why.json에 적힌 기록과 option으로 같은 분석을 다시 만든다. 그래서 다른 경로나 option과
+	// 함께 받지 않는다.
+	for _, path := range set.Args() {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			continue
+		}
+		if set.NArg() != 1 || set.NFlag() != 0 {
+			fmt.Fprintln(os.Stderr, "trace show with a trace why directory takes only the directory")
+			return 2
+		}
+		return printTraceWhyDirectory(path)
+	}
 	if set.NArg() == 1 {
 		path := set.Arg(0)
 		file, err := openTraceShowFile(path)

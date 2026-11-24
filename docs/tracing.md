@@ -10,7 +10,7 @@ The current UI renderer uses synthetic demo events. The screen shows the split p
 
 `edc help trace` lists every option and note of all traces. `edc help trace <subcommand>`, for example `edc help trace exec`, shows the usage, the options, the notes, and the examples of one trace. `edc trace exec --help` shows the same page.
 
-[Capture](#capture) · [trace tcp / udp](#trace-tcp--udp) · [trace io](#trace-io) · [trace priv](#trace-priv) · [trace sched](#trace-sched) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [trace show](#trace-show) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace ndp](#trace-ndp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace drop](#trace-drop) · [PCAP file](#pcap-file)
+[Capture](#capture) · [trace tcp / udp](#trace-tcp--udp) · [trace io](#trace-io) · [trace priv](#trace-priv) · [trace sched](#trace-sched) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [trace why](#trace-why) · [trace show](#trace-show) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace ndp](#trace-ndp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace drop](#trace-drop) · [PCAP file](#pcap-file)
 
 ## Capture
 
@@ -322,9 +322,89 @@ The off-CPU trace also needs the `sched_switch` tracepoint with BTF and task loc
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
+## trace why
+
+Use `trace why` on Linux to find where the time of an HTTP request goes. One command records `trace http`, `trace dns`, and `trace tcp` together. When the traces stop, edc divides the latency of each request into the calls that the server made for that request.
+
+```bash
+sudo edc trace why --duration 30s
+sudo edc trace why --port 8080 --with mysql,redis:6380 --duration 30s
+sudo edc trace why --process gunicorn --out incident
+edc trace show incident
+```
+
+```text
+HTTP request breakdown: 23.2s of 26.8s recorded
+
+Requests: 107
+Calls: 71
+
+PROCESS  REQUEST / CALL                   COUNT  AVG      MAX      SHARE
+python3  GET /ext                         35     302.3ms  302.8ms
+           http GET 127.0.0.1:18081/slow  35     301.1ms           100%
+           self                                  1.3ms             0%
+python3  GET /dns                         36     301.1ms  301.9ms
+           dns slow.edc-why.test A        36     300.7ms           100%
+           self                                  0.5ms             0%
+python3  GET /ok                          36     0.3ms    0.5ms
+           self                                  0.3ms             100%
+```
+
+A row with a process is a request path that a local server received. `COUNT` is the number of requests. `AVG` and `MAX` are the latency of one request.
+
+The rows below a path are the calls of those requests: `dns` queries, `http` requests that the server sent, and database commands. `COUNT` is the number of calls. `AVG` is the time of those calls for one request. `SHARE` is the part of the request latency.
+
+`self` is the request time that no call covers. The program used that time itself, or it made a call that edc does not record.
+
+The kernel records do not connect a call to a request. edc connects them with the process ID and the time. A call belongs to a request if the same process made the call, and the call started and ended while the server handled that request.
+
+If one process handles several requests at the same time, a call can occur while the process handles two or more requests. edc adds that call to no request. The `(ambiguous)` row shows the request time that only those calls cover.
+
+```text
+PROCESS  REQUEST / CALL                 COUNT  AVG      MAX      SHARE
+app      GET /dns                       232    302.2ms  309.5ms
+           dns slow.edcdiag.test A      202    262.0ms           87%
+           dns slow.edcdiag.test AAAA   201    260.6ms           86%
+           (ambiguous)                  5965   37.1ms            12%
+           self *                              0.4ms             0%
+app      GET /db                        240    301.7ms  305.3ms
+           mysql SELECT SLEEP(?)        192    240.4ms           80%
+           (ambiguous)                  5816   61.0ms            20%
+           self                                0.3ms             0%
+```
+
+In this test, a Go server handled 8 requests at the same time. A long call fits only into its own request, so the slow DNS query and the slow SQL statement show below their paths. A short call fits into many requests, and edc cannot assign it. `*` shows that calls of one request ran at the same time. Then the shares of the calls can add up to more than 100%.
+
+A server that handles one request at a time in each process has no ambiguous calls. An example is gunicorn with sync workers. A server with threads or an event loop has more ambiguous calls.
+
+Use these options:
+
+- `--with` adds database traces. The names are `mysql`, `postgres`, and `redis`. `--with mysql:13306` sets the server port.
+- `--port` keeps only the requests that the server on that local port received. edc records all HTTP connections, so the requests that this server sent stay visible.
+- `--process` limits each trace to that process. `trace why` records all HTTP traffic of the host. On a busy host, use `--process`.
+- `--out` sets the directory for the recordings. The default is `edc-why-<time>` in the current directory. edc does not write into a path that exists.
+- If you do not use `--duration`, press Ctrl-C to stop the traces.
+
+Each trace starts at a different time. `trace http` starts some seconds later, because it looks for TLS libraries first. edc compares only the time range that all the traces recorded. The first line of the output shows that range and the full recorded time. Send the load until the traces stop.
+
+When the traces stop, `trace http` detaches its TLS probes. On a host with 28 TLS files, this took 30 seconds. edc prints one line and waits for the traces.
+
+If one trace fails, edc stops the other traces and prints the error of that trace. It prints no breakdown. A breakdown without one of the traces shows the time of the calls of that trace as `self`. If a trace lost events, edc prints the count above the table.
+
+The directory holds one `.jsonl` file and one `.err` file for each trace, and `why.json`. Only the owner can read them. edc records HTTP without payload. `edc trace show <dir>` prints the same breakdown again, on any host and without root. `trace show` also reads one file of the directory, for example `edc trace show incident/dns.jsonl`.
+
+`trace why` has these limits:
+
+- edc does not record the thread of a call. So it cannot assign the ambiguous calls of a server with threads.
+- `--with clickhouse` is not available.
+- edc does not assign TCP connect time and retransmissions to a request. Use `edc trace show <dir>/tcp.jsonl` to read them.
+- A proxy and its backend have separate rows. For nginx with a backend, the nginx row shows the request that nginx sent to the backend. The backend row shows the calls of the backend.
+- A call that edc cannot read stays in `self`. An example is a database command in a TLS connection.
+- `trace why` records on Linux only.
+
 ## trace show
 
-Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely. A response event also carries an `answered` count of the requests that it answers. In a file from an earlier edc without that count, `trace show` counts each DNS query and each HTTP or database request as unanswered.
+Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. A directory from `trace why` prints its [request breakdown](#trace-why) again. For a file, it takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely. A response event also carries an `answered` count of the requests that it answers. In a file from an earlier edc without that count, `trace show` counts each DNS query and each HTTP or database request as unanswered.
 
 ```bash
 sudo edc trace http --raw --duration 30s > http.jsonl

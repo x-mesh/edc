@@ -129,6 +129,11 @@ type captureSummary struct {
 	Event         string `json:"event"`
 	EventCount    uint64 `json:"event_count"`
 	LostEvents    uint64 `json:"lost_events"`
+	// StartBootTimeNS와 EndBootTimeNS는 이 기록이 event를 받은 구간이고, event의 boot_time_ns와 같은 시계다. 시작은 모든
+	// hook이 붙은 때다. trace why가 여러 기록이 겹치는 구간을 여기서 구한다. 끝은 수집을 멈춘 때라서, 그 순간 ring에 남아
+	// 읽지 못한 event만큼은 실제보다 늦다. Linux 수집만 채운다.
+	StartBootTimeNS uint64 `json:"start_boot_time_ns,omitempty"`
+	EndBootTimeNS   uint64 `json:"end_boot_time_ns,omitempty"`
 	// TLSUnmapped는 socket 주소나 TLS key log가 없어 해석하지 못한 TLS 레코드 수다.
 	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 	// TLSExecProblem은 --tls 자동 탐색이 trace 중에 exec 알림을 받지 못한 이유다. trace가 끝난 뒤 stderr로 알린다.

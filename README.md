@@ -22,6 +22,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | See what listens on each port | `edc listen`, `edc listen -B` | [Listening ports](docs/host.md#listening-ports), [socket browser](docs/listen-browse.md) |
 | See scheduled jobs and their last result | `edc jobs` | [Scheduled jobs](docs/host.md#scheduled-jobs-linux-and-macos) |
 | Check a connection | `edc dns lookup example.com`, `edc tcp check example.com:443` | [Network checks](docs/network.md#network-checks), [combined diagnosis](docs/network.md#doctor-live-screen) |
+| Find why HTTP requests are slow | `edc trace why --duration 30s` | [Request breakdown](docs/tracing.md#trace-why) — Linux |
 | Trace application and kernel activity | `edc trace` | [Tracing and packet capture](#tracing-and-packet-capture) — support varies by trace |
 | Record and compare runs | `edc top -w`, `edc history`, `edc log -- <command>` | [Resource history](docs/history.md#top-recordings-and-history), [command logs](docs/history.md#cron-and-application-logs) |
 | Work across hosts | `edc remote`, `edc clean --group <group>` | [Remote recipes](docs/remote.md#remote-recipes), [remote disk survey](docs/disk-usage.md#clean-on-more-hosts) |

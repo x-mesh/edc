@@ -1010,6 +1010,10 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		return captureSummary{}, err
 	}
 	finish := func() (captureSummary, error) {
+		var stopped unix.Timespec
+		if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &stopped); err != nil {
+			return captureSummary{}, fmt.Errorf("read monotonic clock: %w", err)
+		}
 		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
 			return captureSummary{}, err
 		}
@@ -1041,7 +1045,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				return captureSummary{}, err
 			}
 		}
-		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem, TLSNotices: notices}, nil
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, StartBootTimeNS: uint64(attached.Nano()), EndBootTimeNS: uint64(stopped.Nano()), TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem, TLSNotices: notices}, nil
 	}
 	for {
 		if err := drainTLSNotices(); err != nil {

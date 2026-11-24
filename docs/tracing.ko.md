@@ -10,7 +10,7 @@
 
 `edc help trace`는 모든 trace의 option과 설명을 한꺼번에 보여 줍니다. `edc help trace exec`처럼 `edc help trace <하위 명령>`을 쓰면 그 trace 하나의 사용법, option, 설명, 예시만 나옵니다. `edc trace exec --help`도 같은 내용을 보여 줍니다.
 
-[패킷 캡처](#패킷-캡처) · [trace tcp / udp](#trace-tcp--udp) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace priv](#trace-priv) · [trace drop](#trace-drop) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [PCAP 파일](#pcap-파일) · [trace io](#trace-io) · [trace sched](#trace-sched) · [trace show](#trace-show)
+[패킷 캡처](#패킷-캡처) · [trace tcp / udp](#trace-tcp--udp) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace priv](#trace-priv) · [trace drop](#trace-drop) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [PCAP 파일](#pcap-파일) · [trace io](#trace-io) · [trace sched](#trace-sched) · [trace why](#trace-why) · [trace show](#trace-show)
 
 ## 패킷 캡처
 
@@ -1031,6 +1031,51 @@ edc trace sched --raw
 
 thread가 CPU에서 내려갈 때의 system call을 표시합니다. `futex`, `epoll_wait`, `read` 등으로 대기 유형을 좁힐 수 있으며, system call 안에서 기다리지 않았으면 `-`입니다. Linux 5.15에서 동작하며 필요한 BTF 필드를 확인한 뒤 program을 load합니다. [스케줄러 지연과 손실 카운터 상세](tracing.md#trace-sched)를 참고하세요.
 
+## trace why
+
+Linux에서 HTTP 요청의 시간이 어디에 쓰였는지 찾습니다. 명령 하나로 `trace http`, `trace dns`, `trace tcp`를 함께 기록하고, 기록이 끝나면 요청마다 지연을 그 요청이 처리되는 동안 서버가 한 호출로 나눠 보여 줍니다.
+
+```bash
+sudo edc trace why --duration 30s
+sudo edc trace why --port 8080 --with mysql,redis:6380 --duration 30s
+sudo edc trace why --process gunicorn --out incident
+edc trace show incident          # 같은 분석을 root 없이 다시 보기
+```
+
+```text
+HTTP request breakdown: 23.2s of 26.8s recorded
+
+Requests: 107
+Calls: 71
+
+PROCESS  REQUEST / CALL                   COUNT  AVG      MAX      SHARE
+python3  GET /ext                         35     302.3ms  302.8ms
+           http GET 127.0.0.1:18081/slow  35     301.1ms           100%
+           self                                  1.3ms             0%
+python3  GET /dns                         36     301.1ms  301.9ms
+           dns slow.edc-why.test A        36     300.7ms           100%
+           self                                  0.5ms             0%
+python3  GET /ok                          36     0.3ms    0.5ms
+           self                                  0.3ms             100%
+```
+
+process가 있는 행은 로컬 서버가 받은 요청의 경로입니다. 그 아래 행은 그 요청의 호출입니다: DNS 질의, 서버가 보낸 HTTP 요청, DB 명령. 호출 행의 `AVG`는 요청 하나당 그 호출에 쓴 시간이고 `SHARE`는 요청 지연에서 차지하는 비중입니다. `self`는 어떤 호출에도 들어가지 않는 시간입니다.
+
+kernel 기록에는 호출과 요청을 잇는 표시가 없어서 process ID와 시간으로 잇습니다. 같은 process가 한 호출이고, 그 요청이 처리되는 동안 시작하고 끝났으면 그 요청의 호출로 봅니다.
+
+한 process가 요청 여러 개를 동시에 처리하면 한 호출이 둘 이상의 요청에 걸칩니다. 이런 호출은 어느 요청에도 더하지 않고, 그 호출만 덮는 요청 시간을 `(ambiguous)` 행으로 보여 줍니다. 긴 호출은 제 요청에만 들어가므로 병목이 되는 호출은 대부분 제 경로 아래에 나옵니다. 요청 8개를 동시에 처리한 Go 서버 시험에서 0.3초짜리 DNS 질의는 87%, 0.3초짜리 SQL은 80%가 제 경로에 붙었습니다. process마다 요청을 하나씩 처리하는 서버(gunicorn sync worker 등)에는 이런 호출이 없습니다.
+
+- `--with mysql,postgres,redis`로 DB trace를 더합니다. `mysql:13306`처럼 서버 port를 붙일 수 있습니다.
+- `--port`는 그 로컬 port의 서버가 받은 요청만 남깁니다. 기록은 모든 HTTP 연결을 담으므로 그 서버가 밖으로 보낸 요청은 그대로 보입니다.
+- `--process`는 모든 trace를 그 process로 제한합니다. host의 모든 HTTP 통신을 기록하므로 바쁜 host에서는 `--process`를 쓰세요.
+- 기록은 `--out` 디렉터리(기본값: 현재 디렉터리의 `edc-why-<시각>`)에 소유자만 읽을 수 있게 남습니다. HTTP payload는 기록하지 않습니다.
+
+trace마다 기록을 시작하는 때가 달라서(`trace http`는 TLS library를 찾느라 몇 초 늦습니다) 모든 trace가 기록한 시간대만 비교합니다. 출력 첫 줄이 그 길이를 보여 줍니다. trace가 끝날 때까지 부하를 계속 주세요. 끝날 때 `trace http`가 TLS probe를 떼는 데 30초쯤 걸릴 수 있습니다.
+
+trace 하나가 실패하면 나머지를 멈추고 그 오류만 출력합니다. 한 계층이 빠진 기록으로 분석하면 그 계층의 시간이 `self`로 보이기 때문입니다.
+
+스레드별 구분, `--with clickhouse`, TCP 연결 시간의 요청별 귀속, proxy와 backend 요청의 연결은 지원하지 않습니다. [상세 설명과 한계](tracing.md#trace-why)를 참고하세요.
+
 ## trace show
 
 저장한 `--raw` JSONL을 다른 호스트에서 root 없이 요약합니다.
@@ -1040,4 +1085,4 @@ edc trace show trace.jsonl
 edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl
 ```
 
-파일 하나를 조회할 때는 실시간 trace와 같은 그룹 보기와 필터를 사용할 수 있습니다. 여러 파일을 넘기면 각 파일의 첫 이벤트와 마지막 이벤트, 공통 시간대를 UTC로 표시하고 파일별 전체 요약을 이어서 출력합니다. 여러 호스트의 시간대를 비교하려면 호스트의 시계가 동기화되어 있어야 합니다. 응답 이벤트에는 그 응답이 답한 요청 수(`answered`)가 기록됩니다. 이 값이 없는 이전 edc의 기록에서는 DNS 질의와 HTTP·데이터베이스 요청이 모두 응답 없음으로 집계됩니다. [저장 파일 조회 상세](tracing.md#trace-show)를 참고하세요.
+`trace why`가 남긴 디렉터리를 넘기면 그 [요청별 분석](#trace-why)을 다시 출력합니다. 파일 하나를 조회할 때는 실시간 trace와 같은 그룹 보기와 필터를 사용할 수 있습니다. 여러 파일을 넘기면 각 파일의 첫 이벤트와 마지막 이벤트, 공통 시간대를 UTC로 표시하고 파일별 전체 요약을 이어서 출력합니다. 여러 호스트의 시간대를 비교하려면 호스트의 시계가 동기화되어 있어야 합니다. 응답 이벤트에는 그 응답이 답한 요청 수(`answered`)가 기록됩니다. 이 값이 없는 이전 edc의 기록에서는 DNS 질의와 HTTP·데이터베이스 요청이 모두 응답 없음으로 집계됩니다. [저장 파일 조회 상세](tracing.md#trace-show)를 참고하세요.

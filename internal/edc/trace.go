@@ -507,6 +507,7 @@ func traceUsage() {
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceDatabaseUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSyscallUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceWhyUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceShowUsage))
 }
 

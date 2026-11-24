@@ -142,6 +142,87 @@ func TestTraceShowCountsUnansweredRequestsLikeTheLiveTrace(t *testing.T) {
 	}
 }
 
+// 요약 줄의 기록 구간은 새 edc만 쓴다. 구간이 없는 예전 파일도 그대로 읽는다.
+func TestTraceShowReadsTheRecordedRangeOfASummary(t *testing.T) {
+	event := captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "db.internal", QueryType: "A"}
+	file, err := openTraceShowFile(traceShowWrite(t, "dns.jsonl", event, captureSummary{Event: "capture_summary", StartBootTimeNS: 5_000, EndBootTimeNS: 9_000}))
+	if err != nil || file.summary.StartBootTimeNS != 5_000 || file.summary.EndBootTimeNS != 9_000 {
+		t.Fatalf("summary = %+v, %v", file.summary, err)
+	}
+	old, err := openTraceShowFile(traceShowWrite(t, "old.jsonl", event, captureSummary{Event: "capture_summary"}))
+	if err != nil || old.summary.StartBootTimeNS != 0 || old.summary.EndBootTimeNS != 0 {
+		t.Fatalf("old summary = %+v, %v", old.summary, err)
+	}
+	line, err := json.Marshal(captureSummary{Event: "capture_summary"})
+	if err != nil || strings.Contains(string(line), "boot_time_ns") {
+		t.Fatalf("a summary without a range wrote %s, %v", line, err)
+	}
+}
+
+// trace why 디렉터리는 why.json이 가리키는 기록만 읽는다. 읽을 수 없으면 디렉터리의 다른 파일로 대신하지 않고 거부한다.
+func TestTraceShowRejectsBadTraceWhyDirectories(t *testing.T) {
+	summary := captureSummary{Event: "capture_summary", TraceProtocol: "http", StartBootTimeNS: 1, EndBootTimeNS: 10_000 * whyTestMS}
+	recording := traceShowWrite(t, "http.jsonl", whyTestRequest(7, "/a", 400, 300), summary)
+	directory := func(manifest string, files ...string) string {
+		path := t.TempDir()
+		if manifest != "" {
+			if err := os.WriteFile(filepath.Join(path, traceWhyManifestName), []byte(manifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data, err := os.ReadFile(recording)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range files {
+			if err := os.WriteFile(filepath.Join(path, name), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return path
+	}
+	good := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`, "http.jsonl")
+	if output := traceCaptureOutput(t, &os.Stdout, func() {
+		if code := runTraceShow([]string{good}); code != 0 {
+			t.Errorf("exit = %d", code)
+		}
+	}); !strings.Contains(output, "GET /a") {
+		t.Fatalf("output = %q", output)
+	}
+	old := traceShowWrite(t, "old.jsonl", whyTestRequest(7, "/a", 400, 300), captureSummary{Event: "capture_summary", TraceProtocol: "http"})
+	oldData, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noRange := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`)
+	if err := os.WriteFile(filepath.Join(noRange, "http.jsonl"), oldData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, test := range map[string]struct {
+		args []string
+		code int
+		want string
+	}{
+		"no manifest":       {[]string{directory("", "http.jsonl")}, 2, traceWhyManifestName},
+		"broken manifest":   {[]string{directory("{", "http.jsonl")}, 2, traceWhyManifestName},
+		"other version":     {[]string{directory(`{"version":2,"traces":[]}`, "http.jsonl")}, 2, "version 2 is not supported"},
+		"missing recording": {[]string{directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"},{"name":"dns","file":"dns.jsonl"}]}`, "http.jsonl")}, 2, "dns.jsonl"},
+		"file outside":      {[]string{directory(`{"version":1,"traces":[{"name":"http","file":"../http.jsonl"}]}`, "http.jsonl")}, 2, "is not a file name in the directory"},
+		"no recorded range": {[]string{noRange}, 1, "has no recorded range"},
+		"with an option":    {[]string{"--group-by", "path", good}, 2, "takes only the directory"},
+		"with a file":       {[]string{good, recording}, 2, "takes only the directory"},
+	} {
+		var code int
+		var stdout string
+		stderr := traceCaptureOutput(t, &os.Stderr, func() {
+			stdout = traceCaptureOutput(t, &os.Stdout, func() { code = runTraceShow(test.args) })
+		})
+		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout, stderr)
+		}
+	}
+}
+
 func TestTraceShowReplaysAnExecRawFile(t *testing.T) {
 	code1, code0 := int32(1), int32(0)
 	short := 50.0

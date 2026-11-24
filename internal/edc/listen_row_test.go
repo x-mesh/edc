@@ -162,8 +162,14 @@ func TestListenBrowserShowsMergedAddressesAndPIDs(t *testing.T) {
 			t.Fatalf("missing %q:\n%s", want, text)
 		}
 	}
+	// 색이 없으면 SCOPE 칸이 범위를 짧은 문구로 적는다. 표의 긴 문구와 예전 BINDING 칸은 쓰지 않는다.
+	for _, want := range []string{"SCOPE", T("listenbrowse.scope.all"), T("listenbrowse.scope.specific"), T("listenbrowse.scope.loopback")} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("no-color browser lacks the scope text %q:\n%s", want, text)
+		}
+	}
 	if strings.Contains(text, "BINDING") || strings.Contains(text, T("observe.listen.scope.all")) {
-		t.Fatalf("scope words remain without color:\n%s", text)
+		t.Fatalf("the long scope words are in the browser:\n%s", text)
 	}
 }
 
@@ -260,5 +266,171 @@ func TestListenBrowserColorsLegendPortsAndContainers(t *testing.T) {
 		if ansi.StringWidth(line) > 88 {
 			t.Fatalf("width exceeded: %q", line)
 		}
+	}
+}
+
+func TestListenBrowserScopeColumnFitsWithoutColor(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		for _, width := range []int{48, 54, 80} {
+			model := listenRowBrowser(t)
+			next, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+			model = next.(listenBrowser)
+			text := model.View().Content
+			lines := strings.Split(text, "\n")
+			for _, line := range lines {
+				if ansi.StringWidth(line) > width {
+					t.Fatalf("%s width %d exceeded: %q", language, width, line)
+				}
+			}
+			// 줄마다 범위 문구가 있고, 좁아도 PID 칸은 잘리지 않는다.
+			for _, row := range []struct{ port, scope, pid string }{
+				{"22/tcp", T("listenbrowse.scope.all"), "10"},
+				{"53/tcp", T("listenbrowse.scope.loopback"), "20"},
+				{"3737/tcp", T("listenbrowse.scope.all"), "50 +1"},
+			} {
+				found := false
+				for _, line := range lines {
+					if strings.Contains(line, row.port) && strings.Contains(line, row.scope) && strings.HasSuffix(strings.TrimRight(line, " "), row.pid) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%s width %d: no row with %q, %q and PID %q:\n%s", language, width, row.port, row.scope, row.pid, text)
+				}
+			}
+		}
+	}
+}
+
+func TestListenBrowserHasNoScopeColumnInColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	model := listenRowBrowser(t)
+	model.color = true
+	text := ansi.Strip(model.View().Content)
+	header := strings.Split(text, "\n")[3]
+	if !strings.Contains(header, "ADDRESS") || strings.Contains(header, "SCOPE") {
+		t.Fatalf("color header = %q", header)
+	}
+}
+
+func TestListenBrowserPicksThePIDOfARow(t *testing.T) {
+	sockets := append([]listenSocket{}, listenRowFixture[:11]...)
+	sockets[7].Args, sockets[8].Args = []string{"/usr/bin/docker-proxy", "-host-ip", "0.0.0.0"}, []string{"/usr/bin/docker-proxy", "-host-ip", "::"}
+	model := newListenBrowser(context.Background(), time.Second, false, false)
+	model.full = true
+	model.load = func(context.Context) Result {
+		return Result{Status: StatusPass, Metrics: map[string]interface{}{"sockets": sockets}}
+	}
+	next, _ := model.Update(model.Init()())
+	next, _ = next.(listenBrowser).Update(tea.WindowSizeMsg{Width: 140, Height: 20})
+	model = next.(listenBrowser)
+	var launched []string
+	model.openTop = func(pid string) tea.Cmd { launched = append(launched, pid); return nil }
+
+	// PID가 하나인 줄에서는 p가 아무것도 고르지 않고, 고르는 안내도 없다.
+	model, _ = listenBrowserKey(model, "p")
+	if model.pid != "" || strings.Contains(model.View().Content, "(1/1)") {
+		t.Fatalf("p chose a PID on a row with one PID: %q", model.pid)
+	}
+	for model.items[model.cursor].first().Process != "docker-proxy" {
+		model, _ = listenBrowserKey(model, "down")
+	}
+	for _, want := range []string{"50 +1", T("listenbrowse.pid_choice", "50", 1, 2), "-host-ip 0.0.0.0"} {
+		if text := model.View().Content; !strings.Contains(text, want) {
+			t.Fatalf("first PID: missing %q:\n%s", want, text)
+		}
+	}
+	model, _ = listenBrowserKey(model, "p")
+	text := model.View().Content
+	for _, want := range []string{"51 +1", T("listenbrowse.pid_choice", "51", 2, 2), "-host-ip ::"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("second PID: missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "50 +1") || strings.Contains(text, "-host-ip 0.0.0.0") {
+		t.Fatalf("the first PID is still shown as the choice:\n%s", text)
+	}
+	model, _ = listenBrowserKey(model, "t")
+	// loopback을 숨겼다 보여도, 다른 줄에 다녀와도 고른 PID가 남는다.
+	model, _ = listenBrowserKey(model, "l")
+	model, _ = listenBrowserKey(model, "l")
+	model, _ = listenBrowserKey(model, "up")
+	model, _ = listenBrowserKey(model, "down")
+	model, _ = listenBrowserKey(model, "t")
+	if !slices.Equal(launched, []string{"51", "51"}) {
+		t.Fatalf("t opened %v, want the chosen PID 51 twice", launched)
+	}
+
+	// x의 안내는 PID를 담고 있어서, 그 화면에서 p를 누르면 안내도 바뀐다.
+	model, _ = listenBrowserKey(model, "x")
+	if text := model.View().Content; !strings.Contains(text, "--process 51 ") || !strings.Contains(text, T("listenbrowse.pid_choice", "51", 2, 2)) {
+		t.Fatalf("trace hint:\n%s", text)
+	}
+	model, _ = listenBrowserKey(model, "p")
+	if text := model.View().Content; !strings.Contains(text, "--process 50 ") || strings.Contains(text, "--process 51 ") {
+		t.Fatalf("trace hint after p:\n%s", text)
+	}
+	model, _ = listenBrowserKey(model, "esc")
+	model, _ = listenBrowserKey(model, "p")
+
+	// 고른 process가 새로고침에서 사라지면 줄의 첫 PID로 돌아간다.
+	sockets = append(sockets[:8:8], sockets[9:]...)
+	next, _ = model.Update(listenBrowserListMsg{seq: model.seq, result: model.load(context.Background()), at: time.Now()})
+	model = next.(listenBrowser)
+	row, _ := model.selectedRow()
+	if row.first().Process != "docker-proxy" || model.activePID(row) != "50" || strings.Contains(model.View().Content, "+1") {
+		t.Fatalf("after the chosen process left: active %q:\n%s", model.activePID(row), model.View().Content)
+	}
+}
+
+func TestFormatListenTableKeepsColumnsUnderRedact(t *testing.T) {
+	table := listenTableOf(Result{Metrics: map[string]interface{}{"sockets": listenRowFixture}}, true, textStyle{}, nil, true)
+	for _, address := range []string{"0.0.0.0", "127.0.0.53", "100.64.0.1", "fd7a:115c:a1e0::1"} {
+		if strings.Contains(table, address) {
+			t.Fatalf("address %s is not redacted:\n%s", address, table)
+		}
+	}
+	// runListen은 명령줄의 주소도 지우려고 표 전체를 한 번 더 가린다. 그 단계가 표를 다시 바꾸면 칸이 어긋난다.
+	if again := redactIPAddresses(table); again != table {
+		t.Fatalf("a second redaction changed the table:\n%s\n---\n%s", table, again)
+	}
+	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	scopeAt, processAt := strings.Index(lines[0], T("observe.listen.column.scope")), strings.Index(lines[0], T("observe.listen.column.process"))
+	rows := 0
+	for _, line := range lines[1:] {
+		// 주소가 넘쳐 내려온 줄은 PORT와 PROTO 칸이 비어 있다.
+		if strings.HasPrefix(line, " ") {
+			continue
+		}
+		rows++
+		if len(line) <= processAt || line[scopeAt-1] != ' ' || line[scopeAt] == ' ' || line[processAt-1] != ' ' || line[processAt] == ' ' {
+			t.Fatalf("row is out of its columns (scope %d, process %d): %q\n%s", scopeAt, processAt, line, table)
+		}
+	}
+	if rows != len(groupListenSockets(listenRowFixture)) {
+		t.Fatalf("rows = %d:\n%s", rows, table)
+	}
+}
+
+func TestFormatListenTableListsEachCommandOfARow(t *testing.T) {
+	note := func(text string) string { return text }
+	differ := []listenSocket{
+		{Proto: "tcp", Address: "0.0.0.0", Port: 3737, Process: "docker-proxy", PID: "50", Args: []string{"/usr/bin/docker-proxy", "-host-ip", "0.0.0.0"}},
+		{Proto: "tcp", Address: "::", Port: 3737, Process: "docker-proxy", PID: "51", Args: []string{"/usr/bin/docker-proxy", "-host-ip", "::"}},
+	}
+	table := formatListenTable(differ, false, textStyle{}, note)
+	for _, want := range []string{"↳ 50   docker-proxy -host-ip 0.0.0.0\n", "↳ 51   docker-proxy -host-ip ::\n"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("missing %q:\n%s", want, table)
+		}
+	}
+	same := append([]listenSocket{}, differ...)
+	same[1].Args = same[0].Args
+	table = formatListenTable(same, false, textStyle{}, note)
+	if strings.Count(table, "↳") != 1 || !strings.Contains(table, "↳ docker-proxy -host-ip 0.0.0.0\n") {
+		t.Fatalf("equal command lines must show once, without a PID:\n%s", table)
 	}
 }

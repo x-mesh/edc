@@ -549,7 +549,7 @@ func runListen(args []string, version string) int {
 	fmt.Fprint(output, formatResultLine(result, color))
 	printResultDetail(output, result, false, color)
 	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
-	if table := listenTableOf(result, options.verbose, style, note); table != "" {
+	if table := listenTableOf(result, options.verbose, style, note, options.redact); table != "" {
 		fmt.Fprint(output, "\n"+style.table(table))
 	}
 	if options.redact {
@@ -558,11 +558,16 @@ func runListen(args []string, version string) int {
 	return exitCode([]Result{result})
 }
 
-// listenTableOf는 결과의 metrics에 담아 둔 목록으로 표를 만든다.
-func listenTableOf(result Result, detail bool, style textStyle, note func(string) string) string {
+// listenTableOf는 결과의 metrics에 담아 둔 목록으로 표를 만든다. redact면 주소 칸을 가린 글자로 짠다. 명령줄처럼 다른
+// 자리의 주소는 caller가 표 전체를 한 번 더 가려서 지운다.
+func listenTableOf(result Result, detail bool, style textStyle, note func(string) string, redact bool) string {
 	sockets, ok := result.Metrics["sockets"].([]listenSocket)
 	if !ok || len(sockets) == 0 {
 		return ""
 	}
-	return formatListenTable(sockets, detail, style, note)
+	var address func(string) string
+	if redact {
+		address = redactIPAddresses
+	}
+	return formatListenTableWith(sockets, detail, style, note, address)
 }

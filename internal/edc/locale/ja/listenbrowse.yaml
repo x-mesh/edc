@@ -11,6 +11,11 @@ listenbrowse:
   count: "ソケット%d件"
   rows: "%d行"
   loopback_hidden: "loopback非表示"
+  pid_choice: "PID %s (%d/%d) · p 次のPID"
+  scope:
+    all: "全体"
+    specific: "特定"
+    loopback: "loopback"
   keys: "↑↓ 選択 · Enter 詳細 · l loopback · t top · x trace · r 更新 · q 終了"
   detail_keys: "↑↓ スクロール · t top · x trace · r 再読込 · Esc 戻る · q 終了"
   reachability: "外部からの到達性は検査していません。"

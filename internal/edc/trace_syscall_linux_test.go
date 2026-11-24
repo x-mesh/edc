@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf/ringbuf"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -52,6 +53,7 @@ func TestSyscallBPFStructsMatchTheParser(t *testing.T) {
 		"tgid":     {unsafe.Offsetof(record.Tgid), 8},
 		"nr":       {unsafe.Offsetof(record.Nr), 12},
 		"comm":     {unsafe.Offsetof(record.Comm), 16},
+		"tid":      {unsafe.Offsetof(record.Tid), 32},
 		"end":      {unsafe.Sizeof(record), syscallInFlightSize},
 	} {
 		if offsets[0] != offsets[1] {
@@ -91,7 +93,9 @@ func TestParseSyscallInFlightReadsEachRecord(t *testing.T) {
 		data := make([]byte, syscallInFlightSize)
 		binary.NativeEndian.PutUint64(data[0:8], start)
 		binary.NativeEndian.PutUint32(data[12:16], nr)
-		copy(data[16:], comm)
+		binary.NativeEndian.PutUint32(data[8:12], 42)
+		binary.NativeEndian.PutUint32(data[32:36], 43)
+		copy(data[16:32], comm)
 		return data
 	}
 	read, _ := syscallNumber(runtime.GOARCH, "read")
@@ -99,11 +103,31 @@ func TestParseSyscallInFlightReadsEachRecord(t *testing.T) {
 	// 끝에 남은 조각은 기록이 아니다.
 	data = append(data, 1, 2, 3)
 	samples := parseSyscallInFlight(data, 3000)
-	if len(samples) != 2 || samples[0] != (syscallInFlightSample{Process: "api", Syscall: "read", ElapsedNS: 2000}) {
+	if len(samples) != 2 || samples[0] != (syscallInFlightSample{PID: 42, TID: 43, Process: "api", Syscall: "read", ElapsedNS: 2000}) {
 		t.Fatalf("samples = %+v", samples)
 	}
 	if samples[1].Process != "legacy" || samples[1].ElapsedNS != 0 || samples[1].Syscall != syscallName(runtime.GOARCH, read, true) {
 		t.Fatalf("compat sample = %+v", samples[1])
+	}
+}
+
+func TestSyscallRenameEventReadsBothPathsAndDirectoryDescriptors(t *testing.T) {
+	data := make([]byte, syscallEventSize)
+	nr, _ := syscallNumber(runtime.GOARCH, "renameat2")
+	binary.NativeEndian.PutUint32(data[32:36], nr)
+	data[36], data[324], data[325], data[326] = 1, 1, 1, 3
+	oldDir := int32(unix.AT_FDCWD)
+	binary.NativeEndian.PutUint32(data[316:320], uint32(oldDir))
+	binary.NativeEndian.PutUint32(data[320:324], 0)
+	copy(data[56:312], "old")
+	copy(data[328:], "new")
+	event, ok := parseSyscallEvent(data, 0)
+	if !ok || event.Path != "old" || event.Destination != "new" || !event.DestinationTruncated ||
+		event.DirFD == nil || *event.DirFD != oldDir || event.DestinationDirFD == nil || *event.DestinationDirFD != 0 {
+		t.Fatalf("rename event = %+v", event)
+	}
+	if line := event.line(); !strings.Contains(line, "dirfd=-100  old  ->  dirfd=0  new…") {
+		t.Fatalf("rename line = %q", line)
 	}
 }
 
@@ -129,6 +153,31 @@ func TestTraceSyscallHelperProcess(t *testing.T) {
 		if buffer[0] == 's' {
 			pause := syscall.NsecToTimespec(int64(syscallHelperPause))
 			_ = syscall.Nanosleep(&pause, nil)
+			continue
+		}
+		if buffer[0] == 'o' {
+			for _, flags := range []uint64{unix.O_RDONLY, unix.O_WRONLY, unix.O_RDWR | unix.O_CREAT | unix.O_EXCL} {
+				how := unix.OpenHow{Flags: flags}
+				if flags&unix.O_CREAT != 0 {
+					how.Mode = 0600
+				}
+				if fd, err := unix.Openat2(unix.AT_FDCWD, "/dev/null", &how); err == nil {
+					unix.Close(fd)
+				}
+			}
+			continue
+		}
+		if buffer[0] == 'u' {
+			// BPF가 open_how의 flags를 읽지 못하는 두 호출이다. size가 flags보다 작으면 읽지 않고, 주소가 매핑되지 않으면
+			// 읽기가 실패한다. 커널은 각각 EINVAL과 EFAULT를 돌려준다.
+			path, _ := unix.BytePtrFromString("/dev/null")
+			dirfd := unix.AT_FDCWD
+			var how unix.OpenHow
+			for _, call := range []struct{ how, size uintptr }{{uintptr(unsafe.Pointer(&how)), 4}, {1, unsafe.Sizeof(how)}} {
+				if fd, _, errno := unix.Syscall6(unix.SYS_OPENAT2, uintptr(dirfd), uintptr(unsafe.Pointer(path)), call.how, call.size, 0, 0); errno == 0 {
+					unix.Close(int(fd))
+				}
+			}
 			continue
 		}
 		if buffer[0] == 'p' {
@@ -269,10 +318,17 @@ func TestTraceSyscallCountsTheSelectedProcesses(t *testing.T) {
 	}
 	waiting := false
 	for _, sample := range collection.inFlight {
-		waiting = waiting || sample.Process == comm && sample.Syscall == "read"
+		waiting = waiting || sample.Process == comm && sample.Syscall == "read" && sample.PID == helpers[1].pid() && sample.TID > 0
 	}
 	if !waiting {
 		t.Errorf("the waiting helper is not in flight: %+v", collection.inFlight)
+	}
+	var timed uint64
+	for _, sample := range collection.samples {
+		timed += sample.Timed
+	}
+	if collection.summary.Returned != timed || collection.summary.Entered <= collection.summary.Returned {
+		t.Errorf("entered = %d, returned = %d, timed = %d", collection.summary.Entered, collection.summary.Returned, timed)
 	}
 	if collection.summary.Unmatched != nil || collection.summary.StatsFull != 0 || collection.summary.StartsFull != 0 {
 		t.Errorf("summary = %+v", collection.summary)
@@ -280,6 +336,33 @@ func TestTraceSyscallCountsTheSelectedProcesses(t *testing.T) {
 }
 
 // edc 자신의 호출은 kernel 안에서 빠져야 한다. 필터 없이 host 전체를 1초 남짓 센다.
+func TestTraceSyscallGroupsWorkersByPID(t *testing.T) {
+	requireSyscallTrace(t)
+	var helpers []syscallHelper
+	for range 2 {
+		helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+		if err != nil {
+			t.Fatal(err)
+		}
+		helpers = append(helpers, helper)
+	}
+	options := syscallTraceOptions{
+		pids:    []uint32{helpers[0].pid(), helpers[1].pid()},
+		groupBy: traceGroupByPIDSyscall,
+	}
+	collection := traceSyscallHelpers(t, options, helpers, nil, nil)
+	report := syscallReportFor(collection, options.groupBy)
+	calls := map[uint32]uint64{}
+	for _, row := range report.Rows {
+		if row.Syscall == "getppid" {
+			calls[row.PID] = row.Calls
+		}
+	}
+	if len(calls) != 2 || calls[helpers[0].pid()] < syscallHelperCalls || calls[helpers[1].pid()] < syscallHelperCalls {
+		t.Fatalf("getppid calls per worker = %v", calls)
+	}
+}
+
 func TestTraceSyscallLeavesOutEdcItself(t *testing.T) {
 	requireSyscallTrace(t)
 	namespace, _ := os.Readlink("/proc/self/ns/pid")
@@ -344,16 +427,24 @@ func TestTraceSyscallNamesCompatCalls(t *testing.T) {
 func TestSyscallEventLayoutMatchesTheParser(t *testing.T) {
 	var record syscallEventsSyscallEvent
 	for name, offsets := range map[string][2]uintptr{
-		"timestamp_ns": {unsafe.Offsetof(record.TimestampNs), 0},
-		"latency_ns":   {unsafe.Offsetof(record.LatencyNs), 8},
-		"ret":          {unsafe.Offsetof(record.Ret), 16},
-		"tgid":         {unsafe.Offsetof(record.Tgid), 24},
-		"tid":          {unsafe.Offsetof(record.Tid), 28},
-		"nr":           {unsafe.Offsetof(record.Nr), 32},
-		"path_state":   {unsafe.Offsetof(record.PathState), 36},
-		"comm":         {unsafe.Offsetof(record.Comm), 40},
-		"path":         {unsafe.Offsetof(record.Path), 56},
-		"end":          {unsafe.Sizeof(record), syscallEventSize},
+		"timestamp_ns":     {unsafe.Offsetof(record.TimestampNs), 0},
+		"latency_ns":       {unsafe.Offsetof(record.LatencyNs), 8},
+		"ret":              {unsafe.Offsetof(record.Ret), 16},
+		"tgid":             {unsafe.Offsetof(record.Tgid), 24},
+		"tid":              {unsafe.Offsetof(record.Tid), 28},
+		"nr":               {unsafe.Offsetof(record.Nr), 32},
+		"path_state":       {unsafe.Offsetof(record.PathState), 36},
+		"fd_valid":         {unsafe.Offsetof(record.FdValid), 39},
+		"comm":             {unsafe.Offsetof(record.Comm), 40},
+		"fd":               {unsafe.Offsetof(record.Fd), syscallEventPathEnd},
+		"path":             {unsafe.Offsetof(record.Path), 56},
+		"dirfd":            {unsafe.Offsetof(record.Dirfd), 316},
+		"dest_dirfd":       {unsafe.Offsetof(record.DestDirfd), 320},
+		"dirfd_valid":      {unsafe.Offsetof(record.DirfdValid), 324},
+		"dest_dirfd_valid": {unsafe.Offsetof(record.DestDirfdValid), 325},
+		"dest_state":       {unsafe.Offsetof(record.DestState), 326},
+		"dest":             {unsafe.Offsetof(record.Dest), 328},
+		"end":              {unsafe.Sizeof(record), syscallEventSize},
 	} {
 		if offsets[0] != offsets[1] {
 			t.Errorf("%s is at %d in the BPF struct, parseSyscallEvent reads %d", name, offsets[0], offsets[1])
@@ -436,6 +527,61 @@ func TestReadSyscallEventsStopsWhileEventsKeepComing(t *testing.T) {
 	}
 }
 
+func TestTraceSyscallClassifiesOpenat2Flags(t *testing.T) {
+	requireSyscallTrace(t)
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, files: true}
+	actions := map[string]bool{}
+	traceSyscallHelpers(t, options, nil, func() {
+		helper.send(t, 'o')
+		time.Sleep(200 * time.Millisecond)
+	}, func(event syscallEvent) error {
+		if event.Path == "/dev/null" {
+			actions[event.Action] = true
+		}
+		return nil
+	})
+	if !actions["read"] || !actions["write"] || !actions["create"] || actions["other"] {
+		t.Fatalf("openat2 actions = %v", actions)
+	}
+}
+
+// open_how가 flags보다 작거나 읽을 수 없으면 BPF는 OPEN_UNKNOWN을 표시하고, 파일 표는 other로 분류한다.
+func TestTraceSyscallMarksUnreadableOpenHowAsUnknown(t *testing.T) {
+	requireSyscallTrace(t)
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, files: true}
+	unknown := map[string]bool{}
+	var events []syscallEvent
+	traceSyscallHelpers(t, options, nil, func() {
+		helper.send(t, 'u')
+		time.Sleep(200 * time.Millisecond)
+	}, func(event syscallEvent) error {
+		events = append(events, event)
+		if event.Path == "/dev/null" && event.OpenKind == syscallOpenUnknown && event.Action == "other" {
+			unknown[event.Errno] = true
+		}
+		return nil
+	})
+	if !unknown["EINVAL"] || !unknown["EFAULT"] {
+		t.Fatalf("unknown openat2 errnos = %v, events %+v", unknown, events)
+	}
+}
+
 // event의 경로는 255 byte까지 남는다. 정확히 255 byte인 경로는 다 남았으므로 잘린 것이 아니고, 더 긴 경로만 잘린 것이다.
 // BPF helper는 두 경우 모두 같은 길이를 돌려주므로 kernel 안에서 다음 byte로 가른다(#269).
 func TestTraceSyscallMarksOnlyLongerPathsAsTruncated(t *testing.T) {
@@ -478,7 +624,7 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat,nanosleep")
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat,nanosleep,read")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,11 +642,11 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 		return nil
 	})
 	for _, sample := range collection.samples {
-		if sample.Syscall != "openat" && sample.Syscall != "nanosleep" {
+		if sample.Syscall != "openat" && sample.Syscall != "nanosleep" && sample.Syscall != "read" {
 			t.Errorf("a call outside --syscall was counted: %+v", sample)
 		}
 	}
-	failed, slept := false, false
+	failed, slept, readStdin := false, false, false
 	for _, event := range events {
 		if event.PID != helper.pid() {
 			t.Errorf("an event of another process: %+v", event)
@@ -509,13 +655,46 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 			t.Errorf("an errno outside --errors: %+v", event)
 		}
 		failed = failed || event.Syscall == "openat" && event.Errno == "ENOENT" && event.Path == syscallHelperPath
-		slept = slept || event.Syscall == "nanosleep" && event.LatencyMS >= float64(options.slow)/float64(time.Millisecond)
+		slept = slept || event.Syscall == "nanosleep" && event.FD == nil && event.LatencyMS >= float64(options.slow)/float64(time.Millisecond)
+		readStdin = readStdin || event.Syscall == "read" && event.FD != nil && *event.FD == 0 && strings.Contains(event.line(), "fd=0")
 	}
-	if !failed || !slept {
-		t.Errorf("failed openat %t, slow nanosleep %t, events %+v", failed, slept, events)
+	if !failed || !slept || !readStdin {
+		t.Errorf("failed openat %t, slow nanosleep %t, read fd=0 %t, events %+v", failed, slept, readStdin, events)
 	}
 	if collection.summary.Events != uint64(len(events)) || collection.summary.RingLost != 0 {
 		t.Errorf("summary = %+v, events %d", collection.summary, len(events))
+	}
+}
+
+// --fd-path가 이벤트 콜백을 감싼 채로 실제 event를 받아, helper가 아직 열어 둔 stdin pipe를 찾는지 본다.
+func TestTraceSyscallLooksUpFDTargetsOfDetailedEvents(t *testing.T) {
+	requireSyscallTrace(t)
+	root := syscallFDTargetRoot("/proc")
+	if root == "" {
+		t.Skip("--fd-path looks up descriptors only in the host PID namespace")
+	}
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, slow: 50 * time.Millisecond}
+	var events []syscallEvent
+	traceSyscallHelpers(t, options, []syscallHelper{helper}, nil, syscallFDTargetEvents(root, func(event syscallEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	found := false
+	for _, event := range events {
+		if event.Syscall == "read" && event.FD != nil && *event.FD == 0 {
+			found = found || strings.HasPrefix(event.FDTargetAtRead, "pipe:[") && strings.Contains(event.line(), "fd_target_at_read=pipe:[")
+		}
+	}
+	if !found {
+		t.Errorf("no read of fd 0 with a pipe target, events %+v", events)
 	}
 }
 
@@ -645,14 +824,26 @@ func TestTraceSyscallCommandListsTheFilesItTouched(t *testing.T) {
 	dir := t.TempDir()
 	script := fmt.Sprintf("cat /nonexistent-edc-file 2>/dev/null; echo data > %[1]s/out; mv %[1]s/out %[1]s/moved; rm %[1]s/moved; mkdir %[1]s/d", dir)
 	var table syscallFileTable
+	var rename syscallEvent
 	collection, code := traceSyscallCommand(t, []string{"sh", "-c", script}, false, func(event syscallEvent) error {
 		if event.Reason&syscallReasonFile != 0 {
 			table.add(event)
+			if event.Action == "rename" && event.Path == dir+"/out" {
+				rename = event
+			}
 		}
 		return nil
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d", code)
+	}
+	if rename.Destination != dir+"/moved" {
+		t.Errorf("rename event = %+v", rename)
+	}
+	if rename.Syscall == "renameat" || rename.Syscall == "renameat2" {
+		if rename.DirFD == nil || rename.DestinationDirFD == nil {
+			t.Errorf("rename directory descriptors missing: %+v", rename)
+		}
 	}
 	rows := map[string]syscallFileRow{}
 	for _, row := range table.report() {
@@ -768,5 +959,69 @@ func TestTraceSyscallSnapshotWithoutAnIntervalUsesTheDefault(t *testing.T) {
 		if snapshots < 2 {
 			t.Errorf("files=%t: snapshots = %d, want at least 2", files, snapshots)
 		}
+	}
+}
+
+func TestSyscallProcessStartupStatus(t *testing.T) {
+	root := t.TempDir()
+	previous := traceProcRoot
+	traceProcRoot = root
+	t.Cleanup(func() { traceProcRoot = previous })
+
+	options := syscallTraceOptions{pids: []uint32{42}}
+	if got := syscallProcessStartupStatus(options); !strings.Contains(got, "unavailable") {
+		t.Fatalf("without a host procfs, got %q", got)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "1", "ns"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(auditHostPIDNamespace, filepath.Join(root, "1", "ns", "pid")); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(options); !strings.Contains(got, "no visible matches") {
+		t.Fatalf("before the process appears, got %q", got)
+	}
+	if err := os.Mkdir(filepath.Join(root, "42"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "42", "comm"), []byte("nginx\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, filter := range []syscallTraceOptions{
+		options,
+		{comms: []string{"nginx"}},
+		{pids: []uint32{42}, comms: []string{"nginx"}},
+	} {
+		if got := syscallProcessStartupStatus(filter); !strings.HasSuffix(got, "1 visible match") {
+			t.Errorf("with PID or name match, got %q", got)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "43"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "43", "comm"), []byte("nginx\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	names := syscallTraceOptions{comms: []string{"nginx"}}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches") {
+		t.Errorf("with two name matches, got %q", got)
+	}
+	// comm을 읽다 ENOENT가 아닌 오류가 나면, 센 수는 일부일 수 있다고 알린다.
+	if err := os.MkdirAll(filepath.Join(root, "44", "comm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches (some process names unreadable)") {
+		t.Errorf("with an unreadable process name, got %q", got)
+	}
+	// 사라진 프로세스의 comm은 읽지 못한 이름으로 세지 않는다.
+	if err := os.RemoveAll(filepath.Join(root, "44")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "45"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches") {
+		t.Errorf("with a process that left, got %q", got)
 	}
 }

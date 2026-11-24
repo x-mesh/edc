@@ -173,7 +173,7 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 		if !packet.sent && packet.arrivalNS != 0 {
 			event.NetworkMS = traceSpan(queries[0].bootTimeNS, packet.arrivalNS)
 		}
-		event.answered = uint64(len(queries))
+		event.Answered = uint64(len(queries))
 		if event.Target == "" {
 			event.Target, event.QueryType = queries[0].name, queries[0].queryType
 		}
@@ -379,7 +379,7 @@ func (counts *traceDNSCounts) observe(event captureEvent) {
 	if traceDNSError(event.Event) {
 		counts.Errors++
 	}
-	counts.answered += event.answered
+	counts.answered += event.Answered
 	counts.latency.observe(event.LatencyMS)
 	counts.network.observe(event.NetworkMS)
 }

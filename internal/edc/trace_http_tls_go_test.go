@@ -37,7 +37,7 @@ func TestTraceTLSGoSentinelUsesSectionNames(t *testing.T) {
 }
 
 func TestTraceTLSGoVersionsAreExact(t *testing.T) {
-	want := []string{"go1.21.5", "go1.23.7", "go1.23.8", "go1.23.12", "go1.25.0", "go1.26.5", "go1.26.8", "go1.27.1", "go1.27.3"}
+	want := []string{"go1.21.5", "go1.23.4", "go1.23.7", "go1.23.8", "go1.23.12", "go1.25.0", "go1.26.4", "go1.26.5", "go1.26.7", "go1.26.8", "go1.26.10", "go1.27.1", "go1.27.3", "go1.27.4"}
 	if len(traceTLSGoVersions) != len(want) {
 		t.Fatalf("supported versions=%v", traceTLSGoVersions)
 	}
@@ -46,9 +46,27 @@ func TestTraceTLSGoVersionsAreExact(t *testing.T) {
 			t.Errorf("missing supported version %s", version)
 		}
 	}
-	for _, version := range []string{"go1.21.4", "go1.21.6", "go1.23.6", "go1.23.9", "go1.23.13", "go1.26.4", "go1.26.6", "go1.27.2", "go1.27.4", "devel go1.28", "custom"} {
+	for _, version := range []string{"go1.21.4", "go1.21.6", "go1.23.3", "go1.23.5", "go1.23.6", "go1.23.9", "go1.23.13", "go1.26.3", "go1.26.6", "go1.26.9", "go1.26.11", "go1.27.2", "go1.27.5", "devel go1.28", "custom"} {
 		if traceTLSGoVersions[version] {
 			t.Errorf("accepted unsupported version %s", version)
+		}
+	}
+}
+
+func TestTraceTLSGoSupportedAcceptsOnlyBoringCrypto(t *testing.T) {
+	for version := range traceTLSGoVersions {
+		for _, accepted := range []string{version, version + "-X:boringcrypto", version + " X:boringcrypto"} {
+			if !traceTLSGoSupported(accepted) {
+				t.Errorf("rejected %q", accepted)
+			}
+		}
+	}
+	for _, version := range []string{
+		"go1.27.2-X:boringcrypto", "go1.27.2 X:boringcrypto", "go1.27.1-X:jsonv2", "go1.27.1-X:boringcrypto,jsonv2", "go1.27.1-X:jsonv2,boringcrypto",
+		"go1.27.1-X:boringcrypto-X:boringcrypto", "go1.27.1X:boringcrypto", "go1.27.1-X:boringcrypto ", "-X:boringcrypto", " X:boringcrypto", "",
+	} {
+		if traceTLSGoSupported(version) {
+			t.Errorf("accepted %q", version)
 		}
 	}
 }
@@ -77,6 +95,11 @@ func TestTraceTLSGoBuildVersion(t *testing.T) {
 	file := traceTLSGoBuildInfoFixture("go1.23.12")
 	if version, err := traceTLSGoBuildVersion(file); err != nil || version != "go1.23.12" {
 		t.Fatalf("version=%q error=%v", version, err)
+	}
+	for _, want := range []string{"go1.27.1-X:boringcrypto", "go1.25.0 X:boringcrypto", "go1.27.1-X:boringcrypto,jsonv2"} {
+		if version, err := traceTLSGoBuildVersion(traceTLSGoBuildInfoFixture(want)); err != nil || version != want {
+			t.Errorf("version=%q want=%q error=%v", version, want, err)
+		}
 	}
 	for _, tc := range []struct {
 		name string

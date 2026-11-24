@@ -15,12 +15,14 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | Inspect a host and its resource use | `edc info`, `edc top` | [Host information](docs/host.md#host-information), [dashboard](docs/monitoring.md#top-dashboard) |
 | Find what is broken now | `edc check`, `edc check --group <group>` | [Health check](docs/host.md#health-check-linux-and-macos), [check routines](docs/host.md#check-routines) |
 | Find a file by name | `edc find`, `edc find nginxconf /etc` | [Find files](docs/monitoring.md#find-files) |
+| Read config files and code with color | `edc cat .env.*`, `edc cat --mask .env` | [Read files](docs/monitoring.md#read-files) |
 | Find where disk space goes | `edc du /var`, `edc clean` | [Directory usage](docs/disk-usage.md#disk-usage-of-a-directory-linux-and-macos), [known caches](docs/disk-usage.md#known-cache-sizes-linux-and-macos) |
 | Investigate a service or container | `edc svc`, `edc ctr` | [Services](docs/host.md#service-view-linux), [containers](docs/host.md#container-view-linux-and-macos) |
 | Look into one process | `edc proc <pid\|name>` | [Process view](docs/host.md#process-view-linux-and-macos) |
 | See what listens on each port | `edc listen`, `edc listen -B` | [Listening ports](docs/host.md#listening-ports), [socket browser](docs/listen-browse.md) |
 | See scheduled jobs and their last result | `edc jobs` | [Scheduled jobs](docs/host.md#scheduled-jobs-linux-and-macos) |
 | Check a connection | `edc dns lookup example.com`, `edc tcp check example.com:443` | [Network checks](docs/network.md#network-checks), [combined diagnosis](docs/network.md#doctor-live-screen) |
+| Find why HTTP requests are slow | `edc trace why --duration 30s` | [Request breakdown](docs/tracing.md#trace-why) — Linux |
 | Trace application and kernel activity | `edc trace` | [Tracing and packet capture](#tracing-and-packet-capture) — support varies by trace |
 | Record and compare runs | `edc top -w`, `edc history`, `edc log -- <command>` | [Resource history](docs/history.md#top-recordings-and-history), [command logs](docs/history.md#cron-and-application-logs) |
 | Work across hosts | `edc remote`, `edc clean --group <group>` | [Remote recipes](docs/remote.md#remote-recipes), [remote disk survey](docs/disk-usage.md#clean-on-more-hosts) |

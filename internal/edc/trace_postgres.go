@@ -1091,7 +1091,7 @@ func (call *postgresCall) finish(unit *postgresUnit, at uint64) {
 		info.Rows = &rows
 	}
 	event := call.event(name, at, unit.responseBytes, &info)
-	event.LatencyMS, event.answered = traceSpan(unit.at, at), 1
+	event.LatencyMS, event.Answered = traceSpan(unit.at, at), 1
 	call.out = append(call.out, event)
 }
 
@@ -1404,7 +1404,7 @@ func (counts *tracePostgresCounts) observe(event captureEvent) {
 		if event.Event == postgresEventError {
 			counts.Errors++
 		}
-		counts.answered += event.answered
+		counts.answered += event.Answered
 		counts.latency.observe(event.LatencyMS)
 	default:
 		counts.Commands++

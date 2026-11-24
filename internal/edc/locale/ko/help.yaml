@@ -242,6 +242,26 @@ command:
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
       - "edc alias는 ev, evn, evf 같은 짧은 alias를 출력합니다."
       - "--stats는 입력 전체를 한 번 읽어 level이나 status별 수, 상위 예외·path·client·프로그램, 시간 범위를 출력합니다."
+  cat:
+    summary: "파일 위치와 내용을 출력하고 설정 파일과 코드를 색으로 구분"
+    option:
+      numbers: "줄 번호 표시, 파일마다 1부터"
+      recursive: "하위 디렉터리까지 읽음 (.gitignore 적용)"
+      hidden: "디렉터리에서 숨김 파일 포함"
+      no_ignore: "-r에서 .gitignore 규칙을 적용하지 않음"
+      mask: "키와 구조만 남기고 값을 가림"
+      as: "파일 이름 대신 이 형식으로 읽음: yaml, json, go, python, text 등"
+      pager: "터미널에서 출력을 pager로 넘김"
+    notes:
+      - "파일마다 ==> 뒤에 경로, 형식, 크기를 한 줄로 적고 내용을 이어서 출력합니다."
+      - "env, json, yaml, toml, ini 파일은 키, 문자열, 숫자, 주석을 색으로 구분합니다. 그 밖의 소스 코드는 keyword, 문자열, 숫자, 주석을 구분합니다."
+      - "형식은 파일 이름으로 정하고, --as로 바꿀 수 있습니다. 512 KB보다 큰 소스 코드는 색 없이 출력합니다."
+      - "경로 없이 pipe로 받거나 경로에 -를 주면 stdin을 읽습니다. stdin은 이름이 없으므로 --as로 형식을 알려 줍니다."
+      - "디렉터리를 주면 바로 아래 파일을 이름순으로 출력합니다. 숨김 파일은 --hidden, 하위 디렉터리는 -r로 포함합니다."
+      - "binary 파일은 위치 줄만 적고 내용을 생략합니다."
+      - "-p는 터미널에서 출력을 PAGER(기본 less)로 넘깁니다. 한 화면에 들어가면 바로 끝납니다. 기본은 cat처럼 터미널에 바로 씁니다."
+      - "pipe에서는 cat처럼 바이트를 그대로 냅니다. -n은 cat -n과 같은 모양으로 번호를 붙입니다. NO_COLOR에서는 색 없이 위치 줄과 내용을 냅니다."
+      - "--mask는 pipe에서도 값을 가립니다. env, json, yaml, toml, ini가 아닌 입력은 건너뛰고 상태 1로 끝납니다."
   grep:
     summary: "로그, 코드와 파일 경로 검색"
     option:
@@ -470,7 +490,10 @@ command:
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
     summary: "network, I/O, socket, drop, sched, process, syscall, CPU 출력과 요약"
+    tcp_summary: "TCP 연결 수립, 재전송, 연결 지연을 추적합니다"
     option:
+      tcp_group_by: "출발지, 대상, 포트, 프로세스 또는 이벤트별로 묶습니다"
+      tcp_destination: "목적지 호스트와 포트로 필터링합니다"
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       slow: "최소 latency. 예: 20us, 250ms. io/sched 기본 1ms"
       raw: "raw event JSONL 출력"
@@ -479,13 +502,17 @@ command:
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
       destination: "destination host와 port로 필터. dns는 조회 이름의 도메인으로도 필터"
       detail: "요약에 연결이나 flow를 하나씩 표시"
-      yes: "확인 질문 생략"
+      yes: "대화형 TLS 추적 시작 확인 생략"
+      cpu_yes: "호환성 옵션. CPU 추적은 확인 없이 시작합니다"
       side: "http와 DB trace는 두 쪽, dns는 client 쪽"
       payload: "http, socket: 앞 4KiB. =all: 1MiB까지"
       show_secrets: "http: 가린 header. DB: SQL, redis 값"
+      stats_only: "http: event 없이 그룹별 누적 통계만, payload 없음"
+      with: "why: mysql, postgres, redis도 함께 기록. 이름:port로 서버 port 지정"
+      out: "why: 기록을 둘 디렉터리. 기본값: ./edc-why-<시각>"
       tls: "TLS 평문. HTTP: 기본 자동 탐지. macOS MySQL/Redis: 명시적으로 사용. =경로: 파일 하나"
       tls_keylog: "macOS http: SSLKEYLOGFILE 파일로 TLS 복호화"
-      port: "http: 이 port만. DB: 서버 port"
+      port: "http: 이 port만. DB: 서버 port. why: 이 로컬 port로 온 요청만"
       http_port: "clickhouse: HTTP port, 기본 8123"
       container: "이 docker container만, 이름이나 ID"
       reason: "trace drop: 이 이유만, 쉼표로 구분"
@@ -495,6 +522,7 @@ command:
       errors: "trace syscall: 실패한 호출 출력. all이나 errno 이름"
       files: "trace syscall: 파일 표. 기본 켜짐, --slow나 --errors와 함께면 --files 필요"
       no_files: "trace syscall: 파일 표 생략"
+      fd_path: "trace syscall: 이벤트의 FD를 호스트 procfs에서 조회. --slow나 --errors, 상세 텍스트나 --raw 필요"
       all: "trace syscall: 표의 모든 행 출력. 기본은 앞의 행만"
       denied: "trace priv: 거부된 capability 검사만"
       frequency: "trace cpu: CPU마다 1초에 샘플링할 횟수, 기본 99"
@@ -559,6 +587,7 @@ command:
         - "예: trace http --side server --port 8080은 로컬 서버 하나만 봅니다."
         - "Authorization, Proxy-Authorization, Cookie, Set-Cookie 값은 가립니다."
         - "X-Api-Key, X-Goog-Api-Key, Api-Key, X-Amz-Security-Token 값도 가립니다."
+        - "--stats-only는 event를 보관하지 않고 그룹별 누적 수와 초당 rate만 1초마다 그립니다. 기본 보기는 path입니다."
       mysql:
         - "trace mysql은 Linux 5.15 이상과 macOS에서 평문 MySQL 명령과 결과를 표시합니다."
         - "두 쪽을 모두 표시합니다. 행 앞에 client: 또는 server:가 붙습니다."
@@ -638,6 +667,7 @@ command:
         - "trace syscall -- <명령>은 명령을 실행해 끝날 때까지 그 명령과 자식 process의 호출을 세고, 명령의 종료 코드를 돌려줍니다."
         - "trace syscall은 process가 열고 쓰고 지우고 옮기고 찾았지만 없었던 파일도 표로 보여 줍니다. 파일을 바꾼 행이 먼저 나옵니다. --no-files로 끄고, --all로 모든 행을 봅니다."
         - "trace syscall은 조건이 5초 이상 이어지면 event로 남깁니다: 같은 호출이 초당 100번 실패(error loop), 한 경로의 호출이 ENOENT나 ENOTDIR로 초당 50번 실패(missing path), 한 호출이 평소의 10배로 증가(call spike)."
+        - "완료된 호출이 구간마다 20개 이상이고 평균 지연이 2ms 및 평소의 네 배 이상인 상태가 5초간 이어지면 latency spike를 기록합니다."
         - "trace syscall --process는 PID나 정확한 command 이름(최대 15 byte)만 받습니다."
       priv:
         - "trace priv는 capability 검사, uid와 gid 변경, module 적재를 보여 줍니다."
@@ -647,8 +677,20 @@ command:
         - "trace cpu는 CPU마다 stack을 샘플링해 CPU를 많이 쓴 함수를 보여 줍니다."
       lock:
         - "trace lock은 kernel lock 경합과 주소별 futex 기다림을 보여 줍니다."
+      why:
+        - "trace why는 Linux에서 http, dns, tcp를 함께 기록한 뒤 HTTP 요청마다 시간이 어디에 쓰였는지 보여 줍니다."
+        - "행 하나는 로컬 서버가 받은 요청의 process와 경로입니다. 그 아래 행은 그 요청의 호출입니다: DNS 질의, 나가는 HTTP 요청, DB 명령."
+        - "같은 process가 한 호출이고 그 요청이 처리되는 동안 시작하고 끝났으면 그 요청의 호출로 봅니다."
+        - "(ambiguous)는 요청 시간 중 어느 요청의 것인지 가릴 수 없는 호출만 덮는 시간입니다. 그런 호출은 한 process의 여러 요청이 처리되는 동안 일어나서 어느 요청에도 더하지 않습니다. 한 process가 요청을 많이 동시에 처리할수록 늘어납니다."
+        - "self는 요청 시간 중 어떤 호출에도 들어가지 않는 시간입니다."
+        - "--with로 DB trace를 더합니다. 예: --with mysql,redis:6380. --port는 그 로컬 서버 port로 온 요청만 남깁니다."
+        - "--process는 모든 trace를 그 process로 제한합니다. 바쁜 host에서 쓰십시오."
+        - "모든 trace가 기록한 시간대만 비교합니다. trace 하나가 실패하면 중단하고 분석을 내지 않습니다."
+        - "기록은 디렉터리에 남습니다. edc trace show <dir>로 같은 분석을 다시 봅니다. HTTP payload는 기록하지 않습니다."
       show:
         - "trace show <raw.jsonl>은 저장한 --raw 파일의 요약을 root 없이 냅니다."
+        - "파일을 여러 개 넘기면 공통 이벤트 시간대(UTC)와 파일별 요약을 표시합니다. 이때 --process, --destination, -d를 사용할 수 있습니다."
+        - "trace why 디렉터리 하나만 넘기면 그 분석을 다시 냅니다."
   ai:
     summary: "AI 코딩 도구 사용량과 리셋 시각"
     option:

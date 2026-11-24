@@ -404,6 +404,27 @@ func TestHTTPSplitStartsJoinARequestLineReadInTwoParts(t *testing.T) {
 	}
 }
 
+// Go net/http 서버는 다음 요청의 첫 1 byte를 따로 읽는다. BPF는 이 byte를 짧은 첫 조각으로 넘기고, 응답은 이 요청과
+// 짝지어 응답 시간을 얻어야 한다.
+func TestHTTPSplitStartsJoinARequestWhoseFirstByteWasReadAlone(t *testing.T) {
+	starts, tracker := httpSplitStarts{}, newHTTPTracker(traceServerSide, false, false)
+	if _, ok := starts.join(httpTestPacket("G", 1_000_000, false)); ok {
+		t.Fatal("a one-byte start came out")
+	}
+	joined, ok := starts.join(httpChunk("ET /ok HTTP/1.1\r\nHost: app:8080\r\n\r\n", 1_000_100, false, 1))
+	if !ok {
+		t.Fatal("the rest of the request was not joined")
+	}
+	request, ok := tracker.event(joined, 0)
+	if !ok || request.Event != traceHTTPRequestEvent || request.Method != "GET" || request.Path != "/ok" {
+		t.Fatalf("request = %+v, %t", request, ok)
+	}
+	response, ok := tracker.event(httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 301_000_000, true), 0)
+	if !ok || response.Path != "/ok" || response.Answered != 1 || response.LatencyMS == nil || *response.LatencyMS != 300 {
+		t.Fatalf("response = %+v, %t", response, ok)
+	}
+}
+
 // 연결이 끝나면 기다리던 첫 조각을 지운다. 같은 주소를 쓰는 새 연결의 조각이 같은 위치로 와도 잇지 않는다.
 func TestHTTPSplitStartsForgetAClosedSocket(t *testing.T) {
 	starts := httpSplitStarts{}

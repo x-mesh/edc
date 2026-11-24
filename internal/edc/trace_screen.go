@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -117,6 +118,9 @@ type traceScreenModel struct {
 	mysqlRowIndex     map[int]int
 	mysqlPending      map[traceMySQLPairKey][]int
 	mysqlPendingKey   map[int]traceMySQLPairKey
+	// stats는 --stats-only 화면이 읽는 누적 집계이고, statsSnapshot은 마지막으로 읽은 보고서다. stats가 nil이면 event 화면이다.
+	stats         *traceStatsSource
+	statsSnapshot traceStatsSnapshot
 }
 
 type traceScreenRow struct {
@@ -424,6 +428,9 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 }
 
 func (model traceScreenModel) Init() tea.Cmd {
+	if model.stats != nil {
+		return tea.Batch(waitTraceMessage(model.eventCh, model.resultCh), traceStatsTick())
+	}
 	return waitTraceMessage(model.eventCh, model.resultCh)
 }
 
@@ -678,6 +685,12 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case traceStopMsg:
 		cmd := model.requestStop()
 		return model, cmd
+	case traceStatsTickMsg:
+		if model.stopping || model.finished != nil {
+			return model, nil
+		}
+		model.refreshStats(value.at)
+		return model, traceStatsTick()
 	case traceStopTickMsg:
 		if !model.stopping || model.finished != nil || value.sequence != model.stopTick {
 			return model, nil
@@ -734,6 +747,9 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	}
 	if model.stopping {
 		return model, nil
+	}
+	if model.stats != nil {
+		return model.updateStatsKey(key.String())
 	}
 	if model.detail != nil {
 		return model.updateDetailKey(key.String())
@@ -901,10 +917,17 @@ func traceScreenHelp(protocol string) string {
 	return strings.Join(append(keys, "l live", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
+func (model traceScreenModel) helpText() string {
+	if model.stats != nil {
+		return traceStatsHelp(model.protocol)
+	}
+	return traceScreenHelp(model.protocol)
+}
+
 // helpOn은 키 안내에서 지금 켜진 묶음이다. 지금 보기와 i, f, v, m으로 켠 상태다.
 // 미리 보기는 event 목록에서만 그리므로, 다른 보기에서는 split이 켜져 있어도 칠하지 않는다.
 func (model traceScreenModel) helpOn() []string {
-	on := []string{traceViewOn(traceScreenHelp(model.protocol), model.groupBy)}
+	on := []string{traceViewOn(model.helpText(), model.groupBy)}
 	for _, state := range []struct {
 		on   bool
 		hint string
@@ -982,6 +1005,9 @@ func traceScreenHeader(model traceScreenModel) []string {
 	if model.secrets && model.protocol == "http" {
 		status = append(status, traceSeparator, traceText{text: "secrets shown", color: richYellow})
 	}
+	if model.stats != nil {
+		status = []traceText{{text: "live · stats only", color: richGreen}}
+	}
 	if model.stopping {
 		status = []traceText{{text: "stopping", color: richYellow}}
 	}
@@ -1027,7 +1053,7 @@ func traceScreenHeader(model traceScreenModel) []string {
 	line = append(line, traceSeparator)
 	line = append(line, traceField("filter ", filter, "")...)
 	color := traceScreenColor()
-	help := traceKeyHints(traceScreenHelp(model.protocol), model.width, color, model.helpOn()...)
+	help := traceKeyHints(model.helpText(), model.width, color, model.helpOn()...)
 	if model.filtering {
 		help = traceFilterHints(model.input.View(), model.width, color)
 	}
@@ -1269,6 +1295,9 @@ func traceScreenPadRows(rows []string, available int) []string {
 }
 
 func (model traceScreenModel) groupReport() traceGroupReport {
+	if model.stats != nil {
+		return model.statsSnapshot.report
+	}
 	filtered := make([]captureEvent, 0, len(model.events))
 	for _, event := range model.events {
 		if traceEventMatchesText(event, model.filter) {
@@ -1838,6 +1867,15 @@ func traceRuneIndex(value string, count int) int {
 // traceScreenScope는 전체 화면이 모을 범위다. trace http와 trace socket은 --payload가 없어도 message나 호출의
 // 앞부분을 모은다. 옵션을 늘리지 않고 Enter와 v로 바로 보려는 것이다. 인증 header는 원문으로 두고 그릴 때 가려서
 // m으로 풀 수 있게 한다. 파이프와 --raw 출력은 이 범위를 쓰지 않는다.
+// traceScreenCaptureScope는 화면이 수집할 범위다. 통계 화면은 줄 출력의 --group-by처럼 payload와 진행 중 message를
+// 수집하지 않는다.
+func traceScreenCaptureScope(protocol string, options tcpTraceOptions) traceScope {
+	if options.statsOnly {
+		return options.scope(protocol)
+	}
+	return traceScreenScope(protocol, options)
+}
+
 func traceScreenScope(protocol string, options tcpTraceOptions) traceScope {
 	scope := options.scope(protocol)
 	switch protocol {
@@ -1859,7 +1897,8 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
-	if os.Getenv("GOGC") == "" {
+	// 통계 화면은 tick마다 보고서 하나만 만들어 할당이 적다. GC를 늦추면 쓰레기만 쌓여 메모리를 아끼려는 뜻과 어긋난다.
+	if os.Getenv("GOGC") == "" && !options.statsOnly {
 		debug.SetGCPercent(traceScreenGCPercent)
 	}
 	eventCh := make(chan captureEvent, 256)
@@ -1871,13 +1910,18 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
 	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
 	aggregate.useLocalDNS()
+	stats := newTraceStatsSource(aggregate, started)
 	go func() {
-		summary, err := collectTraceEventsLive(traceScreenScope(protocol, options), options.duration, func(event captureEvent) error {
+		summary, err := collectTraceEventsLive(traceScreenCaptureScope(protocol, options), options.duration, func(event captureEvent) error {
 			if event.TLSNotice == "" && (traceProtocol(event) != protocol || !options.matches(event)) {
 				return nil
 			}
 			if event.TLSNotice == "" {
-				aggregate.observe(event)
+				stats.observe(event)
+				// 통계 화면은 집계만 읽는다. event를 화면에 넘기면 그 event를 보관하게 된다.
+				if options.statsOnly {
+					return nil
+				}
 			}
 			select {
 			case eventCh <- event:
@@ -1889,6 +1933,10 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		resultCh <- traceFinishedMsg{summary: summary, err: err}
 	}()
 	model := newTraceScreenModel(protocol, options, eventCh, resultCh, stopCapture)
+	if options.statsOnly {
+		model.stats = stats
+		model.refreshStats(started)
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	// bubbletea의 signal 처리기는 SIGINT를 중단 오류로, SIGTERM을 즉시 종료로 끝내서 수집 결과를 받기 전에
@@ -1917,12 +1965,13 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		return 1
 	}
 	printTraceTLSExecProblem(result.summary)
+	result.summary.TraceOS = runtime.GOOS
 	duration := options.duration
 	if duration == 0 || screen.stopping || ctx.Err() != nil {
 		duration = time.Since(started)
 	}
 	if screen.groupBy != "" {
-		printTraceGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration))
+		aggregate.printGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration), result.summary, duration)
 		return 0
 	}
 	aggregate.summary.summarize(result.summary, duration).print(options.detail)

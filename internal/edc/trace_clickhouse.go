@@ -716,7 +716,7 @@ func (call *clickHouseCall) respond(name string, info traceClickHouseEvent) {
 	info.User, info.Database = cmp.Or(info.User, request.User), cmp.Or(info.Database, request.Database)
 	info.ClientName, info.ClientVersion = request.ClientName, request.ClientVersion
 	event := call.event(name, call.record.size, &info)
-	event.LatencyMS, event.answered = traceSpan(pending.at, call.record.bootTimeNS), 1
+	event.LatencyMS, event.Answered = traceSpan(pending.at, call.record.bootTimeNS), 1
 	conn.pending = nil
 	conn.flow = clickHouseFlow{}
 	call.out = append(call.out, event)
@@ -1387,7 +1387,7 @@ func (counts *traceClickHouseCounts) observe(event captureEvent) {
 			counts.Errors++
 		}
 		if info != nil && info.Command == clickHouseCommandQuery {
-			counts.answered += event.answered
+			counts.answered += event.Answered
 			counts.latency.observe(event.LatencyMS)
 		}
 	}

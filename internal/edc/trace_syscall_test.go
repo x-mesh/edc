@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -282,12 +283,12 @@ func TestSyscallLiveViewFitsTheScreenHeight(t *testing.T) {
 		files                 bool
 		rows, inFlight, shown int
 	}{
-		{24, false, 11, 2, 0},
+		{24, false, 10, 2, 0},
 		{60, false, syscallTraceRows, 8, 0},
 		{8, false, 1, 0, 0},
-		{24, true, 8, 0, 4},
-		{40, true, 12, 4, 8},
-		{60, true, syscallTraceRows, 8, 14},
+		{24, true, 7, 0, 4},
+		{40, true, 12, 4, 7},
+		{60, true, syscallTraceRows, 7, 14},
 	} {
 		view := syscallLiveView(test.height, test.files, 0)
 		if view.rows != test.rows || view.inFlight != test.inFlight || view.files != test.shown || !view.live {
@@ -308,8 +309,11 @@ func TestSyscallLiveViewFitsTheScreenHeight(t *testing.T) {
 
 func TestSyscallLiveRenderShowsRateAndCtrlC(t *testing.T) {
 	var output bytes.Buffer
-	syscallReportFor(syscallTestCollection(), "").render(&output, syscallView{rows: 5, inFlight: 5, live: true, rate: 1234.4})
-	for _, want := range []string{"rate 1234/s", "IN FLIGHT", "Ctrl-C stops and prints the final table"} {
+	collection := syscallTestCollection()
+	collection.summary.Entered, collection.summary.Returned = 9, 7
+	collection.inFlight = append(collection.inFlight, syscallInFlightSample{Process: "api", Syscall: "read", PID: 42, TID: 43, ElapsedNS: uint64(time.Hour)})
+	syscallReportFor(collection, "").render(&output, syscallView{rows: 5, inFlight: 5, live: true, rate: 1234.4})
+	for _, want := range []string{"rate 1234/s", "IN FLIGHT", "42/43", "entered 9", "returned 7", "Ctrl-C stops and prints the final table"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("live output lacks %q:\n%s", want, output.String())
 		}
@@ -324,13 +328,37 @@ func TestSyscallLiveRenderShowsRateAndCtrlC(t *testing.T) {
 	}
 }
 
+func TestSyscallProcessStatusFollowsTheHeadline(t *testing.T) {
+	const status = "PROCESS FILTER AT START  2 visible matches"
+	var final bytes.Buffer
+	syscallReportFor(syscallTestCollection(), "").render(&final, syscallView{rows: 5, processStatus: status})
+	lines := strings.Split(final.String(), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], "SYSCALL TRACE") || lines[1] != status {
+		t.Errorf("final table does not put the status below the headline:\n%s", final.String())
+	}
+
+	file, err := os.CreateTemp(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	newSyscallSnapshotHandler(file, "", nil, nil, true, status)(syscallTestCollection())
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), status) {
+		t.Errorf("live frame lacks the process status:\n%s", data)
+	}
+}
+
 func TestSyscallLiveWriterRedrawsWithTheCallRate(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "live")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	write := newSyscallSnapshotHandler(file, "", nil, nil, true)
+	write := newSyscallSnapshotHandler(file, "", nil, nil, true, "")
 	first := syscallTestCollection()
 	first.summary.DurationMS = 1000
 	write(first)
@@ -647,6 +675,107 @@ func TestSnapshotIntervalFallsBackToTheDefault(t *testing.T) {
 	} {
 		if got := (syscallTraceOptions{liveInterval: test.given}).snapshotInterval(); got != test.want {
 			t.Errorf("%s: interval = %s, want %s", test.name, got, test.want)
+		}
+	}
+}
+
+func TestSyscallFDTargetUsesTheTracingThreadsCurrentDescriptor(t *testing.T) {
+	root := t.TempDir()
+	threadFDs := filepath.Join(root, "19", "fd")
+	if err := os.MkdirAll(threadFDs, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := "/fixture/database.wal"
+	if err := os.Symlink(target, filepath.Join(threadFDs, "0")); err != nil {
+		t.Fatal(err)
+	}
+	fd := int32(0)
+	event := syscallEvent{PID: 7, TID: 19, Syscall: "fsync", FD: &fd}
+	event.lookupFDTarget(root)
+	if event.FDTargetAtRead != target || event.FDTargetUnavailable || !strings.Contains(event.line(), "fd_target_at_read="+target) {
+		t.Fatalf("event = %+v, line = %q", event, event.line())
+	}
+	for _, event := range []syscallEvent{
+		{PID: 7, TID: 19, Syscall: "close", FD: &fd},
+		{PID: 7, TID: 19, Syscall: "fsync", Errno: "EBADF", FD: &fd},
+		{PID: 7, TID: 20, Syscall: "fsync", FD: &fd},
+	} {
+		event.lookupFDTarget(root)
+		if event.FDTargetAtRead != "" || !event.FDTargetUnavailable {
+			t.Errorf("event = %+v, want unavailable", event)
+		}
+	}
+}
+
+func TestSyscallFDTargetRootNeedsTheHostPIDNamespace(t *testing.T) {
+	for _, test := range []struct {
+		namespace string
+		host      bool
+	}{{auditHostPIDNamespace, true}, {"pid:[4026532000]", false}, {"", false}} {
+		root := t.TempDir()
+		if test.namespace != "" {
+			if err := os.MkdirAll(filepath.Join(root, "1", "ns"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(test.namespace, filepath.Join(root, "1", "ns", "pid")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := ""
+		if test.host {
+			want = root
+		}
+		if got := syscallFDTargetRoot(root); got != want {
+			t.Errorf("namespace %q: root = %q, want %q", test.namespace, got, want)
+		}
+	}
+}
+
+func TestSyscallFDTargetEventsLookUpOnlyDetailedEvents(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "19", "fd"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := "/fixture/database.wal"
+	if err := os.Symlink(target, filepath.Join(root, "19", "fd", "3")); err != nil {
+		t.Fatal(err)
+	}
+	fd := int32(3)
+	var got []syscallEvent
+	onEvent := syscallFDTargetEvents(root, func(event syscallEvent) error {
+		got = append(got, event)
+		return nil
+	})
+	for _, reason := range []uint8{syscallReasonLine, syscallReasonFile, syscallReasonLine | syscallReasonFile} {
+		if err := onEvent(syscallEvent{TID: 19, Syscall: "fsync", FD: &fd, Reason: reason}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("passed %d events, want 3", len(got))
+	}
+	for _, event := range got {
+		want := ""
+		if event.Reason&syscallReasonLine != 0 {
+			want = target
+		}
+		if event.FDTargetAtRead != want || event.FDTargetUnavailable {
+			t.Errorf("reason %d: target %q unavailable %t, want %q", event.Reason, event.FDTargetAtRead, event.FDTargetUnavailable, want)
+		}
+	}
+	wantErr := errors.New("write failed")
+	if err := syscallFDTargetEvents(root, func(syscallEvent) error { return wantErr })(syscallEvent{Reason: syscallReasonLine}); err != wantErr {
+		t.Errorf("error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestSyscallFDPathRequiresDetailedOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"--fd-path"},
+		{"--fd-path", "--slow", "2ms", "--json", "-"},
+	} {
+		if code := runTraceSyscall(args); code != 2 {
+			t.Errorf("args %v returned %d, want 2", args, code)
 		}
 	}
 }

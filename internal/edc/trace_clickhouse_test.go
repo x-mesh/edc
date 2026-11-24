@@ -194,7 +194,7 @@ func TestClickHouseTrackerPairsHandshakeQueryAndFinalWriteOnBothSides(t *testing
 		if info := connect.ClickHouse; connect.Event != "clickhouse_connect" || connect.Protocol != "clickhouse" || connect.Side != side || info.Command != "connect" || info.ClientName != "ClickHouse client" || info.ClientVersion != "26.9" || info.Revision != 54492 || info.User != "edc" || info.Database != "" {
 			t.Fatalf("connect = %#v %#v", connect, info)
 		}
-		if info := hello.ClickHouse; hello.Event != "clickhouse_hello" || hello.answered != 1 || hello.LatencyMS == nil || *hello.LatencyMS != 1.5 || info.Command != "connect" || info.ServerName != "ClickHouse" || info.ServerVersion != "26.9" || info.Revision != 54492 || info.User != "edc" {
+		if info := hello.ClickHouse; hello.Event != "clickhouse_hello" || hello.Answered != 1 || hello.LatencyMS == nil || *hello.LatencyMS != 1.5 || info.Command != "connect" || info.ServerName != "ClickHouse" || info.ServerVersion != "26.9" || info.Revision != 54492 || info.User != "edc" {
 			t.Fatalf("hello = %#v %#v", hello, info)
 		}
 		query := clickHouseOnly(t, conn.request(10_000_000, clickHouseFixture(t, "client_query")))
@@ -202,7 +202,7 @@ func TestClickHouseTrackerPairsHandshakeQueryAndFinalWriteOnBothSides(t *testing
 			t.Fatalf("query = %#v %#v", query, query.ClickHouse)
 		}
 		end := clickHouseOnly(t, conn.response(1_010_000_000, clickHouseFixture(t, "server_select_final")))
-		if info := end.ClickHouse; end.Event != "clickhouse_end" || end.answered != 1 || end.LatencyMS == nil || *end.LatencyMS != 1000 || info.Command != "query" || info.SQL != "SELECT sleep(1)" || info.EndInferred || info.Rows == nil || *info.Rows != 1 {
+		if info := end.ClickHouse; end.Event != "clickhouse_end" || end.Answered != 1 || end.LatencyMS == nil || *end.LatencyMS != 1000 || info.Command != "query" || info.SQL != "SELECT sleep(1)" || info.EndInferred || info.Rows == nil || *info.Rows != 1 {
 			t.Fatalf("end = %#v %#v", end, end.ClickHouse)
 		}
 		// 질의가 끝난 뒤의 byte는 짝 없이 사라진다.
@@ -271,7 +271,7 @@ func TestClickHouseTrackerInfersTheEndWhenEndOfStreamIsOutsideTheCapture(t *test
 			conn.request(10_000_000, clickHouseFixture(t, tc.query))
 			final := clickHouseFixture(t, tc.fixture)
 			end := clickHouseOnly(t, conn.responseCut(30_000_000, final, tc.keep))
-			if end.Event != "clickhouse_end" || !end.ClickHouse.EndInferred || end.ClickHouse.Rows == nil || end.LatencyMS == nil || *end.LatencyMS != 20 || end.answered != 1 {
+			if end.Event != "clickhouse_end" || !end.ClickHouse.EndInferred || end.ClickHouse.Rows == nil || end.LatencyMS == nil || *end.LatencyMS != 20 || end.Answered != 1 {
 				t.Fatalf("%s keep %d: end = %#v %#v", tc.fixture, tc.keep, end, end.ClickHouse)
 			}
 		}
@@ -303,7 +303,7 @@ func TestClickHouseTrackerReadsExceptionsCompleteOrCut(t *testing.T) {
 		conn.request(10_000_000, clickHouseFixture(t, "client_query"))
 		exception := clickHouseOnly(t, conn.responseCut(15_000_000, clickHouseFixture(t, "server_exception"), keep))
 		info := exception.ClickHouse
-		if exception.Event != "clickhouse_exception" || exception.answered != 1 || exception.LatencyMS == nil || *exception.LatencyMS != 5 || info.ErrorCode != 60 || info.ErrorName != "DB::Exception" || !strings.Contains(info.Message, "Unknown table") || info.Command != "query" || info.SQL != "SELECT sleep(1)" {
+		if exception.Event != "clickhouse_exception" || exception.Answered != 1 || exception.LatencyMS == nil || *exception.LatencyMS != 5 || info.ErrorCode != 60 || info.ErrorName != "DB::Exception" || !strings.Contains(info.Message, "Unknown table") || info.Command != "query" || info.SQL != "SELECT sleep(1)" {
 			t.Fatalf("keep %d: exception = %#v", keep, info)
 		}
 	}
@@ -311,7 +311,7 @@ func TestClickHouseTrackerReadsExceptionsCompleteOrCut(t *testing.T) {
 	conn := newClickHouseTestConn(t, false, "", false)
 	conn.request(1_000_000, clickHouseFixture(t, "client_hello"))
 	exception := clickHouseOnly(t, conn.response(2_000_000, chException(516, "DB::Exception", "edc: Authentication failed")))
-	if exception.Event != "clickhouse_exception" || exception.ClickHouse.Command != "connect" || exception.ClickHouse.ErrorCode != 516 || exception.answered != 1 {
+	if exception.Event != "clickhouse_exception" || exception.ClickHouse.Command != "connect" || exception.ClickHouse.ErrorCode != 516 || exception.Answered != 1 {
 		t.Fatalf("auth failure = %#v", exception.ClickHouse)
 	}
 	if events := conn.request(3_000_000, clickHouseFixture(t, "client_query")); len(events) != 0 {
@@ -785,7 +785,7 @@ func TestClickHouseTraceSummaryCountsSidesAndShapes(t *testing.T) {
 func TestClickHouseTraceSummaryShowsInterfaceColumnOnlyWhenMixed(t *testing.T) {
 	httpEvent := func(name string, latency *float64, info traceClickHouseEvent) captureEvent {
 		info.Command, info.SQL, info.Interface = clickHouseCommandQuery, "SELECT 1", clickHouseInterfaceHTTP
-		return captureEvent{Protocol: "clickhouse", Event: name, Side: traceServerSide, LatencyMS: latency, ClickHouse: &info, answered: 1}
+		return captureEvent{Protocol: "clickhouse", Event: name, Side: traceServerSide, LatencyMS: latency, ClickHouse: &info, Answered: 1}
 	}
 	latency := 4.0
 	events := []captureEvent{

@@ -183,7 +183,7 @@ func TestClickHouseHTTPFixtureEventFields(t *testing.T) {
 			if query.Event != clickHouseEventQuery || query.ClickHouse.SQL != "SELECT 1" || query.ClickHouse.User != "edc" || query.ClickHouse.Interface != "http" || query.Protocol != "clickhouse" {
 				t.Errorf("%s server=%v small query = %#v", version, server, query.ClickHouse)
 			}
-			if end.ClickHouse.HTTPStatus != 200 || end.ClickHouse.SQL != "SELECT 1" || end.ClickHouse.QueryID == "" || end.ClickHouse.Interface != "http" || end.answered != 1 || end.LatencyMS == nil {
+			if end.ClickHouse.HTTPStatus != 200 || end.ClickHouse.SQL != "SELECT 1" || end.ClickHouse.QueryID == "" || end.ClickHouse.Interface != "http" || end.Answered != 1 || end.LatencyMS == nil {
 				t.Errorf("%s server=%v small end = %#v", version, server, end)
 			}
 			// 요청 첫 record부터 종료 chunk record까지가 latency다.

@@ -1516,7 +1516,7 @@ func (call *redisCall) answer(f redisFrame, pushKind string) {
 		info.BulkLength = &f.count
 	}
 	traced := call.event(name, f.at, f.bytes, info)
-	traced.LatencyMS, traced.answered = traceSpan(pending.at, f.at), 1
+	traced.LatencyMS, traced.Answered = traceSpan(pending.at, f.at), 1
 	call.out = append(call.out, traced)
 }
 
@@ -1551,7 +1551,7 @@ func (counts *traceRedisCounts) observe(event captureEvent) {
 		if event.Event == redisEventError {
 			counts.Errors++
 		}
-		counts.answered += event.answered
+		counts.answered += event.Answered
 		counts.latency.observe(event.LatencyMS)
 	case redisEventPush:
 		counts.Pushes++

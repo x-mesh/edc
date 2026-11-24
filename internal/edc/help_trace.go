@@ -10,11 +10,11 @@ import (
 var traceNoteGroups = []string{
 	"screen", "grouped", "stop", "raw", "slow", "container", "flow", "side", "dns", "arp", "ndp", "http",
 	"mysql", "clickhouse", "postgres", "redis", "socket", "drop", "io", "sched", "exec", "syscall", "priv",
-	"reclaim", "cpu", "lock", "show",
+	"reclaim", "cpu", "lock", "why", "show",
 }
 
 // traceSubDoc는 edc help trace <하위 명령>의 뼈대다. options는 trace 도움말의 option 중 이 하위 명령의 parser가 받는 것이다.
-// --yes와 --live는 받기만 하고 효과가 없어서 넣지 않는다.
+// --live는 받기만 하고 효과가 없어서 넣지 않는다.
 type traceSubDoc struct {
 	name       string
 	usage      string
@@ -42,15 +42,15 @@ func traceScreenSub(name string, options, notes, examples []string) traceSubDoc 
 // 각 parser가 이 option을 받는지 확인한다.
 var traceSubDocs = []traceSubDoc{
 	traceScreenSub("tcp", []string{"container"}, []string{"container", "flow"},
-		[]string{"edc trace tcp", "edc trace tcp --group-by process", "edc trace tcp --process nginx --destination 192.0.2.10:443 --json trace.json"}),
+		[]string{"edc trace tcp --duration 30s --group-by target", "edc trace tcp --duration 30s --destination 192.0.2.10:443 -d", "edc trace tcp --duration 30s --raw > tcp.jsonl"}),
 	traceScreenSub("udp", []string{"container"}, []string{"container", "flow"},
 		[]string{"edc trace udp --duration 15s", "edc trace udp --group-by target"}),
 	traceScreenSub("dns", []string{"side", "container"}, []string{"container", "side", "dns"},
 		[]string{"edc trace dns", "edc trace dns --group-by target", "edc trace dns --process curl --destination 127.0.0.53:53"}),
 	traceScreenSub("arp", nil, []string{"arp"}, []string{"edc trace arp", "edc trace arp --group-by target"}),
 	traceScreenSub("ndp", nil, []string{"arp", "ndp"}, []string{"edc trace ndp", "edc trace ndp --group-by target"}),
-	traceScreenSub("http", []string{"side", "payload", "show-secrets", "tls", "tls-keylog", "port", "container"}, []string{"container", "side", "http"},
-		[]string{"edc trace http", "edc trace http --side server --port 8080", "edc trace http --group-by path", "edc trace http --side server --container web"}),
+	traceScreenSub("http", []string{"yes", "side", "payload", "show-secrets", "stats-only", "tls", "tls-keylog", "port", "container"}, []string{"container", "side", "http"},
+		[]string{"edc trace http", "edc trace http --side server --port 8080", "edc trace http --group-by path", "edc trace http --stats-only --port 8080", "edc trace http --side server --container web"}),
 	traceScreenSub("mysql", []string{"slow", "side", "show-secrets", "tls", "port", "container"}, []string{"slow", "container", "side", "mysql"},
 		[]string{"edc trace mysql", "edc trace mysql --side server --port 3307", "edc trace mysql --slow 250ms"}),
 	traceScreenSub("clickhouse", []string{"slow", "side", "show-secrets", "port", "http-port", "container"}, []string{"slow", "container", "side", "clickhouse"},
@@ -87,9 +87,9 @@ var traceSubDocs = []traceSubDoc{
 	},
 	{
 		name: "syscall", usage: traceSyscallUsage,
-		options:    []string{"duration", "process", "container", "group-by", "json", "syscall", "slow", "errors", "raw", "all", "files", "no-files"},
+		options:    []string{"duration", "process", "container", "group-by", "json", "syscall", "slow", "errors", "raw", "all", "files", "no-files", "fd-path"},
 		noteGroups: []string{"stop", "raw", "slow", "container", "syscall"},
-		examples:   []string{"edc trace syscall --duration 10s", "edc trace syscall -- curl -s https://example.com", "edc trace syscall --process nginx --duration 30s"},
+		examples:   []string{"edc trace syscall --duration 10s", "edc trace syscall -- curl -s https://example.com", "edc trace syscall --process nginx --group-by pid,syscall --duration 30s"},
 	},
 	{
 		name: "priv", usage: tracePrivUsage,
@@ -116,10 +116,16 @@ var traceSubDocs = []traceSubDoc{
 		examples:   []string{"edc trace lock --duration 10s", "edc trace lock --process api --kind futex"},
 	},
 	{
+		name: "why", usage: traceWhyUsage,
+		options:    []string{"duration", "process", "port", "with", "out"},
+		noteGroups: []string{"stop", "why"},
+		examples:   []string{"edc trace why --duration 30s", "edc trace why --port 8080 --with mysql,redis:6380 --duration 30s", "edc trace why --process gunicorn --out incident", "edc trace show incident"},
+	},
+	{
 		name: "show", usage: traceShowUsage,
 		options:    []string{"group-by", "process", "destination", "json", "detail"},
 		noteGroups: []string{"show"},
-		examples:   []string{"edc trace show http.jsonl", "edc trace show http.jsonl --group-by path -d"},
+		examples:   []string{"edc trace show http.jsonl", "edc trace show http.jsonl --group-by path -d", "edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl", "edc trace show edc-why-20261124-220600"},
 	},
 }
 
@@ -146,8 +152,17 @@ func traceSubCommandDoc(name string) (commandDoc, bool) {
 			continue
 		}
 		doc := commandDoc{name: "trace " + sub.name, group: parent.group, usage: []string{sub.usage}, examples: sub.examples, parent: "trace", noteGroups: sub.noteGroups}
+		if name == "tcp" {
+			doc.summaryKey = "command.trace.tcp_summary"
+		}
 		for _, option := range sub.options {
 			if line, ok := traceOptionDoc(parent, option); ok {
+				if name == "cpu" && option == "yes" {
+					line.key = "command.trace.option.cpu_yes"
+				}
+				if name == "tcp" && (option == "group-by" || option == "destination") {
+					line.key = "command.trace.option.tcp_" + strings.ReplaceAll(option, "-", "_")
+				}
 				doc.options = append(doc.options, line)
 			}
 		}

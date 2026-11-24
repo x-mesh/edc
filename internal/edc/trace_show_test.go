@@ -106,6 +106,123 @@ func TestTraceShowReplaysAnHTTPRawFile(t *testing.T) {
 	}
 }
 
+// raw 기록을 다시 읽어도 응답이 답한 요청 수가 남아야 한다. 남지 않으면 모든 요청이 응답 없음으로 보인다.
+func TestTraceShowCountsUnansweredRequestsLikeTheLiveTrace(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tracker := newHTTPTracker("", false, false)
+	var events []any
+	for index, packet := range []httpPacket{
+		httpTestPacket("GET /a HTTP/1.1\r\nHost: api.example\r\n\r\n", 1_000_000, true),
+		httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 3_000_000, false),
+		httpTestPacket("GET /hang HTTP/1.1\r\nHost: api.example\r\n\r\n", 4_000_000, true),
+	} {
+		event, ok := tracker.event(packet, 0)
+		if !ok {
+			t.Fatalf("packet %d made no event", index)
+		}
+		event.Socket = 1
+		events = append(events, event)
+	}
+	output := traceCaptureOutput(t, &os.Stdout, func() { runTraceShow([]string{traceShowWrite(t, "http.jsonl", events...)}) })
+	if !strings.Contains(output, "Unanswered: 1\n") {
+		t.Fatalf("http summary = %q", output)
+	}
+
+	// DNS는 응답 하나가 다시 보낸 질의까지 답한다.
+	latency := 2.0
+	dns := []any{
+		captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "db.internal", QueryType: "A", Destination: "127.0.0.53:53"},
+		captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "db.internal", QueryType: "A", Destination: "127.0.0.53:53"},
+		captureEvent{Protocol: "dns", Event: "dns_noerror", Process: "app", Target: "db.internal", QueryType: "A", Destination: "127.0.0.53:53", LatencyMS: &latency, Answered: 2},
+		captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "lost.internal", QueryType: "A", Destination: "127.0.0.53:53"},
+	}
+	output = traceCaptureOutput(t, &os.Stdout, func() { runTraceShow([]string{traceShowWrite(t, "dns.jsonl", dns...)}) })
+	if !strings.Contains(output, "Unanswered: 1\n") {
+		t.Fatalf("dns summary = %q", output)
+	}
+}
+
+// 요약 줄의 기록 구간은 새 edc만 쓴다. 구간이 없는 예전 파일도 그대로 읽는다.
+func TestTraceShowReadsTheRecordedRangeOfASummary(t *testing.T) {
+	event := captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "db.internal", QueryType: "A"}
+	file, err := openTraceShowFile(traceShowWrite(t, "dns.jsonl", event, captureSummary{Event: "capture_summary", StartBootTimeNS: 5_000, EndBootTimeNS: 9_000}))
+	if err != nil || file.summary.StartBootTimeNS != 5_000 || file.summary.EndBootTimeNS != 9_000 {
+		t.Fatalf("summary = %+v, %v", file.summary, err)
+	}
+	old, err := openTraceShowFile(traceShowWrite(t, "old.jsonl", event, captureSummary{Event: "capture_summary"}))
+	if err != nil || old.summary.StartBootTimeNS != 0 || old.summary.EndBootTimeNS != 0 {
+		t.Fatalf("old summary = %+v, %v", old.summary, err)
+	}
+	line, err := json.Marshal(captureSummary{Event: "capture_summary"})
+	if err != nil || strings.Contains(string(line), "boot_time_ns") {
+		t.Fatalf("a summary without a range wrote %s, %v", line, err)
+	}
+}
+
+// trace why 디렉터리는 why.json이 가리키는 기록만 읽는다. 읽을 수 없으면 디렉터리의 다른 파일로 대신하지 않고 거부한다.
+func TestTraceShowRejectsBadTraceWhyDirectories(t *testing.T) {
+	summary := captureSummary{Event: "capture_summary", TraceProtocol: "http", StartBootTimeNS: 1, EndBootTimeNS: 10_000 * whyTestMS}
+	recording := traceShowWrite(t, "http.jsonl", whyTestRequest(7, "/a", 400, 300), summary)
+	directory := func(manifest string, files ...string) string {
+		path := t.TempDir()
+		if manifest != "" {
+			if err := os.WriteFile(filepath.Join(path, traceWhyManifestName), []byte(manifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data, err := os.ReadFile(recording)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range files {
+			if err := os.WriteFile(filepath.Join(path, name), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return path
+	}
+	good := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`, "http.jsonl")
+	if output := traceCaptureOutput(t, &os.Stdout, func() {
+		if code := runTraceShow([]string{good}); code != 0 {
+			t.Errorf("exit = %d", code)
+		}
+	}); !strings.Contains(output, "GET /a") {
+		t.Fatalf("output = %q", output)
+	}
+	old := traceShowWrite(t, "old.jsonl", whyTestRequest(7, "/a", 400, 300), captureSummary{Event: "capture_summary", TraceProtocol: "http"})
+	oldData, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noRange := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`)
+	if err := os.WriteFile(filepath.Join(noRange, "http.jsonl"), oldData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, test := range map[string]struct {
+		args []string
+		code int
+		want string
+	}{
+		"no manifest":       {[]string{directory("", "http.jsonl")}, 2, traceWhyManifestName},
+		"broken manifest":   {[]string{directory("{", "http.jsonl")}, 2, traceWhyManifestName},
+		"other version":     {[]string{directory(`{"version":2,"traces":[]}`, "http.jsonl")}, 2, "version 2 is not supported"},
+		"missing recording": {[]string{directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"},{"name":"dns","file":"dns.jsonl"}]}`, "http.jsonl")}, 2, "dns.jsonl"},
+		"file outside":      {[]string{directory(`{"version":1,"traces":[{"name":"http","file":"../http.jsonl"}]}`, "http.jsonl")}, 2, "is not a file name in the directory"},
+		"no recorded range": {[]string{noRange}, 1, "has no recorded range"},
+		"with an option":    {[]string{"--group-by", "path", good}, 2, "takes only the directory"},
+		"with a file":       {[]string{good, recording}, 2, "takes only the directory"},
+	} {
+		var code int
+		var stdout string
+		stderr := traceCaptureOutput(t, &os.Stderr, func() {
+			stdout = traceCaptureOutput(t, &os.Stdout, func() { code = runTraceShow(test.args) })
+		})
+		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout, stderr)
+		}
+	}
+}
+
 func TestTraceShowReplaysAnExecRawFile(t *testing.T) {
 	code1, code0 := int32(1), int32(0)
 	short := 50.0
@@ -163,5 +280,99 @@ func TestTraceShowRejectsBadFiles(t *testing.T) {
 		if code := runTraceShow(args); code != 2 {
 			t.Errorf("args %q exit = %d, want 2", args, code)
 		}
+	}
+}
+
+func TestTraceShowComparesNetworkRecordings(t *testing.T) {
+	second := uint64(time.Second)
+	source, peer := "127.0.0.1:40111", "127.0.0.1:443"
+	tcp := traceShowWrite(t, "tcp.jsonl",
+		captureEvent{Protocol: "tcp", Event: "tcp_connect", Socket: 1, TimestampNS: second, Process: "curl", Source: source, Destination: peer},
+		captureEvent{Protocol: "tcp", Event: "tcp_sample", Socket: 1, TimestampNS: 2 * second, TCPValid: 1 | 64, RTTUS: 150, ZeroWindow: 1},
+		captureEvent{Protocol: "tcp", Event: "tcp_retransmit", Socket: 1, TimestampNS: 3 * second},
+		captureEvent{Protocol: "tcp", Event: "tcp_sample", Socket: 1, TimestampNS: 4 * second, TCPValid: 1 | 64, RTTUS: 50},
+	)
+	dns := traceShowWrite(t, "dns.jsonl",
+		captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: 2 * second, Destination: "127.0.0.53:53", Target: "example.com"},
+		captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: 5 * second, Destination: "127.0.0.53:53", Target: "example.org"},
+	)
+	drop := traceShowWrite(t, "drop.jsonl", captureSummary{Event: "capture_summary", TraceProtocol: "drop", TraceOS: "linux"})
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{tcp, dns}, []string{"Shared event time range 1970-01-01T00:00:02Z to 1970-01-01T00:00:04Z", "avg 100us, max 150us, n=2", "Peer advertised a zero window", "Retransmit events observed (1)"}},
+		{[]string{tcp, drop}, []string{"Shared event time range unavailable.", "Drops: 0"}},
+		{[]string{tcp, "--group-by", "target"}, []string{"Highest observed RTT", peer}},
+	} {
+		output := traceCaptureOutput(t, &os.Stdout, func() {
+			if code := runTraceShow(test.args); code != 0 {
+				t.Errorf("exit = %d", code)
+			}
+		})
+		for _, want := range test.want {
+			if !strings.Contains(output, want) {
+				t.Errorf("missing %q in %s", want, output)
+			}
+		}
+	}
+}
+
+func TestTraceShowRejectsBadComparisons(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tcp := traceShowWrite(t, "tcp.jsonl", captureEvent{Protocol: "tcp", Event: "connect", TimestampNS: uint64(time.Second)})
+	dns := traceShowWrite(t, "dns.jsonl", captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: uint64(time.Second), Target: "example.com"})
+	bad := filepath.Join(t.TempDir(), "bad.jsonl")
+	if err := os.WriteFile(bad, []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.jsonl")
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{tcp, dns, "--json", filepath.Join(t.TempDir(), "out.json")}, "accepts --process, --destination and --detail"},
+		{[]string{tcp, dns, "--group-by", "target"}, "accepts --process, --destination and --detail"},
+		{[]string{tcp, "-"}, "requires file paths"},
+		{[]string{"-", tcp}, "requires file paths"},
+		{[]string{tcp, missing}, missing},
+		{[]string{tcp, dns, bad}, bad},
+	} {
+		var stdout string
+		stderr := traceCaptureOutput(t, &os.Stderr, func() {
+			stdout = traceCaptureOutput(t, &os.Stdout, func() {
+				if code := runTraceShow(test.args); code != 2 {
+					t.Errorf("args %q: exit = %d, want 2", test.args, code)
+				}
+			})
+		})
+		if !strings.Contains(stderr, test.want) {
+			t.Errorf("args %q: stderr lacks %q:\n%s", test.args, test.want, stderr)
+		}
+		// 뒤 파일이 실패하면 앞 파일의 보고도 내지 않는다.
+		if stdout != "" {
+			t.Errorf("args %q: printed a partial comparison:\n%s", test.args, stdout)
+		}
+	}
+}
+
+func TestTraceShowRefusesSymbolicLinksInATraceWhyDirectory(t *testing.T) {
+	summary := captureSummary{Event: "capture_summary", TraceProtocol: "http", StartBootTimeNS: 1, EndBootTimeNS: 10_000 * whyTestMS}
+	outside := traceShowWrite(t, "outside.jsonl", whyTestRequest(7, "/a", 400, 300), summary)
+	directory := t.TempDir()
+	manifest := `{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`
+	if err := os.WriteFile(filepath.Join(directory, traceWhyManifestName), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(directory, "http.jsonl")); err != nil {
+		t.Skip(err)
+	}
+	stderr := captureTraceStderr(t, func() {
+		if code := runTraceShow([]string{directory}); code != 2 {
+			t.Fatalf("exit = %d", code)
+		}
+	})
+	if !strings.Contains(stderr, "not a regular file") {
+		t.Fatalf("stderr = %q", stderr)
 	}
 }

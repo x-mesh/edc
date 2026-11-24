@@ -10,7 +10,7 @@ The current UI renderer uses synthetic demo events. The screen shows the split p
 
 `edc help trace` lists every option and note of all traces. `edc help trace <subcommand>`, for example `edc help trace exec`, shows the usage, the options, the notes, and the examples of one trace. `edc trace exec --help` shows the same page.
 
-[Capture](#capture) · [trace tcp / udp](#trace-tcp--udp) · [trace io](#trace-io) · [trace priv](#trace-priv) · [trace sched](#trace-sched) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [trace show](#trace-show) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace ndp](#trace-ndp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace drop](#trace-drop) · [PCAP file](#pcap-file)
+[Capture](#capture) · [trace tcp / udp](#trace-tcp--udp) · [trace io](#trace-io) · [trace priv](#trace-priv) · [trace sched](#trace-sched) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [trace why](#trace-why) · [trace show](#trace-show) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace ndp](#trace-ndp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace drop](#trace-drop) · [PCAP file](#pcap-file)
 
 ## Capture
 
@@ -26,7 +26,7 @@ On Linux, `trace tcp` also reports change-based `tcp_sample` events. These event
 
 `tcp_accept` records TCP handshake completion. `tcp_app_accept` records a successful return from `inet_csk_accept`. It reports the time from child ESTABLISHED to application accept and the listener accept queue values. Failed accepts do not produce `tcp_app_accept`. `ListenDrops` and `ListenOverflows` are network namespace counters. edc does not assign them to one listener.
 
-Use Enter in the terminal view to see raw event JSON. The TCP connection JSON includes the last observed diagnostic values. The text summary shows mean RTT, lost packets, zero-window state, and mean application accept time for each process and peer. Linux 5.15 load and attach verification is not complete.
+Use Enter in the terminal view to see raw event JSON. The TCP connection JSON includes the last observed diagnostic values. The text summary highlights observed handshake, retransmission, zero-window, and app accept signals with the affected process and peer. RTT statistics include the average, maximum, and count of recorded samples. The process and peer summary also includes app accept wait statistics. Linux 5.15 load and attach verification is not complete.
 
 ## trace io
 
@@ -164,17 +164,22 @@ Each row is one process name and one system call. The row shows the calls, the e
 
 Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add the rows over one column. `--process` takes PIDs and command names, separated by commas. edc compares them in the kernel, so a name must be the exact command name of the process, up to 15 bytes. A PID matches all threads of the process. `--container` keeps the calls of one container.
 
+Use `--group-by pid,syscall` to show one row per host PID and system call. Threads of a worker share its PID row. For example, `edc trace syscall --process nginx --group-by pid,syscall` separates workers with the same name. This uses more statistics entries when many processes match.
+
+With `--process`, `PROCESS FILTER AT START` reports how many processes visible in the host’s `/proc` match the name or host PID when edc starts. The check happens before applying `--container`. A match can have zero recorded calls, and a process that starts later can still be traced. The status appears on stderr for non-interactive output. If edc does not run in the host PID namespace, or cannot list `/proc`, the status shows `unavailable` and no count.
+
 To trace a command that ends quickly, put it after `--`. edc starts the command in a new cgroup after the trace is on, so the first call is counted. The calls of the processes that the command starts are counted too. The trace ends when the command ends, and edc returns the exit code of the command. Run it as root. You cannot use `--process`, `--container`, or `--duration` with a command. If cgroup v2 is not available, edc counts only the command itself and prints a warning.
 
-edc also prints a `FILES` table, and the live screen shows it too. Each row is one path. The columns count the opens for reading (`READ`) and writing (`WRITE`), the `mkdir`, `link`, and `symlink` calls and the opens with `O_EXCL` (`CREATE`), the deletes (`DELETE`), the renames (`RENAME`), and the other changes (`OTHER`). A rename row shows the source path. `WRITE` includes the opens that create the file, because the kernel does not tell if an open with `O_CREAT` made the file. `OTHER` also counts the `stat` and `access` calls that failed, so the table shows the files that the process looked for and did not find. The `openat2` calls are in `OTHER`, because edc does not read their flags. The `ERRORS` column shows the number of failed calls and the most frequent errno. A failed open still counts in its column.
+edc also prints a `FILES` table, and the live screen shows it too. Each row is one path. The columns count the opens for reading (`READ`) and writing (`WRITE`), the `mkdir`, `link`, and `symlink` calls and the opens with `O_EXCL` (`CREATE`), the deletes (`DELETE`), the renames (`RENAME`), and the other changes (`OTHER`). A rename row shows the source path. `WRITE` includes the opens that create the file, because the kernel does not tell if an open with `O_CREAT` made the file. `OTHER` also counts the `stat` and `access` calls that failed, so the table shows the files that the process looked for and did not find. `openat2` uses the flags read from `open_how` when the call returns. It goes in `OTHER` if the flags cannot be read. The `ERRORS` column shows the number of failed calls and the most frequent errno. A failed open still counts in its column.
 
 The rows with changes are first. The rows with failed calls are next, and the rows that were only read are last. The table has 20 rows. `--all` shows every row, and `--json` holds all rows in `files`. Use `--no-files` to leave the table out. A trace with `--slow` or `--errors` has no file table unless you add `--files`. edc records at most 10,000 file events for each CPU in each second, and it records at most 10,000 paths. If edc misses events, the table says so.
 
-`trace syscall` also keeps events, as `edc top` does. A condition that holds for 5 seconds becomes an event, and a condition that stops and starts again within 5 seconds stays in the same event. The live screen shows the latest 3 events, and the final output lists all of them with the start time, the duration, the peak per second, and the count. A `●` mark means the condition is still on. `--json` holds them in `events`. There are three kinds:
+`trace syscall` also keeps events, as `edc top` does. A condition that holds for 5 seconds becomes an event, and a condition that stops and starts again within 5 seconds stays in the same event. The live screen shows the latest 3 events, and the final output lists all of them with the start time, the duration, the peak rate or latency, and the count. A `●` mark means the condition is still on. `--json` holds them in `events`. The events are:
 
 - `error loop`: one process fails the same system call with the same errno at least 100 times each second. Errors that are normal in busy programs do not count: `EAGAIN`, `EINTR`, `EINPROGRESS`, the restart errors, `ETIMEDOUT` of `futex`, and `ECHILD` of `wait4`.
 - `missing path`: calls on one path fail with `ENOENT` or `ENOTDIR` at least 50 times each second, for example a `stat` on a file that does not exist. A permission error on a path that exists is not a missing path. This kind uses the file events, so it needs the file table, and the limit of file events applies. The peak can be lower than the real rate.
 - `call spike`: one process calls one system call at least 1,000 times each second, and at least 10 times the average of the last 30 seconds. A process that always calls a lot has no event. The first 5 seconds have no average, so they have no event.
+- `latency spike`: the average duration of completed calls in a snapshot window is at least 2 ms and at least four times the baseline. Each window needs 20 completed calls of that process name and syscall. The baseline averages up to 30 previous qualifying windows and needs at least five. Expected waits such as `epoll_wait`, `futex`, and `nanosleep` are excluded. The event shows the peak window average and the number of completed calls in the event.
 
 The limits are fixed. A trace with `--slow`, `--errors`, or `--raw` prints each call, and it has no events.
 
@@ -188,9 +193,21 @@ Use `--slow <duration>` to print each call that takes at least that time. Use `-
 
 edc reads the path only for the calls that it prints, when the call returns. It reads up to 256 bytes, and a longer path ends with `…`. The path is the first path argument of about 50 calls, such as `openat`, `statx`, `unlinkat`, `mkdirat`, and `execve`. edc does not read the path of a 32-bit call. It does not read the path of an `execve` that succeeded, because the new program replaced the registers and the memory. If another thread changes the path buffer during the call, the line can show the new text. Control characters in the path show as `\xNN`.
 
+Detailed native syscall events include the descriptor for supported FD-based calls such as `read`, `write`, `fsync`, and `fdatasync`. Text shows `fd=0` for descriptor 0, and raw JSON has an `fd` field. This is the caller’s descriptor number.
+
+Add `--fd-path` with `--slow` or `--errors` to look up the FD target in host procfs when edc reads the event. Use detailed text or `--raw` output. The result is labeled `fd_target_at_read` because the descriptor may have been reused after the call. A missing descriptor or inaccessible host procfs is shown as unavailable.
+
+```bash
+sudo edc trace syscall --process postgres --syscall fsync,fdatasync --slow 5ms --fd-path
+```
+
+Rename events include the destination path. Supported `*at` calls also report the directory descriptor that accompanies the path, and `renameat` and `renameat2` report both descriptors. Paths retain their original spelling, and FILES rows for renames still use the source path.
+
 edc prints at most 1,000 lines per second on each CPU. The summary counts the other lines as `sampled_out`, and the table still counts all calls. `ring_lost` counts the lines that did not fit in the event buffer. With `--json`, edc counts the lines but does not print them. Use `--raw` to print each line as JSON, with the summary as the last line.
 
 The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process`, `--container`, or `--syscall`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.
+
+`entered` counts selected calls that entered during the trace. `returned` counts returns paired with a recorded entry, even when the per-syscall statistics map is full. Calls such as `exit_group` enter without returning. The in-flight table shows the host PID/TID of the longest-waiting thread in each row.
 
 edc leaves out its own calls. If edc runs in a container with its own PID namespace, it cannot find its own calls, and it prints a note after the summary. On amd64, a 32-bit program uses other system call numbers. edc shows these calls with `(32-bit)` after the name. A call that a signal interrupts can return a restart code that only the kernel uses, for example `ERESTARTSYS`. The table shows these codes by name.
 
@@ -305,9 +322,89 @@ The off-CPU trace also needs the `sched_switch` tracepoint with BTF and task loc
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
+## trace why
+
+Use `trace why` on Linux to find where the time of an HTTP request goes. One command records `trace http`, `trace dns`, and `trace tcp` together. When the traces stop, edc divides the latency of each request into the calls that the server made for that request.
+
+```bash
+sudo edc trace why --duration 30s
+sudo edc trace why --port 8080 --with mysql,redis:6380 --duration 30s
+sudo edc trace why --process gunicorn --out incident
+edc trace show incident
+```
+
+```text
+HTTP request breakdown: 23.2s of 26.8s recorded
+
+Requests: 107
+Calls: 71
+
+PROCESS  REQUEST / CALL                   COUNT  AVG      MAX      SHARE
+python3  GET /ext                         35     302.3ms  302.8ms
+           http GET 127.0.0.1:18081/slow  35     301.1ms           100%
+           self                                  1.3ms             0%
+python3  GET /dns                         36     301.1ms  301.9ms
+           dns slow.edc-why.test A        36     300.7ms           100%
+           self                                  0.5ms             0%
+python3  GET /ok                          36     0.3ms    0.5ms
+           self                                  0.3ms             100%
+```
+
+A row with a process is a request path that a local server received. `COUNT` is the number of requests. `AVG` and `MAX` are the latency of one request.
+
+The rows below a path are the calls of those requests: `dns` queries, `http` requests that the server sent, and database commands. `COUNT` is the number of calls. `AVG` is the time of those calls for one request. `SHARE` is the part of the request latency.
+
+`self` is the request time that no call covers. The program used that time itself, or it made a call that edc does not record.
+
+The kernel records do not connect a call to a request. edc connects them with the process ID and the time. A call belongs to a request if the same process made the call, and the call started and ended while the server handled that request.
+
+If one process handles several requests at the same time, a call can occur while the process handles two or more requests. edc adds that call to no request. The `(ambiguous)` row shows the request time that only those calls cover.
+
+```text
+PROCESS  REQUEST / CALL                 COUNT  AVG      MAX      SHARE
+app      GET /dns                       232    302.2ms  309.5ms
+           dns slow.edcdiag.test A      202    262.0ms           87%
+           dns slow.edcdiag.test AAAA   201    260.6ms           86%
+           (ambiguous)                  5965   37.1ms            12%
+           self *                              0.4ms             0%
+app      GET /db                        240    301.7ms  305.3ms
+           mysql SELECT SLEEP(?)        192    240.4ms           80%
+           (ambiguous)                  5816   61.0ms            20%
+           self                                0.3ms             0%
+```
+
+In this test, a Go server handled 8 requests at the same time. A long call fits only into its own request, so the slow DNS query and the slow SQL statement show below their paths. A short call fits into many requests, and edc cannot assign it. `*` shows that calls of one request ran at the same time. Then the shares of the calls can add up to more than 100%.
+
+A server that handles one request at a time in each process has no ambiguous calls. An example is gunicorn with sync workers. A server with threads or an event loop has more ambiguous calls.
+
+Use these options:
+
+- `--with` adds database traces. The names are `mysql`, `postgres`, and `redis`. `--with mysql:13306` sets the server port.
+- `--port` keeps only the requests that the server on that local port received. edc records all HTTP connections, so the requests that this server sent stay visible.
+- `--process` limits each trace to that process. `trace why` records all HTTP traffic of the host. On a busy host, use `--process`.
+- `--out` sets the directory for the recordings. The default is `edc-why-<time>` in the current directory. edc does not write into a path that exists.
+- If you do not use `--duration`, press Ctrl-C to stop the traces.
+
+Each trace starts at a different time. `trace http` starts some seconds later, because it looks for TLS libraries first. edc compares only the time range that all the traces recorded. The first line of the output shows that range and the full recorded time. Send the load until the traces stop.
+
+When the traces stop, `trace http` detaches its TLS probes. On a host with 28 TLS files, this took 30 seconds. edc prints one line and waits for the traces.
+
+If one trace fails, edc stops the other traces and prints the error of that trace. It prints no breakdown. A breakdown without one of the traces shows the time of the calls of that trace as `self`. If a trace lost events, edc prints the count above the table.
+
+The directory holds one `.jsonl` file and one `.err` file for each trace, and `why.json`. Only the owner can read them. edc records HTTP without payload. `edc trace show <dir>` prints the same breakdown again, on any host and without root. `trace show` also reads one file of the directory, for example `edc trace show incident/dns.jsonl`.
+
+`trace why` has these limits:
+
+- edc does not record the thread of a call. So it cannot assign the ambiguous calls of a server with threads.
+- `--with clickhouse` is not available.
+- edc does not assign TCP connect time and retransmissions to a request. Use `edc trace show <dir>/tcp.jsonl` to read them.
+- A proxy and its backend have separate rows. For nginx with a backend, the nginx row shows the request that nginx sent to the backend. The backend row shows the calls of the backend.
+- A call that edc cannot read stays in `self`. An example is a database command in a TLS connection.
+- `trace why` records on Linux only.
+
 ## trace show
 
-Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.
+Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. A directory from `trace why` prints its [request breakdown](#trace-why) again. For a file, it takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely. A response event also carries an `answered` count of the requests that it answers. In a file from an earlier edc without that count, `trace show` counts each DNS query and each HTTP or database request as unanswered.
 
 ```bash
 sudo edc trace http --raw --duration 30s > http.jsonl
@@ -348,6 +445,8 @@ In the full-screen terminal view, press `s` for source rows, `t` for target rows
 The full-screen view keeps the last 10,000 events. The live rates use the time that these events cover. The summary after Ctrl-C uses all events.
 Grouped rows in the full-screen view show the groups with the most traffic first. If the rows do not fit the terminal, the view shows the top rows.
 
+A view keeps at most 10,000 groups. After that limit, edc adds the events of each new value to the `(other)` row. A value that already has a row keeps its row. The summary after Ctrl-C has the same limit. In `trace http`, the summary rows without `--group-by` also have this limit.
+
 In the event list, press Up or Down (or `k` and `j`) to select an event. While an event is selected, the list stops and does not follow new events. The header shows the number of newer events. Press Enter to see all the fields of the event and the whole payload. The detail view wraps long lines. Press Up, Down, PgUp (or `b`), PgDn (or Space), `g`, or `G` to scroll, and press Esc or `q` to go back. Press `l`, Esc, or End in the list to follow new events again. Many Mac keyboards have no End key. In the list, `b` and Space also move the selection by a page. If the selected event becomes the oldest one in the list, the list shows newer events below it. The list keeps the first 4 KiB of each payload. The detail view shows the whole payload of recent events, up to 64 MiB in total.
 
 Press `f` to open the newest event and follow new events. Press `f` again to stop at the current event. In `trace http`, the full screen collects up to 1 MiB per message by default. The list keeps a 4 KiB snippet.
@@ -374,6 +473,15 @@ On macOS, the process name holds up to 32 bytes. `edc` reads the ephemeral port 
 Without root, the macOS trace shows only the kernel sockets of the current user. It does not show the connections that the user-space network stack of macOS handles. Network.framework can send traffic through that stack. The trace also does not show a `target` hostname, so `--group-by target` groups events by the destination address.
 
 If you run the trace with `sudo`, it shows the processes of all users and the connections of the user-space network stack. It also shows the domain name that macOS records for a connection as the `target`, and `target_source` shows `system`. If macOS has no domain name for a connection, `--group-by target` uses the destination address. QUIC uses UDP, so `trace udp` shows the QUIC connections of the user-space network stack.
+
+To inspect recordings from the same incident together, pass their file paths:
+
+```bash
+edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl
+```
+
+The table shows the first and last event in each file and their shared range in UTC. Compare timestamps across hosts with synchronized clocks. Each summary covers its full recording and uses its protocol’s own grouping. In multi-file mode, use `--process`, `--destination`, and `-d`. Replay filters work the same way as in single-file mode. A recording without timestamped events has no event range.
+
 
 ## trace dns
 
@@ -634,6 +742,31 @@ A `tls_hello` event and an unmatched response go into the `-` row.
 
 If the path contains an ID, for example `/users/123`, each ID gets a different row.
 
+`--stats-only` shows only the group rows. edc does not keep the events and does not collect the payload. Use it on a busy server to save memory.
+
+```bash
+edc trace http --stats-only --port 8080
+edc trace http --stats-only --group-by target
+```
+
+The default view is path. To change the view, press `s`, `t`, `p`, `c`, `e`, `u`, or `Tab`. The screen has no event list, so `g`, `Enter`, `/`, `i`, `v`, and `m` do nothing.
+
+The counts and the latency are for the whole trace. The event rate and the byte rate are for the last second. When the load stops, the rates become 0 at the next update. The screen updates every second.
+
+Memory grows with the number of groups, not with the number of events. A path with an ID, for example `/users/123`, makes one group for each ID. After 10,000 groups, edc adds new paths to the `(other)` row, so memory stops growing.
+
+The table shows the peak memory on a Linux host with 12 CPUs. The test load sent about 2,500 requests per second for 25 seconds. Each response had a 64 KiB body.
+
+| Screen | Peak RSS, 8 paths | Peak RSS, one path per request | Lost events, one path per request |
+| --- | --- | --- | --- |
+| `edc trace http` | 1.26 GB | 1.49 GB | 1,120 |
+| `--group-by path --payload=false` | 286 MB | 476 MB | 26,830 |
+| `--stats-only` | 83 MB | 124 MB | 0 |
+
+In the same test, edc used about 8 seconds of CPU time with `--stats-only` and about 35 seconds with `--group-by path --payload=false`.
+
+`--stats-only` works only with `trace http`. You cannot use it with `--raw`, `--payload`, or `--show-secrets`. If the output is not a terminal, edc prints only the summary at the end, as with `--group-by`.
+
 | To see | Command |
 | --- | --- |
 | All HTTP on this host | `edc trace http` |
@@ -643,6 +776,7 @@ If the path contains an ID, for example `/users/123`, each ID gets a different r
 | Only the requests that the proxy on port 9900 received | `edc trace http --side server --port 9900` |
 | The latency of each process on each side | `edc trace http --port 9000 --group-by process` |
 | The requests, errors, and latency of each path | `edc trace http --group-by path` |
+| Only the group stats, with less memory | `edc trace http --stats-only` |
 | The HTTP/1.1 and HTTP/2 requests in HTTPS | `edc trace http` |
 
 Client and server latency measure different times. Client latency includes the network and the wait before the server reads the request.
@@ -749,7 +883,7 @@ It needs no certificate or key file.
 
 TLS probes support only Linux amd64 and arm64. Unsupported architecture or ABI, missing access, and attach failures show a reason. HTTP capture continues.
 
-Use `--tls=false` to disable TLS observation. Use `--tls=<path>` to probe only one file. An explicit `--tls` keeps its existing warning and confirmation on risky kernels.
+Use `--tls=false` to disable TLS observation. Use `--tls=<path>` to probe only one file. An explicit `--tls` keeps its warning and confirmation on risky kernels. In a terminal, use `--yes` to skip the start confirmation. The warning still appears.
 
 ```bash
 edc trace http --tls
@@ -805,9 +939,11 @@ An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with 
 
 Go TLS uses the Go function table and probes at function returns.
 
-edc supports Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.8, 1.27.1, and 1.27.3.
+edc supports Go 1.21.5, 1.23.4, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.4, 1.26.5, 1.26.7, 1.26.8, 1.26.10, 1.27.1, 1.27.3, and 1.27.4.
 
 Live capture tests pass on Linux amd64 for these versions. Metadata tests cover Linux amd64 and arm64. Native arm64 capture remains unverified.
+
+edc also supports a `GOEXPERIMENT=boringcrypto` build of these versions. Live capture tests pass on Linux amd64 for BoringCrypto builds of Go 1.25.0, 1.26.7, 1.26.8, 1.27.1, and 1.27.4. edc rejects a build with a different Go experiment, or with more than one experiment, with an unsupported ABI error.
 
 A valid modern Go function table with no TLS Read, Write, or Close method produces no TLS target. A partial or corrupt table produces a notice in automatic mode. The `--tls` option reports an error when a Go binary has no TLS methods. edc rejects legacy Go function tables with an unsupported ABI error.
 

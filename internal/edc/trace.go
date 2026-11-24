@@ -507,6 +507,7 @@ func traceUsage() {
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceDatabaseUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSyscallUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceWhyUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceShowUsage))
 }
 
@@ -536,6 +537,7 @@ func runTraceProtocol(args []string) int {
 	set.IntVar(&options.httpPort, "http-port", 0, T("command.trace.option.http_port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.dropReasons, "reason", "", T("command.trace.option.reason"))
+	set.BoolVar(&options.statsOnly, "stats-only", false, T("command.trace.option.stats_only"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -564,6 +566,20 @@ func runTraceProtocol(args []string) int {
 	} else if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", "trace "+args[0]))
 		return 2
+	}
+	if options.statsOnly {
+		if args[0] != "http" {
+			fmt.Fprintln(os.Stderr, T("cli.trace.stats_only_protocol", args[0]))
+			return 2
+		}
+		// 통계 화면은 event를 두지 않으므로 event 한 줄씩이나 payload를 내는 option과 맞지 않는다.
+		if options.raw || options.payload != "" || options.showSecrets {
+			fmt.Fprintln(os.Stderr, T("cli.trace.stats_only_conflict"))
+			return 2
+		}
+		if options.groupBy == "" {
+			options.groupBy = traceGroupByPath
+		}
 	}
 	if args[0] == "http" {
 		applyTraceHTTPDefaults(&options)
@@ -725,7 +741,7 @@ func runTraceProtocol(args []string) int {
 		options.container = container
 	}
 	screen := !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout)
-	options.progressive = screen || (!options.raw && options.jsonPath == "" && options.groupBy == "")
+	options.progressive = (screen && !options.statsOnly) || (!options.raw && options.jsonPath == "" && options.groupBy == "")
 	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
 	if options.tls != "" {
 		finder, notices, code, err := resolveTraceHTTPTLSTargets(options.tls, options.implicitTLS, options.process)
@@ -746,7 +762,7 @@ func runTraceProtocol(args []string) int {
 			}
 			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached_path", strings.Join(paths, ", ")))
 		}
-		if screen && !traceTLSConfirmStart(os.Stdin, os.Stderr, traceIsTerminal(os.Stderr)) {
+		if screen && !options.yes && !traceTLSConfirmStart(os.Stdin, os.Stderr, traceIsTerminal(os.Stderr)) {
 			return 4
 		}
 	}
@@ -761,6 +777,9 @@ func runTraceProtocol(args []string) int {
 	var encoder *json.Encoder
 	var written uint64
 	aggregate := newTraceAggregate(args[0], options.groupBy)
+	if args[0] == "tcp" && options.groupBy != "" && options.jsonPath == "" && !options.raw {
+		aggregate.summary = traceProtocols["tcp"].newSummarizer()
+	}
 	aggregate.useLocalDNS()
 	rawSockets := traceRawSockets{}
 	if options.raw {
@@ -795,7 +814,9 @@ func runTraceProtocol(args []string) int {
 		return 1
 	}
 	printTraceTLSExecProblem(summary)
+	summary.TraceOS = runtime.GOOS
 	if options.raw {
+		summary.TraceProtocol = args[0]
 		// collector는 다른 protocol의 event도 받아 센다. 요약의 event 수는 이 출력에 쓴 줄 수와 같아야 한다.
 		summary.EventCount = written
 		if err := encoder.Encode(summary); err != nil {
@@ -817,7 +838,7 @@ func runTraceProtocol(args []string) int {
 			}
 			return 0
 		}
-		printTraceGroupReport(report)
+		aggregate.printGroupReport(report, summary, traceDuration)
 		return 0
 	}
 	report := aggregate.summary.summarize(summary, traceDuration)
@@ -928,6 +949,7 @@ func printTCPTraceReport(report tcpTraceReport, detail bool) {
 	style.fields(out, "", "Attempts", strconv.Itoa(report.Attempts), "Established", strconv.Itoa(report.Established), "Incomplete", strconv.Itoa(report.Incomplete), "Existing", strconv.Itoa(report.Existing),
 		"Retransmissions", traceOptional(report.Retransmissions, "%d"), "Resets", traceOptional(report.Resets, "%d"), "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes), "Total", traceBytes(report.TotalBytes),
 		"Traffic rate", traceTrafficRate(report.traceTraffic), "Lost events", strconv.FormatUint(report.LostEvents, 10))
+	printTCPTraceFindings(out, style, report.groups, report.traceOS)
 	if !detail {
 		printTCPTraceGroups(style, report.groups)
 		return
@@ -938,14 +960,79 @@ func printTCPTraceReport(report tcpTraceReport, detail bool) {
 	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "RESULT", "CONNECT", "TX", "RX", "RETRANS", "RESET"}}
 	for _, connection := range report.Connections {
 		table.add(connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
-		if connection.RTTUS != nil || connection.AcceptLatencyMS != nil {
-			table.addNote(fmt.Sprintf("  diagnostics: rtt=%s rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s", traceOptional(connection.RTTUS, "%dus"), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d")))
+		if connection.tcpValid != 0 || connection.RTTUS != nil || connection.AcceptLatencyMS != nil {
+			table.addNote(fmt.Sprintf("  diagnostics: rtt=[%s] rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s", connection.rttStats.text(), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d")))
 		}
 	}
 	io.WriteString(out, "\n")
 	style.writeTable(out, table)
 	if report.ConnectionsOmitted > 0 {
 		style.line(out, style.hint(fmt.Sprintf("%d earlier closed connections are not listed. The totals include them.", report.ConnectionsOmitted)))
+	}
+}
+
+// Show the strongest observation in each category, with the endpoint it came from.
+func printTCPTraceFindings(out io.Writer, style traceSummaryStyle, rows []tcpTraceGroupRow, traceOS string) {
+	var pending, retransmit, window, accept, peakRTT tcpTraceGroupRow
+	for _, row := range rows {
+		if row.rttStats.count > 0 && (peakRTT.rttStats.count == 0 || row.rttStats.peak > peakRTT.rttStats.peak) {
+			peakRTT = row
+		}
+		if row.incomplete > pending.incomplete {
+			pending = row
+		}
+		if row.retransmissions > retransmit.retransmissions {
+			retransmit = row
+		}
+		if row.zeroWindow && !window.zeroWindow {
+			window = row
+		}
+		if row.acceptQueueFull && !accept.acceptQueueFull ||
+			row.acceptQueueFull == accept.acceptQueueFull && row.acceptMaxNS > accept.acceptMaxNS {
+			accept = row
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	style.line(out, style.heading("TCP observations"))
+	observation := func(row tcpTraceGroupRow, signal string, next ...string) {
+		style.line(out, "  "+signal)
+		endpoint := row.process + " / " + traceSummaryPeerLabel(row.peer, "", row.server)
+		style.line(out, style.hint("    "+endpoint))
+		for _, line := range next {
+			style.line(out, "    "+line)
+		}
+	}
+	if pending.incomplete > 0 {
+		observation(pending, fmt.Sprintf("Handshakes failed or unfinished at stop (%d)", pending.incomplete),
+			"Inspect connection results with edc trace tcp -d.")
+	}
+	if retransmit.retransmissions > 0 {
+		observation(retransmit, fmt.Sprintf("Retransmit events observed (%d)", retransmit.retransmissions),
+			"Compare RTT with a healthy run.",
+			"Check each Linux endpoint with edc trace drop.")
+	}
+	if window.zeroWindow {
+		observation(window, "Peer advertised a zero window",
+			"Check whether the receiving application is reading.",
+			"Use edc trace tcp -d to identify the peer on server rows.")
+	}
+	if accept.acceptQueueFull {
+		observation(accept, "Accept queue reached its reported limit",
+			"On the server, run edc trace drop.",
+			"Check ListenOverflows and ListenDrops.")
+	} else if accept.acceptMaxNS > 0 {
+		observation(accept, fmt.Sprintf("Longest app accept wait %.3fms", float64(accept.acceptMaxNS)/float64(time.Millisecond)),
+			"Compare the wait after handshake with a healthy run.")
+	}
+	if peakRTT.rttStats.count > 0 {
+		observation(peakRTT, "Highest observed RTT ("+peakRTT.rttStats.text()+")")
+	} else if traceOS == "darwin" {
+		style.line(out, "  RTT sampling is unavailable for macOS TCP traces.")
+	} else {
+		style.line(out, "  No RTT samples.")
+		style.line(out, style.hint("    Linux samples at connection establishment and retransmission."))
 	}
 }
 
@@ -960,15 +1047,15 @@ func printTCPTraceGroups(style traceSummaryStyle, rows []tcpTraceGroupRow) {
 			connect = traceOptional(traceObserved(row.connectTotalMS/int64(row.connectCount)), "%dms")
 		}
 		table.add(row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), strconv.Itoa(row.connections), strconv.Itoa(row.established), strconv.Itoa(row.incomplete), strconv.Itoa(row.existing), connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
-		if row.rttCount > 0 || row.lost != 0 || row.zeroWindow || row.acceptCount > 0 {
-			rtt, accept := "-", "-"
-			if row.rttCount > 0 {
-				rtt = fmt.Sprintf("%dus", row.rttTotalUS/uint64(row.rttCount))
-			}
-			if row.acceptCount > 0 {
-				accept = fmt.Sprintf("%.3fms", float64(row.acceptTotalNS/uint64(row.acceptCount))/float64(time.Millisecond))
-			}
-			table.addNote(fmt.Sprintf("  diagnostics: rtt=%s lost=%d zero-window=%t accept=%s", rtt, row.lost, row.zeroWindow, accept))
+		table.addNote("  RTT: " + row.rttStats.text())
+		if row.acceptCount > 0 {
+			table.addNote(fmt.Sprintf("  App accept: avg %.3fms, max %.3fms, n=%d", float64(row.acceptTotalNS)/float64(row.acceptCount)/float64(time.Millisecond), float64(row.acceptMaxNS)/float64(time.Millisecond), row.acceptCount))
+		}
+		if row.lost > 0 {
+			table.addNote(fmt.Sprintf("  Last sampled lost packets: %d", row.lost))
+		}
+		if row.zeroWindow {
+			table.addNote("  Zero window observed")
 		}
 	}
 	io.WriteString(os.Stdout, "\n")
@@ -1267,6 +1354,14 @@ func newTraceAggregate(protocol string, views ...string) *traceAggregate {
 	return aggregate
 }
 
+func (aggregate *traceAggregate) printGroupReport(report traceGroupReport, summary captureSummary, duration time.Duration) {
+	if report.Protocol == "tcp" && aggregate.summary != nil {
+		tcp := aggregate.summary.summarize(summary, duration).(tcpTraceReport)
+		printTCPTraceFindings(os.Stdout, newTraceSummaryStyle(os.Stdout), tcp.groups, tcp.traceOS)
+	}
+	printTraceGroupReport(report)
+}
+
 func (aggregate *traceAggregate) observe(event captureEvent) {
 	if event.TLSNotice != "" {
 		return
@@ -1299,6 +1394,13 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 	return summarizer.report(summary, duration)
 }
 
+// traceGroupLimit는 보기 하나가 두는 그룹 수의 상한이다. path에 ID가 들어 있으면 요청마다 그룹이 생겨, 2026-11에
+// 요청마다 다른 path를 보낸 측정에서 trace http --stats-only가 25초 만에 467MB를 썼다. 상한을 넘은 뒤 처음 보는 값은
+// traceGroupOther 행에 더한다.
+const traceGroupLimit = 10000
+
+const traceGroupOther = "(other)"
+
 type traceGroupSummarizer struct {
 	protocol string
 	side     string
@@ -1322,7 +1424,10 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		if event.Protocol != "http" {
 			return
 		}
-		_, mapKey, _ := traceGroupIdentity(event, summarizer.groupBy)
+		_, mapKey, server := traceGroupIdentity(event, summarizer.groupBy)
+		if summarizer.groups[mapKey] == nil && len(summarizer.groups) >= traceGroupLimit {
+			_, mapKey = traceGroupOtherKey(server)
+		}
 		if group := summarizer.groups[mapKey]; group != nil {
 			group.traceTraffic.observeHTTP(event)
 			summarizer.traffic.observeHTTP(event)
@@ -1339,6 +1444,10 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	}
 	key, mapKey, server := traceGroupIdentity(event, summarizer.groupBy)
 	group := summarizer.groups[mapKey]
+	if group == nil && len(summarizer.groups) >= traceGroupLimit {
+		key, mapKey = traceGroupOtherKey(server)
+		group = summarizer.groups[mapKey]
+	}
 	if group == nil {
 		group = &traceGroup{Group: key, Server: server, Destinations: map[string]struct{}{}, Processes: map[string]struct{}{}}
 		summarizer.groups[mapKey] = group
@@ -1346,9 +1455,9 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	observeTraceGroup(group, event)
 	// event 보기는 질의를 dns_query 행에, 응답을 결과 행에 둔다. 응답이 답한 질의를 dns_query 행에서 빼지 않으면
 	// 그 행의 질의가 모두 응답 없음으로 보인다. 다른 보기는 질의와 응답이 같은 행에 들어간다.
-	if summarizer.groupBy == traceGroupByEvent && event.answered > 0 {
+	if summarizer.groupBy == traceGroupByEvent && event.Answered > 0 {
 		if queries := summarizer.groups[traceDNSQueryEvent]; queries != nil && queries.DNS != nil {
-			queries.DNS.answered += event.answered
+			queries.DNS.answered += event.Answered
 		}
 		requestKey := traceHTTPRequestEvent
 		if event.MySQL != nil {
@@ -1371,24 +1480,31 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 			requestKey += "\x00server"
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.HTTP != nil {
-			requests.HTTP.answered += event.answered
+			requests.HTTP.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.MySQL != nil {
-			requests.MySQL.answered += event.answered
+			requests.MySQL.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.ClickHouse != nil {
-			requests.ClickHouse.answered += event.answered
+			requests.ClickHouse.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.Postgres != nil {
-			requests.Postgres.answered += event.answered
+			requests.Postgres.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.Redis != nil {
-			requests.Redis.answered += event.answered
+			requests.Redis.answered += event.Answered
 		}
 	}
 	summarizer.events++
 	summarizer.traffic.observe(event)
 	summarizer.traffic.observeHTTP(event)
+}
+
+func traceGroupOtherKey(server bool) (key, mapKey string) {
+	if server {
+		return traceGroupOther, traceGroupOther + "\x00server"
+	}
+	return traceGroupOther, traceGroupOther
 }
 
 func traceGroupIdentity(event captureEvent, groupBy string) (key, mapKey string, server bool) {

@@ -527,6 +527,7 @@ static __always_inline void emit_tcp_sample(struct sock *sk) {
 	if (!event) return;
 	event->skaddr = key;
 	apply_sock_owner(event);
+	fill_tcp_addresses(event, sk);
 	event->tcp_valid = current.valid;
 	event->rtt_us = current.rtt_us;
 	event->rttvar_us = current.rttvar_us;
@@ -1324,6 +1325,19 @@ static __always_inline int http_start(const __u8 *p) {
 	       (p[0] == 'P' && p[1] == 'R' && p[2] == 'I' && p[3] == ' ');
 }
 
+static __always_inline int http_short_prefix(const __u8 *p, __u64 len, char a, char b, char c) {
+	return p[0] == a && (len < 2 || p[1] == b) && (len < 3 || p[2] == c);
+}
+
+// http_short_start는 4 byte보다 짧은 읽기와 쓰기가 HTTP/1 시작 낱말의 앞부분인지 본다. Go net/http 서버는 handler가
+// 끝날 무렵 다음 요청의 첫 1 byte를 따로 읽어서, 이 조각을 버리면 그 요청을 통째로 놓친다. h2c 머리는 길이 전체가
+// 맞아야 하므로 보지 않는다.
+static __always_inline int http_short_start(const __u8 *p, __u64 len) {
+	return http_short_prefix(p, len, 'G', 'E', 'T') || http_short_prefix(p, len, 'P', 'O', 'S') || http_short_prefix(p, len, 'P', 'U', 'T') ||
+	       http_short_prefix(p, len, 'H', 'E', 'A') || http_short_prefix(p, len, 'D', 'E', 'L') || http_short_prefix(p, len, 'P', 'A', 'T') ||
+	       http_short_prefix(p, len, 'O', 'P', 'T') || http_short_prefix(p, len, 'H', 'T', 'T');
+}
+
 // tls_start는 TLS handshake record의 머리다. version은 SSL 3.0부터 TLS 1.3까지다.
 static __always_inline int tls_start(const __u8 *p) {
 	return p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x04;
@@ -1661,7 +1675,9 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	__u64 peek_len = size < sizeof(peek) ? size : sizeof(peek);
 	int peeked = limit >= peek_len && !bpf_probe_read_user(peek, peek_len, (void *)buffer);
 	int readable = peek_len == sizeof(peek) && peeked;
-	int start = readable && http_start(peek);
+	// 짧은 시작은 --payload=all에서 앞 message의 위치가 남아 있어도 새 message로 본다. body 중간의 1~3 byte 읽기가 이
+	// 낱말로 시작하면 앞 message가 거기서 잘리지만, 그런 읽기보다 Go 서버가 요청 첫 byte를 따로 읽는 경우가 훨씬 흔하다.
+	int start = (readable && http_start(peek)) || (peeked && peek_len < sizeof(peek) && http_short_start(peek, peek_len));
 	// h2c 연결은 HTTP2_PREFACE_LEN byte 머리로 시작한다. 짧은 조각은 HTTP/1 서버가 몇 byte씩 엿보는 경우와 구별할 수 없다.
 	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, limit, size);
 	// TCP Fast Open은 송신 호출 안에서 SYN과 첫 순번을 정하므로 시작할 때의 write_seq가 첫 data의 순번이 아니다. 이런

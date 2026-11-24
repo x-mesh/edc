@@ -242,6 +242,26 @@ command:
       - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
       - "edc alias prints short aliases such as ev, evn, and evf."
       - "--stats reads the whole input once and prints the level or status counts, the top exceptions, paths, clients, and programs, and the time range."
+  cat:
+    summary: "Print files with their paths and color config files and code"
+    option:
+      numbers: "show line numbers, from 1 in each file"
+      recursive: "read subdirectories too (applies .gitignore)"
+      hidden: "include hidden files in a directory"
+      no_ignore: "with -r, do not apply .gitignore rules"
+      mask: "keep the keys and the structure, and hide the values"
+      as: "read as this format, not by file name: yaml, json, go, python, text, and more"
+      pager: "in a terminal, send the output to the pager"
+    notes:
+      - "Each file starts with one line that holds ==>, the path, the format, and the size. The content follows."
+      - "In env, json, yaml, toml, and ini files, color marks keys, strings, numbers, and comments. In other source code, it marks keywords, strings, numbers, and comments."
+      - "The file name selects the format, and --as changes it. Source code larger than 512 KB prints without color."
+      - "Without a path in a pipe, or with the path -, it reads stdin. stdin has no name, so give the format with --as."
+      - "For a directory, it prints the files directly in it by name. --hidden adds hidden files, and -r adds subdirectories."
+      - "For a binary file, it prints the path line and omits the content."
+      - "-p sends the output in a terminal to PAGER (less by default). It exits at once when the output fits one screen. By default, it writes to the terminal directly, like cat."
+      - "In a pipe, it writes the bytes unchanged, like cat. -n adds numbers in the form of cat -n. With NO_COLOR, it prints the path line and the content without color."
+      - "--mask hides values in a pipe too. It skips input that is not env, json, yaml, toml, or ini and exits with status 1."
   grep:
     summary: "Search logs, code, and file paths"
     option:
@@ -470,7 +490,10 @@ command:
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
     summary: "Trace network, I/O, socket, drop, sched, process, syscall, and CPU"
+    tcp_summary: "Trace TCP handshakes, retransmissions, and connection latency"
     option:
+      tcp_group_by: "group by source, target, port, process, or event"
+      tcp_destination: "filter by destination host and port"
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "min latency, e.g. 20us, 250ms. Default io/sched 1ms"
       raw: "print raw event JSONL"
@@ -479,13 +502,17 @@ command:
       process: "match PIDs or command names, comma-separated"
       destination: "filter by destination host and port; for dns, also by a domain in the query name"
       detail: "list each connection or flow in the summary"
-      yes: "skip the question"
+      yes: "skip the interactive TLS start confirmation"
+      cpu_yes: "accepted for compatibility. CPU tracing starts without a prompt"
       side: "http and database traces: both sides. dns: client"
       payload: "http, socket: first 4 KiB. =all: up to 1 MiB"
       show_secrets: "http: masked headers. databases: SQL, values"
+      stats_only: "http: only cumulative group stats, no events or payload"
+      with: "why: also record mysql, postgres, or redis. name:port sets the server port"
+      out: "why: directory for the recordings. Default: ./edc-why-<time>"
       tls: "TLS plaintext. HTTP: auto by default. macOS MySQL/Redis: opt in. =<path>: one file"
       tls_keylog: "http on macOS: decrypt TLS with an SSLKEYLOGFILE file"
-      port: "http: only this port. databases: the server port"
+      port: "http: only this port. databases: the server port. why: requests to this local port"
       http_port: "clickhouse: HTTP port, default 8123"
       container: "only this docker container, by name or ID"
       reason: "trace drop: only these reasons, comma separated"
@@ -495,6 +522,7 @@ command:
       errors: "trace syscall: failed calls, all or errno names"
       files: "trace syscall: file table. On by default; with --slow or --errors it needs --files"
       no_files: "trace syscall: leave out the file table"
+      fd_path: "trace syscall: look up event descriptors in host procfs. Needs --slow or --errors, and detailed text or --raw"
       all: "trace syscall: show every row of the tables, not only the first rows"
       denied: "trace priv: only denied capability checks"
       frequency: "trace cpu: samples per second per CPU, default 99"
@@ -559,6 +587,7 @@ command:
         - "Example: trace http --side server --port 8080 shows one local server."
         - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
         - "It also hides X-Api-Key, X-Goog-Api-Key, Api-Key, X-Amz-Security-Token values."
+        - "--stats-only keeps no events and draws only cumulative group counts and per-second rates every second. The default view is path."
       mysql:
         - "trace mysql shows plain MySQL commands and results on Linux 5.15 or later and macOS."
         - "It shows both sides. Each row starts with client: or server:."
@@ -638,6 +667,7 @@ command:
         - "trace syscall -- <command> runs the command and counts its calls, including the processes it starts, until it exits. It returns the exit code of the command."
         - "trace syscall also lists the files that the process opened, wrote, deleted, renamed, or looked for and did not find. The rows with changes come first. --no-files turns the list off, and --all shows every row."
         - "trace syscall keeps an event when a condition holds for 5 seconds: the same call fails 100 times a second (error loop), calls on one path fail with ENOENT or ENOTDIR 50 times a second (missing path), or one call jumps to 10 times its usual rate (call spike)."
+        - "A latency spike means the window average reached 2 ms and four times the baseline for 5 seconds, with at least 20 completed calls per window."
         - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
       priv:
         - "trace priv shows capability checks, uid and gid changes, and module loads."
@@ -647,8 +677,20 @@ command:
         - "trace cpu samples the stacks on each CPU and prints the hot functions."
       lock:
         - "trace lock shows kernel lock contention and futex waits by address."
+      why:
+        - "trace why records http, dns, and tcp together on Linux, then shows where the time of each HTTP request went."
+        - "Each row is a process and a request path that a local server received. The rows below it are the calls of that request: DNS queries, outgoing HTTP requests, and database commands."
+        - "edc assigns a call to a request when the same process made the call and the call started and ended during that request."
+        - "(ambiguous) is the request time that only calls of an unknown request cover. Such a call occurred during several requests of one process, so edc adds it to no request. A server that handles many requests in one process has more of it."
+        - "self is the time of the request that no assigned call covers."
+        - "--with adds database traces, for example --with mysql,redis:6380. --port keeps only the requests to that local server port."
+        - "--process limits each trace to that process. Use it on a busy host."
+        - "edc compares only the time range that all the traces recorded. If a trace fails, edc stops and prints no breakdown."
+        - "The recordings stay in a directory. edc trace show <dir> prints the same breakdown again. HTTP payload is not recorded."
       show:
         - "trace show <raw.jsonl> prints the summary of a saved --raw file, without root."
+        - "Pass several files to see their shared UTC event range and individual summaries. Multi-file mode accepts --process, --destination and -d."
+        - "Pass a trace why directory alone to print its breakdown again."
   ai:
     summary: "AI coding tool usage and reset times"
     option:

@@ -584,7 +584,7 @@ func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
 	if interim.Status != 100 || interim.LatencyMS != nil || interim.Path != "/a" {
 		t.Fatalf("interim = %#v", interim)
 	}
-	if first.Event != "http_2xx" || first.Path != "/a" || first.LatencyMS == nil || *first.LatencyMS != 2 || first.answered != 1 {
+	if first.Event != "http_2xx" || first.Path != "/a" || first.LatencyMS == nil || *first.LatencyMS != 2 || first.Answered != 1 {
 		t.Fatalf("first response = %#v", first)
 	}
 	if second.Event != "http_5xx" || second.Method != "POST" || second.Path != "/b" || *second.LatencyMS != 4 {

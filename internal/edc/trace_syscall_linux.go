@@ -36,7 +36,8 @@ const (
 	syscallNrMax    = 1024
 	syscallMaxErrno = 4095
 	// syscallEventSize는 BPF의 struct syscall_event 크기다.
-	syscallEventSize = 312
+	syscallEventSize    = 584
+	syscallEventPathEnd = 312
 	// syscallEventPoll은 event를 기다리는 한 번의 시간이다. Ctrl-C는 이 시간 안에 멈춘다.
 	syscallEventPoll = 200 * time.Millisecond
 )
@@ -118,6 +119,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		variables.FilterProcess.Set(boolByte(options.processFiltered())),
 		variables.FilterCgroup.Set(boolByte(options.container != nil)),
 		variables.KeyCgroup.Set(boolByte(options.groupBy == traceGroupByCgroup)),
+		variables.KeyPid.Set(boolByte(options.groupBy == traceGroupByPIDSyscall)),
 		variables.ExitNr.Set(exit),
 		variables.ExitGroupNr.Set(exitGroup),
 		variables.CompatExitNr.Set(compatExit),
@@ -276,7 +278,7 @@ func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfEx
 	var values []syscallEventsSyscallStats
 	iterator := objects.Stats.Iterate()
 	for iterator.Next(&key, &values) {
-		sample := syscallSample{Process: syscallComm(key.Comm), CgroupID: key.CgroupId, Syscall: syscallName(runtime.GOARCH, key.Nr&^syscallCompatBit, key.Nr&syscallCompatBit != 0), Errnos: errnos[key]}
+		sample := syscallSample{PID: key.Tgid, Process: syscallComm(key.Comm), CgroupID: key.CgroupId, Syscall: syscallName(runtime.GOARCH, key.Nr&^syscallCompatBit, key.Nr&syscallCompatBit != 0), Errnos: errnos[key]}
 		for _, value := range values {
 			sample.Calls += value.Calls
 			sample.Timed += value.Timed
@@ -301,12 +303,21 @@ func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfEx
 		}
 		collection.inFlight = inFlight
 	}
-	var counters syscallEventsSyscallCounters
+	var counters []syscallEventsSyscallCounters
 	if err := objects.Counters.Lookup(uint32(0), &counters); err != nil {
 		return syscallCollection{}, fmt.Errorf("read syscall counters: %w", err)
 	}
 	summary := &collection.summary
-	summary.StartsFull, summary.StatsFull, summary.ErrnosFull, summary.RingLost = counters.Values[0], counters.Values[1], counters.Values[2], counters.Values[4]
+	var unmatched uint64
+	for _, cpu := range counters {
+		summary.StartsFull += cpu.Values[0]
+		summary.StatsFull += cpu.Values[1]
+		summary.ErrnosFull += cpu.Values[2]
+		unmatched += cpu.Values[3]
+		summary.RingLost += cpu.Values[4]
+		summary.Entered += cpu.Values[5]
+		summary.Returned += cpu.Values[6]
+	}
 	summary.Events = events
 	var windows []syscallEventsSyscallWindow
 	if err := objects.EventWindows.Lookup(uint32(0), &windows); err != nil {
@@ -316,7 +327,6 @@ func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfEx
 		summary.SampledOut += window.Suppressed
 	}
 	if !options.processFiltered() && len(options.syscalls)+len(options.compatSyscalls) == 0 && options.container == nil {
-		unmatched := counters.Values[3]
 		summary.Unmatched = &unmatched
 	}
 	return collection, nil
@@ -366,8 +376,20 @@ func fillSyscallRules(objects syscallEventsObjects, options syscallTraceOptions)
 		if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
 			rule := rules[nr]
 			rule.PathArg = arg + 1
+			rule.DirfdArg = syscallPathDirFDArg(name, arg)
+			rule.DestArg = syscallRenameDestArgs[name]
+			rule.DestDirfdArg = syscallRenameDestDirFDArgs[name]
 			rule.PathGone = boolByte(syscallPathGone[name])
 			rules[nr] = rule
+		}
+	}
+	if options.linesEnabled() {
+		for _, name := range syscallFDCalls {
+			if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
+				rule := rules[nr]
+				rule.FdArg = 1
+				rules[nr] = rule
+			}
 		}
 	}
 	if options.files {
@@ -495,19 +517,35 @@ func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
 	if nr&syscallCompatBit == 0 {
 		event.Action = syscallFileAction(event.Syscall, event.OpenKind)
 	}
-	switch sample[36] {
-	case 1:
-		event.Path = string(bytesTrimNUL(sample[56:syscallEventSize]))
-	case 2:
-		event.PathUnreadable = true
-	case 3:
-		event.Path, event.PathTruncated = string(bytesTrimNUL(sample[56:syscallEventSize])), true
-	}
+	event.FD = syscallEventDescriptor(sample[39], sample[312:316])
+	event.DirFD = syscallEventDescriptor(sample[324], sample[316:320])
+	event.DestinationDirFD = syscallEventDescriptor(sample[325], sample[320:324])
+	event.Path, event.PathTruncated, event.PathUnreadable = parseSyscallEventPath(sample[36], sample[56:syscallEventPathEnd])
+	event.Destination, event.DestinationTruncated, event.DestinationUnreadable = parseSyscallEventPath(sample[326], sample[328:syscallEventSize])
 	return event, true
 }
 
+func syscallEventDescriptor(valid byte, field []byte) *int32 {
+	if valid == 0 {
+		return nil
+	}
+	fd := int32(binary.NativeEndian.Uint32(field))
+	return &fd
+}
+
+func parseSyscallEventPath(state byte, field []byte) (path string, truncated, unreadable bool) {
+	switch state {
+	case 1, 3:
+		return string(bytesTrimNUL(field)), state == 3, false
+	case 2:
+		return "", false, true
+	default:
+		return "", false, false
+	}
+}
+
 // syscallInFlightSize는 BPF의 struct syscall_in_flight 크기다. iterator는 이 크기의 기록을 이어서 쓴다.
-const syscallInFlightSize = 32
+const syscallInFlightSize = 40
 
 // readSyscallInFlight는 task iterator를 한 번 돌려 아직 돌아오지 않은 호출을 읽는다. monotonic은 trace를 뗀 시각이다.
 func readSyscallInFlight(program *ebpf.Program, monotonic uint64) ([]syscallInFlightSample, error) {
@@ -538,7 +576,13 @@ func parseSyscallInFlight(data []byte, monotonic uint64) []syscallInFlightSample
 		if monotonic > start {
 			elapsed = monotonic - start
 		}
-		samples = append(samples, syscallInFlightSample{Process: string(bytesTrimNUL(record[16:32])), Syscall: syscallName(runtime.GOARCH, nr&^syscallCompatBit, nr&syscallCompatBit != 0), ElapsedNS: elapsed})
+		samples = append(samples, syscallInFlightSample{
+			PID:       binary.NativeEndian.Uint32(record[8:12]),
+			TID:       binary.NativeEndian.Uint32(record[32:36]),
+			Process:   string(bytesTrimNUL(record[16:32])),
+			Syscall:   syscallName(runtime.GOARCH, nr&^syscallCompatBit, nr&syscallCompatBit != 0),
+			ElapsedNS: elapsed,
+		})
 	}
 	return samples
 }

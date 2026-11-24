@@ -60,7 +60,7 @@ func TestCompletionOffersSemanticSearchContract(t *testing.T) {
 }
 
 func TestCompletionOffersTraceClickHouse(t *testing.T) {
-	if !strings.Contains(zshCompletion, "http mysql clickhouse postgres redis)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
+	if !strings.Contains(zshCompletion, "http mysql clickhouse postgres redis why)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
 		t.Fatal("zsh trace completion must list clickhouse and its options")
 	}
 	for _, option := range []string{"--slow[", "--show-secrets[", "--port[ClickHouse", "--http-port[ClickHouse HTTP"} {
@@ -70,7 +70,7 @@ func TestCompletionOffersTraceClickHouse(t *testing.T) {
 			t.Fatalf("zsh trace clickhouse completion misses %q", option)
 		}
 	}
-	if !strings.Contains(bashCompletion, "http mysql clickhouse postgres redis\"") {
+	if !strings.Contains(bashCompletion, "http mysql clickhouse postgres redis why\"") {
 		t.Fatal("bash trace completion must list clickhouse")
 	}
 	if !strings.Contains(bashCompletion, "--port --http-port --yes") {
@@ -162,6 +162,23 @@ func TestCompletionOffersTracePostgresAndRedis(t *testing.T) {
 		if strings.Contains(line, "--http-port") || strings.Contains(line, "--payload") {
 			t.Fatalf("zsh trace %s completion offers an option it rejects: %q", protocol, line)
 		}
+	}
+}
+
+func TestCompletionOffersTraceWhy(t *testing.T) {
+	start := strings.Index(zshCompletion, "            why) _arguments")
+	if start < 0 {
+		t.Fatal("zsh trace completion misses why")
+	}
+	line := zshCompletion[start:]
+	line = line[:strings.Index(line, "\n")]
+	for _, option := range []string{"--duration[", "--process[", "--port[", "--with[", "--out["} {
+		if !strings.Contains(line, option) {
+			t.Fatalf("zsh trace why completion misses %q", option)
+		}
+	}
+	if !strings.Contains(zshCompletion, "postgres redis why)") || !strings.Contains(bashCompletion, "postgres redis why\"") || !strings.Contains(bashCompletion, "--with --out") {
+		t.Fatal("trace completion misses the why subcommand or its options")
 	}
 }
 

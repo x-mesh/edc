@@ -242,6 +242,26 @@ command:
       - "pipe や NO_COLOR では cat のようにバイトをそのまま出力します。-f は tail -F のように追従します。"
       - "edc alias は ev、evn、evf のような短い alias を出力します。"
       - "--stats は入力全体を一度読み、level や status 別の数、上位の例外・path・client・プログラム、時間範囲を出力します。"
+  cat:
+    summary: "ファイルの場所と内容を出力し、設定ファイルとコードを色分け"
+    option:
+      numbers: "行番号を表示、ファイルごとに 1 から"
+      recursive: "下位ディレクトリも読む (.gitignore を適用)"
+      hidden: "ディレクトリの隠しファイルを含める"
+      no_ignore: "-r で .gitignore の規則を適用しない"
+      mask: "キーと構造だけを残し、値を隠す"
+      as: "ファイル名ではなくこの形式で読む: yaml、json、go、python、text など"
+      pager: "端末で出力を pager に渡す"
+    notes:
+      - "ファイルごとに ==> の後へパス、形式、サイズを 1 行で示し、続けて内容を出力します。"
+      - "env、json、yaml、toml、ini ファイルはキー、文字列、数値、コメントを色分けします。そのほかのソースコードは keyword、文字列、数値、コメントを色分けします。"
+      - "形式はファイル名で決め、--as で変えられます。512 KB より大きいソースコードは色なしで出力します。"
+      - "パスなしで pipe から受けるか、パスに - を渡すと stdin を読みます。stdin には名前がないので --as で形式を指定します。"
+      - "ディレクトリを渡すと直下のファイルを名前順に出力します。隠しファイルは --hidden、下位ディレクトリは -r で含めます。"
+      - "binary ファイルは場所の行だけを示し、内容を省略します。"
+      - "-p は端末で出力を PAGER (既定は less) に渡します。1 画面に収まればすぐ終了します。既定では cat のように端末へ直接書きます。"
+      - "pipe では cat のようにバイトをそのまま出力します。-n は cat -n と同じ形で番号を付けます。NO_COLOR では色なしで場所の行と内容を出力します。"
+      - "--mask は pipe でも値を隠します。env、json、yaml、toml、ini 以外の入力は飛ばし、状態 1 で終了します。"
   grep:
     summary: "ログ、コード、ファイルパスを検索"
     option:
@@ -470,7 +490,10 @@ command:
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
     summary: "network、I/O、socket、drop、sched、process、syscall、CPU の要約"
+    tcp_summary: "TCP 接続の確立、再送、接続遅延を追跡します"
     option:
+      tcp_group_by: "送信元、対象、ポート、プロセス、イベントで集計"
+      tcp_destination: "宛先のホストとポートで絞り込む"
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       slow: "最小 latency。例: 20us、250ms。io/sched の既定 1ms"
       raw: "raw event JSONL を表示"
@@ -479,13 +502,17 @@ command:
       process: "一致する PID か command 名のみ、カンマ区切り"
       destination: "宛先 host と port で絞る。dns は問い合わせ名のドメインでも絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
-      yes: "確認を省く"
+      yes: "対話モードの TLS トレース開始確認を省く"
+      cpu_yes: "互換性のためのオプション。CPU トレースは確認なしで開始します"
       side: "http と DB の trace は両側、dns は client 側"
       payload: "http、socket: 先頭 4 KiB。=all は 1 MiB まで"
       show_secrets: "http: マスクした header。DB: SQL、redis の値"
+      stats_only: "http: event を保持せずグループ別の累積統計だけ、payload なし"
+      with: "why: mysql、postgres、redis も記録。名前:port で server の port を指定"
+      out: "why: 記録を置くディレクトリ。既定: ./edc-why-<時刻>"
       tls: "TLS 平文。HTTP: 既定は自動検出。macOS MySQL/Redis: 明示指定。=パス: ファイル 1 つ"
       tls_keylog: "macOS http: SSLKEYLOGFILE ファイルで TLS を復号"
-      port: "http: この port。DB: server の port"
+      port: "http: この port。DB: server の port。why: このローカル port へのリクエスト"
       http_port: "clickhouse: HTTP の port、既定 8123"
       container: "この docker container だけ、名前か ID"
       reason: "trace drop: この理由だけ、カンマ区切り"
@@ -495,6 +522,7 @@ command:
       errors: "trace syscall: 失敗した呼び出し。all か errno 名"
       files: "trace syscall: ファイル表。既定で有効、--slow や --errors と併用するときは --files が必要"
       no_files: "trace syscall: ファイル表を省略"
+      fd_path: "trace syscall: イベントの FD をホストの procfs で参照。--slow か --errors と、詳細テキストか --raw が必要"
       all: "trace syscall: 表のすべての行を表示。既定は先頭の行のみ"
       denied: "trace priv: 拒否された capability 検査だけ"
       frequency: "trace cpu: CPU ごとの毎秒 sample 数、既定 99"
@@ -559,6 +587,7 @@ command:
         - "例: trace http --side server --port 8080 は local server を 1 つだけ見ます。"
         - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
         - "X-Api-Key、X-Goog-Api-Key、Api-Key、X-Amz-Security-Token の値も隠します。"
+        - "--stats-only は event を保持せず、グループ別の累積数と毎秒の rate だけを 1 秒ごとに描きます。既定の表示は path です。"
       mysql:
         - "trace mysql は Linux 5.15 以降と macOS で平文 MySQL のコマンドと結果を表示します。"
         - "両側を表示します。各行の先頭に client: か server: が付きます。"
@@ -638,6 +667,7 @@ command:
         - "trace syscall -- <コマンド> はコマンドを実行し、終了するまでそのコマンドと子プロセスの呼び出しを数え、コマンドの終了コードを返します。"
         - "trace syscall はプロセスが開き、書き込み、削除し、移動し、探したが存在しなかったファイルも表で示します。変更のあった行が先に並びます。--no-files で省略し、--all ですべての行を表示します。"
         - "trace syscall は条件が 5 秒以上続くと event として残します: 同じ呼び出しが毎秒 100 回失敗 (error loop)、1 つのパスへの呼び出しが ENOENT か ENOTDIR で毎秒 50 回失敗 (missing path)、1 つの呼び出しが通常の 10 倍に増加 (call spike)。"
+        - "各区間の完了呼び出しが20件以上で、平均遅延が2ms以上かつ平常時の4倍以上の状態が5秒続くと、latency spikeを記録します。"
         - "trace syscall --process は PID か正確な command 名 (15 byte まで)。"
       priv:
         - "trace priv は capability 検査、uid と gid の変更、module の読み込みを表示。"
@@ -647,8 +677,20 @@ command:
         - "trace cpu は CPU ごとに stack を sampling し、CPU を多く使う関数を表示します。"
       lock:
         - "trace lock は kernel lock の競合とアドレスごとの futex 待ちを表示します。"
+      why:
+        - "trace why は Linux で http、dns、tcp を同時に記録し、HTTP リクエストごとに時間の内訳を表示します。"
+        - "1 行はローカルの server が受けたリクエストの process と path です。その下の行はそのリクエストの呼び出しです: DNS クエリ、外向きの HTTP リクエスト、DB コマンド。"
+        - "同じ process の呼び出しで、そのリクエストの処理中に始まって終わったものを、そのリクエストの呼び出しとします。"
+        - "(ambiguous) は、どのリクエストのものか判別できない呼び出しだけが占めるリクエスト時間です。その呼び出しは 1 つの process の複数のリクエストの処理中に起きたため、どのリクエストにも加えません。1 つの process が多くのリクエストを同時に処理するほど増えます。"
+        - "self はリクエストの時間のうち、どの呼び出しにも含まれない時間です。"
+        - "--with で DB trace を追加します。例: --with mysql,redis:6380。--port はそのローカル server port へのリクエストだけを残します。"
+        - "--process はすべての trace をその process に限定します。負荷の高い host で使ってください。"
+        - "すべての trace が記録した時間範囲だけを比較します。trace が 1 つ失敗すると中断し、内訳を出しません。"
+        - "記録はディレクトリに残ります。edc trace show <dir> で同じ内訳をもう一度表示します。HTTP payload は記録しません。"
       show:
         - "trace show <raw.jsonl> は保存した --raw の要約を root なしで出します。"
+        - "複数のファイルを指定すると、共通するイベントの時間範囲（UTC）と各ファイルの要約を表示します。--process、--destination、-d を使えます。"
+        - "trace why のディレクトリを 1 つだけ指定すると、その内訳をもう一度出します。"
   ai:
     summary: "AI コーディングツールの使用量とリセット時刻"
     option:

@@ -63,7 +63,7 @@ var syscallFileCalls = map[string]syscallFileCall{
 
 // syscallFileAction은 호출 하나가 파일에 한 일이다. 파일 표의 호출이 아니면 빈 문자열이다. open 계열은 flags를 따른다.
 // 쓰기로 열면 O_CREAT가 있어도 write다. kernel이 돌려주는 값으로는 새로 만들었는지 알 수 없고, `>>`로 덧붙이는 로그도
-// O_CREAT로 열기 때문이다. 새로 만들었다고 확실한 O_CREAT|O_EXCL만 create다. flags를 읽지 않는 openat2는 other다.
+// O_CREAT로 열기 때문이다. 새로 만들었다고 확실한 O_CREAT|O_EXCL만 create다. flags를 읽을 수 없는 openat2는 other다.
 func syscallFileAction(name string, kind uint8) string {
 	if _, ok := syscallFileCalls[name]; !ok {
 		return ""

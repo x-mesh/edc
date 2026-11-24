@@ -11,9 +11,9 @@ import (
 var traceOptionSamples = map[string]string{
 	"duration": "1s", "slow": "1ms", "json": "out.json", "raw": "", "group-by": "process", "process": "1",
 	"destination": "example.com:443", "detail": "", "container": "web", "side": "client", "payload": "all",
-	"show-secrets": "", "tls": "", "tls-keylog": "keys.log", "port": "8080", "http-port": "8123",
+	"show-secrets": "", "stats-only": "", "yes": "", "tls": "", "tls-keylog": "keys.log", "port": "8080", "http-port": "8123",
 	"reason": "NO_SOCKET", "device": "8:0", "signal": "all", "syscall": "openat", "errors": "all", "all": "",
-	"files": "", "no-files": "", "denied": "", "frequency": "99", "folded": "stacks.txt", "off-cpu": "", "kind": "futex",
+	"files": "", "no-files": "", "fd-path": "", "denied": "", "frequency": "99", "folded": "stacks.txt", "off-cpu": "", "kind": "futex", "with": "mysql", "out": "why-dir",
 }
 
 // 하위 명령 도움말의 option을 그 parser에 모두 주고 끝에 없는 option을 붙인다. parser가 도움말의 option을 모두 받으면 오류는

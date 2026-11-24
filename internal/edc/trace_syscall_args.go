@@ -21,6 +21,29 @@ var syscallPathArgs = map[string]uint8{
 	"inotify_add_watch": 1, "mount": 1, "umount2": 0, "swapon": 0, "pivot_root": 0,
 }
 
+// These indexes are one-based so zero means the argument is absent.
+var syscallRenameDestArgs = map[string]uint8{"rename": 2, "renameat": 4, "renameat2": 4}
+var syscallRenameDestDirFDArgs = map[string]uint8{"renameat": 3, "renameat2": 3}
+
+func syscallPathDirFDArg(name string, pathArg uint8) uint8 {
+	switch name {
+	case "openat", "openat2", "newfstatat", "statx", "faccessat", "faccessat2",
+		"readlinkat", "unlinkat", "mkdirat", "mknodat", "renameat", "renameat2",
+		"linkat", "symlinkat", "fchmodat", "fchmodat2", "fchownat",
+		"utimensat", "futimesat", "execveat":
+		return pathArg
+	default:
+		return 0
+	}
+}
+
+// syscallFDCalls take their file descriptor in the first argument.
+var syscallFDCalls = []string{
+	"read", "write", "readv", "writev", "pread64", "pwrite64", "preadv", "pwritev", "preadv2", "pwritev2",
+	"fsync", "fdatasync", "syncfs", "sync_file_range", "fallocate", "ftruncate", "fstat", "fstatfs",
+	"close", "lseek", "fcntl", "ioctl", "flock",
+}
+
 // syscallPathGone은 성공하면 경로를 읽을 수 없는 syscall이다. execve가 성공하면 register와 memory가 새 program의 것이다.
 var syscallPathGone = map[string]bool{"execve": true, "execveat": true}
 

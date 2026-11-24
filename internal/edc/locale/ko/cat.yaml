@@ -1,0 +1,8 @@
+# cat 명령의 한국어 메시지.
+cat:
+  failed: "edc cat: %v"
+  binary_omitted: "내용 생략"
+  color_omitted: "색 생략"
+  no_files: "edc cat: %s: 출력할 파일이 없습니다. 숨김 파일은 --hidden, 하위 디렉터리는 -r로 포함합니다"
+  mask_unsupported: "edc cat: %s: 값을 가릴 수 없는 형식이어서 건너뜁니다. --mask는 env, json, yaml, toml, ini 형식의 값을 가립니다"
+  as_unknown: "edc cat: --as %s: 모르는 형식입니다. dotenv, json, yaml, toml, ini, text나 go, python, bash 같은 언어 이름을 줍니다"

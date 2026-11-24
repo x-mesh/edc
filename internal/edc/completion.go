@@ -270,15 +270,16 @@ _edc() {
           _arguments '--mode[캡처 방식]:mode:(pcap events)' '--interface[capture할 interface]:interface' '--duration[capture 시간]:duration' '--count[packet 수]:count' '--filter[BPF filter]:filter' '--output[pcap 저장 경로]:path:_files' '--yes[확인 생략]'
           ;;
         trace)
-          _arguments '1:subcommand:(tcp udp dns arp ndp http mysql clickhouse postgres redis)'
+          _arguments '1:subcommand:(tcp udp dns arp ndp http mysql clickhouse postgres redis why)'
           case $words[2] in
             tcp|udp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '(-d --detail)'{-d,--detail}'[연결별 상세 요약]' '--yes[확인 생략]' ;;
             dns) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target process event)' '--process[process filter]:process' '--destination[DNS server filter]:host:port' '--side[DNS 관측 쪽]:side:(client server)' '--yes[확인 생략]' ;;
-            http) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event path)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--payload=-[message 출력, =all은 전체]::mode:(all)' '--show-secrets[가린 header 값 출력]' '--tls=-[OpenSSL HTTPS 평문, =경로는 그 파일만]::path:_files' '--port[HTTP 서버 port]:port' '--yes[확인 생략]' ;;
+            http) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event path)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--payload=-[message 출력, =all은 전체]::mode:(all)' '--show-secrets[가린 header 값 출력]' '--stats-only[그룹 통계만, event 보관 안 함]' '--tls=-[OpenSSL HTTPS 평문, =경로는 그 파일만]::path:_files' '--port[HTTP 서버 port]:port' '--yes[확인 생략]' ;;
             mysql) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--show-secrets[SQL 문자열 출력]' '--port[MySQL 서버 port]:port' '--yes[확인 생략]' ;;
             clickhouse) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--slow[느린 질의만, 예: 250ms]:duration' '--show-secrets[SQL 문자열 출력]' '--port[ClickHouse native port]:port' '--http-port[ClickHouse HTTP port]:port' '--yes[확인 생략]' ;;
             postgres) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--slow[느린 요청만, 예: 250ms]:duration' '--show-secrets[SQL 문자열 출력]' '--port[PostgreSQL 서버 port]:port' '--yes[확인 생략]' ;;
             redis) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--slow[느린 명령만, 예: 250ms]:duration' '--show-secrets[인자와 값 preview 출력]' '--port[Redis 서버 port]:port' '--yes[확인 생략]' ;;
+            why) _arguments '--duration[trace 시간]:duration' '--process[process filter]:process' '--port[요청을 받은 서버 port]:port' '--with[함께 기록할 DB trace]:database:(mysql postgres redis)' '--out[기록 디렉터리]:directory:_directories' ;;
             arp|ndp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target event)' '--destination[IP filter]:ip' ;;
           esac
           ;;
@@ -316,6 +317,9 @@ _edc() {
           ;;
         view)
           _arguments '-n[마지막 N줄]:count' '(-f -F)'{-f,-F}'[pipe에서 tail -F처럼 따라가기]' '1:file:_files'
+          ;;
+        cat)
+          _arguments '-n[줄 번호]' '-r[하위 디렉터리 포함]' '--hidden[숨김 파일 포함]' '--no-ignore[.gitignore 무시]' '--mask[값 가리기]' '--as[형식 지정]:format:(dotenv json yaml toml ini text go python bash javascript typescript sql markdown diff)' '(-p --pager)'{-p,--pager}'[pager로 보기]' '*:path:_files'
           ;;
         grep)
           _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--code[search code]' '(-f --files)'{-f,--files}'[search file paths]' '--hidden[include hidden files]' '--no-ignore[ignore .gitignore]' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
@@ -491,7 +495,7 @@ _edc() {
     quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;
     trace)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql clickhouse postgres redis" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --tls --port --http-port --yes" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql clickhouse postgres redis why" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --stats-only --tls --port --http-port --yes --with --out" -- "$cur")); fi ;;
     log)
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "history prune" -- "$cur")); return; fi
       if [[ ${COMP_WORDS[2]} == prune ]]; then
@@ -554,6 +558,10 @@ _edc() {
     view)
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-n -f -F" -- "$cur"))
       elif [[ $prev != -n ]]; then COMPREPLY=($(compgen -f -- "$cur")); fi ;;
+    cat)
+      if [[ $prev == --as ]]; then COMPREPLY=($(compgen -W "dotenv json yaml toml ini text go python bash javascript typescript sql markdown diff" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-n -r --hidden --no-ignore --mask --as -p --pager" -- "$cur"))
+      else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     grep)
       case "$prev" in
         --level) COMPREPLY=($(compgen -W "trace debug info warn error fatal" -- "$cur")); return ;;

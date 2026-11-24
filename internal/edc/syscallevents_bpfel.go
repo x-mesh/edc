@@ -20,7 +20,7 @@ type syscallEventsSyscallComm struct {
 
 type syscallEventsSyscallCounters struct {
 	_      structs.HostLayout
-	Values [5]uint64
+	Values [7]uint64
 }
 
 type syscallEventsSyscallErrnoKey struct {
@@ -31,19 +31,27 @@ type syscallEventsSyscallErrnoKey struct {
 }
 
 type syscallEventsSyscallEvent struct {
-	_           structs.HostLayout
-	TimestampNs uint64
-	LatencyNs   uint64
-	Ret         int64
-	Tgid        uint32
-	Tid         uint32
-	Nr          uint32
-	PathState   uint8
-	OpenKind    uint8
-	Reason      uint8
-	Pad         uint8
-	Comm        [16]int8
-	Path        [256]int8
+	_              structs.HostLayout
+	TimestampNs    uint64
+	LatencyNs      uint64
+	Ret            int64
+	Tgid           uint32
+	Tid            uint32
+	Nr             uint32
+	PathState      uint8
+	OpenKind       uint8
+	Reason         uint8
+	FdValid        uint8
+	Comm           [16]int8
+	Path           [256]int8
+	Fd             int32
+	Dirfd          int32
+	DestDirfd      int32
+	DirfdValid     uint8
+	DestDirfdValid uint8
+	DestState      uint8
+	Pad            uint8
+	Dest           [256]int8
 }
 
 type syscallEventsSyscallInFlight struct {
@@ -52,6 +60,8 @@ type syscallEventsSyscallInFlight struct {
 	Tgid    uint32
 	Nr      uint32
 	Comm    [16]int8
+	Tid     uint32
+	Pad     uint32
 }
 
 type syscallEventsSyscallKey struct {
@@ -59,18 +69,21 @@ type syscallEventsSyscallKey struct {
 	CgroupId uint64
 	Comm     [16]int8
 	Nr       uint32
-	Pad      uint32
+	Tgid     uint32
 }
 
 type syscallEventsSyscallRule struct {
-	_         structs.HostLayout
-	Allowed   uint8
-	PathArg   uint8
-	PathGone  uint8
-	File      uint8
-	FlagsArg  uint8
-	FlagsMode uint8
-	Pad       [2]uint8
+	_            structs.HostLayout
+	Allowed      uint8
+	PathArg      uint8
+	PathGone     uint8
+	File         uint8
+	FlagsArg     uint8
+	FlagsMode    uint8
+	FdArg        uint8
+	DirfdArg     uint8
+	DestArg      uint8
+	DestDirfdArg uint8
 }
 
 type syscallEventsSyscallStart struct {
@@ -126,6 +139,7 @@ const (
 	syscallEventsVarFilterProcess         = "filter_process"
 	syscallEventsVarFilterSyscall         = "filter_syscall"
 	syscallEventsVarKeyCgroup             = "key_cgroup"
+	syscallEventsVarKeyPid                = "key_pid"
 	syscallEventsVarSelfTgid              = "self_tgid"
 	syscallEventsVarSlowNs                = "slow_ns"
 	syscallEventsVarUnusedSyscallComm     = "unused_syscall_comm"
@@ -219,6 +233,7 @@ type syscallEventsVariableSpecs struct {
 	FilterProcess         *ebpf.VariableSpec `ebpf:"filter_process"`
 	FilterSyscall         *ebpf.VariableSpec `ebpf:"filter_syscall"`
 	KeyCgroup             *ebpf.VariableSpec `ebpf:"key_cgroup"`
+	KeyPid                *ebpf.VariableSpec `ebpf:"key_pid"`
 	SelfTgid              *ebpf.VariableSpec `ebpf:"self_tgid"`
 	SlowNs                *ebpf.VariableSpec `ebpf:"slow_ns"`
 	UnusedSyscallComm     *ebpf.VariableSpec `ebpf:"unused_syscall_comm"`
@@ -297,6 +312,7 @@ type syscallEventsVariables struct {
 	FilterProcess         *ebpf.Variable `ebpf:"filter_process"`
 	FilterSyscall         *ebpf.Variable `ebpf:"filter_syscall"`
 	KeyCgroup             *ebpf.Variable `ebpf:"key_cgroup"`
+	KeyPid                *ebpf.Variable `ebpf:"key_pid"`
 	SelfTgid              *ebpf.Variable `ebpf:"self_tgid"`
 	SlowNs                *ebpf.Variable `ebpf:"slow_ns"`
 	UnusedSyscallComm     *ebpf.Variable `ebpf:"unused_syscall_comm"`

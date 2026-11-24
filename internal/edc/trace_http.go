@@ -627,7 +627,7 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 	if request, ok := tracker.h2Pending[packet.socket][stream]; ok {
 		event.Method, event.Path, event.Target = request.method, request.path, request.host
 		if status >= 200 {
-			event.LatencyMS, event.answered, event.requestID = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1, request.id
+			event.LatencyMS, event.Answered, event.requestID = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1, request.id
 			tracker.forgetHTTP2Stream(packet.socket, stream)
 		}
 	}
@@ -711,7 +711,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	// 1xx는 중간 응답이다. 최종 응답이 같은 요청에 다시 온다.
 	if status >= 200 {
 		event.LatencyMS = traceSpan(request.bootTimeNS, packet.bootTimeNS)
-		event.answered = 1
+		event.Answered = 1
 		event.requestID = request.id
 		tracker.pending[packet.socket] = queue[1:]
 		if len(queue) == 1 {
@@ -1132,7 +1132,7 @@ func (counts *traceHTTPCounts) observe(event captureEvent) {
 	case 5:
 		counts.ServerErrors++
 	}
-	counts.answered += event.answered
+	counts.answered += event.Answered
 	counts.latency.observe(event.LatencyMS)
 }
 
@@ -1354,6 +1354,11 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 	summarizer.traffic.observeHTTP(event)
 	key := httpTraceKey{side: event.Side, method: event.Method, host: event.Target, path: event.Path}
 	stats := summarizer.rows[key]
+	// 그룹 보기와 같은 상한이다. ID가 든 path는 요청마다 행을 만든다.
+	if stats == nil && len(summarizer.rows) >= traceGroupLimit {
+		key = httpTraceKey{side: event.Side, path: traceGroupOther}
+		stats = summarizer.rows[key]
+	}
 	if stats == nil {
 		stats = &httpTraceRowStats{processes: map[string]struct{}{}, statuses: map[string]uint64{}}
 		summarizer.rows[key] = stats

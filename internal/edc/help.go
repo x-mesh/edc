@@ -42,7 +42,8 @@ type commandDoc struct {
 	subcommands []subcommandDoc
 	examples    []string
 	// parent는 하위 명령 하나의 도움말일 때 상위 명령 이름이다. 설명과 notes는 상위 명령의 locale에서 읽는다.
-	parent string
+	parent     string
+	summaryKey string
 	// noteGroups는 notes를 묶음으로 둔 명령의 묶음 이름이다. 이 순서로 command.<명령>.note_group.<이름>을 잇는다.
 	noteGroups []string
 }
@@ -55,7 +56,12 @@ func (doc commandDoc) localeName() string {
 	return doc.name
 }
 
-func (doc commandDoc) summary() string { return T("command." + doc.localeName() + ".summary") }
+func (doc commandDoc) summary() string {
+	if doc.summaryKey != "" {
+		return T(doc.summaryKey)
+	}
+	return T("command." + doc.localeName() + ".summary")
+}
 
 func (doc commandDoc) notes() []string {
 	if len(doc.noteGroups) > 0 {
@@ -479,6 +485,20 @@ var commandDocs = []commandDoc{
 		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "edc view --stats boot.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
 	},
 	{
+		name: "cat", group: "observe",
+		usage: []string{"edc cat [options] <path...>", "<command> | edc cat [options]"},
+		options: []optionDoc{
+			{"-n", "command.cat.option.numbers"},
+			{"-r", "command.cat.option.recursive"},
+			{"--hidden", "command.cat.option.hidden"},
+			{"--no-ignore", "command.cat.option.no_ignore"},
+			{"--mask", "command.cat.option.mask"},
+			{"--as <format>", "command.cat.option.as"},
+			{"-p, --pager", "command.cat.option.pager"},
+		},
+		examples: []string{"edc cat .env.local .env.production", "edc cat --mask .env", "edc cat -n -p internal/edc/cat.go", "edc cat -r --hidden config/", "kubectl get cm app -o yaml | edc cat --as yaml", "edc cat config.yaml | head"},
+	},
+	{
 		name: "grep", group: "observe",
 		usage: []string{"edc grep [options] <pattern> [path...]", "edc grep --level|--status|--since|--until ... [path...]", "<command> | edc grep [options] <pattern>"},
 		options: []optionDoc{
@@ -694,7 +714,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceSyscallUsage, tracePrivUsage, traceReclaimUsage, traceCPUUsage, traceLockUsage, traceShowUsage},
+		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceSyscallUsage, tracePrivUsage, traceReclaimUsage, traceCPUUsage, traceLockUsage, traceWhyUsage, traceShowUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},
@@ -708,6 +728,7 @@ var commandDocs = []commandDoc{
 			{"--side client|server", "command.trace.option.side"},
 			{"--payload[=all]", "command.trace.option.payload"},
 			{"--show-secrets", "command.trace.option.show_secrets"},
+			{"--stats-only", "command.trace.option.stats_only"},
 			{"--tls[=<path>]", "command.trace.option.tls"},
 			{"--tls-keylog <path>", "command.trace.option.tls_keylog"},
 			{"--port <n>", "command.trace.option.port"},
@@ -720,11 +741,14 @@ var commandDocs = []commandDoc{
 			{"--errors <all|names>", "command.trace.option.errors"},
 			{"--files", "command.trace.option.files"},
 			{"--no-files", "command.trace.option.no_files"},
+			{"--fd-path", "command.trace.option.fd_path"},
 			{"--all", "command.trace.option.all"},
 			{"--denied", "command.trace.option.denied"},
 			{"--frequency 99", "command.trace.option.frequency"},
 			{"--folded <path|->", "command.trace.option.folded"},
 			{"--kind kernel|futex", "command.trace.option.lock_kind"},
+			{"--with <db[:port],...>", "command.trace.option.with"},
+			{"--out <dir>", "command.trace.option.out"},
 			{"--off-cpu", "command.trace.option.off_cpu"},
 			{"--yes", "command.trace.option.yes"},
 		},

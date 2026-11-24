@@ -10,7 +10,7 @@
 
 `edc help trace`는 모든 trace의 option과 설명을 한꺼번에 보여 줍니다. `edc help trace exec`처럼 `edc help trace <하위 명령>`을 쓰면 그 trace 하나의 사용법, option, 설명, 예시만 나옵니다. `edc trace exec --help`도 같은 내용을 보여 줍니다.
 
-[패킷 캡처](#패킷-캡처) · [trace tcp / udp](#trace-tcp--udp) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace priv](#trace-priv) · [trace drop](#trace-drop) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [PCAP 파일](#pcap-파일) · [trace io](#trace-io) · [trace sched](#trace-sched) · [trace show](#trace-show)
+[패킷 캡처](#패킷-캡처) · [trace tcp / udp](#trace-tcp--udp) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace priv](#trace-priv) · [trace drop](#trace-drop) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [PCAP 파일](#pcap-파일) · [trace io](#trace-io) · [trace sched](#trace-sched) · [trace why](#trace-why) · [trace show](#trace-show)
 
 ## 패킷 캡처
 
@@ -39,6 +39,8 @@ edc trace tcp -d
 
 `--raw`는 JSONL event를 발생 즉시 출력합니다. `--json`은 `Ctrl-C` 후 connection summary를 저장합니다.
 끝에 출력하는 텍스트 요약은 process와 상대별로 행을 묶습니다. client 행은 목적지를, server 행은 `127.0.0.1:2379 (server)`처럼 local 서비스를 표시합니다. client마다 포트가 달라서 서버 쪽은 서비스로 묶습니다. TCP 행은 연결 수, 결과별 연결 수, 평균 연결 시간과 traffic을 표시하고, UDP 행은 datagram 수와 traffic을 표시합니다. 연결이나 UDP flow마다 한 행을 보려면 `-d` 또는 `--detail`을 사용합니다. JSON 출력은 항상 연결이나 flow마다 한 행입니다. `trace dns`의 요약은 항상 이름과 record 종류마다 한 행이라 `-d`로 달라지지 않습니다.
+TCP 텍스트 요약은 연결 수립 미완료, 재전송, 수신 윈도우 0, 서버의 `accept()` 대기 등 관측된 신호와 확인할 대상을 보여 줍니다. RTT는 관측한 표본의 평균, 최댓값, 개수를 표시합니다. Linux의 RTT 표본은 연결 성립과 재전송 시점에 값이 바뀔 때 기록됩니다.
+
 연결별 상세 행은 socket이 생긴 때부터 없어질 때까지를 한 행으로 표시합니다. kernel은 닫힌 socket의 주소를 새 socket에 다시 쓸 수 있으므로, socket이 없어지면 다음 event부터 새 행으로 셉니다. 행은 열려 있는 연결과 최근에 닫힌 연결 1,000개만 남기고, 합계는 모든 연결로 셉니다. JSON 출력의 `connections_omitted`는 행을 남기지 않은 닫힌 연결의 수입니다.
 각 행의 결과는 다음 중 하나입니다.
 
@@ -69,6 +71,8 @@ bridge network에서는 주소와 port가 container 안의 값입니다. 예를 
 
 전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `p`로 port 행, `c`로 process 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. `trace http`에서는 `u`로 path 행을 표시합니다. `Tab`은 다음 보기, `Shift+Tab`은 이전 보기로 바꿉니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
+
+보기 하나는 그룹을 10,000개까지 둡니다. 그 뒤로 처음 나온 값의 event는 `(other)` 행에 더하고, 이미 행이 있는 값은 계속 제 행에 셉니다. `Ctrl-C` 후 summary도 같은 상한을 쓰며, `trace http`에서 `--group-by` 없이 끝날 때의 요약 행도 마찬가지입니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
 
 event 목록에서 Up이나 Down(또는 `k`, `j`)을 누르면 event를 고릅니다. event를 고른 동안에는 목록이 멈추고 새 event를 따라가지 않으며, 머리글에 더 새로운 event 수가 표시됩니다. Enter를 누르면 event의 모든 필드와 payload 전체를 보여 주는 상세 보기가 열립니다. 상세 보기는 긴 줄을 화면 폭에 맞춰 나눕니다. Up, Down, PgUp(또는 `b`), PgDn(또는 Space), `g`, `G`로 스크롤하고, Esc나 `q`로 돌아갑니다. 목록에서 `l`, Esc, End 중 하나를 누르면 다시 새 event를 따라갑니다. Mac 자판에는 End 키가 없는 경우가 많습니다. 목록에서도 `b`와 Space는 한 화면씩 고른 위치를 옮깁니다. 고른 event가 목록에서 가장 오래된 event가 되면, 그 아래에 더 새 event를 보여 줍니다. 목록은 payload마다 앞 4KiB만 보관하고, 상세 보기는 최근 event의 payload 전체를 합계 64MiB까지 보여 줍니다.
@@ -187,6 +191,8 @@ macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니�
 
 Linux 5.15 이상과 macOS에서 `edc trace http`를 실행하면 HTTP/1.x와 HTTP/2를 client·server 양쪽에서 봅니다. Linux는 기본 TLS 자동 탐지를 사용합니다. macOS는 PKTAP으로 수집하며 BPF 장치에 접근할 권한이 필요합니다. TLS 계측을 시작하기 전에 커널 캡처 필터를 적용하며, `--port`도 이 필터에 반영합니다. 손실 수에는 잘린 레코드, BPF 버퍼에서 버린 패킷과 스트림 복원 손실이 포함됩니다.
 
+터미널에서 TLS 추적 시작 확인을 건너뛰려면 `--yes`를 사용합니다. 커널 경고는 계속 표시됩니다.
+
 macOS의 기본 HTTPS 수집은 DTrace로 OpenSSL·지원 Go TLS·SecureTransport의 평문 버퍼를 읽습니다. root 권한이 필요하며 키 로그는 필요하지 않습니다.
 
 ```bash
@@ -257,6 +263,31 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 
 `--group-by path`를 사용하면 요청 path별로 event를 묶습니다. 전체 화면에서는 `u`를 누릅니다. path 보기는 `trace http`에만 있습니다. path에는 query가 없고, host와 method가 달라도 path가 같으면 한 행에 묶습니다. 응답은 짝지은 요청의 행에 들어갑니다. `tls_hello` event와 짝이 없는 응답은 `-` 행에 들어갑니다. `/users/123`처럼 path에 ID가 들어 있으면 ID마다 행이 따로 생깁니다.
 
+`--stats-only`는 그룹 행만 보여 줍니다. event를 보관하지 않고 payload도 수집하지 않으므로, 바쁜 서버에서 메모리를 아낄 때 씁니다.
+
+```bash
+edc trace http --stats-only --port 8080
+edc trace http --stats-only --group-by target
+```
+
+기본 보기는 path입니다. `s`, `t`, `p`, `c`, `e`, `u`나 `Tab`으로 보기를 바꿉니다. event 목록이 없으므로 `g`, `Enter`, `/`, `i`, `v`, `m`은 동작하지 않습니다.
+
+요청 수, 오류 수, 응답 시간은 trace 전체의 누적 값입니다. event rate와 byte rate는 마지막 1초의 값이라, 부하가 멈추면 다음 갱신에서 0이 됩니다. 화면은 1초마다 갱신합니다.
+
+메모리는 event 수가 아니라 그룹 수에 비례합니다. `/users/123`처럼 path에 ID가 들어 있으면 ID마다 그룹이 생기지만, 그룹이 10,000개가 되면 새 path는 `(other)` 행에 더하므로 메모리가 더 늘지 않습니다.
+
+아래 표는 CPU 12개인 Linux host에서 잰 최대 메모리입니다. 시험 부하는 25초 동안 초당 약 2,500건의 요청을 보냈고, 응답 본문은 64 KiB였습니다.
+
+| 화면 | 최대 RSS, path 8개 | 최대 RSS, 요청마다 다른 path | 유실 event, 요청마다 다른 path |
+| --- | --- | --- | --- |
+| `edc trace http` | 1.26 GB | 1.49 GB | 1,120 |
+| `--group-by path --payload=false` | 286 MB | 476 MB | 26,830 |
+| `--stats-only` | 83 MB | 124 MB | 0 |
+
+같은 시험에서 edc의 CPU 사용 시간은 `--stats-only`가 약 8초, `--group-by path --payload=false`가 약 35초였습니다.
+
+`--stats-only`는 `trace http`에서만 쓸 수 있고, `--raw`, `--payload`, `--show-secrets`와 함께 쓸 수 없습니다. 출력이 터미널이 아니면 `--group-by`처럼 끝날 때 요약만 출력합니다.
+
 | 보려는 것 | 명령 |
 | --- | --- |
 | 이 host의 HTTP 전부 | `edc trace http` |
@@ -266,6 +297,7 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 | port 9900의 proxy가 받은 요청만 | `edc trace http --side server --port 9900` |
 | 쪽마다 process별 응답 시간 | `edc trace http --port 9000 --group-by process` |
 | path별 요청, 오류, 응답 시간 | `edc trace http --group-by path` |
+| 그룹 통계만, 메모리를 적게 | `edc trace http --stats-only` |
 | HTTPS 안의 HTTP/1.1과 HTTP/2 요청 | `edc trace http` |
 
 한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.
@@ -328,7 +360,7 @@ NSS 프로그램을 시작하기 전에 trace를 시작합니다. TLS와 일반 
 
 NSS 평문은 `PR_Read`, `PR_Recv`, `PR_Write`, `PR_Send`에서 읽습니다. NSPR은 이 함수로 일반 파일과 socket도 읽고 쓰므로, TLS를 쓰지 않는 program에서도 NSPR의 읽기와 쓰기마다 probe가 실행됩니다. `SSL_SECURITY`와 기본값 변경, model 복사, accept한 연결, `PR_Close`도 추적합니다. `SSL_SECURITY`를 끈 연결과 `PR_MSG_PEEK`로 읽은 내용은 TLS event로 표시하지 않습니다.
 
-Go TLS는 Go 함수 표를 읽고 함수 반환 지점에 probe를 붙여 평문을 읽습니다. edc는 Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.8, 1.27.1, 1.27.3을 지원합니다. 이 버전의 실시간 캡처를 Linux amd64에서 검증했습니다. Linux amd64와 arm64의 normal, stripped, PIE ELF metadata도 확인했습니다. arm64 실시간 캡처는 검증하지 않았습니다. 현재 형식의 유효한 Go 함수 표에서 TLS Read, Write, Close 메서드가 모두 없으면 자동 탐지에서 제외하고 오류를 내지 않습니다. 메서드가 일부만 있거나 함수 표가 손상되면 자동 탐지 안내를 표시합니다. `--tls`로 TLS 메서드가 없는 Go 바이너리를 지정하면 오류를 반환합니다. 이전 형식의 Go 함수 표는 지원하지 않습니다.
+Go TLS는 Go 함수 표를 읽고 함수 반환 지점에 probe를 붙여 평문을 읽습니다. edc는 Go 1.21.5, 1.23.4, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.4, 1.26.5, 1.26.7, 1.26.8, 1.26.10, 1.27.1, 1.27.3, 1.27.4를 지원합니다. 이 버전의 실시간 캡처를 Linux amd64에서 검증했습니다. Linux amd64와 arm64의 normal, stripped, PIE ELF metadata도 확인했습니다. arm64 실시간 캡처는 검증하지 않았습니다. 이 버전들을 `GOEXPERIMENT=boringcrypto`로 빌드한 바이너리도 지원합니다. BoringCrypto 빌드의 실시간 캡처는 Linux amd64에서 Go 1.25.0, 1.26.7, 1.26.8, 1.27.1, 1.27.4로 검증했습니다. 다른 Go 실험을 쓰거나 실험을 여러 개 함께 쓴 빌드는 지원하지 않는 ABI 오류로 거부합니다. 현재 형식의 유효한 Go 함수 표에서 TLS Read, Write, Close 메서드가 모두 없으면 자동 탐지에서 제외하고 오류를 내지 않습니다. 메서드가 일부만 있거나 함수 표가 손상되면 자동 탐지 안내를 표시합니다. `--tls`로 TLS 메서드가 없는 Go 바이너리를 지정하면 오류를 반환합니다. 이전 형식의 Go 함수 표는 지원하지 않습니다.
 
 ```bash
 edc trace http --tls=my-go-program
@@ -799,17 +831,22 @@ edc trace syscall --syscall openat,statx --slow 10ms --raw
 
 `--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
 
+`--group-by pid,syscall`은 호스트 PID와 시스템 콜별로 한 행을 표시합니다. 같은 worker의 스레드는 한 PID로 모입니다. 예를 들어 `edc trace syscall --process nginx --group-by pid,syscall`은 이름이 같은 worker를 구분합니다. 대상 프로세스가 많으면 통계 맵의 항목을 더 많이 사용합니다.
+
+`--process`를 쓰면 `PROCESS FILTER AT START`에 시작 시 호스트의 `/proc`에서 이름이나 호스트 PID가 일치한 프로세스 수가 표시됩니다. 이 확인에는 `--container` 조건을 적용하지 않습니다. 일치하는 프로세스도 기록된 호출이 0일 수 있고, 나중에 시작한 프로세스도 추적할 수 있습니다. 대시보드 외 출력에서는 상태를 stderr에 표시합니다. edc가 호스트 PID namespace에서 실행되지 않거나 `/proc` 목록을 읽지 못하면 수 대신 `unavailable`이 표시됩니다.
+
 빨리 끝나는 명령은 `--` 뒤에 적어 trace할 수 있습니다. edc는 trace를 켠 뒤에 새 cgroup 안에서 명령을 시작하므로 첫 호출부터 셉니다. 명령이 시작한 process의 호출도 함께 셉니다. 명령이 끝나면 trace도 끝나고, edc는 명령의 종료 코드를 돌려줍니다. root로 실행해야 하며, `--process`, `--container`, `--duration`은 명령과 함께 쓸 수 없습니다. cgroup v2를 쓸 수 없으면 명령 자신의 호출만 세고 경고를 출력합니다.
 
-`FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 flags를 읽지 않으므로 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.
+`FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 호출이 반환될 때 `open_how`에서 읽은 플래그로 분류합니다. 플래그를 읽을 수 없으면 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.
 
 파일을 바꾼 행이 먼저 나오고, 실패한 호출이 있는 행, 읽기만 한 행 순서입니다. 표에는 20행이 보이고, `--all`을 주면 모든 행을 보여 줍니다. `--json`의 `files`에도 모든 행이 들어 있습니다. 표를 빼려면 `--no-files`를 쓰십시오. `--slow`나 `--errors`를 주면 `--files`를 함께 줄 때만 파일 표가 나옵니다. edc는 파일 event를 CPU마다 1초에 최대 10,000건, 경로를 최대 10,000개까지 기록합니다. 놓친 event가 있으면 표 아래에 알립니다.
 
-`trace syscall`도 `edc top`처럼 event를 남깁니다. 조건이 5초 이상 이어지면 event가 되고, 꺼졌다가 5초 안에 다시 켜지면 같은 event입니다. 실시간 화면에는 최근 event 3개가 보이고, 끝난 뒤의 출력에는 모든 event가 시작 시각, 지속 시간, 초당 최댓값, 횟수와 함께 나옵니다. `●`는 조건이 지금 켜져 있다는 뜻입니다. `--json`의 `events`에도 들어갑니다. 종류는 세 가지입니다.
+`trace syscall`도 `edc top`처럼 event를 남깁니다. 조건이 5초 이상 이어지면 event가 되고, 꺼졌다가 5초 안에 다시 켜지면 같은 event입니다. 실시간 화면에는 최근 event 3개가 보이고, 끝난 뒤의 출력에는 모든 event가 시작 시각, 지속 시간, 최고 빈도 또는 지연, 횟수와 함께 나옵니다. `●`는 조건이 지금 켜져 있다는 뜻입니다. `--json`의 `events`에도 들어갑니다. 종류는 네 가지입니다.
 
 - `error loop`: 한 process가 같은 system call을 같은 errno로 초당 100번 이상 실패합니다. 바쁜 프로그램에서 정상인 오류는 세지 않습니다: `EAGAIN`, `EINTR`, `EINPROGRESS`, 재시작 errno, `futex`의 `ETIMEDOUT`, `wait4`의 `ECHILD`.
 - `missing path`: 한 경로에 대한 호출이 `ENOENT`나 `ENOTDIR`로 초당 50번 이상 실패합니다. 예를 들어 없는 파일을 계속 `stat`하는 경우입니다. 있는 경로의 권한 오류는 없는 경로가 아닙니다. 이 종류는 파일 event를 쓰므로 파일 표가 켜져 있어야 하고, 파일 event의 상한이 적용됩니다. 그래서 최댓값이 실제보다 낮을 수 있습니다.
 - `call spike`: 한 process가 한 system call을 초당 1,000번 이상, 그리고 최근 30초 평균의 10배 이상 부릅니다. 늘 많이 부르는 process는 event가 아닙니다. 처음 5초는 평균이 없어 event를 만들지 않습니다.
+- `latency spike`는 같은 프로세스 이름과 시스템 콜의 구간 평균 반환 지연이 2ms 이상이고 평소의 네 배 이상일 때 감지합니다. 구간마다 완료된 호출이 20개 이상이어야 하며, 평상시 값은 조건에 맞는 이전 구간 최소 5개, 최대 30개의 평균입니다. `epoll_wait`, `futex`, `nanosleep`처럼 의도적으로 대기하는 호출은 제외합니다. 이벤트에는 가장 높은 구간 평균과 해당 기간에 완료된 호출 수를 표시합니다.
 
 기준값은 고정입니다. `--slow`, `--errors`, `--raw`를 쓰면 호출을 하나씩 출력하므로 event를 만들지 않습니다.
 
@@ -823,9 +860,21 @@ edc trace syscall --syscall openat,statx --slow 10ms --raw
 
 경로는 출력하는 호출에서만, 호출이 돌아올 때 읽습니다. 256 byte까지 읽고, 더 긴 경로는 `…`로 끝납니다. 경로는 `openat`, `statx`, `unlinkat`, `mkdirat`, `execve` 같은 약 50개 호출의 첫 경로 인자입니다. 32비트 호출의 경로는 읽지 않습니다. 성공한 `execve`의 경로도 읽지 않습니다. 새 program이 register와 memory를 바꿨기 때문입니다. 호출 중에 다른 스레드가 경로 buffer를 바꾸면 바뀐 글자가 나올 수 있습니다. 경로의 제어 문자는 `\xNN`으로 보여 줍니다.
 
+상세 이벤트는 `read`, `write`, `fsync`, `fdatasync` 등 지원하는 네이티브 호출의 파일 디스크립터 번호를 보여 줍니다. 번호가 0이면 텍스트에 `fd=0`으로 표시하고, raw JSON에는 `fd` 필드를 넣습니다.
+
+`--slow` 또는 `--errors`에 `--fd-path`를 추가하면 상세 텍스트나 `--raw`에서 edc가 이벤트를 읽는 시점에 호스트 procfs로 FD 대상을 조회합니다. 호출 뒤 번호가 재사용될 수 있으므로 결과는 `fd_target_at_read`로 표시합니다. FD가 사라졌거나 호스트 procfs에 접근할 수 없으면 조회 불가로 표시합니다.
+
+```bash
+sudo edc trace syscall --process postgres --syscall fsync,fdatasync --slow 5ms --fd-path
+```
+
+이름 변경 상세 이벤트에는 목적지 경로도 표시합니다. 지원하는 `*at` 호출은 경로에 대응하는 디렉터리 디스크립터를 보여 주며, `renameat`과 `renameat2`는 양쪽 디스크립터를 표시합니다. 경로는 호출의 원래 표기를 유지하며, FILES의 이름 변경 행은 출발 경로로 집계합니다.
+
 edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약의 `sampled_out`으로 세고, 표는 모든 호출을 계속 셉니다. event buffer에 들어가지 못한 줄은 `ring_lost`로 셉니다. `--json`을 주면 줄 수만 세고 출력하지 않습니다. `--raw`를 주면 줄마다 JSON으로 출력하고, 마지막 줄에 요약을 붙입니다.
 
 `IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`, `--container`, `--syscall`을 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
+
+`entered`는 추적 중 진입한 필터 대상 호출 수입니다. `returned`는 진입 기록이 있는 호출의 반환 수이며, 시스템 콜별 통계 맵이 가득 차도 셉니다. `exit_group` 같은 호출은 진입하지만 반환하지 않습니다. 진행 중인 호출 표는 각 행에서 가장 오래 기다린 스레드의 호스트 PID/TID를 보여 줍니다.
 
 edc 자신의 호출은 뺍니다. edc가 자기 PID namespace가 있는 container 안에서 실행되면 자신의 호출을 찾을 수 없어서, 요약 뒤에 이 사실을 알립니다. amd64에서 32비트 program은 다른 system call 번호를 씁니다. 이 호출은 이름 뒤에 `(32-bit)`를 붙여 보여 줍니다. 신호로 끊긴 호출은 kernel 안에서만 쓰는 재시작 값으로 돌아올 수 있습니다. 예를 들어 `ERESTARTSYS`입니다. 표는 이 값도 이름으로 보여 줍니다.
 
@@ -982,12 +1031,58 @@ edc trace sched --raw
 
 thread가 CPU에서 내려갈 때의 system call을 표시합니다. `futex`, `epoll_wait`, `read` 등으로 대기 유형을 좁힐 수 있으며, system call 안에서 기다리지 않았으면 `-`입니다. Linux 5.15에서 동작하며 필요한 BTF 필드를 확인한 뒤 program을 load합니다. [스케줄러 지연과 손실 카운터 상세](tracing.md#trace-sched)를 참고하세요.
 
+## trace why
+
+Linux에서 HTTP 요청의 시간이 어디에 쓰였는지 찾습니다. 명령 하나로 `trace http`, `trace dns`, `trace tcp`를 함께 기록하고, 기록이 끝나면 요청마다 지연을 그 요청이 처리되는 동안 서버가 한 호출로 나눠 보여 줍니다.
+
+```bash
+sudo edc trace why --duration 30s
+sudo edc trace why --port 8080 --with mysql,redis:6380 --duration 30s
+sudo edc trace why --process gunicorn --out incident
+edc trace show incident          # 같은 분석을 root 없이 다시 보기
+```
+
+```text
+HTTP request breakdown: 23.2s of 26.8s recorded
+
+Requests: 107
+Calls: 71
+
+PROCESS  REQUEST / CALL                   COUNT  AVG      MAX      SHARE
+python3  GET /ext                         35     302.3ms  302.8ms
+           http GET 127.0.0.1:18081/slow  35     301.1ms           100%
+           self                                  1.3ms             0%
+python3  GET /dns                         36     301.1ms  301.9ms
+           dns slow.edc-why.test A        36     300.7ms           100%
+           self                                  0.5ms             0%
+python3  GET /ok                          36     0.3ms    0.5ms
+           self                                  0.3ms             100%
+```
+
+process가 있는 행은 로컬 서버가 받은 요청의 경로입니다. 그 아래 행은 그 요청의 호출입니다: DNS 질의, 서버가 보낸 HTTP 요청, DB 명령. 호출 행의 `AVG`는 요청 하나당 그 호출에 쓴 시간이고 `SHARE`는 요청 지연에서 차지하는 비중입니다. `self`는 어떤 호출에도 들어가지 않는 시간입니다.
+
+kernel 기록에는 호출과 요청을 잇는 표시가 없어서 process ID와 시간으로 잇습니다. 같은 process가 한 호출이고, 그 요청이 처리되는 동안 시작하고 끝났으면 그 요청의 호출로 봅니다.
+
+한 process가 요청 여러 개를 동시에 처리하면 한 호출이 둘 이상의 요청에 걸칩니다. 이런 호출은 어느 요청에도 더하지 않고, 그 호출만 덮는 요청 시간을 `(ambiguous)` 행으로 보여 줍니다. 긴 호출은 제 요청에만 들어가므로 병목이 되는 호출은 대부분 제 경로 아래에 나옵니다. 요청 8개를 동시에 처리한 Go 서버 시험에서 0.3초짜리 DNS 질의는 87%, 0.3초짜리 SQL은 80%가 제 경로에 붙었습니다. process마다 요청을 하나씩 처리하는 서버(gunicorn sync worker 등)에는 이런 호출이 없습니다.
+
+- `--with mysql,postgres,redis`로 DB trace를 더합니다. `mysql:13306`처럼 서버 port를 붙일 수 있습니다.
+- `--port`는 그 로컬 port의 서버가 받은 요청만 남깁니다. 기록은 모든 HTTP 연결을 담으므로 그 서버가 밖으로 보낸 요청은 그대로 보입니다.
+- `--process`는 모든 trace를 그 process로 제한합니다. host의 모든 HTTP 통신을 기록하므로 바쁜 host에서는 `--process`를 쓰세요.
+- 기록은 `--out` 디렉터리(기본값: 현재 디렉터리의 `edc-why-<시각>`)에 소유자만 읽을 수 있게 남습니다. HTTP payload는 기록하지 않습니다.
+
+trace마다 기록을 시작하는 때가 달라서(`trace http`는 TLS library를 찾느라 몇 초 늦습니다) 모든 trace가 기록한 시간대만 비교합니다. 출력 첫 줄이 그 길이를 보여 줍니다. trace가 끝날 때까지 부하를 계속 주세요. 끝날 때 `trace http`가 TLS probe를 떼는 데 30초쯤 걸릴 수 있습니다.
+
+trace 하나가 실패하면 나머지를 멈추고 그 오류만 출력합니다. 한 계층이 빠진 기록으로 분석하면 그 계층의 시간이 `self`로 보이기 때문입니다.
+
+스레드별 구분, `--with clickhouse`, TCP 연결 시간의 요청별 귀속, proxy와 backend 요청의 연결은 지원하지 않습니다. [상세 설명과 한계](tracing.md#trace-why)를 참고하세요.
+
 ## trace show
 
 저장한 `--raw` JSONL을 다른 호스트에서 root 없이 요약합니다.
 
 ```bash
 edc trace show trace.jsonl
+edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl
 ```
 
-실시간 trace와 같은 grouping과 필터를 사용할 수 있습니다. [저장 파일 조회 상세](tracing.md#trace-show)를 참고하세요.
+`trace why`가 남긴 디렉터리를 넘기면 그 [요청별 분석](#trace-why)을 다시 출력합니다. 파일 하나를 조회할 때는 실시간 trace와 같은 그룹 보기와 필터를 사용할 수 있습니다. 여러 파일을 넘기면 각 파일의 첫 이벤트와 마지막 이벤트, 공통 시간대를 UTC로 표시하고 파일별 전체 요약을 이어서 출력합니다. 여러 호스트의 시간대를 비교하려면 호스트의 시계가 동기화되어 있어야 합니다. 응답 이벤트에는 그 응답이 답한 요청 수(`answered`)가 기록됩니다. 이 값이 없는 이전 edc의 기록에서는 DNS 질의와 HTTP·데이터베이스 요청이 모두 응답 없음으로 집계됩니다. [저장 파일 조회 상세](tracing.md#trace-show)를 참고하세요.

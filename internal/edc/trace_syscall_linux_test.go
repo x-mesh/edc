@@ -290,6 +290,33 @@ func TestTraceSyscallCountsTheSelectedProcesses(t *testing.T) {
 }
 
 // edc 자신의 호출은 kernel 안에서 빠져야 한다. 필터 없이 host 전체를 1초 남짓 센다.
+func TestTraceSyscallGroupsWorkersByPID(t *testing.T) {
+	requireSyscallTrace(t)
+	var helpers []syscallHelper
+	for range 2 {
+		helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+		if err != nil {
+			t.Fatal(err)
+		}
+		helpers = append(helpers, helper)
+	}
+	options := syscallTraceOptions{
+		pids:    []uint32{helpers[0].pid(), helpers[1].pid()},
+		groupBy: traceGroupByPIDSyscall,
+	}
+	collection := traceSyscallHelpers(t, options, helpers, nil, nil)
+	report := syscallReportFor(collection, options.groupBy)
+	calls := map[uint32]uint64{}
+	for _, row := range report.Rows {
+		if row.Syscall == "getppid" {
+			calls[row.PID] = row.Calls
+		}
+	}
+	if len(calls) != 2 || calls[helpers[0].pid()] < syscallHelperCalls || calls[helpers[1].pid()] < syscallHelperCalls {
+		t.Fatalf("getppid calls per worker = %v", calls)
+	}
+}
+
 func TestTraceSyscallLeavesOutEdcItself(t *testing.T) {
 	requireSyscallTrace(t)
 	namespace, _ := os.Readlink("/proc/self/ns/pid")

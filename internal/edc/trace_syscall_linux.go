@@ -118,6 +118,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		variables.FilterProcess.Set(boolByte(options.processFiltered())),
 		variables.FilterCgroup.Set(boolByte(options.container != nil)),
 		variables.KeyCgroup.Set(boolByte(options.groupBy == traceGroupByCgroup)),
+		variables.KeyPid.Set(boolByte(options.groupBy == traceGroupByPIDSyscall)),
 		variables.ExitNr.Set(exit),
 		variables.ExitGroupNr.Set(exitGroup),
 		variables.CompatExitNr.Set(compatExit),
@@ -276,7 +277,7 @@ func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfEx
 	var values []syscallEventsSyscallStats
 	iterator := objects.Stats.Iterate()
 	for iterator.Next(&key, &values) {
-		sample := syscallSample{Process: syscallComm(key.Comm), CgroupID: key.CgroupId, Syscall: syscallName(runtime.GOARCH, key.Nr&^syscallCompatBit, key.Nr&syscallCompatBit != 0), Errnos: errnos[key]}
+		sample := syscallSample{PID: key.Tgid, Process: syscallComm(key.Comm), CgroupID: key.CgroupId, Syscall: syscallName(runtime.GOARCH, key.Nr&^syscallCompatBit, key.Nr&syscallCompatBit != 0), Errnos: errnos[key]}
 		for _, value := range values {
 			sample.Calls += value.Calls
 			sample.Timed += value.Timed

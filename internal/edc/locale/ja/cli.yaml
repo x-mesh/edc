@@ -398,7 +398,7 @@ cli:
     socket_payload_kernel: "trace socket の --payload には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
     io_group_by: "--group-by は device、process、cgroup、event だけを使用できます"
     io_failed: "trace io に失敗しました: %v"
-    syscall_group_by: "--group-by は process、syscall、cgroup だけを使用できます"
+    syscall_group_by: "--group-by は process、syscall、cgroup、pid,syscall だけを使用できます"
     syscall_process: "--process: %v"
     syscall_failed: "trace syscall に失敗しました: %v"
     syscall_names: "--syscall: %v"

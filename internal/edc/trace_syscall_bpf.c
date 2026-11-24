@@ -59,7 +59,7 @@ struct bpf_iter__task { struct bpf_iter_meta *meta; struct task_struct *task; } 
 // 짧게 사는 process가 많은 host에서는 tgid마다 항목을 만들면 map이 금방 찬다. 같은 이름은 한 항목에 모은다.
 // cgroup_id는 --group-by cgroup일 때만 채운다. ssh login마다 생기는 session scope처럼 잠깐 있는 cgroup도 항목을 늘린다.
 // nr의 맨 위 bit는 32비트 호환 호출이다. amd64에서 같은 번호가 64비트와 32비트에서 다른 syscall이다.
-struct syscall_key { __u64 cgroup_id; char comm[TASK_COMM_LEN]; __u32 nr; __u32 pad; };
+struct syscall_key { __u64 cgroup_id; char comm[TASK_COMM_LEN]; __u32 nr; __u32 tgid; };
 // calls는 모든 호출이고 timed는 돌아온 호출이다. exit와 exit_group은 돌아오지 않아 calls에만 들어간다.
 // bucket i는 [2^i, 2^(i+1)) 마이크로초다.
 struct syscall_stats { __u64 calls; __u64 timed; __u64 errors; __u64 sum_ns; __u64 max_ns; __u64 hist[HIST_BUCKETS]; };
@@ -113,6 +113,7 @@ volatile const __u32 self_tgid = 0;
 volatile const __u8 filter_process = 0;
 volatile const __u8 filter_cgroup = 0;
 volatile const __u8 key_cgroup = 0;
+volatile const __u8 key_pid = 0;
 // 돌아오지 않는 syscall의 번호다. 아키텍처마다 달라 사용자 공간이 정하고, 없는 값은 어떤 번호와도 같지 않게 둔다.
 volatile const __u32 exit_nr = 0xFFFFFFFFU;
 volatile const __u32 exit_group_nr = 0xFFFFFFFFU;
@@ -191,6 +192,7 @@ static __always_inline __u32 syscall_nr(struct task_struct *task, long id) {
 
 static __always_inline struct syscall_stats *stats_for(struct task_struct *task, __u32 nr, struct syscall_key *key) {
 	if (key_cgroup) key->cgroup_id = bpf_get_current_cgroup_id();
+	if (key_pid) key->tgid = bpf_get_current_pid_tgid() >> 32;
 	leader_comm(task, key->comm);
 	key->nr = nr;
 	struct syscall_stats *value = bpf_map_lookup_elem(&stats, key);

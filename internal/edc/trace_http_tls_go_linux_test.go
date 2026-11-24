@@ -54,16 +54,43 @@ func traceTLSGoBuildFixture(t *testing.T, goCommand, source, mode, arch string, 
 	t.Helper()
 	fixture := filepath.Join(t.TempDir(), "edc-go-tls")
 	args := []string{"build", "-o", fixture}
+	// "external-" mode는 외부 linker로 build한다. 외부 linker는 C 시작 코드를 .text 앞에 두므로 runtime.text가 .text의
+	// 시작보다 뒤에 온다.
+	mode, external := strings.CutPrefix(mode, "external-")
+	cgo := "CGO_ENABLED=0"
+	var ldflags []string
+	if external {
+		if _, err := exec.LookPath("gcc"); err != nil {
+			t.Skip("needs gcc for external linking")
+		}
+		cgo = "CGO_ENABLED=1"
+		ldflags = append(ldflags, "-linkmode=external")
+	}
 	if mode == "stripped" {
-		args = append(args, "-ldflags=-s -w")
+		ldflags = append(ldflags, "-s", "-w")
 	} else if mode == "pie" {
 		args = append(args, "-buildmode=pie")
 	}
+	if len(ldflags) > 0 {
+		args = append(args, "-ldflags="+strings.Join(ldflags, " "))
+	}
 	args = append(args, source)
 	command := exec.Command(goCommand, args...)
-	command.Env = traceTLSGoCompilerEnv(stdlib, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
+	command.Env = traceTLSGoCompilerEnv(stdlib, "GOOS=linux", "GOARCH="+arch, cgo)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Go TLS fixture: %v\n%s", err, output)
+	}
+	if external && mode == "pie" {
+		// Go 1.25까지는 외부 linker로 만든 PIE의 pclntab이 .data.rel.ro 안에 있고, traceTLSGo는 그 표를 찾지 않는다.
+		file, err := elf.Open(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := file.Section(".gopclntab") != nil || file.Section(".data.rel.ro.gopclntab") != nil
+		file.Close()
+		if !found {
+			t.Skip("externally linked PIE has no Go function table section")
+		}
 	}
 	info, err := buildinfo.ReadFile(fixture)
 	if err != nil {
@@ -188,6 +215,68 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 	}
 }
 
+// 함수 주소를 .text의 시작에서 세면 외부 linker로 build한 binary에서는 C 시작 코드의 크기만큼 앞선 곳을 가리킨다.
+// 심볼표가 있는 build에서는 찾은 진입 offset이 심볼표의 그 함수 안에 있는지 본다.
+func TestTraceTLSGoExternalLinkEntries(t *testing.T) {
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("external link fixture needs a supported Linux amd64 or arm64 Go version")
+	}
+	names := []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose}
+	for _, mode := range []string{"external-normal", "external-stripped", "external-pie"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := traceTLSGoFixture(t, goCommand, mode)
+			file, err := elf.Open(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			target := traceTLSTarget{path: fixture}
+			if err := traceTLSGo(file, &target); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range names {
+				if _, ok := target.offsets[name]; !ok {
+					t.Fatalf("missing entry: %s", name)
+				}
+				if name != traceTLSGoClose && len(target.goReturns[name]) == 0 {
+					t.Errorf("missing returns: %s", name)
+				}
+			}
+			if mode == "external-stripped" {
+				return
+			}
+			symbols, err := file.Symbols()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var runtimeText uint64
+			functions := map[string]elf.Symbol{}
+			for _, symbol := range symbols {
+				if symbol.Name == "runtime.text" {
+					runtimeText = symbol.Value
+				} else if _, ok := target.offsets[symbol.Name]; ok {
+					functions[symbol.Name] = symbol
+				}
+			}
+			text := file.Section(".text")
+			if text == nil || runtimeText <= text.Addr {
+				t.Fatalf("fixture has no C code before runtime.text: runtime.text=%#x .text=%+v", runtimeText, text)
+			}
+			for _, name := range names {
+				symbol, ok := functions[name]
+				if !ok {
+					t.Fatalf("missing symbol: %s", name)
+				}
+				start := symbol.Value - text.Addr + text.Offset
+				if entry := target.offsets[name]; entry <= start || entry >= start+symbol.Size {
+					t.Errorf("%s entry offset %#x is outside its symbol [%#x,%#x)", name, entry, start, start+symbol.Size)
+				}
+			}
+		})
+	}
+}
+
 func TestTraceTLSGoMissingMethodsAreClassified(t *testing.T) {
 	if !traceTLSGoVersions[traceTLSGoVersion(t, traceTLSGoCommand(t))] {
 		t.Skip("fixture compiler version is not supported")
@@ -307,6 +396,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 		port           uint16
 	}{
 		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443}, {"normal", "errors", 0},
+		{"external-normal", "", 0}, {"external-stripped", "", 0}, {"external-pie", "", 0},
 	} {
 		t.Run(tc.mode+"-"+tc.argument+"-"+fmt.Sprint(tc.port), func(t *testing.T) {
 			fixture := traceTLSGoFixture(t, goCommand, tc.mode)

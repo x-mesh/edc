@@ -330,7 +330,7 @@ func TestSyscallLiveWriterRedrawsWithTheCallRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	write := newSyscallSnapshotHandler(file, "", nil, nil, true)
+	write := newSyscallSnapshotHandler(file, "", nil, nil, true, "")
 	first := syscallTestCollection()
 	first.summary.DurationMS = 1000
 	write(first)

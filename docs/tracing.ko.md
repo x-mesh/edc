@@ -799,6 +799,8 @@ edc trace syscall --syscall openat,statx --slow 10ms --raw
 
 `--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
 
+`--process`를 쓰면 `PROCESS FILTER AT START`에 시작 시 호스트의 `/proc`에서 이름이나 호스트 PID가 일치한 프로세스 수가 표시됩니다. 이 확인에는 `--container` 조건을 적용하지 않습니다. 일치하는 프로세스도 기록된 호출이 0일 수 있고, 나중에 시작한 프로세스도 추적할 수 있습니다. 대시보드 외 출력에서는 상태를 stderr에 표시합니다.
+
 빨리 끝나는 명령은 `--` 뒤에 적어 trace할 수 있습니다. edc는 trace를 켠 뒤에 새 cgroup 안에서 명령을 시작하므로 첫 호출부터 셉니다. 명령이 시작한 process의 호출도 함께 셉니다. 명령이 끝나면 trace도 끝나고, edc는 명령의 종료 코드를 돌려줍니다. root로 실행해야 하며, `--process`, `--container`, `--duration`은 명령과 함께 쓸 수 없습니다. cgroup v2를 쓸 수 없으면 명령 자신의 호출만 세고 경고를 출력합니다.
 
 `FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 flags를 읽지 않으므로 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.

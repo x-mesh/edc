@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
@@ -340,9 +341,13 @@ func runTraceSyscall(args []string) int {
 		}
 		options.container = container
 	}
+	processStatus := syscallProcessStartupStatus(options)
 	// event를 내거나 파일로 쓰지 않고 터미널에 그릴 때만 실행 중에 표를 다시 그린다. 그 밖에는 끝날 때 한 번 출력한다.
 	live := !options.raw && options.jsonPath == "" && !options.linesEnabled() && traceIsTerminal(os.Stdout) && command == nil
 	// 화면 없이 끝날 때 한 번 출력하므로, 터미널에서는 무엇을 기다리는지 알린다.
+	if !live && processStatus != "" {
+		fmt.Fprintln(os.Stderr, processStatus)
+	}
 	if traceIsTerminal(os.Stderr) && !live && command == nil {
 		if options.duration > 0 {
 			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_running_for", options.duration))
@@ -410,7 +415,7 @@ func runTraceSyscall(args []string) int {
 		}
 		options.liveInterval = syscallLiveInterval
 		options.snapshotInFlight = live
-		options.onSnapshot = newSyscallSnapshotHandler(os.Stdout, options.groupBy, snapshotFiles, detector, live)
+		options.onSnapshot = newSyscallSnapshotHandler(os.Stdout, options.groupBy, snapshotFiles, detector, live, processStatus)
 	}
 	collection, err := collectSyscallStats(options, stopTrace, onEvent)
 	if err != nil {
@@ -462,7 +467,11 @@ func runTraceSyscall(args []string) int {
 	if live {
 		io.WriteString(os.Stdout, syscallLiveClear)
 	}
-	report.render(os.Stdout, syscallFinalView(options.all))
+	view := syscallFinalView(options.all)
+	if live {
+		view.processStatus = processStatus
+	}
+	report.render(os.Stdout, view)
 	notices()
 	return exitCode()
 }
@@ -487,7 +496,7 @@ func syscallLiveFrame(report syscallReport, view syscallView) []byte {
 
 // newSyscallSnapshotHandler는 snapshot마다 event 조건을 보고, live이면 표를 다시 그리는 함수다. 호출 수의 증가분을 지난
 // snapshot과 비교해 초당 호출 수를 낸다. files와 detector는 nil일 수 있다.
-func newSyscallSnapshotHandler(out *os.File, groupBy string, files *syscallFileTable, detector *syscallEventDetector, live bool) func(syscallCollection) {
+func newSyscallSnapshotHandler(out *os.File, groupBy string, files *syscallFileTable, detector *syscallEventDetector, live bool, processStatus string) func(syscallCollection) {
 	var previous uint64
 	var previousMS int64
 	return func(collection syscallCollection) {
@@ -510,7 +519,12 @@ func newSyscallSnapshotHandler(out *os.File, groupBy string, files *syscallFileT
 		if detector != nil {
 			eventRows = max(1, len(report.Events))
 		}
-		view := syscallLiveView(terminalHeight(out), files != nil, eventRows)
+		height := terminalHeight(out)
+		if processStatus != "" {
+			height--
+		}
+		view := syscallLiveView(height, files != nil, eventRows)
+		view.processStatus = processStatus
 		if elapsed := report.Summary.DurationMS - previousMS; elapsed > 0 && report.Summary.Calls >= previous {
 			view.rate = float64(report.Summary.Calls-previous) * 1000 / float64(elapsed)
 		}
@@ -551,6 +565,56 @@ func terminalHeight(file *os.File) int {
 		return syscallLiveHeight
 	}
 	return height
+}
+
+// The process filter compares host TGIDs and the group leader's comm.
+func syscallProcessStartupStatus(options syscallTraceOptions) string {
+	if runtime.GOOS != "linux" || len(options.pids)+len(options.comms) == 0 {
+		return ""
+	}
+	const label = "PROCESS FILTER AT START"
+	namespace, _ := os.Readlink(filepath.Join(traceProcRoot, "1", "ns", "pid"))
+	if namespace != auditHostPIDNamespace {
+		return label + "  unavailable (host PID namespace required)"
+	}
+	entries, err := os.ReadDir(traceProcRoot)
+	if err != nil {
+		return label + "  unavailable (cannot list processes)"
+	}
+	selfNamespace, _ := os.Readlink(filepath.Join(traceProcRoot, "self", "ns", "pid"))
+	self, _ := syscallSelfTGID(selfNamespace, os.Getpid())
+	matched, unreadable := 0, false
+	for _, entry := range entries {
+		pid, err := strconv.ParseUint(entry.Name(), 10, 32)
+		if err != nil || !entry.IsDir() || uint32(pid) == self {
+			continue
+		}
+		if slices.Contains(options.pids, uint32(pid)) {
+			matched++
+			continue
+		}
+		if len(options.comms) == 0 {
+			continue
+		}
+		comm, err := os.ReadFile(filepath.Join(traceProcRoot, entry.Name(), "comm"))
+		if err != nil {
+			unreadable = unreadable || !os.IsNotExist(err)
+			continue
+		}
+		if slices.Contains(options.comms, strings.TrimSuffix(string(comm), "\n")) {
+			matched++
+		}
+	}
+	if unreadable {
+		return fmt.Sprintf("%s  %d visible matches (some process names unreadable)", label, matched)
+	}
+	if matched == 0 {
+		return label + "  no visible matches"
+	}
+	if matched == 1 {
+		return label + "  1 visible match"
+	}
+	return fmt.Sprintf("%s  %d visible matches", label, matched)
 }
 
 // parseSyscallProcessFilter는 쉼표로 나눈 PID와 command 이름이다. kernel 안에서 비교하므로 이름은 대표 thread의 comm과
@@ -744,7 +808,8 @@ func (row syscallReportRow) errnoText() string {
 
 // syscallView는 표가 보이는 방식이다. live는 실행 중에 다시 그리는 표이고, rate는 지난 갱신 뒤 초당 호출 수다.
 type syscallView struct {
-	events int
+	processStatus string
+	events        int
 	// styleOut은 색과 폭을 정하는 출력이다. 표를 buffer에 그릴 때 실제 터미널을 알려 준다.
 	styleOut io.Writer
 	rows     int
@@ -777,6 +842,9 @@ func (report syscallReport) render(out io.Writer, view syscallView) {
 		stats = append(stats, traceStat{"rate", fmt.Sprintf("%.0f/s", view.rate)})
 	}
 	style.line(out, style.headline("SYSCALL TRACE", stats...))
+	if view.processStatus != "" {
+		style.line(out, view.processStatus)
+	}
 	var titles []string
 	switch report.GroupBy {
 	case traceGroupByProcess:

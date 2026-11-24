@@ -770,3 +770,39 @@ func TestTraceSyscallSnapshotWithoutAnIntervalUsesTheDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestSyscallProcessStartupStatus(t *testing.T) {
+	root := t.TempDir()
+	previous := traceProcRoot
+	traceProcRoot = root
+	t.Cleanup(func() { traceProcRoot = previous })
+
+	options := syscallTraceOptions{pids: []uint32{42}}
+	if got := syscallProcessStartupStatus(options); !strings.Contains(got, "unavailable") {
+		t.Fatalf("without a host procfs, got %q", got)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "1", "ns"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(auditHostPIDNamespace, filepath.Join(root, "1", "ns", "pid")); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(options); !strings.Contains(got, "no visible matches") {
+		t.Fatalf("before the process appears, got %q", got)
+	}
+	if err := os.Mkdir(filepath.Join(root, "42"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "42", "comm"), []byte("nginx\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, filter := range []syscallTraceOptions{
+		options,
+		{comms: []string{"nginx"}},
+		{pids: []uint32{42}, comms: []string{"nginx"}},
+	} {
+		if got := syscallProcessStartupStatus(filter); !strings.HasSuffix(got, "1 visible match") {
+			t.Errorf("with PID or name match, got %q", got)
+		}
+	}
+}

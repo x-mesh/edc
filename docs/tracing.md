@@ -8,6 +8,8 @@ Inspect requests, connections, process activity, and kernel waits. Support and p
 
 The current UI renderer uses synthetic demo events. The screen shows the split preview opened with `i`. [Reproduce the capture](capture/README.md).
 
+`edc help trace` lists every option and note of all traces. `edc help trace <subcommand>`, for example `edc help trace exec`, shows the usage, the options, the notes, and the examples of one trace. `edc trace exec --help` shows the same page.
+
 [Capture](#capture) · [trace tcp / udp](#trace-tcp--udp) · [trace io](#trace-io) · [trace priv](#trace-priv) · [trace sched](#trace-sched) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [trace show](#trace-show) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace ndp](#trace-ndp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace drop](#trace-drop) · [PCAP file](#pcap-file)
 
 ## Capture

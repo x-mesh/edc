@@ -119,6 +119,25 @@ var evidenceShownProbes = map[string]bool{}
 // 판정과 무관한 참고 값이라 -v에 남긴다.
 var warnEvidenceProbes = map[string]bool{}
 
+// warnEvidenceLines는 -v 없이 evidence 묶음마다 보이는 줄 수다. 등록하지 않은 probe는 줄이지 않는다. JSON과 -v는 모두 보인다.
+var warnEvidenceLines = map[string]int{}
+
+// shortEvidence는 -v 없이 보일 evidence다. 묶음이 limit 줄을 넘으면 앞의 limit 줄과 남은 줄 수를 적는다.
+func shortEvidence(evidence []Evidence, limit int) []Evidence {
+	if limit <= 0 {
+		return evidence
+	}
+	short := make([]Evidence, len(evidence))
+	for index, item := range evidence {
+		lines := evidenceValueLines(item.Value)
+		if len(lines) > limit {
+			item.Value = strings.Join(lines[:limit], "\n") + "\n" + T("cli.evidence_more", len(lines)-limit)
+		}
+		short[index] = item
+	}
+	return short
+}
+
 // printResultDetail은 결과 줄 뒤의 상세다. 실시간 화면이 남긴 결과 줄은 화면 폭에서 잘리므로, 오류 상자가 원인 전문을
 // 보이는 유일한 자리일 수 있다. 그래서 여기서는 상자를 줄이지 않는다.
 func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
@@ -167,6 +186,9 @@ func printResultDetailWith(writer io.Writer, result Result, verbose, color, line
 	}
 	shown := verbose || evidenceShownProbes[result.Probe] || (result.Status == StatusWarn && warnEvidenceProbes[result.Probe])
 	if shown && result.Status != StatusFail && !isRemoteResult(result) {
+		if !verbose {
+			result.Evidence = shortEvidence(result.Evidence, warnEvidenceLines[result.Probe])
+		}
 		if lines := richEvidenceLinesWidth(color, result, writerWidth(writer)); lines != nil {
 			for _, line := range lines {
 				fmt.Fprintln(writer, line)

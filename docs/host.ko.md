@@ -80,7 +80,9 @@ Linux의 `storage`는 `/proc/mdstat`과 `smartctl --json`을 읽습니다. `smar
 
 macOS에서 `time`과 `reboot`은 `skip`입니다. Linux 결과에는 `thermal`과 `backup`이 없습니다.
 
-`reboot`는 `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, `/boot`의 커널을 읽습니다. 요약에는 재부팅이 필요한 이유가 나옵니다. `/boot`에 실행 중인 것보다 새 커널이 있으면 커널 업데이트가 재부팅해야 적용된다는 뜻입니다. 커널이 아닌 패키지도 재부팅을 요청할 수 있고, 그 업데이트도 재부팅해야 적용될 수 있습니다. 근거에는 재부팅을 요청한 시각과 지난 일수, 설치된 커널과 실행 중인 커널의 부팅 시각, 요청한 패키지 전체가 나옵니다.
+`reboot`는 `/var/run/reboot-required`, `/var/run/reboot-required.pkgs`, `/boot`의 커널을 읽습니다. 요약에는 재부팅이 필요한 이유가 나옵니다. `/boot`에 실행 중인 것보다 새 커널이 있으면 커널 업데이트가 재부팅해야 적용된다는 뜻입니다. 커널이 아닌 패키지도 재부팅을 요청할 수 있고, 그 업데이트도 재부팅해야 적용될 수 있습니다. 근거에는 재부팅을 요청한 시각과 지난 일수, 설치된 커널과 실행 중인 커널의 부팅 시각, 요청한 패키지가 나옵니다. `-v`가 없으면 근거의 묶음마다 앞의 5줄과 나머지 줄 수만 보이고, `-v`와 `--json`은 모두 보여 줍니다.
+
+`service`가 실패한 unit을 찾으면 계속 떠 있어야 하는 unit을 요약의 앞에 적습니다. `systemd-run`이 `--unit` 없이 만든 `run-r…`나 `run-p…-i….service` 같은 unit은 그 뒤에 오고, `next`는 목록의 첫 unit을 엽니다.
 
 `--group`은 `edc remote`의 inventory와 OpenSSH 설정을 씁니다. 각 호스트에 `check`가 있는 edc가 있어야 합니다. 표에는 호스트마다 한 줄이 나옵니다. 결과를 받지 못한 호스트는 SSH 실패나 `check`가 없는 edc처럼 그 이유를 보여 줍니다.
 
@@ -558,8 +560,8 @@ edc listen --full
 edc listen --watch -i 0.5 --duration 10s
 ```
 
-포트, 프로토콜, 프로세스, 바인딩 범위, container가 같은 소켓은 한 행으로 묶습니다. 행 안에서는 주소와 PID만 다를 수 있습니다. 예를 들어 `0.0.0.0`과 `::`에 바인드한 `sshd`는 `0.0.0.0, ::` 한 행으로 나옵니다. loopback 소켓과 모든 주소에 바인드한 소켓은 같은 행에 묶지 않고, unix socket은 언제나 따로 나옵니다. ADDRESS 열의 폭은 가장 긴 주소 하나에 맞추고, 한 행의 주소가 그 폭에 들어가지 않으면 나머지 주소를 첫 주소 아래 줄에 적습니다. `-v`는 행에 묶인 소켓의 사용자, fd, queue 값을 이어 적으므로 행 수가 바뀌지 않습니다. 색을 쓰면 주소와 범위를 모든 주소는 노랑, 특정 주소는 청록, loopback은 회색으로 칠합니다. `--json`과 `--watch`의 변화 줄은 지금처럼 소켓마다 항목 하나를 냅니다.
+포트, 프로토콜, 프로세스, 바인딩 범위, container가 같은 소켓은 한 행으로 묶습니다. 행 안에서는 주소와 PID만 다를 수 있습니다. 예를 들어 `0.0.0.0`과 `::`에 바인드한 `sshd`는 `0.0.0.0, ::` 한 행으로 나옵니다. loopback 소켓과 모든 주소에 바인드한 소켓은 같은 행에 묶지 않고, unix socket은 언제나 따로 나옵니다. ADDRESS 열의 폭은 가장 긴 주소 하나에 맞추고, 한 행의 주소가 그 폭에 들어가지 않으면 나머지 주소를 첫 주소 아래 줄에 적습니다. `-v`는 행에 묶인 소켓의 사용자, fd, queue 값을 이어 적으므로 행 수가 바뀌지 않습니다. 색을 쓰면 주소와 범위를 모든 주소는 노랑, 특정 주소는 청록, loopback은 회색으로 칠합니다. `--json`과 `--watch`의 변화 줄은 지금처럼 소켓마다 항목 하나를 냅니다. `--redact`를 쓰면 ADDRESS 열의 폭을 가린 주소에 맞추므로 열이 어긋나지 않습니다.
 
-`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token`, redis의 `--requirepass` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.
+`--full`은 행마다 아래에 프로세스의 작업 디렉터리와 명령줄을 회색 줄로 붙입니다. 같은 `node`나 `python` 서버 여럿을 이 줄로 구분할 수 있습니다. 한 행의 프로세스들이 이 줄이 서로 다르면 줄을 모두 보여 주고, 줄마다 PID를 앞에 적습니다. `node`, `python`, `ruby`, `perl`, `php`는 스크립트 이름을 앞에 둡니다. 터미널에서는 화면 폭에 맞춰 줄을 자르므로 명령줄의 끝이 먼저 잘립니다. `--password`, `--token`, redis의 `--requirepass` 같은 옵션의 값과 URL의 암호는 `***`로 가립니다. `edc listen --json`은 읽을 수 있는 프로세스의 `args`와 `cwd`를 담습니다. root가 아니면 macOS에서는 다른 계정의 프로세스를, Linux에서는 다른 계정의 작업 디렉터리를 읽을 수 없습니다. `--full`은 `--watch`와 함께 쓸 수 없습니다.
 
 컨테이너가 publish한 포트이면 행에 `→` 뒤로 그 컨테이너와 명령도 표시합니다(`OrbStack Helper (9378) → pg: docker-entrypoint.sh postgres`). 표에서는 명령을 40자에서 자릅니다. edc가 컨테이너 목록을 읽은 뒤 그 컨테이너가 멈추는 경우처럼 명령을 읽지 못하면 컨테이너 이름만 표시합니다. OrbStack과 `docker-proxy`는 컨테이너 대신 host에서 publish한 포트를 열기 때문에, 소켓의 process는 실제 서버가 아닙니다. edc는 Docker Engine에 publish한 포트를 묻고, 프로토콜, 포트, host 주소가 같은 소켓을 찾습니다. `--full`은 컨테이너 안의 포트, 이미지, 자르지 않은 명령도 표시합니다. Engine socket은 `edc ctr`과 같은 방법으로 찾습니다. Engine에 닿지 못하면 행에는 process만 나오고, `--json`의 `container_error`에 이유가 남습니다. OrbStack이 자기 자신을 위해 연 포트처럼 어느 컨테이너도 publish하지 않은 포트에는 process만 나옵니다.

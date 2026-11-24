@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -592,6 +593,8 @@ func checkServices(facts checkFacts, policy checkPolicy) Result {
 	}
 	next := ""
 	if len(failed) > 0 {
+		// systemd-run이 만든 일회성 unit은 실패한 명령 한 번의 기록이라, 계속 떠 있어야 하는 unit을 먼저 적고 next도 그쪽을 연다.
+		slices.SortStableFunc(failed, func(a, b string) int { return compareBool(checkTransientUnit(a), checkTransientUnit(b)) })
 		issues.add(StatusFail, T("check.service.failed", len(failed), checkNames(failed)))
 		next = facts.serviceCommand(failed[0])
 	}
@@ -608,6 +611,23 @@ func checkServices(facts checkFacts, policy checkPolicy) Result {
 		}
 	}
 	return issues.result(id, T("check.service.ok", len(facts.Services)), next)
+}
+
+// checkTransientUnitName은 systemd-run이 --unit 없이 만든 unit의 이름이다. systemd-run 문서의 run-r<16진수>와
+// systemd 257 host에서 본 run-p<PID>-i<번호>를 가린다.
+var checkTransientUnitName = regexp.MustCompile(`^run-(r[0-9a-f]+|p[0-9]+-i[0-9]+)\.service$`)
+
+func checkTransientUnit(unit string) bool { return checkTransientUnitName.MatchString(unit) }
+
+// compareBool은 false를 true보다 앞에 둔다.
+func compareBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
 }
 
 // checkPartialError는 원천을 일부만 읽은 경우다. 읽은 만큼은 판정하고, 읽지 못한 수를 경고로 남긴다.
@@ -971,7 +991,14 @@ func checkFileHandles(facts checkFacts, policy checkPolicy) Result {
 // checkRebootShown은 요약 줄에 적는 패키지 수다. 커널을 여러 번 올리면 수십 개가 쌓여 줄이 잘린다.
 const checkRebootShown = 3
 
-func init() { warnEvidenceProbes["check.reboot"] = true }
+func init() {
+	warnEvidenceProbes["check.reboot"] = true
+	// 재부팅을 요청한 패키지는 수십 개가 될 수 있다. -v 없이는 묶음마다 앞의 몇 줄만 보인다.
+	warnEvidenceLines["check.reboot"] = checkRebootEvidenceLines
+}
+
+// checkRebootEvidenceLines는 -v 없이 재부팅 근거의 묶음마다 보이는 줄 수다.
+const checkRebootEvidenceLines = 5
 
 // checkKernelPackage는 커널 패키지다. 이 패키지는 재부팅해야 새 커널이 돈다. 나머지는 라이브러리나 서비스라 재시작으로 끝날 수도 있다.
 func checkKernelPackage(name string) bool {

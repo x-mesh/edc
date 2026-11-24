@@ -1,6 +1,7 @@
 # 한국어 메시지. 빠진 키는 en의 같은 키로 내려간다.
 cli:
   usage: "사용법: %s"
+  evidence_more: "… %d줄 더 있음 (-v로 모두 보기)"
   confirm: "계속하시겠습니까? [y/N] "
   prompt:
     target: "대상 (host 또는 URL)"

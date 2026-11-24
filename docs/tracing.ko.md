@@ -8,6 +8,8 @@
 
 현재 UI 렌더러에 데모 event를 넣어 만든 화면입니다. `i`로 화면을 나누어 message 미리 보기를 연 상태입니다. [캡처 재현 방법](capture/README.md)을 참고하세요.
 
+`edc help trace`는 모든 trace의 option과 설명을 한꺼번에 보여 줍니다. `edc help trace exec`처럼 `edc help trace <하위 명령>`을 쓰면 그 trace 하나의 사용법, option, 설명, 예시만 나옵니다. `edc trace exec --help`도 같은 내용을 보여 줍니다.
+
 [패킷 캡처](#패킷-캡처) · [trace tcp / udp](#trace-tcp--udp) · [trace dns](#trace-dns) · [trace arp](#trace-arp) · [trace http](#trace-http) · [trace mysql](#trace-mysql) · [trace clickhouse](#trace-clickhouse) · [trace postgres](#trace-postgres) · [trace redis](#trace-redis) · [trace socket](#trace-socket) · [trace priv](#trace-priv) · [trace drop](#trace-drop) · [trace exec](#trace-exec) · [trace lock](#trace-lock) · [trace syscall](#trace-syscall) · [trace reclaim](#trace-reclaim) · [trace cpu](#trace-cpu) · [PCAP 파일](#pcap-파일) · [trace io](#trace-io) · [trace sched](#trace-sched) · [trace show](#trace-show)
 
 ## 패킷 캡처

@@ -81,7 +81,7 @@ func TestParseDiskutilSMARTReadsAppleNVMeKeys(t *testing.T) {
 
 func TestCheckStorageFailsOnDegradedArrayAndPointsAtIt(t *testing.T) {
 	storage := checkStorage{
-		Arrays:     parseMdstat(testMdstat),
+		Arrays:  parseMdstat(testMdstat),
 		Devices: []checkStorageDevice{{Name: "/dev/nvme0", Wear: 91, Next: "smartctl -a -d nvme /dev/nvme0"}},
 	}
 	result := checkStorageResult(checkFacts{Storage: storage})

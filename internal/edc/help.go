@@ -41,11 +41,30 @@ type commandDoc struct {
 	usesCommon  bool
 	subcommands []subcommandDoc
 	examples    []string
+	// parent는 하위 명령 하나의 도움말일 때 상위 명령 이름이다. 설명과 notes는 상위 명령의 locale에서 읽는다.
+	parent string
+	// noteGroups는 notes를 묶음으로 둔 명령의 묶음 이름이다. 이 순서로 command.<명령>.note_group.<이름>을 잇는다.
+	noteGroups []string
 }
 
-func (doc commandDoc) summary() string { return T("command." + doc.name + ".summary") }
+// localeName은 설명과 notes를 읽을 locale의 명령 이름이다.
+func (doc commandDoc) localeName() string {
+	if doc.parent != "" {
+		return doc.parent
+	}
+	return doc.name
+}
+
+func (doc commandDoc) summary() string { return T("command." + doc.localeName() + ".summary") }
 
 func (doc commandDoc) notes() []string {
+	if len(doc.noteGroups) > 0 {
+		var notes []string
+		for _, group := range doc.noteGroups {
+			notes = append(notes, TList("command."+doc.localeName()+".note_group."+group)...)
+		}
+		return notes
+	}
 	notes := TList("command." + doc.name + ".notes")
 	if doc.name == "history" || doc.name == "snapshot" {
 		if path, err := defaultHistoryPath(); err == nil {
@@ -101,6 +120,11 @@ var commandDocs = []commandDoc{
 		usage:      []string{"edc doctor [--profile default|full] [--all-ips] [options] <host|URL>"},
 		options:    []optionDoc{{"--profile default|full", "command.doctor.option.profile"}, {"--all-ips", "command.doctor.option.all_ips"}},
 		usesCommon: true,
+		examples: []string{
+			"edc doctor https://example.com",
+			"edc doctor --profile full example.com",
+			"edc doctor --redact --json report.json https://example.com",
+		},
 	},
 	{
 		name: "dns", group: "diagnose",
@@ -111,6 +135,11 @@ var commandDocs = []commandDoc{
 			{"lookup", "edc dns lookup <host>"},
 			{"compare", "edc dns compare <host>"},
 			{"config", "edc dns config"},
+		},
+		examples: []string{
+			"edc dns lookup example.com",
+			"edc dns compare --resolver 1.1.1.1 example.com",
+			"edc dns config",
 		},
 	},
 	{
@@ -137,12 +166,23 @@ var commandDocs = []commandDoc{
 			{"--parallel N", "command.tcp.option.parallel"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc tcp check example.com:443",
+			"edc tcp check -w=5m 192.0.2.10:5432",
+			"edc tcp check --diagnose example.com:443",
+			"edc tcp scan --ports 22,80,443 example.com",
+			"edc tcp expect --from 192.0.2.0/24 --duration 30s 8080",
+		},
 	},
 	{
 		name: "tls", group: "diagnose",
 		usage:      []string{"edc tls check [--min-days N] [options] <host:port>"},
 		options:    []optionDoc{{"--min-days N", "command.tls.option.min_days"}},
 		usesCommon: true,
+		examples: []string{
+			"edc tls check example.com:443",
+			"edc tls check --min-days 14 example.com:443",
+		},
 	},
 	{
 		name: "http", group: "diagnose",
@@ -156,6 +196,11 @@ var commandDocs = []commandDoc{
 			{"--body <path|->", "command.http.option.body"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc http check https://example.com",
+			"edc http check --expect-status 200 https://example.com/health",
+			"edc http check -H 'Accept: application/json' https://example.com/api",
+		},
 	},
 	{
 		name: "net", group: "diagnose",
@@ -175,11 +220,21 @@ var commandDocs = []commandDoc{
 			{"trace", "edc net trace <host>"},
 			{"mtu", "edc net mtu <host>"},
 		},
+		examples: []string{
+			"edc net interfaces",
+			"edc net route example.com",
+			"edc net ping example.com",
+			"edc net mtu example.com",
+		},
 	},
 	{
 		name: "audit", group: "diagnose",
 		usage:      []string{"edc audit [options]"},
 		usesCommon: true,
+		examples: []string{
+			"edc audit",
+			"edc audit --json audit.json",
+		},
 	},
 	{
 		name: "check", group: "diagnose",
@@ -191,12 +246,21 @@ var commandDocs = []commandDoc{
 			{"--notify", "command.check.option.notify"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc check",
+			"edc check --json -",
+			"edc check --group daily",
+		},
 	},
 	{
 		name: "events", group: "diagnose",
 		usage:      []string{"edc events [--since 6h] [options]"},
 		options:    []optionDoc{{"--since 6h", "command.events.option.since"}},
 		usesCommon: true,
+		examples: []string{
+			"edc events",
+			"edc events --since 24h",
+		},
 	},
 	{
 		name: "route", group: "host",
@@ -222,6 +286,11 @@ var commandDocs = []commandDoc{
 			{"status", "edc route status"},
 			{"rollback", "edc route rollback [--state <file>]"},
 		},
+		examples: []string{
+			"edc route check",
+			"edc route status",
+			"edc route switch --to backup --dry-run",
+		},
 	},
 	{
 		name: "disk", group: "host",
@@ -239,6 +308,11 @@ var commandDocs = []commandDoc{
 			{"check", "edc disk check [mount]"},
 			{"grow", "edc disk grow <mount>"},
 			{"detach", "edc disk detach [mount...]"},
+		},
+		examples: []string{
+			"edc disk check",
+			"edc disk check /data",
+			"edc disk grow /data --dry-run",
 		},
 	},
 	{
@@ -265,6 +339,10 @@ var commandDocs = []commandDoc{
 			{"confirm", "edc change confirm [--state <file>]"},
 			{"rollback", "edc change rollback [--state <file>]"},
 		},
+		examples: []string{
+			"edc change status",
+			"edc change status --json -",
+		},
 	},
 	{
 		name: "top", group: "observe",
@@ -289,6 +367,12 @@ var commandDocs = []commandDoc{
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},
 			{"--json <path|->", "command.top.option.json"},
+		},
+		examples: []string{
+			"edc top",
+			"edc top --process nginx",
+			"edc top --count 5 --json -",
+			"edc top -w incident.db",
 		},
 	},
 	{
@@ -364,6 +448,11 @@ var commandDocs = []commandDoc{
 			{"http", "edc watch http <host|URL>"},
 			{"fs", "edc watch fs [directory]"},
 		},
+		examples: []string{
+			"edc watch http https://example.com/health",
+			"edc watch fs ./src -r --event modify --match '**/*.go'",
+			"edc watch fs --rules watch.yaml --dry-run",
+		},
 	},
 	{
 		name: "info", group: "observe",
@@ -372,6 +461,11 @@ var commandDocs = []commandDoc{
 			{"--public=false", "command.info.option.public"},
 			{"--timeout 3s", "command.info.option.timeout"},
 			{"-v, --verbose", "command.info.option.verbose"},
+		},
+		examples: []string{
+			"edc info",
+			"edc info --public=false",
+			"edc info -v",
 		},
 	},
 	{
@@ -450,6 +544,11 @@ var commandDocs = []commandDoc{
 			{"-v, --verbose", "command.du.option.verbose"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc du /var",
+			"edc du --top 40 /var",
+			"edc du -B /var",
+		},
 	},
 	{
 		name: "clean", group: "observe",
@@ -464,6 +563,12 @@ var commandDocs = []commandDoc{
 			{"-v, --verbose", "command.clean.option.verbose"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc clean",
+			"edc clean -v",
+			"edc clean --project ~/work",
+			"edc clean --group daily",
+		},
 	},
 	{
 		name: "where", group: "observe",
@@ -473,6 +578,10 @@ var commandDocs = []commandDoc{
 			{"--count 3", "command.where.option.count"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc where",
+			"edc where --provider aws --count 5",
+		},
 	},
 	{
 		name: listenProbeID, group: "observe",
@@ -491,23 +600,43 @@ var commandDocs = []commandDoc{
 			{"--full", "command.listen.option.full"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc listen",
+			"edc listen -B --full",
+			"edc listen --all -v",
+			"edc listen --watch --duration 1m",
+		},
 	},
 	{
 		name: "svc", group: "observe",
 		usage:      []string{"edc svc [options] [--all]", "edc svc [options] <unit>"},
 		options:    []optionDoc{{"--all", "command.svc.option.all"}},
 		usesCommon: true,
+		examples: []string{
+			"edc svc",
+			"edc svc --all",
+			"edc svc nginx.service",
+		},
 	},
 	{
 		name: "proc", group: "observe",
 		usage:      []string{"edc proc <pid|name> [options]"},
 		usesCommon: true,
+		examples: []string{
+			"edc proc 1234",
+			"edc proc nginx -v",
+			"edc proc 1234 --json -",
+		},
 	},
 	{
 		name: "jobs", group: "observe",
 		usage:      []string{"edc jobs [--notify] [options]"},
 		options:    []optionDoc{{"--notify", "command.jobs.option.notify"}},
 		usesCommon: true,
+		examples: []string{
+			"edc jobs",
+			"edc jobs --json -",
+		},
 	},
 	{
 		name: "ctr", group: "observe",
@@ -517,6 +646,11 @@ var commandDocs = []commandDoc{
 			{"--collector-image <local-image>", "command.ctr.option.collector_image"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc ctr",
+			"edc ctr --all",
+			"edc ctr web",
+		},
 	},
 	{
 		name: "changes", group: "observe",
@@ -526,12 +660,20 @@ var commandDocs = []commandDoc{
 			{"-v, --verbose", "command.changes.option.verbose"},
 		},
 		usesCommon: true,
+		examples: []string{
+			"edc changes",
+			"edc changes --since 2h -v",
+		},
 	},
 	{
 		name: "quality", group: "observe",
 		usage:      []string{"edc quality [options]"},
 		options:    []optionDoc{{"--server <URL>", "command.quality.option.server"}},
 		usesCommon: true,
+		examples: []string{
+			"edc quality",
+			"edc quality --json -",
+		},
 	},
 	{
 		name: "capture", group: "observe",
@@ -544,6 +686,10 @@ var commandDocs = []commandDoc{
 			{"--filter <expr>", "command.capture.option.filter"},
 			{"--output <path>", "command.capture.option.output"},
 			{"--yes", "command.capture.option.yes"},
+		},
+		examples: []string{
+			"edc capture --interface eth0 --duration 10s",
+			"edc capture --interface eth0 --filter 'tcp port 443' --output trace.pcap",
 		},
 	},
 	{
@@ -582,6 +728,14 @@ var commandDocs = []commandDoc{
 			{"--off-cpu", "command.trace.option.off_cpu"},
 			{"--yes", "command.trace.option.yes"},
 		},
+		noteGroups: traceNoteGroups,
+		examples: []string{
+			"edc trace tcp",
+			"edc trace http --side server --port 8080",
+			"edc trace exec --duration 30s",
+			"edc trace syscall -- curl -s https://example.com",
+			"edc trace show http.jsonl",
+		},
 	},
 	{
 		name: "ai", group: "observe",
@@ -602,6 +756,11 @@ var commandDocs = []commandDoc{
 			{"-f, --follow", "command.ai.option.follow"},
 			{"--json <path|->", "option.json"},
 		},
+		examples: []string{
+			"edc ai",
+			"edc ai sessions --needs",
+			"edc ai agents -f",
+		},
 	},
 	{
 		name: "snapshot", group: "record",
@@ -616,6 +775,10 @@ var commandDocs = []commandDoc{
 			{"--timeout 15s", "option.timeout"},
 			{"--redact", "option.redact"},
 		},
+		examples: []string{
+			"edc snapshot",
+			"edc snapshot --no-write --since 2h --output -",
+		},
 	},
 	{
 		name: "report", group: "record",
@@ -624,6 +787,11 @@ var commandDocs = []commandDoc{
 			"edc report show <file>",
 			"edc report diff [--json <path|->] <before> <after>",
 			reportJoinUsage,
+		},
+		examples: []string{
+			"edc report list",
+			"edc report show report.json",
+			"edc report diff before.json after.json",
 		},
 	},
 	{
@@ -688,6 +856,11 @@ var commandDocs = []commandDoc{
 			{"--group <name>", "command.remote.option.group"},
 			{"--connect-timeout", "command.remote.option.connect_timeout"},
 			{"--output-limit N", "command.remote.option.output_limit"},
+		},
+		examples: []string{
+			"edc remote --list",
+			"edc remote daily --dry-run",
+			"edc remote daily",
 		},
 	},
 	{
@@ -775,6 +948,11 @@ var commandDocs = []commandDoc{
 			{"--inventory FILE", "command.setup.option.inventory"},
 			{"--recipe FILE", "command.setup.option.recipe"},
 		},
+		examples: []string{
+			"edc setup",
+			"edc setup --list",
+			"edc setup listen.browse never",
+		},
 	},
 	{
 		name: "update", group: "tool",
@@ -783,6 +961,9 @@ var commandDocs = []commandDoc{
 			{"--check", "command.update.option.check"},
 			{"--yes", "command.update.option.yes"},
 			{"--timeout 60s", "command.update.option.timeout"},
+		},
+		examples: []string{
+			"edc update --check",
 		},
 	},
 	{
@@ -944,11 +1125,16 @@ func printCommandHelp(writer io.Writer, name string) bool {
 	if !ok {
 		return false
 	}
-	if helpColor(writer) {
+	color := helpColor(writer)
+	if color {
 		printRichCommandHelp(writer, doc)
-		return true
+	} else {
+		renderCommandHelp(writer, doc, 80, false)
 	}
-	renderCommandHelp(writer, doc, 80, false)
+	// trace의 전체 도움말은 하위 명령 스무 개의 option과 notes를 모두 담아 길다. 하나만 보는 방법을 알린다.
+	if doc.name == "trace" {
+		printHelpDetail(writer, "edc help trace <subcommand>", color)
+	}
 	return true
 }
 

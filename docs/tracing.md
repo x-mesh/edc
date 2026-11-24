@@ -831,11 +831,11 @@ An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with 
 
 Go TLS uses the Go function table and probes at function returns.
 
-edc supports Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.7, 1.26.8, 1.27.1, and 1.27.3.
+edc supports Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.7, 1.26.8, 1.27.1, 1.27.3, and 1.27.4.
 
 Live capture tests pass on Linux amd64 for these versions. Metadata tests cover Linux amd64 and arm64. Native arm64 capture remains unverified.
 
-edc also supports a `GOEXPERIMENT=boringcrypto` build of these versions. Live capture tests pass on Linux amd64 for BoringCrypto builds of Go 1.25.0, 1.26.7, 1.26.8, and 1.27.1. edc rejects a build with a different Go experiment, or with more than one experiment, with an unsupported ABI error.
+edc also supports a `GOEXPERIMENT=boringcrypto` build of these versions. Live capture tests pass on Linux amd64 for BoringCrypto builds of Go 1.25.0, 1.26.7, 1.26.8, 1.27.1, and 1.27.4. edc rejects a build with a different Go experiment, or with more than one experiment, with an unsupported ABI error.
 
 A valid modern Go function table with no TLS Read, Write, or Close method produces no TLS target. A partial or corrupt table produces a notice in automatic mode. The `--tls` option reports an error when a Go binary has no TLS methods. edc rejects legacy Go function tables with an unsupported ABI error.
 

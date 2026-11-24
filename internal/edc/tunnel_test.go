@@ -268,6 +268,10 @@ func TestSaveAndRemoveTunnelDefinitionKeepComments(t *testing.T) {
 	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	// WriteFile의 권한은 umask를 거친다. 저장이 권한을 지키는지 보려면 umask와 상관없이 0640에서 시작해야 한다.
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveTunnelDefinition(path, "proxy", tunnelSpec{Host: "jump1", Socks: "1080"}); err != nil {
 		t.Fatal(err)
 	}

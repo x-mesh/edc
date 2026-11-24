@@ -243,10 +243,19 @@ func TestPackExtractPlacement(t *testing.T) {
 	if code, _, stderr := packTest(t, dir, "many.tgz"); code != 0 || packRead(t, filepath.Join(dir, "many", "b", "c")) != "c" {
 		t.Fatalf("many: %d %s", code, stderr)
 	}
-	// tar에 적히지 않은 부모 b는 보통 권한이다. 여러 항목을 담은 디렉터리도 그렇다.
-	for _, name := range []string{"many", filepath.Join("many", "b")} {
-		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm()&0o755 != 0o755 {
-			t.Fatalf("%s mode %v %v", name, info.Mode(), err)
+	// 여러 항목을 담은 디렉터리는 packPlace가 0755로 바꾼다. tar에 적히지 않은 부모 b는 0755로 만들어 umask를 거치므로,
+	// 같은 umask로 0755를 주어 만든 디렉터리와 비교한다.
+	reference := filepath.Join(t.TempDir(), "reference")
+	if err := os.Mkdir(reference, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	usual, err := os.Stat(reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]fs.FileMode{"many": 0o755, filepath.Join("many", "b"): usual.Mode().Perm()} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm() != want {
+			t.Fatalf("%s mode %v %v, want %v", name, info.Mode(), err, want)
 		}
 	}
 	if code, _, _ := packTest(t, dir, "-o", "chosen", "one.tar.gz"); code != 0 || packRead(t, filepath.Join(dir, "chosen", "top", "a")) != "a" {

@@ -55,19 +55,22 @@ func duHangAt(t *testing.T, path string, at int) {
 	})
 }
 
+// duHangCase는 duWalk가 멈춘 호출을 두고 기한에 돌아오는지 보는 경우 하나다.
+type duHangCase struct {
+	name     string
+	child    bool
+	at       int
+	workers  int
+	minDirs  int64
+	minBytes uint64
+}
+
 func TestDuWalkReturnsAtDeadlineWhenACallHangs(t *testing.T) {
 	const (
 		open = 1
 		read = 2
 	)
-	cases := []struct {
-		name     string
-		child    bool
-		at       int
-		workers  int
-		minDirs  int64
-		minBytes uint64
-	}{
+	cases := []duHangCase{
 		{"child open parallel", true, open, 4, 2, 64 << 10},
 		{"child open sequential", true, open, 1, 1, 0},
 		{"child read parallel", true, read, 4, 2, 64 << 10},
@@ -78,49 +81,57 @@ func TestDuWalkReturnsAtDeadlineWhenACallHangs(t *testing.T) {
 		{"root read sequential", false, read, 1, 0, 0},
 	}
 	sources, _ := hostDuSources()
-	const timeout = 100 * time.Millisecond
+	// 경우마다 duAbandonGrace를 기다리므로 차례로 돌리면 몇 초가 걸린다. 경우마다 다른 디렉터리를 막으므로 함께 돌린다.
 	for _, test := range cases {
-		root := filepath.Join(t.TempDir(), "tree")
-		for _, dir := range []string{"hang", "ok"} {
-			if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(root, dir, "file"), make([]byte, 64<<10), 0o644); err != nil {
-				t.Fatal(err)
-			}
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			duWalkHangCase(t, test, sources)
+		})
+	}
+}
+
+func duWalkHangCase(t *testing.T, test duHangCase, sources duSources) {
+	const timeout = 100 * time.Millisecond
+	root := filepath.Join(t.TempDir(), "tree")
+	for _, dir := range []string{"hang", "ok"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		hung := root
-		if test.child {
-			hung = filepath.Join(root, "hang")
+		if err := os.WriteFile(filepath.Join(root, dir, "file"), make([]byte, 64<<10), 0o644); err != nil {
+			t.Fatal(err)
 		}
-		duHangAt(t, hung, test.at)
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		started := time.Now()
-		done := make(chan duScan, 1)
-		go func() {
-			scan, err := duWalk(ctx, duOptions{root: root, workers: test.workers, rows: 20}, sources)
-			if err != nil {
-				t.Error(err)
-			}
-			done <- scan
-		}()
-		select {
-		case scan := <-done:
-			elapsed := time.Since(started)
-			// 시간이 다 된 뒤 유예 시간만 더 기다린다. 1초 여유는 CI runner의 지연 몫이다.
-			if limit := timeout + duAbandonGrace + time.Second; elapsed > limit {
-				t.Errorf("%s: returned after %s, limit %s", test.name, elapsed, limit)
-			}
-			warning := T("du.warning.abandoned", 1)
-			if !scan.partial || scan.directories < test.minDirs || scan.root.total < test.minBytes || scan.walker != nil ||
-				!slices.Contains(scan.warnings, warning) {
-				t.Errorf("%s: partial=%v dirs=%d total=%d walker=%v warnings=%v", test.name, scan.partial, scan.directories,
-					scan.root.total, scan.walker != nil, scan.warnings)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%s: duWalk did not return after the deadline", test.name)
+	}
+	hung := root
+	if test.child {
+		hung = filepath.Join(root, "hang")
+	}
+	duHangAt(t, hung, test.at)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	started := time.Now()
+	done := make(chan duScan, 1)
+	go func() {
+		scan, err := duWalk(ctx, duOptions{root: root, workers: test.workers, rows: 20}, sources)
+		if err != nil {
+			t.Error(err)
 		}
-		cancel()
+		done <- scan
+	}()
+	select {
+	case scan := <-done:
+		elapsed := time.Since(started)
+		// 시간이 다 된 뒤 유예 시간만 더 기다린다. 1초 여유는 CI runner의 지연 몫이다.
+		if limit := timeout + duAbandonGrace + time.Second; elapsed > limit {
+			t.Errorf("%s: returned after %s, limit %s", test.name, elapsed, limit)
+		}
+		warning := T("du.warning.abandoned", 1)
+		if !scan.partial || scan.directories < test.minDirs || scan.root.total < test.minBytes || scan.walker != nil ||
+			!slices.Contains(scan.warnings, warning) {
+			t.Errorf("%s: partial=%v dirs=%d total=%d walker=%v warnings=%v", test.name, scan.partial, scan.directories,
+				scan.root.total, scan.walker != nil, scan.warnings)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: duWalk did not return after the deadline", test.name)
 	}
 }
 

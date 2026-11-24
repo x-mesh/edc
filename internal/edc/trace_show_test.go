@@ -200,3 +200,41 @@ func TestTraceShowComparesNetworkRecordings(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceShowRejectsBadComparisons(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tcp := traceShowWrite(t, "tcp.jsonl", captureEvent{Protocol: "tcp", Event: "connect", TimestampNS: uint64(time.Second)})
+	dns := traceShowWrite(t, "dns.jsonl", captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: uint64(time.Second), Target: "example.com"})
+	bad := filepath.Join(t.TempDir(), "bad.jsonl")
+	if err := os.WriteFile(bad, []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.jsonl")
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{tcp, dns, "--json", filepath.Join(t.TempDir(), "out.json")}, "accepts --process, --destination and --detail"},
+		{[]string{tcp, dns, "--group-by", "target"}, "accepts --process, --destination and --detail"},
+		{[]string{tcp, "-"}, "requires file paths"},
+		{[]string{"-", tcp}, "requires file paths"},
+		{[]string{tcp, missing}, missing},
+		{[]string{tcp, dns, bad}, bad},
+	} {
+		var stdout string
+		stderr := traceCaptureOutput(t, &os.Stderr, func() {
+			stdout = traceCaptureOutput(t, &os.Stdout, func() {
+				if code := runTraceShow(test.args); code != 2 {
+					t.Errorf("args %q: exit = %d, want 2", test.args, code)
+				}
+			})
+		})
+		if !strings.Contains(stderr, test.want) {
+			t.Errorf("args %q: stderr lacks %q:\n%s", test.args, test.want, stderr)
+		}
+		// 뒤 파일이 실패하면 앞 파일의 보고도 내지 않는다.
+		if stdout != "" {
+			t.Errorf("args %q: printed a partial comparison:\n%s", test.args, stdout)
+		}
+	}
+}

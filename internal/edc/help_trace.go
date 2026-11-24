@@ -87,7 +87,7 @@ var traceSubDocs = []traceSubDoc{
 	},
 	{
 		name: "syscall", usage: traceSyscallUsage,
-		options:    []string{"duration", "process", "container", "group-by", "json", "syscall", "slow", "errors", "raw", "all", "files", "no-files"},
+		options:    []string{"duration", "process", "container", "group-by", "json", "syscall", "slow", "errors", "raw", "all", "files", "no-files", "fd-path"},
 		noteGroups: []string{"stop", "raw", "slow", "container", "syscall"},
 		examples:   []string{"edc trace syscall --duration 10s", "edc trace syscall -- curl -s https://example.com", "edc trace syscall --process nginx --group-by pid,syscall --duration 30s"},
 	},

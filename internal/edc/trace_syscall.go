@@ -109,6 +109,8 @@ type syscallEvent struct {
 	LatencyMS             float64 `json:"latency_ms"`
 	Path                  string  `json:"path,omitempty"`
 	FD                    *int32  `json:"fd,omitempty"`
+	FDTargetAtRead        string  `json:"fd_target_at_read,omitempty"`
+	FDTargetUnavailable   bool    `json:"fd_target_unavailable,omitempty"`
 	Destination           string  `json:"destination,omitempty"`
 	DirFD                 *int32  `json:"dirfd,omitempty"`
 	DestinationDirFD      *int32  `json:"destination_dirfd,omitempty"`
@@ -133,6 +135,11 @@ func (event syscallEvent) line() string {
 	if event.FD != nil {
 		text += fmt.Sprintf("  fd=%d", *event.FD)
 	}
+	if event.FDTargetAtRead != "" {
+		text += "  fd_target_at_read=" + execPrintable([]byte(event.FDTargetAtRead))
+	} else if event.FDTargetUnavailable {
+		text += "  (fd target unavailable)"
+	}
 	if event.DirFD != nil {
 		text += fmt.Sprintf("  dirfd=%d", *event.DirFD)
 	}
@@ -145,6 +152,22 @@ func (event syscallEvent) line() string {
 		text += syscallEventPathText(event.Destination, event.DestinationTruncated, event.DestinationUnreadable)
 	}
 	return text
+}
+
+// lookupFDTarget reads the thread's descriptor table after receiving the event.
+func (event *syscallEvent) lookupFDTarget(procRoot string) {
+	if event.FD == nil {
+		return
+	}
+	event.FDTargetUnavailable = true
+	if procRoot == "" || event.TID == 0 || *event.FD < 0 || event.Syscall == "close" || event.Errno == "EBADF" {
+		return
+	}
+	link := filepath.Join(procRoot, strconv.FormatUint(uint64(event.TID), 10), "fd", strconv.FormatInt(int64(*event.FD), 10))
+	if target, err := os.Readlink(link); err == nil {
+		event.FDTargetAtRead = target
+		event.FDTargetUnavailable = false
+	}
 }
 
 func syscallEventPathText(path string, truncated, unreadable bool) string {
@@ -274,9 +297,10 @@ func runTraceSyscall(args []string) int {
 	set.StringVar(&options.errors, "errors", "", T("command.trace.option.errors"))
 	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
 	set.BoolVar(&options.all, "all", false, T("command.trace.option.all"))
-	var files, noFiles bool
+	var files, noFiles, fdPath bool
 	set.BoolVar(&files, "files", false, T("command.trace.option.files"))
 	set.BoolVar(&noFiles, "no-files", false, T("command.trace.option.no_files"))
+	set.BoolVar(&fdPath, "fd-path", false, T("command.trace.option.fd_path"))
 	// "--" 뒤는 실행할 명령이다. flag 패키지는 "--"를 지우므로, 명령 없는 위치 인자와 구분하려고 먼저 자른다.
 	var argv []string
 	if index := slices.Index(args, "--"); index >= 0 {
@@ -338,6 +362,9 @@ func runTraceSyscall(args []string) int {
 	// 파일 표는 기본으로 켜지만, --slow나 --errors로 조건에 맞는 호출만 받던 사용은 그대로 둔다. 그때는 --files를 직접 준다.
 	options.files = syscallFilesEnabled(files, noFiles, options)
 	switch {
+	case fdPath && (!options.linesEnabled() || options.jsonPath != ""):
+		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_fd_path_requires_lines"))
+		return 2
 	case options.raw && options.jsonPath != "":
 		fmt.Fprintln(os.Stderr, T("cli.trace.raw_json_conflict"))
 		return 2
@@ -414,6 +441,20 @@ func runTraceSyscall(args []string) int {
 				return err
 			}
 			return nil
+		}
+	}
+	if fdPath {
+		root := traceProcRoot
+		namespace, _ := os.Readlink(filepath.Join(root, "1", "ns", "pid"))
+		if namespace != auditHostPIDNamespace {
+			root = ""
+		}
+		writeEvent := onEvent
+		onEvent = func(event syscallEvent) error {
+			if event.Reason&syscallReasonLine != 0 {
+				event.lookupFDTarget(root)
+			}
+			return writeEvent(event)
 		}
 	}
 	stopTrace := ctx.Done()

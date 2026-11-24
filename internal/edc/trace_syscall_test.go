@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -674,6 +675,45 @@ func TestSnapshotIntervalFallsBackToTheDefault(t *testing.T) {
 	} {
 		if got := (syscallTraceOptions{liveInterval: test.given}).snapshotInterval(); got != test.want {
 			t.Errorf("%s: interval = %s, want %s", test.name, got, test.want)
+		}
+	}
+}
+
+func TestSyscallFDTargetUsesTheTracingThreadsCurrentDescriptor(t *testing.T) {
+	root := t.TempDir()
+	threadFDs := filepath.Join(root, "19", "fd")
+	if err := os.MkdirAll(threadFDs, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := "/fixture/database.wal"
+	if err := os.Symlink(target, filepath.Join(threadFDs, "0")); err != nil {
+		t.Fatal(err)
+	}
+	fd := int32(0)
+	event := syscallEvent{PID: 7, TID: 19, Syscall: "fsync", FD: &fd}
+	event.lookupFDTarget(root)
+	if event.FDTargetAtRead != target || event.FDTargetUnavailable || !strings.Contains(event.line(), "fd_target_at_read="+target) {
+		t.Fatalf("event = %+v, line = %q", event, event.line())
+	}
+	for _, event := range []syscallEvent{
+		{PID: 7, TID: 19, Syscall: "close", FD: &fd},
+		{PID: 7, TID: 19, Syscall: "fsync", Errno: "EBADF", FD: &fd},
+		{PID: 7, TID: 20, Syscall: "fsync", FD: &fd},
+	} {
+		event.lookupFDTarget(root)
+		if event.FDTargetAtRead != "" || !event.FDTargetUnavailable {
+			t.Errorf("event = %+v, want unavailable", event)
+		}
+	}
+}
+
+func TestSyscallFDPathRequiresDetailedOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"--fd-path"},
+		{"--fd-path", "--slow", "2ms", "--json", "-"},
+	} {
+		if code := runTraceSyscall(args); code != 2 {
+			t.Errorf("args %v returned %d, want 2", args, code)
 		}
 	}
 }

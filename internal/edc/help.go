@@ -42,7 +42,8 @@ type commandDoc struct {
 	subcommands []subcommandDoc
 	examples    []string
 	// parent는 하위 명령 하나의 도움말일 때 상위 명령 이름이다. 설명과 notes는 상위 명령의 locale에서 읽는다.
-	parent string
+	parent     string
+	summaryKey string
 	// noteGroups는 notes를 묶음으로 둔 명령의 묶음 이름이다. 이 순서로 command.<명령>.note_group.<이름>을 잇는다.
 	noteGroups []string
 }
@@ -55,7 +56,12 @@ func (doc commandDoc) localeName() string {
 	return doc.name
 }
 
-func (doc commandDoc) summary() string { return T("command." + doc.localeName() + ".summary") }
+func (doc commandDoc) summary() string {
+	if doc.summaryKey != "" {
+		return T(doc.summaryKey)
+	}
+	return T("command." + doc.localeName() + ".summary")
+}
 
 func (doc commandDoc) notes() []string {
 	if len(doc.noteGroups) > 0 {

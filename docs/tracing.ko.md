@@ -39,6 +39,8 @@ edc trace tcp -d
 
 `--raw`는 JSONL event를 발생 즉시 출력합니다. `--json`은 `Ctrl-C` 후 connection summary를 저장합니다.
 끝에 출력하는 텍스트 요약은 process와 상대별로 행을 묶습니다. client 행은 목적지를, server 행은 `127.0.0.1:2379 (server)`처럼 local 서비스를 표시합니다. client마다 포트가 달라서 서버 쪽은 서비스로 묶습니다. TCP 행은 연결 수, 결과별 연결 수, 평균 연결 시간과 traffic을 표시하고, UDP 행은 datagram 수와 traffic을 표시합니다. 연결이나 UDP flow마다 한 행을 보려면 `-d` 또는 `--detail`을 사용합니다. JSON 출력은 항상 연결이나 flow마다 한 행입니다. `trace dns`의 요약은 항상 이름과 record 종류마다 한 행이라 `-d`로 달라지지 않습니다.
+TCP 텍스트 요약은 연결 수립 미완료, 재전송, 수신 윈도우 0, 서버의 `accept()` 대기 등 관측된 신호와 확인할 대상을 보여 줍니다. RTT는 관측한 표본의 평균, 최댓값, 개수를 표시합니다. Linux의 RTT 표본은 연결 성립과 재전송 시점에 값이 바뀔 때 기록됩니다.
+
 연결별 상세 행은 socket이 생긴 때부터 없어질 때까지를 한 행으로 표시합니다. kernel은 닫힌 socket의 주소를 새 socket에 다시 쓸 수 있으므로, socket이 없어지면 다음 event부터 새 행으로 셉니다. 행은 열려 있는 연결과 최근에 닫힌 연결 1,000개만 남기고, 합계는 모든 연결로 셉니다. JSON 출력의 `connections_omitted`는 행을 남기지 않은 닫힌 연결의 수입니다.
 각 행의 결과는 다음 중 하나입니다.
 
@@ -186,6 +188,8 @@ macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니�
 ## trace http
 
 Linux 5.15 이상과 macOS에서 `edc trace http`를 실행하면 HTTP/1.x와 HTTP/2를 client·server 양쪽에서 봅니다. Linux는 기본 TLS 자동 탐지를 사용합니다. macOS는 PKTAP으로 수집하며 BPF 장치에 접근할 권한이 필요합니다. TLS 계측을 시작하기 전에 커널 캡처 필터를 적용하며, `--port`도 이 필터에 반영합니다. 손실 수에는 잘린 레코드, BPF 버퍼에서 버린 패킷과 스트림 복원 손실이 포함됩니다.
+
+터미널에서 TLS 추적 시작 확인을 건너뛰려면 `--yes`를 사용합니다. 커널 경고는 계속 표시됩니다.
 
 macOS의 기본 HTTPS 수집은 DTrace로 OpenSSL·지원 Go TLS·SecureTransport의 평문 버퍼를 읽습니다. root 권한이 필요하며 키 로그는 필요하지 않습니다.
 
@@ -1005,6 +1009,7 @@ thread가 CPU에서 내려갈 때의 system call을 표시합니다. `futex`, `e
 
 ```bash
 edc trace show trace.jsonl
+edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl
 ```
 
-실시간 trace와 같은 grouping과 필터를 사용할 수 있습니다. [저장 파일 조회 상세](tracing.md#trace-show)를 참고하세요.
+파일 하나를 조회할 때는 실시간 trace와 같은 그룹 보기와 필터를 사용할 수 있습니다. 여러 파일을 넘기면 각 파일의 첫 이벤트와 마지막 이벤트, 공통 시간대를 UTC로 표시하고 파일별 전체 요약을 이어서 출력합니다. 여러 호스트의 시간대를 비교하려면 호스트의 시계가 동기화되어 있어야 합니다. [저장 파일 조회 상세](tracing.md#trace-show)를 참고하세요.

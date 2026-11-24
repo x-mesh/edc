@@ -11,7 +11,7 @@ import (
 var traceOptionSamples = map[string]string{
 	"duration": "1s", "slow": "1ms", "json": "out.json", "raw": "", "group-by": "process", "process": "1",
 	"destination": "example.com:443", "detail": "", "container": "web", "side": "client", "payload": "all",
-	"show-secrets": "", "tls": "", "tls-keylog": "keys.log", "port": "8080", "http-port": "8123",
+	"show-secrets": "", "yes": "", "tls": "", "tls-keylog": "keys.log", "port": "8080", "http-port": "8123",
 	"reason": "NO_SOCKET", "device": "8:0", "signal": "all", "syscall": "openat", "errors": "all", "all": "",
 	"files": "", "no-files": "", "fd-path": "", "denied": "", "frequency": "99", "folded": "stacks.txt", "off-cpu": "", "kind": "futex",
 }

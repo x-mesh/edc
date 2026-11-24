@@ -19,12 +19,12 @@ func traceSummaryFixtures() []traceSummaryFixture {
 	connect, reset, rtt := int64(12), true, uint32(840)
 	tcp := tcpTraceReport{DurationMS: 2000, Attempts: 3, Established: 2, Incomplete: 1, Retransmissions: u64(4), Resets: new(int), LostEvents: 2, traceTraffic: traffic,
 		Connections: []tcpTraceConnection{
-			{Process: "curl", Destination: "10.0.0.5:443", Hostname: "api.example", Result: "established", ConnectMS: &connect, Retransmissions: u64(4), Reset: &reset, RTTUS: &rtt, traceTraffic: traffic},
+			{Process: "curl", Destination: "10.0.0.5:443", Hostname: "api.example", Result: "established", ConnectMS: &connect, Retransmissions: u64(4), Reset: &reset, RTTUS: &rtt, rttStats: tcpRTTStats{total: 840, count: 1, peak: 840}, traceTraffic: traffic},
 			{Process: "nc", Destination: "10.0.0.9:22", Result: "refused", Retransmissions: u64(0), Reset: new(bool)},
 		},
 		ConnectionsOmitted: 7,
 		groups: []tcpTraceGroupRow{
-			{process: "curl", peer: "10.0.0.5:443", hostname: "api.example", connections: 2, established: 2, retransmissions: 4, resets: 1, connectTotalMS: 24, connectCount: 2, rttTotalUS: 1680, rttCount: 2, traceTraffic: traffic},
+			{process: "curl", peer: "10.0.0.5:443", hostname: "api.example", connections: 2, established: 2, retransmissions: 4, resets: 1, connectTotalMS: 24, connectCount: 2, rttStats: tcpRTTStats{total: 1680, count: 2, peak: 840}, traceTraffic: traffic},
 			{process: "nc", peer: "10.0.0.9:22", connections: 1, incomplete: 1},
 		}}
 	udp := udpTraceReport{DurationMS: 1500, Datagrams: 4, Sent: 3, Received: 1, traceTraffic: traffic,

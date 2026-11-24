@@ -165,3 +165,76 @@ func TestTraceShowRejectsBadFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceShowComparesNetworkRecordings(t *testing.T) {
+	second := uint64(time.Second)
+	source, peer := "127.0.0.1:40111", "127.0.0.1:443"
+	tcp := traceShowWrite(t, "tcp.jsonl",
+		captureEvent{Protocol: "tcp", Event: "tcp_connect", Socket: 1, TimestampNS: second, Process: "curl", Source: source, Destination: peer},
+		captureEvent{Protocol: "tcp", Event: "tcp_sample", Socket: 1, TimestampNS: 2 * second, TCPValid: 1 | 64, RTTUS: 150, ZeroWindow: 1},
+		captureEvent{Protocol: "tcp", Event: "tcp_retransmit", Socket: 1, TimestampNS: 3 * second},
+		captureEvent{Protocol: "tcp", Event: "tcp_sample", Socket: 1, TimestampNS: 4 * second, TCPValid: 1 | 64, RTTUS: 50},
+	)
+	dns := traceShowWrite(t, "dns.jsonl",
+		captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: 2 * second, Destination: "127.0.0.53:53", Target: "example.com"},
+		captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: 5 * second, Destination: "127.0.0.53:53", Target: "example.org"},
+	)
+	drop := traceShowWrite(t, "drop.jsonl", captureSummary{Event: "capture_summary", TraceProtocol: "drop", TraceOS: "linux"})
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{tcp, dns}, []string{"Shared event time range 1970-01-01T00:00:02Z to 1970-01-01T00:00:04Z", "avg 100us, max 150us, n=2", "Peer advertised a zero window", "Retransmit events observed (1)"}},
+		{[]string{tcp, drop}, []string{"Shared event time range unavailable.", "Drops: 0"}},
+		{[]string{tcp, "--group-by", "target"}, []string{"Highest observed RTT", peer}},
+	} {
+		output := traceCaptureOutput(t, &os.Stdout, func() {
+			if code := runTraceShow(test.args); code != 0 {
+				t.Errorf("exit = %d", code)
+			}
+		})
+		for _, want := range test.want {
+			if !strings.Contains(output, want) {
+				t.Errorf("missing %q in %s", want, output)
+			}
+		}
+	}
+}
+
+func TestTraceShowRejectsBadComparisons(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tcp := traceShowWrite(t, "tcp.jsonl", captureEvent{Protocol: "tcp", Event: "connect", TimestampNS: uint64(time.Second)})
+	dns := traceShowWrite(t, "dns.jsonl", captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: uint64(time.Second), Target: "example.com"})
+	bad := filepath.Join(t.TempDir(), "bad.jsonl")
+	if err := os.WriteFile(bad, []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.jsonl")
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{tcp, dns, "--json", filepath.Join(t.TempDir(), "out.json")}, "accepts --process, --destination and --detail"},
+		{[]string{tcp, dns, "--group-by", "target"}, "accepts --process, --destination and --detail"},
+		{[]string{tcp, "-"}, "requires file paths"},
+		{[]string{"-", tcp}, "requires file paths"},
+		{[]string{tcp, missing}, missing},
+		{[]string{tcp, dns, bad}, bad},
+	} {
+		var stdout string
+		stderr := traceCaptureOutput(t, &os.Stderr, func() {
+			stdout = traceCaptureOutput(t, &os.Stdout, func() {
+				if code := runTraceShow(test.args); code != 2 {
+					t.Errorf("args %q: exit = %d, want 2", test.args, code)
+				}
+			})
+		})
+		if !strings.Contains(stderr, test.want) {
+			t.Errorf("args %q: stderr lacks %q:\n%s", test.args, test.want, stderr)
+		}
+		// 뒤 파일이 실패하면 앞 파일의 보고도 내지 않는다.
+		if stdout != "" {
+			t.Errorf("args %q: printed a partial comparison:\n%s", test.args, stdout)
+		}
+	}
+}

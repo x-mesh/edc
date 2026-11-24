@@ -79,28 +79,105 @@ func runTraceShow(args []string) int {
 	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
-	usage := T("cli.usage", "edc trace show <raw.jsonl> [--group-by view] [--process name] [--destination host:port] [-d] [--json <path>]")
-	if set.NArg() != 1 {
+	usage := T("cli.usage", traceShowUsage)
+	if set.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
-	path := set.Arg(0)
-	var reader io.Reader = os.Stdin
-	if path != "-" {
-		handle, err := os.Open(path)
+	if set.NArg() == 1 {
+		path := set.Arg(0)
+		file, err := openTraceShowFile(path)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, T("cli.trace.show_failed", path, err))
 			return 2
 		}
-		defer handle.Close()
-		reader = handle
+		return printTraceShow(file, options)
 	}
-	file, err := readTraceShowFile(reader)
+	return printTraceShowComparison(set.Args(), options)
+}
+
+func openTraceShowFile(path string) (*traceShowFile, error) {
+	if path == "-" {
+		return readTraceShowFile(os.Stdin)
+	}
+	handle, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, T("cli.trace.show_failed", path, err))
+		return nil, err
+	}
+	defer handle.Close()
+	return readTraceShowFile(handle)
+}
+
+func printTraceShowComparison(paths []string, options traceShowOptions) int {
+	if options.jsonPath != "" || options.groupBy != "" {
+		fmt.Fprintln(os.Stderr, "trace show with multiple files accepts --process, --destination and --detail")
 		return 2
 	}
-	return printTraceShow(file, options)
+	type recording struct {
+		path, protocol string
+		first, last    uint64
+		print          func()
+	}
+	var recordings []recording
+	var overlapStart, overlapEnd uint64
+	for _, path := range paths {
+		if path == "-" {
+			fmt.Fprintln(os.Stderr, "trace show with multiple files requires file paths")
+			return 2
+		}
+		file, err := openTraceShowFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("cli.trace.show_failed", path, err))
+			return 2
+		}
+		if file.first == 0 {
+			overlapStart, overlapEnd = 0, 0
+		} else if len(recordings) == 0 {
+			overlapStart, overlapEnd = file.first, file.last
+		} else if overlapStart != 0 {
+			if file.first > overlapStart {
+				overlapStart = file.first
+			}
+			overlapEnd = min(overlapEnd, file.last)
+		}
+		var printReport func()
+		if file.protocol == traceShowExec {
+			report := traceShowExecReport(file, options)
+			printReport = report.print
+		} else {
+			aggregate, summary := traceShowAggregate(file, options)
+			report := aggregate.summary.summarize(summary, file.duration())
+			printReport = func() { report.print(options.detail) }
+		}
+		recordings = append(recordings, recording{path, file.protocol, file.first, file.last, printReport})
+	}
+
+	fmt.Fprintln(os.Stdout, "Recorded event ranges (UTC, before replay filters)")
+	table := traceTable{titles: []string{"FILE", "TRACE", "FIRST EVENT", "LAST EVENT"}}
+	for _, recording := range recordings {
+		table.add(traceEscapeText([]byte(recording.path)), recording.protocol, traceShowTime(recording.first), traceShowTime(recording.last))
+	}
+	newTraceSummaryStyle(os.Stdout).writeTable(os.Stdout, table)
+	switch {
+	case overlapStart == 0:
+		fmt.Fprintln(os.Stdout, "Shared event time range unavailable.")
+	case overlapStart > overlapEnd:
+		fmt.Fprintln(os.Stdout, "No shared event time range.")
+	default:
+		fmt.Fprintf(os.Stdout, "Shared event time range %s to %s. Each report covers its full recording. Compare timestamps across hosts using synchronized clocks.\n", traceShowTime(overlapStart), traceShowTime(overlapEnd))
+	}
+	for _, recording := range recordings {
+		fmt.Fprintf(os.Stdout, "\n%q (%s)\n", recording.path, recording.protocol)
+		recording.print()
+	}
+	return 0
+}
+
+func traceShowTime(ns uint64) string {
+	if ns == 0 {
+		return "unavailable"
+	}
+	return time.Unix(0, int64(ns)).UTC().Format(time.RFC3339Nano)
 }
 
 // readTraceShowFile은 JSONL을 한 줄씩 읽는다. protocol이 있는 줄은 네트워크·DB·socket·drop event이고, exec·exit·signal·oom은
@@ -164,6 +241,11 @@ func readTraceShowFile(reader io.Reader) (*traceShowFile, error) {
 		}
 		return nil, err
 	}
+	if protocol := file.summary.TraceProtocol; knownTraceProtocol(protocol) {
+		if err := file.setProtocol(protocol, file.lines); err != nil {
+			return nil, err
+		}
+	}
 	if file.protocol == "" {
 		return nil, errors.New("no trace event in the file")
 	}
@@ -172,7 +254,7 @@ func readTraceShowFile(reader io.Reader) (*traceShowFile, error) {
 
 const (
 	traceShowExec  = "exec"
-	traceShowUsage = "edc trace show <raw.jsonl> [options]"
+	traceShowUsage = "edc trace show <raw.jsonl> [more.jsonl ...] [options]"
 )
 
 func (file *traceShowFile) setProtocol(protocol string, line int) error {
@@ -213,6 +295,25 @@ func printTraceShow(file *traceShowFile, options traceShowOptions) int {
 		fmt.Fprintln(os.Stderr, "trace show --group-by must be source, target, port, process, event, or path")
 		return 2
 	}
+	aggregate, summary := traceShowAggregate(file, options)
+	duration := file.duration()
+	if options.groupBy != "" {
+		report := aggregate.groups[options.groupBy].report(summary, duration)
+		if options.jsonPath != "" {
+			return traceShowJSON(options.jsonPath, report)
+		}
+		aggregate.printGroupReport(report, summary, duration)
+		return 0
+	}
+	report := aggregate.summary.summarize(summary, duration)
+	if options.jsonPath != "" {
+		return traceShowJSON(options.jsonPath, report)
+	}
+	report.print(options.detail)
+	return 0
+}
+
+func traceShowAggregate(file *traceShowFile, options traceShowOptions) (*traceAggregate, captureSummary) {
 	aggregate := newTraceAggregate(file.protocol, "", options.groupBy)
 	var kept uint64
 	for _, event := range file.events {
@@ -224,21 +325,7 @@ func printTraceShow(file *traceShowFile, options traceShowOptions) int {
 	}
 	summary := file.summary
 	summary.EventCount = kept
-	duration := file.duration()
-	if options.groupBy != "" {
-		report := aggregate.groups[options.groupBy].report(summary, duration)
-		if options.jsonPath != "" {
-			return traceShowJSON(options.jsonPath, report)
-		}
-		printTraceGroupReport(report)
-		return 0
-	}
-	report := aggregate.summary.summarize(summary, duration)
-	if options.jsonPath != "" {
-		return traceShowJSON(options.jsonPath, report)
-	}
-	report.print(options.detail)
-	return 0
+	return aggregate, summary
 }
 
 func printTraceShowExec(file *traceShowFile, options traceShowOptions) int {
@@ -248,6 +335,15 @@ func printTraceShowExec(file *traceShowFile, options traceShowOptions) int {
 		fmt.Fprintln(os.Stderr, "trace show --group-by must be process, parent, cgroup, or event for an exec trace")
 		return 2
 	}
+	report := traceShowExecReport(file, options)
+	if options.jsonPath != "" {
+		return traceShowJSON(options.jsonPath, report)
+	}
+	report.print()
+	return 0
+}
+
+func traceShowExecReport(file *traceShowFile, options traceShowOptions) execReport {
 	aggregator := newExecAggregator(options.groupBy)
 	summary := file.execSum
 	summary.EventCount = 0
@@ -258,12 +354,7 @@ func printTraceShowExec(file *traceShowFile, options traceShowOptions) int {
 		summary.EventCount++
 		aggregator.add(event)
 	}
-	report := aggregator.report(file.duration(), summary)
-	if options.jsonPath != "" {
-		return traceShowJSON(options.jsonPath, report)
-	}
-	report.print()
-	return 0
+	return aggregator.report(file.duration(), summary)
 }
 
 func traceShowJSON(path string, report interface{}) int {

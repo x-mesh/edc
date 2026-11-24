@@ -485,6 +485,20 @@ var commandDocs = []commandDoc{
 		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "edc view --stats boot.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
 	},
 	{
+		name: "cat", group: "observe",
+		usage: []string{"edc cat [options] <path...>", "<command> | edc cat [options]"},
+		options: []optionDoc{
+			{"-n", "command.cat.option.numbers"},
+			{"-r", "command.cat.option.recursive"},
+			{"--hidden", "command.cat.option.hidden"},
+			{"--no-ignore", "command.cat.option.no_ignore"},
+			{"--mask", "command.cat.option.mask"},
+			{"--as <format>", "command.cat.option.as"},
+			{"-p, --pager", "command.cat.option.pager"},
+		},
+		examples: []string{"edc cat .env.local .env.production", "edc cat --mask .env", "edc cat -n -p internal/edc/cat.go", "edc cat -r --hidden config/", "kubectl get cm app -o yaml | edc cat --as yaml", "edc cat config.yaml | head"},
+	},
+	{
 		name: "grep", group: "observe",
 		usage: []string{"edc grep [options] <pattern> [path...]", "edc grep --level|--status|--since|--until ... [path...]", "<command> | edc grep [options] <pattern>"},
 		options: []optionDoc{

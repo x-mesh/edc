@@ -242,6 +242,26 @@ command:
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
       - "edc alias는 ev, evn, evf 같은 짧은 alias를 출력합니다."
       - "--stats는 입력 전체를 한 번 읽어 level이나 status별 수, 상위 예외·path·client·프로그램, 시간 범위를 출력합니다."
+  cat:
+    summary: "파일 위치와 내용을 출력하고 설정 파일과 코드를 색으로 구분"
+    option:
+      numbers: "줄 번호 표시, 파일마다 1부터"
+      recursive: "하위 디렉터리까지 읽음 (.gitignore 적용)"
+      hidden: "디렉터리에서 숨김 파일 포함"
+      no_ignore: "-r에서 .gitignore 규칙을 적용하지 않음"
+      mask: "키와 구조만 남기고 값을 가림"
+      as: "파일 이름 대신 이 형식으로 읽음: yaml, json, go, python, text 등"
+      pager: "터미널에서 출력을 pager로 넘김"
+    notes:
+      - "파일마다 ==> 뒤에 경로, 형식, 크기를 한 줄로 적고 내용을 이어서 출력합니다."
+      - "env, json, yaml, toml, ini 파일은 키, 문자열, 숫자, 주석을 색으로 구분합니다. 그 밖의 소스 코드는 keyword, 문자열, 숫자, 주석을 구분합니다."
+      - "형식은 파일 이름으로 정하고, --as로 바꿀 수 있습니다. 512 KB보다 큰 소스 코드는 색 없이 출력합니다."
+      - "경로 없이 pipe로 받거나 경로에 -를 주면 stdin을 읽습니다. stdin은 이름이 없으므로 --as로 형식을 알려 줍니다."
+      - "디렉터리를 주면 바로 아래 파일을 이름순으로 출력합니다. 숨김 파일은 --hidden, 하위 디렉터리는 -r로 포함합니다."
+      - "binary 파일은 위치 줄만 적고 내용을 생략합니다."
+      - "-p는 터미널에서 출력을 PAGER(기본 less)로 넘깁니다. 한 화면에 들어가면 바로 끝납니다. 기본은 cat처럼 터미널에 바로 씁니다."
+      - "pipe에서는 cat처럼 바이트를 그대로 냅니다. -n은 cat -n과 같은 모양으로 번호를 붙입니다. NO_COLOR에서는 색 없이 위치 줄과 내용을 냅니다."
+      - "--mask는 pipe에서도 값을 가립니다. env, json, yaml, toml, ini가 아닌 입력은 건너뛰고 상태 1로 끝납니다."
   grep:
     summary: "로그, 코드와 파일 경로 검색"
     option:

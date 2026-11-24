@@ -1,0 +1,8 @@
+# cat コマンドの日本語メッセージ。
+cat:
+  failed: "edc cat: %v"
+  binary_omitted: "内容を省略"
+  color_omitted: "色なし"
+  no_files: "edc cat: %s: 出力するファイルがありません。隠しファイルは --hidden、下位ディレクトリは -r で含めます"
+  mask_unsupported: "edc cat: %s: 値を隠せない形式のため飛ばします。--mask は env、json、yaml、toml、ini 形式の値を隠します"
+  as_unknown: "edc cat: --as %s: 不明な形式です。dotenv、json、yaml、toml、ini、text、または go、python、bash などの言語名を指定します"

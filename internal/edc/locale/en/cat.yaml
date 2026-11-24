@@ -1,0 +1,8 @@
+# English messages for the cat command.
+cat:
+  failed: "edc cat: %v"
+  binary_omitted: "content omitted"
+  color_omitted: "no color"
+  no_files: "edc cat: %s: no files to print; --hidden adds hidden files, and -r adds subdirectories"
+  mask_unsupported: "edc cat: %s: skipped, because --mask cannot hide values in this format; it masks the env, json, yaml, toml, and ini formats"
+  as_unknown: "edc cat: --as %s: unknown format; give dotenv, json, yaml, toml, ini, text, or a language name such as go, python, or bash"

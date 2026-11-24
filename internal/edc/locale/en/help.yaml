@@ -242,6 +242,26 @@ command:
       - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
       - "edc alias prints short aliases such as ev, evn, and evf."
       - "--stats reads the whole input once and prints the level or status counts, the top exceptions, paths, clients, and programs, and the time range."
+  cat:
+    summary: "Print files with their paths and color config files and code"
+    option:
+      numbers: "show line numbers, from 1 in each file"
+      recursive: "read subdirectories too (applies .gitignore)"
+      hidden: "include hidden files in a directory"
+      no_ignore: "with -r, do not apply .gitignore rules"
+      mask: "keep the keys and the structure, and hide the values"
+      as: "read as this format, not by file name: yaml, json, go, python, text, and more"
+      pager: "in a terminal, send the output to the pager"
+    notes:
+      - "Each file starts with one line that holds ==>, the path, the format, and the size. The content follows."
+      - "In env, json, yaml, toml, and ini files, color marks keys, strings, numbers, and comments. In other source code, it marks keywords, strings, numbers, and comments."
+      - "The file name selects the format, and --as changes it. Source code larger than 512 KB prints without color."
+      - "Without a path in a pipe, or with the path -, it reads stdin. stdin has no name, so give the format with --as."
+      - "For a directory, it prints the files directly in it by name. --hidden adds hidden files, and -r adds subdirectories."
+      - "For a binary file, it prints the path line and omits the content."
+      - "-p sends the output in a terminal to PAGER (less by default). It exits at once when the output fits one screen. By default, it writes to the terminal directly, like cat."
+      - "In a pipe, it writes the bytes unchanged, like cat. -n adds numbers in the form of cat -n. With NO_COLOR, it prints the path line and the content without color."
+      - "--mask hides values in a pipe too. It skips input that is not env, json, yaml, toml, or ini and exits with status 1."
   grep:
     summary: "Search logs, code, and file paths"
     option:

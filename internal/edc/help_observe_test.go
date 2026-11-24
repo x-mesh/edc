@@ -12,7 +12,7 @@ func TestObserveHelpSectionsCoverEveryCommandOnce(t *testing.T) {
 	expected := []observeHelpTopic{
 		{"resources", []string{"top", "info", "du", "clean", "ai"}},
 		{"processes", []string{"proc", "svc", "jobs", "ctr"}},
-		{"logs_files", []string{"view", "grep", "find", "search", "watch"}},
+		{"logs_files", []string{"view", "cat", "grep", "find", "search", "watch"}},
 		{"network", []string{"where", "listen", "quality", "capture"}},
 		{"tracing_changes", []string{"trace", "changes"}},
 	}

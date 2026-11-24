@@ -98,19 +98,24 @@ func (options syscallTraceOptions) linesEnabled() bool {
 
 // syscallEvent는 --slow나 --errors에 맞은 호출 하나다. Return은 kernel이 돌려준 값이고, 실패하면 Errno에 이름이 있다.
 type syscallEvent struct {
-	TimestampNS    uint64  `json:"timestamp_ns"`
-	Event          string  `json:"event"`
-	PID            uint32  `json:"pid"`
-	TID            uint32  `json:"tid"`
-	Process        string  `json:"process"`
-	Syscall        string  `json:"syscall"`
-	Return         int64   `json:"return"`
-	Errno          string  `json:"errno,omitempty"`
-	LatencyMS      float64 `json:"latency_ms"`
-	Path           string  `json:"path,omitempty"`
-	FD             *int32  `json:"fd,omitempty"`
-	PathTruncated  bool    `json:"path_truncated,omitempty"`
-	PathUnreadable bool    `json:"path_unreadable,omitempty"`
+	TimestampNS           uint64  `json:"timestamp_ns"`
+	Event                 string  `json:"event"`
+	PID                   uint32  `json:"pid"`
+	TID                   uint32  `json:"tid"`
+	Process               string  `json:"process"`
+	Syscall               string  `json:"syscall"`
+	Return                int64   `json:"return"`
+	Errno                 string  `json:"errno,omitempty"`
+	LatencyMS             float64 `json:"latency_ms"`
+	Path                  string  `json:"path,omitempty"`
+	FD                    *int32  `json:"fd,omitempty"`
+	Destination           string  `json:"destination,omitempty"`
+	DirFD                 *int32  `json:"dirfd,omitempty"`
+	DestinationDirFD      *int32  `json:"destination_dirfd,omitempty"`
+	DestinationTruncated  bool    `json:"destination_truncated,omitempty"`
+	DestinationUnreadable bool    `json:"destination_unreadable,omitempty"`
+	PathTruncated         bool    `json:"path_truncated,omitempty"`
+	PathUnreadable        bool    `json:"path_unreadable,omitempty"`
 	// Action은 파일 표에 넣는 호출이 파일에 한 일이다. read, write, create, delete, rename, other 중 하나다.
 	Action string `json:"action,omitempty"`
 	// OpenKind와 Reason은 BPF가 채운다. Reason은 event를 낸 이유로, 줄 출력(EVENT_LINE)과 파일 표(EVENT_FILE)를 나눈다.
@@ -128,14 +133,30 @@ func (event syscallEvent) line() string {
 	if event.FD != nil {
 		text += fmt.Sprintf("  fd=%d", *event.FD)
 	}
-	switch {
-	case event.PathUnreadable:
-		text += "  (path unreadable)"
-	case event.Path != "":
-		text += "  " + execPrintable([]byte(event.Path))
-		if event.PathTruncated {
-			text += "…"
+	if event.DirFD != nil {
+		text += fmt.Sprintf("  dirfd=%d", *event.DirFD)
+	}
+	text += syscallEventPathText(event.Path, event.PathTruncated, event.PathUnreadable)
+	if event.Destination != "" || event.DestinationUnreadable || event.DestinationDirFD != nil {
+		text += "  ->"
+		if event.DestinationDirFD != nil {
+			text += fmt.Sprintf("  dirfd=%d", *event.DestinationDirFD)
 		}
+		text += syscallEventPathText(event.Destination, event.DestinationTruncated, event.DestinationUnreadable)
+	}
+	return text
+}
+
+func syscallEventPathText(path string, truncated, unreadable bool) string {
+	if unreadable {
+		return "  (path unreadable)"
+	}
+	if path == "" {
+		return ""
+	}
+	text := "  " + execPrintable([]byte(path))
+	if truncated {
+		text += "…"
 	}
 	return text
 }

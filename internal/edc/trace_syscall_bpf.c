@@ -73,12 +73,12 @@ struct syscall_counters { __u64 values[SYSCALL_COUNTERS]; };
 // execve가 성공하면 register와 memory가 새 program의 것으로 바뀐다.
 // file이 1이면 event_files일 때 호출마다 event를 내고, 2이면 실패한 호출만 낸다. stat과 access는 성공이 너무 많아 후자다. flags_arg는 open flags 인자의 위치에 1을 더한 값이고, flags_mode는
 // FLAGS_HOW는 사용자 메모리의 open_how 구조체에서 flags를 읽는다.
-struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 file; __u8 flags_arg; __u8 flags_mode; __u8 fd_arg; __u8 pad; };
+struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 file; __u8 flags_arg; __u8 flags_mode; __u8 fd_arg; __u8 dirfd_arg; __u8 dest_arg; __u8 dest_dirfd_arg; };
 struct syscall_window { __u64 start_ns; __u64 sent; __u64 suppressed; };
 // path_state는 0이면 경로가 없는 호출, 1이면 읽은 경로, 2이면 읽지 못한 경로, 3이면 잘린 경로다.
 // open_kind는 open flags에서 뽑은 OPEN_* bit이고, flags를 읽지 않는 호출은 0이다.
 // reason은 event를 낸 이유의 EVENT_* bit다. 한 호출이 둘 다에 해당할 수 있어 사용자 공간이 줄 출력과 파일 표를 나눈다.
-struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 open_kind; __u8 reason; __u8 fd_valid; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; __s32 fd; __u32 pad; };
+struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 open_kind; __u8 reason; __u8 fd_valid; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; __s32 fd; __s32 dirfd; __s32 dest_dirfd; __u8 dirfd_valid; __u8 dest_dirfd_valid; __u8 dest_state; __u8 pad; char dest[SYSCALL_PATH_MAX]; };
 const struct syscall_key *unused_syscall_key __attribute__((unused));
 const struct syscall_stats *unused_syscall_stats __attribute__((unused));
 const struct syscall_start *unused_syscall_start __attribute__((unused));
@@ -287,6 +287,17 @@ static __always_inline __u8 event_wanted(__u32 nr, __u64 latency, long ret) {
 	return reason;
 }
 
+static __always_inline __u8 read_event_path(char *buffer, const void *path) {
+	long length = bpf_probe_read_user_str(buffer, SYSCALL_PATH_MAX, path);
+	if (length < 0) return 2;
+	if (length == SYSCALL_PATH_MAX) {
+		char next = 1;
+		bpf_probe_read_user(&next, 1, path + SYSCALL_PATH_MAX - 1);
+		return next ? 3 : 1;
+	}
+	return 1;
+}
+
 // emit은 호출 하나를 event로 낸다. 경로는 낼 때만 사용자 memory에서 읽는다. 복귀 시점에는 kernel이 방금 그 page를 읽었다.
 static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgid, __u32 nr, __u64 latency, long ret, __u8 reason) {
 	__u32 zero = 0;
@@ -318,6 +329,12 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 	record->reason = reason;
 	record->fd_valid = 0;
 	record->fd = 0;
+	record->dirfd = 0;
+	record->dest_dirfd = 0;
+	record->dirfd_valid = 0;
+	record->dest_dirfd_valid = 0;
+	record->dest_state = 0;
+	record->dest[0] = 0;
 	record->pad = 0;
 	leader_comm(task, record->comm);
 	record->path[0] = 0;
@@ -327,17 +344,20 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 		record->fd_valid = 1;
 	}
 	// 32비트 호환 호출은 인자가 다른 register에 있어 경로를 읽지 않는다.
-	if (rule && rule->path_arg && !(nr & SYSCALL_COMPAT) && !(rule->path_gone && ret == 0)) {
-		const void *path = (const void *)syscall_arg((void *)ctx[0], rule->path_arg - 1);
-		long length = bpf_probe_read_user_str(record->path, sizeof(record->path), path);
-		if (length < 0) record->path_state = 2;
-		else if (length == sizeof(record->path)) {
-			// helper가 돌려주는 길이는 NUL을 포함하므로, 꼭 맞는 255 byte 경로와 잘린 긴 경로가 모두 256이다. 사용자
-			// memory의 다음 byte가 NUL이면 꼭 맞은 것이다. 그 byte를 읽지 못하면 잘린 것으로 둔다.
-			char next = 1;
-			bpf_probe_read_user(&next, 1, path + sizeof(record->path) - 1);
-			record->path_state = next ? 3 : 1;
-		} else record->path_state = 1;
+	if (rule && !(nr & SYSCALL_COMPAT) && !(rule->path_gone && ret == 0)) {
+		void *regs = (void *)ctx[0];
+		if (rule->path_arg)
+			record->path_state = read_event_path(record->path, (const void *)syscall_arg(regs, rule->path_arg - 1));
+		if (rule->dirfd_arg) {
+			record->dirfd = (__s32)syscall_arg(regs, rule->dirfd_arg - 1);
+			record->dirfd_valid = 1;
+		}
+		if (rule->dest_arg)
+			record->dest_state = read_event_path(record->dest, (const void *)syscall_arg(regs, rule->dest_arg - 1));
+		if (rule->dest_dirfd_arg) {
+			record->dest_dirfd = (__s32)syscall_arg(regs, rule->dest_dirfd_arg - 1);
+			record->dest_dirfd_valid = 1;
+		}
 	}
 	if (rule && rule->flags_mode && !(nr & SYSCALL_COMPAT)) {
 		if (rule->flags_mode == FLAGS_HOW) {

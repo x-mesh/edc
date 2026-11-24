@@ -36,7 +36,7 @@ const (
 	syscallNrMax    = 1024
 	syscallMaxErrno = 4095
 	// syscallEventSize는 BPF의 struct syscall_event 크기다.
-	syscallEventSize    = 320
+	syscallEventSize    = 584
 	syscallEventPathEnd = 312
 	// syscallEventPoll은 event를 기다리는 한 번의 시간이다. Ctrl-C는 이 시간 안에 멈춘다.
 	syscallEventPoll = 200 * time.Millisecond
@@ -376,6 +376,9 @@ func fillSyscallRules(objects syscallEventsObjects, options syscallTraceOptions)
 		if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
 			rule := rules[nr]
 			rule.PathArg = arg + 1
+			rule.DirfdArg = syscallPathDirFDArg(name, arg)
+			rule.DestArg = syscallRenameDestArgs[name]
+			rule.DestDirfdArg = syscallRenameDestDirFDArgs[name]
 			rule.PathGone = boolByte(syscallPathGone[name])
 			rules[nr] = rule
 		}
@@ -514,19 +517,31 @@ func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
 	if nr&syscallCompatBit == 0 {
 		event.Action = syscallFileAction(event.Syscall, event.OpenKind)
 	}
-	if sample[39] != 0 {
-		fd := int32(binary.NativeEndian.Uint32(sample[syscallEventPathEnd : syscallEventPathEnd+4]))
-		event.FD = &fd
-	}
-	switch sample[36] {
-	case 1:
-		event.Path = string(bytesTrimNUL(sample[56:syscallEventPathEnd]))
-	case 2:
-		event.PathUnreadable = true
-	case 3:
-		event.Path, event.PathTruncated = string(bytesTrimNUL(sample[56:syscallEventPathEnd])), true
-	}
+	event.FD = syscallEventDescriptor(sample[39], sample[312:316])
+	event.DirFD = syscallEventDescriptor(sample[324], sample[316:320])
+	event.DestinationDirFD = syscallEventDescriptor(sample[325], sample[320:324])
+	event.Path, event.PathTruncated, event.PathUnreadable = parseSyscallEventPath(sample[36], sample[56:syscallEventPathEnd])
+	event.Destination, event.DestinationTruncated, event.DestinationUnreadable = parseSyscallEventPath(sample[326], sample[328:syscallEventSize])
 	return event, true
+}
+
+func syscallEventDescriptor(valid byte, field []byte) *int32 {
+	if valid == 0 {
+		return nil
+	}
+	fd := int32(binary.NativeEndian.Uint32(field))
+	return &fd
+}
+
+func parseSyscallEventPath(state byte, field []byte) (path string, truncated, unreadable bool) {
+	switch state {
+	case 1, 3:
+		return string(bytesTrimNUL(field)), state == 3, false
+	case 2:
+		return "", false, true
+	default:
+		return "", false, false
+	}
 }
 
 // syscallInFlightSize는 BPF의 struct syscall_in_flight 크기다. iterator는 이 크기의 기록을 이어서 쓴다.

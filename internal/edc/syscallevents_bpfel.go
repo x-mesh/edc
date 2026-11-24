@@ -31,21 +31,27 @@ type syscallEventsSyscallErrnoKey struct {
 }
 
 type syscallEventsSyscallEvent struct {
-	_           structs.HostLayout
-	TimestampNs uint64
-	LatencyNs   uint64
-	Ret         int64
-	Tgid        uint32
-	Tid         uint32
-	Nr          uint32
-	PathState   uint8
-	OpenKind    uint8
-	Reason      uint8
-	FdValid     uint8
-	Comm        [16]int8
-	Path        [256]int8
-	Fd          int32
-	Pad         uint32
+	_              structs.HostLayout
+	TimestampNs    uint64
+	LatencyNs      uint64
+	Ret            int64
+	Tgid           uint32
+	Tid            uint32
+	Nr             uint32
+	PathState      uint8
+	OpenKind       uint8
+	Reason         uint8
+	FdValid        uint8
+	Comm           [16]int8
+	Path           [256]int8
+	Fd             int32
+	Dirfd          int32
+	DestDirfd      int32
+	DirfdValid     uint8
+	DestDirfdValid uint8
+	DestState      uint8
+	Pad            uint8
+	Dest           [256]int8
 }
 
 type syscallEventsSyscallInFlight struct {
@@ -67,15 +73,17 @@ type syscallEventsSyscallKey struct {
 }
 
 type syscallEventsSyscallRule struct {
-	_         structs.HostLayout
-	Allowed   uint8
-	PathArg   uint8
-	PathGone  uint8
-	File      uint8
-	FlagsArg  uint8
-	FlagsMode uint8
-	FdArg     uint8
-	Pad       uint8
+	_            structs.HostLayout
+	Allowed      uint8
+	PathArg      uint8
+	PathGone     uint8
+	File         uint8
+	FlagsArg     uint8
+	FlagsMode    uint8
+	FdArg        uint8
+	DirfdArg     uint8
+	DestArg      uint8
+	DestDirfdArg uint8
 }
 
 type syscallEventsSyscallStart struct {

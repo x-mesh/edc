@@ -111,6 +111,26 @@ func TestParseSyscallInFlightReadsEachRecord(t *testing.T) {
 	}
 }
 
+func TestSyscallRenameEventReadsBothPathsAndDirectoryDescriptors(t *testing.T) {
+	data := make([]byte, syscallEventSize)
+	nr, _ := syscallNumber(runtime.GOARCH, "renameat2")
+	binary.NativeEndian.PutUint32(data[32:36], nr)
+	data[36], data[324], data[325], data[326] = 1, 1, 1, 3
+	oldDir := int32(unix.AT_FDCWD)
+	binary.NativeEndian.PutUint32(data[316:320], uint32(oldDir))
+	binary.NativeEndian.PutUint32(data[320:324], 0)
+	copy(data[56:312], "old")
+	copy(data[328:], "new")
+	event, ok := parseSyscallEvent(data, 0)
+	if !ok || event.Path != "old" || event.Destination != "new" || !event.DestinationTruncated ||
+		event.DirFD == nil || *event.DirFD != oldDir || event.DestinationDirFD == nil || *event.DestinationDirFD != 0 {
+		t.Fatalf("rename event = %+v", event)
+	}
+	if line := event.line(); !strings.Contains(line, "dirfd=-100  old  ->  dirfd=0  new…") {
+		t.Fatalf("rename line = %q", line)
+	}
+}
+
 func TestSyscallErrnoNamesIncludeKernelRestarts(t *testing.T) {
 	for value, want := range map[uint32]string{2: "ENOENT", 516: "ERESTART_RESTARTBLOCK", 600: "errno 600"} {
 		if got := syscallErrnoName(value); got != want {
@@ -394,18 +414,24 @@ func TestTraceSyscallNamesCompatCalls(t *testing.T) {
 func TestSyscallEventLayoutMatchesTheParser(t *testing.T) {
 	var record syscallEventsSyscallEvent
 	for name, offsets := range map[string][2]uintptr{
-		"timestamp_ns": {unsafe.Offsetof(record.TimestampNs), 0},
-		"latency_ns":   {unsafe.Offsetof(record.LatencyNs), 8},
-		"ret":          {unsafe.Offsetof(record.Ret), 16},
-		"tgid":         {unsafe.Offsetof(record.Tgid), 24},
-		"tid":          {unsafe.Offsetof(record.Tid), 28},
-		"nr":           {unsafe.Offsetof(record.Nr), 32},
-		"path_state":   {unsafe.Offsetof(record.PathState), 36},
-		"fd_valid":     {unsafe.Offsetof(record.FdValid), 39},
-		"comm":         {unsafe.Offsetof(record.Comm), 40},
-		"fd":           {unsafe.Offsetof(record.Fd), syscallEventPathEnd},
-		"path":         {unsafe.Offsetof(record.Path), 56},
-		"end":          {unsafe.Sizeof(record), syscallEventSize},
+		"timestamp_ns":     {unsafe.Offsetof(record.TimestampNs), 0},
+		"latency_ns":       {unsafe.Offsetof(record.LatencyNs), 8},
+		"ret":              {unsafe.Offsetof(record.Ret), 16},
+		"tgid":             {unsafe.Offsetof(record.Tgid), 24},
+		"tid":              {unsafe.Offsetof(record.Tid), 28},
+		"nr":               {unsafe.Offsetof(record.Nr), 32},
+		"path_state":       {unsafe.Offsetof(record.PathState), 36},
+		"fd_valid":         {unsafe.Offsetof(record.FdValid), 39},
+		"comm":             {unsafe.Offsetof(record.Comm), 40},
+		"fd":               {unsafe.Offsetof(record.Fd), syscallEventPathEnd},
+		"path":             {unsafe.Offsetof(record.Path), 56},
+		"dirfd":            {unsafe.Offsetof(record.Dirfd), 316},
+		"dest_dirfd":       {unsafe.Offsetof(record.DestDirfd), 320},
+		"dirfd_valid":      {unsafe.Offsetof(record.DirfdValid), 324},
+		"dest_dirfd_valid": {unsafe.Offsetof(record.DestDirfdValid), 325},
+		"dest_state":       {unsafe.Offsetof(record.DestState), 326},
+		"dest":             {unsafe.Offsetof(record.Dest), 328},
+		"end":              {unsafe.Sizeof(record), syscallEventSize},
 	} {
 		if offsets[0] != offsets[1] {
 			t.Errorf("%s is at %d in the BPF struct, parseSyscallEvent reads %d", name, offsets[0], offsets[1])
@@ -724,14 +750,26 @@ func TestTraceSyscallCommandListsTheFilesItTouched(t *testing.T) {
 	dir := t.TempDir()
 	script := fmt.Sprintf("cat /nonexistent-edc-file 2>/dev/null; echo data > %[1]s/out; mv %[1]s/out %[1]s/moved; rm %[1]s/moved; mkdir %[1]s/d", dir)
 	var table syscallFileTable
+	var rename syscallEvent
 	collection, code := traceSyscallCommand(t, []string{"sh", "-c", script}, false, func(event syscallEvent) error {
 		if event.Reason&syscallReasonFile != 0 {
 			table.add(event)
+			if event.Action == "rename" && event.Path == dir+"/out" {
+				rename = event
+			}
 		}
 		return nil
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d", code)
+	}
+	if rename.Destination != dir+"/moved" {
+		t.Errorf("rename event = %+v", rename)
+	}
+	if rename.Syscall == "renameat" || rename.Syscall == "renameat2" {
+		if rename.DirFD == nil || rename.DestinationDirFD == nil {
+			t.Errorf("rename directory descriptors missing: %+v", rename)
+		}
 	}
 	rows := map[string]syscallFileRow{}
 	for _, row := range table.report() {

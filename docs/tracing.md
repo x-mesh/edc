@@ -194,6 +194,8 @@ edc reads the path only for the calls that it prints, when the call returns. It 
 
 Detailed native syscall events include the descriptor for supported FD-based calls such as `read`, `write`, `fsync`, and `fdatasync`. Text shows `fd=0` for descriptor 0, and raw JSON has an `fd` field. This is the caller’s descriptor number.
 
+Rename events include the destination path. Supported `*at` calls also report the directory descriptor that accompanies the path, and `renameat` and `renameat2` report both descriptors. Paths retain their original spelling, and FILES rows for renames still use the source path.
+
 edc prints at most 1,000 lines per second on each CPU. The summary counts the other lines as `sampled_out`, and the table still counts all calls. `ring_lost` counts the lines that did not fit in the event buffer. With `--json`, edc counts the lines but does not print them. Use `--raw` to print each line as JSON, with the summary as the last line.
 
 The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process`, `--container`, or `--syscall`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.

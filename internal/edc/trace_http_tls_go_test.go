@@ -37,7 +37,7 @@ func TestTraceTLSGoSentinelUsesSectionNames(t *testing.T) {
 }
 
 func TestTraceTLSGoVersionsAreExact(t *testing.T) {
-	want := []string{"go1.21.5", "go1.23.7", "go1.23.8", "go1.23.12", "go1.25.0", "go1.26.5", "go1.26.7", "go1.26.8", "go1.27.1", "go1.27.3", "go1.27.4"}
+	want := []string{"go1.21.5", "go1.23.4", "go1.23.7", "go1.23.8", "go1.23.12", "go1.25.0", "go1.26.4", "go1.26.5", "go1.26.7", "go1.26.8", "go1.26.10", "go1.27.1", "go1.27.3", "go1.27.4"}
 	if len(traceTLSGoVersions) != len(want) {
 		t.Fatalf("supported versions=%v", traceTLSGoVersions)
 	}
@@ -46,7 +46,7 @@ func TestTraceTLSGoVersionsAreExact(t *testing.T) {
 			t.Errorf("missing supported version %s", version)
 		}
 	}
-	for _, version := range []string{"go1.21.4", "go1.21.6", "go1.23.6", "go1.23.9", "go1.23.13", "go1.26.4", "go1.26.6", "go1.27.2", "go1.27.5", "devel go1.28", "custom"} {
+	for _, version := range []string{"go1.21.4", "go1.21.6", "go1.23.3", "go1.23.5", "go1.23.6", "go1.23.9", "go1.23.13", "go1.26.3", "go1.26.6", "go1.26.9", "go1.26.11", "go1.27.2", "go1.27.5", "devel go1.28", "custom"} {
 		if traceTLSGoVersions[version] {
 			t.Errorf("accepted unsupported version %s", version)
 		}

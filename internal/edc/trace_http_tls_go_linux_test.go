@@ -621,7 +621,7 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 func traceTLSGoHTTP2Fixture(t *testing.T, goCommand, mode string) string {
 	t.Helper()
 	version := traceTLSGoVersion(t, goCommand)
-	if version == "go1.21.5" || version == "go1.23.7" || version == "go1.23.8" || version == "go1.23.12" {
+	if version == "go1.21.5" || version == "go1.23.4" || version == "go1.23.7" || version == "go1.23.8" || version == "go1.23.12" {
 		source := filepath.Join(t.TempDir(), "go_tls_http2_legacy.go")
 		if err := os.WriteFile(source, []byte(traceTLSGoLegacyHTTP2Source), 0600); err != nil {
 			t.Fatal(err)

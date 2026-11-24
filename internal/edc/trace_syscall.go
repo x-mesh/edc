@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	traceSyscallUsage   = "edc trace syscall [options] [-- <command> [args...]]"
-	traceGroupBySyscall = "syscall"
+	traceSyscallUsage      = "edc trace syscall [options] [-- <command> [args...]]"
+	traceGroupBySyscall    = "syscall"
+	traceGroupByPIDSyscall = "pid,syscall"
 	// syscallTraceRows와 syscallInFlightRows는 표에 보이는 행 수다. --all은 모든 행을 보이고, --json에는 늘 모든 행이 들어간다.
 	syscallTraceRows    = 20
 	syscallInFlightRows = 10
@@ -137,6 +138,7 @@ func (event syscallEvent) line() string {
 
 // syscallSample은 BPF map에서 읽은 cgroup, process 이름, syscall 하나의 값이다. Timed는 돌아온 호출 수다.
 type syscallSample struct {
+	PID      uint32
 	Process  string
 	CgroupID uint64
 	Syscall  string
@@ -205,6 +207,7 @@ type syscallReport struct {
 
 // syscallReportRow의 P95MS는 histogram bucket의 위쪽 경계다. 실제 p95는 그 값보다 작다.
 type syscallReportRow struct {
+	PID       uint32            `json:"pid,omitempty"`
 	Process   string            `json:"process,omitempty"`
 	Syscall   string            `json:"syscall,omitempty"`
 	CgroupID  *uint64           `json:"cgroup_id,omitempty"`
@@ -238,7 +241,7 @@ func runTraceSyscall(args []string) int {
 	durationFlagVar(set, &options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
-	set.StringVar(&options.groupBy, "group-by", "", "process, syscall, or cgroup")
+	set.StringVar(&options.groupBy, "group-by", "", "process, syscall, cgroup, or pid,syscall")
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
 	var syscalls string
 	set.StringVar(&syscalls, "syscall", "", T("command.trace.option.syscall"))
@@ -270,7 +273,7 @@ func runTraceSyscall(args []string) int {
 		return 2
 	}
 	switch options.groupBy {
-	case "", traceGroupByProcess, traceGroupBySyscall, traceGroupByCgroup:
+	case "", traceGroupByProcess, traceGroupBySyscall, traceGroupByCgroup, traceGroupByPIDSyscall:
 	default:
 		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_group_by"))
 		return 2
@@ -688,6 +691,8 @@ func syscallNumber(arch, name string) (uint32, bool) {
 
 func syscallGroupKey(sample syscallSample, groupBy string) string {
 	switch groupBy {
+	case traceGroupByPIDSyscall:
+		return strconv.FormatUint(uint64(sample.PID), 10) + "\x00" + sample.Syscall
 	case traceGroupByProcess:
 		return sample.Process
 	case traceGroupBySyscall:
@@ -710,6 +715,8 @@ func syscallReportFor(collection syscallCollection, groupBy string) syscallRepor
 		if row == nil {
 			row = &syscallReportRow{}
 			switch groupBy {
+			case traceGroupByPIDSyscall:
+				row.PID, row.Syscall = sample.PID, sample.Syscall
 			case traceGroupByProcess:
 				row.Process = sample.Process
 			case traceGroupBySyscall:
@@ -790,6 +797,9 @@ func syscallReportFor(collection syscallCollection, groupBy string) syscallRepor
 }
 
 func (row syscallReportRow) label() string {
+	if row.PID != 0 {
+		return strconv.FormatUint(uint64(row.PID), 10) + "\x00" + row.Syscall
+	}
 	if row.CgroupID != nil {
 		return strconv.FormatUint(*row.CgroupID, 10)
 	}
@@ -854,6 +864,8 @@ func (report syscallReport) render(out io.Writer, view syscallView) {
 	}
 	var titles []string
 	switch report.GroupBy {
+	case traceGroupByPIDSyscall:
+		titles = []string{"PID", "SYSCALL"}
 	case traceGroupByProcess:
 		titles = []string{"PROCESS"}
 	case traceGroupBySyscall:
@@ -939,6 +951,8 @@ func syscallHiddenRows(hidden int, live bool) string {
 
 func (row syscallReportRow) cells(groupBy string) []string {
 	switch groupBy {
+	case traceGroupByPIDSyscall:
+		return []string{strconv.FormatUint(uint64(row.PID), 10), row.Syscall}
 	case traceGroupByProcess:
 		return []string{row.Process}
 	case traceGroupBySyscall:

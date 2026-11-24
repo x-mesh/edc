@@ -61,7 +61,7 @@ type syscallEventsSyscallKey struct {
 	CgroupId uint64
 	Comm     [16]int8
 	Nr       uint32
-	Pad      uint32
+	Tgid     uint32
 }
 
 type syscallEventsSyscallRule struct {
@@ -128,6 +128,7 @@ const (
 	syscallEventsVarFilterProcess         = "filter_process"
 	syscallEventsVarFilterSyscall         = "filter_syscall"
 	syscallEventsVarKeyCgroup             = "key_cgroup"
+	syscallEventsVarKeyPid                = "key_pid"
 	syscallEventsVarSelfTgid              = "self_tgid"
 	syscallEventsVarSlowNs                = "slow_ns"
 	syscallEventsVarUnusedSyscallComm     = "unused_syscall_comm"
@@ -221,6 +222,7 @@ type syscallEventsVariableSpecs struct {
 	FilterProcess         *ebpf.VariableSpec `ebpf:"filter_process"`
 	FilterSyscall         *ebpf.VariableSpec `ebpf:"filter_syscall"`
 	KeyCgroup             *ebpf.VariableSpec `ebpf:"key_cgroup"`
+	KeyPid                *ebpf.VariableSpec `ebpf:"key_pid"`
 	SelfTgid              *ebpf.VariableSpec `ebpf:"self_tgid"`
 	SlowNs                *ebpf.VariableSpec `ebpf:"slow_ns"`
 	UnusedSyscallComm     *ebpf.VariableSpec `ebpf:"unused_syscall_comm"`
@@ -299,6 +301,7 @@ type syscallEventsVariables struct {
 	FilterProcess         *ebpf.Variable `ebpf:"filter_process"`
 	FilterSyscall         *ebpf.Variable `ebpf:"filter_syscall"`
 	KeyCgroup             *ebpf.Variable `ebpf:"key_cgroup"`
+	KeyPid                *ebpf.Variable `ebpf:"key_pid"`
 	SelfTgid              *ebpf.Variable `ebpf:"self_tgid"`
 	SlowNs                *ebpf.Variable `ebpf:"slow_ns"`
 	UnusedSyscallComm     *ebpf.Variable `ebpf:"unused_syscall_comm"`

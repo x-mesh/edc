@@ -2,7 +2,7 @@
 
 # Live resource monitoring
 
-[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs) · [Find files](#find-files)
+[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Read files](#read-files) · [Search logs](#search-logs) · [Find files](#find-files)
 
 ![Live resource dashboard](media/top.png)
 
@@ -575,6 +575,57 @@ Put quotes around text with a space to find it as one phrase, for example `"conn
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 
 If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. When the input is a pipe, it keeps at most 64 MB of one line; a longer line keeps its first part, and stderr says how many lines were cut. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
+
+## Read files
+
+`edc cat <path...>` prints files with their paths. It colors config files and source code.
+
+```bash
+# two files, each below its path line
+edc cat .env.local .env.production
+# a source file with line numbers, in the pager
+edc cat -n -p internal/edc/cat.go
+# the files directly in a directory
+edc cat /etc/nginx/sites-enabled
+# subdirectories and hidden files too
+edc cat -r --hidden config/
+# keys and structure only
+edc cat --mask .env
+# the output of a different command
+kubectl get cm app -o yaml | edc cat --as yaml
+```
+
+Each file starts with a path line that holds `==>`, the path, the format, and the size. The content follows. An empty line separates two files.
+
+The file name selects the format. edc reads these config formats itself and colors keys, strings, numbers, and comments:
+
+- `dotenv`: `.env`, `.env.*`, and `*.env`
+- `json`: `*.json`, `*.jsonl`, and `*.ndjson`
+- `yaml`: `*.yaml` and `*.yml`
+- `toml`: `*.toml`
+- `ini`: `*.ini`, `*.cfg`, `*.cnf`, `*.conf`, `*.properties`, and the systemd units `*.service`, `*.socket`, `*.timer`, `*.mount`, and `*.target`
+
+For other files, edc uses the [chroma](https://github.com/alecthomas/chroma) lexers. They know source code such as Go, Python, and shell scripts, and files such as `Dockerfile`, `Makefile`, and `nginx.conf`. edc colors keywords, strings, numbers, and comments. In a diff, it colors added and removed lines. Source code larger than 512 KB prints without color, and the path line says so.
+
+`--as <format>` sets the format for all inputs. Give one of the config formats, a language name such as `go`, `python`, or `bash`, or `text` for no color. An unknown name is an error with status 2.
+
+`edc cat` prints a file in an unknown format without token colors. For a binary file, it prints the path line and omits the content. In a terminal, it removes escape sequences from the content, so a file cannot move the cursor or change the terminal.
+
+`-n` shows line numbers. The numbers start from 1 in each file.
+
+If you give no path and stdin is a pipe, `edc cat` reads stdin. The path `-` also reads stdin. stdin has no file name, so give the format with `--as`.
+
+For a directory, `edc cat` prints the files directly in it in name order. It also reads a file that a symbolic link points to. `--hidden` adds hidden files. `-r` reads subdirectories too. With `-r`, it applies `.gitignore` and does not follow symbolic links. `--no-ignore` turns off the `.gitignore` rules.
+
+`--mask` keeps the keys and the structure and replaces each value with `••••••••`. It hides all values, not only the values with a secret name. It also hides a comment that comes after a value on the same line. An `ini` file has three cases where it hides the whole line. The line has an indent, has no value, or continues a line that ends with `\`. Such a line can be a part of the value before it.
+
+`--mask` reads only the five config formats. It cannot hide the values in source code, in a file in an unknown format, or in a binary file. edc skips that input, writes the reason to stderr, and exits with status 1.
+
+By default, `edc cat` writes to the terminal directly, like `cat`. `-p` sends the output in a terminal to the command in `PAGER`. If `PAGER` is not set, it uses `less`. If `LESS` is not set, edc sets it to `FRX`. Then `less` exits at once when the output fits one screen, and the content stays on the screen. If `PAGER` is `cat` or empty, or if `TERM` is empty or `dumb`, `-p` uses no pager. `-p` also uses no pager when stdin comes from the keyboard. edc splits `PAGER` at spaces and does not run it through a shell. If the pager cannot start, edc writes to the terminal directly.
+
+If the output is not a terminal, `edc cat` writes the bytes unchanged, like `cat`, without path lines and without a pager. With `-n`, it adds the numbers in the form of `cat -n`. With `--mask`, it writes the masked lines. If `NO_COLOR` is set in a terminal, it prints the path lines and the content without color.
+
+If edc cannot read a file, it writes the cause to stderr, prints the other files, and exits with status 1.
 
 ## Search logs
 

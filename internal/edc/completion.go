@@ -317,6 +317,9 @@ _edc() {
         view)
           _arguments '-n[마지막 N줄]:count' '(-f -F)'{-f,-F}'[pipe에서 tail -F처럼 따라가기]' '1:file:_files'
           ;;
+        cat)
+          _arguments '-n[줄 번호]' '-r[하위 디렉터리 포함]' '--hidden[숨김 파일 포함]' '--no-ignore[.gitignore 무시]' '--mask[값 가리기]' '--as[형식 지정]:format:(dotenv json yaml toml ini text go python bash javascript typescript sql markdown diff)' '(-p --pager)'{-p,--pager}'[pager로 보기]' '*:path:_files'
+          ;;
         grep)
           _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--code[search code]' '(-f --files)'{-f,--files}'[search file paths]' '--hidden[include hidden files]' '--no-ignore[ignore .gitignore]' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
           ;;
@@ -554,6 +557,10 @@ _edc() {
     view)
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-n -f -F" -- "$cur"))
       elif [[ $prev != -n ]]; then COMPREPLY=($(compgen -f -- "$cur")); fi ;;
+    cat)
+      if [[ $prev == --as ]]; then COMPREPLY=($(compgen -W "dotenv json yaml toml ini text go python bash javascript typescript sql markdown diff" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-n -r --hidden --no-ignore --mask --as -p --pager" -- "$cur"))
+      else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     grep)
       case "$prev" in
         --level) COMPREPLY=($(compgen -W "trace debug info warn error fatal" -- "$cur")); return ;;

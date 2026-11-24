@@ -1,6 +1,6 @@
 # Browse listening sockets
 
-`edc listen` opens the socket browser when stdin and stdout are interactive and `TERM` is not `dumb`. In pipes it prints the current sockets once and exits. Use `-B` (`--no-browse`) for one-shot output in a terminal, or `-b` (`--browse`) to require the browser. The browser refreshes only when you press `r`.
+`edc listen` opens the socket browser when stdin and stdout are interactive and `TERM` is not `dumb`. In pipes it prints the current sockets once and exits. Use `-B` (`--no-browse`) for one-shot output in a terminal, or `-b` (`--browse`) to require the browser. The browser refreshes when you press `r`, and one second after `S` sends a signal.
 
 ```sh
 edc listen
@@ -22,6 +22,7 @@ The browser requires interactive stdin and stdout, UTF-8, a terminal other than 
 | Enter | Read socket and process details | — |
 | t | Open `edc top --interactive --process <pid>` | Open the selected process in top |
 | x | Show a CPU trace command | Show a CPU trace command |
+| S | Ask for confirmation, then send SIGTERM to the selected PID | Ask for confirmation, then send SIGTERM to the selected PID |
 | l | Hide or show loopback rows | — |
 | p | Select the next PID of a row with two or more PIDs | Select the next PID |
 | r | Refresh the socket list | Reload selected socket's process details |
@@ -73,3 +74,15 @@ Process navigation uses the current edc executable and passes the PID as a separ
 `top --interactive` explicitly requests a terminal dashboard even with `NO_COLOR`; it preserves monochrome rendering and rejects JSON, counted batch output, pipes, and TERM=dumb. Normal top defaults are unchanged.
 
 The process-navigation child explicitly clears saved top count and JSON defaults so the selected process always opens as a dashboard rather than a batch export.
+
+## Stop a process
+
+`S` shows a confirmation box in the middle of the screen. While the box is open, the rest of the screen is gray. The box names the process, the PID, and up to three ports that this PID holds. If the PID holds more ports, `+N` gives the number of other ports. The default answer is no. Press `y` to send SIGTERM. You can also select yes with Left, Right, or Tab and then press Enter. Any other key cancels, so a navigation key cannot send the signal. If the window becomes smaller than 48 columns by 8 rows, edc cancels the confirmation.
+
+In a row with two or more PIDs, `S` stops only the PID that `p` selected. The confirmation box tells you that the row has other PIDs. If you stop a worker process, its parent process can start a new one.
+
+Before edc shows the confirmation box, it reads the process name and start time again. If the name is different, or the process started after edc began to read the list, edc does not send the signal. Press `r` to read the list again. On Linux, edc keeps the `/proc/<pid>` directory open and sends the signal through it with `pidfd_send_signal`. Thus the signal cannot reach a different process that gets the same PID later. On Linux before 5.1 and on macOS, edc examines the process again just before `kill`. A small gap remains between that examination and the signal.
+
+After the signal, edc reads the socket list again after one second. The notice line tells you if the sockets of the PID are gone. If the sockets remain, the process did not stop yet, or it ignores SIGTERM. edc does not send SIGKILL.
+
+edc does not stop PID 1 or itself. `S` is not available with `--redact`. For a port that a container publishes, the socket owner is usually `docker-proxy`. If you stop it, the container continues to run and only the port mapping stops. Use `docker stop` for these rows. To stop a process of a different user, run edc with sudo.

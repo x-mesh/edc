@@ -406,6 +406,7 @@ command:
       - "기본은 대화형 터미널에서 TUI이며 파이프나 TERM=dumb에서는 한 번 출력합니다. -B/--no-browse는 한 번 출력합니다. edc setup listen.browse로 auto/always/never를 설정하며 NO_COLOR는 색상만 끕니다."
       - "탐색 화면: 방향키 선택, Enter 소켓·프로세스 상세, l loopback 행 숨김·표시, t 그 프로세스의 edc top, x CPU trace 명령 표시, r 새로고침, Esc 뒤로, q 종료. 48열·8행 대화형 터미널이 필요하며 NO_COLOR에서도 색 없이 탐색합니다."
       - "한 행에 PID가 여럿일 수 있습니다. 탐색 화면에서 p는 그 행의 다음 PID를 고르고, t와 x는 고른 PID를 씁니다."
+      - "탐색 화면에서 S는 확인을 받은 뒤 고른 PID에 SIGTERM을 보냅니다. 기본 답은 아니오입니다. --redact와 컨테이너가 publish한 포트에서는 쓸 수 없습니다."
       - "색이 없으면 탐색 화면의 목록이 바인딩 범위를 SCOPE 열에 글자로 적습니다."
       - "--browse는 --watch, --json, --interval, --duration과 함께 쓸 수 없습니다."
       - "기본은 LISTEN 상태의 TCP socket과 바인드된 UDP socket입니다."

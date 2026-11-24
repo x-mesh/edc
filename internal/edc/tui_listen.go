@@ -37,7 +37,30 @@ type listenBrowser struct {
 	// pidRow와 pid는 p로 고른 PID와 그 줄이다. 다른 줄에서는 줄의 첫 PID를 쓴다.
 	pidRow listenRowKey
 	pid    string
+	// openStop은 S가 고른 process를 잡는다. 시험에서는 실제 process 대신 가짜를 넣는다.
+	openStop func(pid int, name string, listed time.Time) (listenStopProcess, error)
+	// listed는 지금 목록을 읽기 시작한 시각이다. 이보다 늦게 시작한 process는 목록의 process가 아니다.
+	listed time.Time
+	// stop은 S가 띄운 확인 상자다. 떠 있는 동안 키는 모두 확인 상자가 받는다.
+	stop *listenStopConfirm
+	// stopped는 SIGTERM을 보낸 PID다. 다음 목록에서 그 PID의 소켓이 남았는지 알린다.
+	stopped int
 }
+
+type listenStopConfirm struct {
+	process              listenStopProcess
+	pid                  int
+	name, question, note string
+	yes                  bool
+}
+
+type listenStopDoneMsg struct {
+	pid  int
+	name string
+	err  error
+}
+
+type listenStopCheckMsg struct{ pid int }
 
 type listenBrowserDetail struct {
 	row         listenRow
@@ -52,6 +75,7 @@ type listenBrowserListMsg struct {
 	seq    int
 	result Result
 	at     time.Time
+	read   time.Time
 }
 type listenBrowserDetailMsg struct {
 	seq   int
@@ -77,6 +101,7 @@ func runListenBrowser(options commonOptions, families listenFamilies, full bool)
 	color := model.color
 	model.inspect = func(ctx context.Context, row listenRow) []string { return inspectListenSocket(ctx, row, color) }
 	model.openTop = listenBrowserOpenTop
+	model.openStop = openListenStopProcess
 	model.full = full
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -101,7 +126,8 @@ func (model listenBrowser) loadList() tea.Cmd {
 		case <-ctx.Done():
 			return listenBrowserListMsg{seq: model.seq, result: Result{Status: StatusFail, Summary: ctx.Err().Error()}}
 		}
-		return listenBrowserListMsg{seq: model.seq, result: model.load(ctx), at: time.Now()}
+		read := time.Now()
+		return listenBrowserListMsg{seq: model.seq, result: model.load(ctx), at: time.Now(), read: read}
 	}
 }
 
@@ -230,6 +256,11 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		widthChanged := model.width != max(1, value.Width)
 		model.width, model.height = max(1, value.Width), max(1, value.Height)
 		model.keepCursor()
+		// 크기 안내만 보이는 화면에서는 확인 상자가 보이지 않으므로, y가 보이지 않는 질문에 답하지 않게 취소한다.
+		if model.stop != nil && model.tooSmall() {
+			model.stop.process.close()
+			model.stop, model.notice = nil, T("listenbrowse.stop_cancelled")
+		}
 		if model.detail != nil && widthChanged {
 			detail := *model.detail
 			detail.offset = 0
@@ -240,6 +271,8 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		model.loading = false
+		stopped := model.stopped
+		model.stopped = 0
 		sockets, ok := value.result.Metrics["sockets"].([]listenSocket)
 		if !ok || value.result.Status == StatusFail || value.result.Status == StatusSkip {
 			model.err = infoSingleLine(value.result.Summary)
@@ -249,10 +282,28 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		model.sockets, model.warnings, model.loaded, model.updated, model.err = sockets, value.result.Warnings, true, value.at, ""
+		model.listed = value.read
 		if !model.rebuild() {
 			model.cursor = 0
 			model.keepCursor()
 		}
+		if stopped > 0 {
+			model.notice = model.stopResult(stopped)
+		}
+	case listenStopDoneMsg:
+		if value.err != nil {
+			model.notice = listenStopMessage(value.pid, value.err)
+			return model, nil
+		}
+		model.notice = T("listenbrowse.stop_sent", value.name, value.pid)
+		// SIGTERM을 받은 process가 소켓을 닫을 틈을 두고 목록을 다시 읽는다.
+		return model, tea.Tick(time.Second, func(time.Time) tea.Msg { return listenStopCheckMsg{pid: value.pid} })
+	case listenStopCheckMsg:
+		// 시그널 전에 시작한 새로고침의 결과로 판정하지 않게, 이 확인이 시작한 읽기에만 stopped를 건다.
+		model.stopped = value.pid
+		model.seq++
+		model.loading = true
+		return model, model.loadList()
 	case listenBrowserDetailMsg:
 		if model.detail == nil || model.detail.seq != value.seq {
 			return model, nil
@@ -262,12 +313,18 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.detail = &detail
 	case tea.KeyPressMsg:
 		key := value.String()
+		if model.stop != nil {
+			return model.answerStop(key)
+		}
 		if key == "q" || key == "ctrl+c" {
 			return model, tea.Quit
 		}
 		model.notice = ""
 		if key == "t" || key == "x" {
 			return model.navigateProcess(key)
+		}
+		if key == "S" {
+			return model.askStop(), nil
 		}
 		if key == "p" {
 			if row, ok := model.navigationRow(); ok && model.nextPID(row) && model.detail != nil && model.detail.trace {
@@ -364,7 +421,7 @@ func (model listenBrowser) detailLine(line string) string {
 }
 
 func (model listenBrowser) View() tea.View {
-	if model.width < 48 || model.height < 8 {
+	if model.tooSmall() {
 		view := tea.NewView(ansi.Truncate(T("listenbrowse.small"), model.width, "…"))
 		view.AltScreen = true
 		return view
@@ -491,7 +548,18 @@ func (model listenBrowser) View() tea.View {
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, model.width, "…")
 	}
-	view := tea.NewView(strings.Join(lines[:min(len(lines), model.height)], "\n"))
+	lines = lines[:min(len(lines), model.height)]
+	if model.stop != nil {
+		// 확인 상자가 떠 있는 동안 배경은 색을 걷고 회색으로 칠해, 눈이 상자에 먼저 가게 한다.
+		for i, line := range lines {
+			lines[i] = topDim(ansi.Strip(line), liveRich(model.color))
+		}
+	}
+	content := strings.Join(lines, "\n")
+	if model.stop != nil {
+		content = overlayTopBox(content, model.stopBox(), model.width, liveRich(model.color))
+	}
+	view := tea.NewView(content)
 	view.AltScreen = true
 	return view
 }

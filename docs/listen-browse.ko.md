@@ -1,6 +1,6 @@
 # Listening socket 탐색
 
-stdin과 stdout이 대화형이고 `TERM`이 `dumb`가 아니면 `edc listen`은 socket 브라우저를 엽니다. pipe에서는 지금의 socket을 한 번 출력하고 끝납니다. 터미널에서 한 번만 출력하려면 `-B`(`--no-browse`)를, 반드시 브라우저를 열려면 `-b`(`--browse`)를 사용합니다. 브라우저는 `r`을 누를 때만 새로 읽습니다.
+stdin과 stdout이 대화형이고 `TERM`이 `dumb`가 아니면 `edc listen`은 socket 브라우저를 엽니다. pipe에서는 지금의 socket을 한 번 출력하고 끝납니다. 터미널에서 한 번만 출력하려면 `-B`(`--no-browse`)를, 반드시 브라우저를 열려면 `-b`(`--browse`)를 사용합니다. 브라우저는 `r`을 누를 때와, `S`로 시그널을 보낸 1초 뒤에 새로 읽습니다.
 
 ```sh
 edc listen
@@ -22,6 +22,7 @@ edc listen -b --redact
 | Enter | socket과 process 상세 읽기 | — |
 | t | `edc top --interactive --process <pid>` 열기 | 선택한 process를 top에서 열기 |
 | x | CPU trace 명령 보기 | CPU trace 명령 보기 |
+| S | 확인을 받은 뒤 고른 PID에 SIGTERM 보내기 | 확인을 받은 뒤 고른 PID에 SIGTERM 보내기 |
 | l | loopback 행 숨기기·보이기 | — |
 | p | PID가 둘 이상인 행에서 다음 PID 고르기 | 다음 PID 고르기 |
 | r | socket 목록 새로 읽기 | 선택한 socket의 process 상세 다시 읽기 |
@@ -73,3 +74,15 @@ process로 이동할 때는 지금 실행 중인 edc 실행 파일을 쓰고, PI
 `top --interactive`는 `NO_COLOR`에서도 터미널 대시보드를 명시적으로 요청합니다. 흑백 표시는 그대로 두고, JSON, 횟수를 정한 batch 출력, pipe, TERM=dumb는 거부합니다. 일반 top의 기본 동작은 바뀌지 않습니다.
 
 process 이동으로 띄운 top은 저장된 top의 횟수와 JSON 기본값을 명시적으로 비웁니다. 그래서 선택한 process는 batch 출력이 아니라 언제나 대시보드로 열립니다.
+
+## process 멈추기
+
+`S`를 누르면 화면 가운데에 확인 상자가 뜨고, 상자가 떠 있는 동안 나머지 화면은 회색으로 옅어집니다. 상자에는 process 이름과 PID, 그 PID가 연 포트가 세 개까지 나옵니다. 포트가 더 있으면 나머지 수를 `+N`으로 적습니다. 기본 답은 아니오입니다. `y`를 누르거나, 왼쪽·오른쪽 방향키나 Tab으로 예를 고른 뒤 Enter를 누르면 SIGTERM을 보냅니다. 그 밖의 키는 모두 취소이므로 이동 키를 잘못 눌러도 시그널이 나가지 않습니다. 창이 48열·8행보다 작아지면 확인을 취소합니다.
+
+PID가 둘 이상인 행에서 `S`는 `p`로 고른 PID 하나만 멈추고, 확인 상자에 그 행에 다른 PID가 있다고 알립니다. worker process를 멈추면 부모 process가 새 worker를 띄울 수 있습니다.
+
+확인 상자를 띄우기 전에 process 이름과 시작 시각을 다시 읽습니다. 이름이 다르거나, 목록을 읽기 시작한 뒤에 시작한 process라면 시그널을 보내지 않습니다. 이때는 `r`로 목록을 다시 읽으세요. Linux에서는 `/proc/<pid>` 디렉터리를 열어 두고 그 fd로 `pidfd_send_signal`을 부르므로, 나중에 같은 PID를 받은 다른 process에는 시그널이 닿지 않습니다. Linux 5.1 이전과 macOS에서는 `kill` 직전에 process를 다시 견주며, 그 확인과 시그널 사이에 짧은 틈이 남습니다.
+
+시그널을 보내고 1초 뒤 socket 목록을 다시 읽어, 그 PID의 socket이 사라졌는지 안내 줄에 알립니다. socket이 남아 있으면 process가 아직 끝나지 않았거나 SIGTERM을 무시한 것입니다. edc는 SIGKILL을 보내지 않습니다.
+
+PID 1과 edc 자신은 멈추지 않습니다. `--redact`에서는 `S`를 쓸 수 없습니다. container가 publish한 포트의 socket은 대개 `docker-proxy`가 엽니다. 이 process를 멈추면 container는 계속 돌고 포트 연결만 끊기므로, 이런 행에서는 `docker stop`을 쓰세요. 다른 사용자의 process를 멈추려면 sudo로 edc를 실행하세요.

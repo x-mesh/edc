@@ -21,6 +21,13 @@ var syscallPathArgs = map[string]uint8{
 	"inotify_add_watch": 1, "mount": 1, "umount2": 0, "swapon": 0, "pivot_root": 0,
 }
 
+// syscallFDCalls take their file descriptor in the first argument.
+var syscallFDCalls = []string{
+	"read", "write", "readv", "writev", "pread64", "pwrite64", "preadv", "pwritev", "preadv2", "pwritev2",
+	"fsync", "fdatasync", "syncfs", "sync_file_range", "fallocate", "ftruncate", "fstat", "fstatfs",
+	"close", "lseek", "fcntl", "ioctl", "flock",
+}
+
 // syscallPathGone은 성공하면 경로를 읽을 수 없는 syscall이다. execve가 성공하면 register와 memory가 새 program의 것이다.
 var syscallPathGone = map[string]bool{"execve": true, "execveat": true}
 

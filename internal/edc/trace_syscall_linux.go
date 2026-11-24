@@ -36,7 +36,8 @@ const (
 	syscallNrMax    = 1024
 	syscallMaxErrno = 4095
 	// syscallEventSize는 BPF의 struct syscall_event 크기다.
-	syscallEventSize = 312
+	syscallEventSize    = 320
+	syscallEventPathEnd = 312
 	// syscallEventPoll은 event를 기다리는 한 번의 시간이다. Ctrl-C는 이 시간 안에 멈춘다.
 	syscallEventPoll = 200 * time.Millisecond
 )
@@ -379,6 +380,15 @@ func fillSyscallRules(objects syscallEventsObjects, options syscallTraceOptions)
 			rules[nr] = rule
 		}
 	}
+	if options.linesEnabled() {
+		for _, name := range syscallFDCalls {
+			if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
+				rule := rules[nr]
+				rule.FdArg = 1
+				rules[nr] = rule
+			}
+		}
+	}
 	if options.files {
 		for name, call := range syscallFileCalls {
 			if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
@@ -504,13 +514,17 @@ func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
 	if nr&syscallCompatBit == 0 {
 		event.Action = syscallFileAction(event.Syscall, event.OpenKind)
 	}
+	if sample[39] != 0 {
+		fd := int32(binary.NativeEndian.Uint32(sample[syscallEventPathEnd : syscallEventPathEnd+4]))
+		event.FD = &fd
+	}
 	switch sample[36] {
 	case 1:
-		event.Path = string(bytesTrimNUL(sample[56:syscallEventSize]))
+		event.Path = string(bytesTrimNUL(sample[56:syscallEventPathEnd]))
 	case 2:
 		event.PathUnreadable = true
 	case 3:
-		event.Path, event.PathTruncated = string(bytesTrimNUL(sample[56:syscallEventSize])), true
+		event.Path, event.PathTruncated = string(bytesTrimNUL(sample[56:syscallEventPathEnd])), true
 	}
 	return event, true
 }

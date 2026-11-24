@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -62,6 +64,36 @@ func TestHelpWrappedStylesDoNotLeakPastPanelLines(t *testing.T) {
 	for _, line := range strings.Split(output.String(), "\n") {
 		if strings.HasPrefix(ansi.Strip(line), "│ ") && !strings.HasSuffix(line, richReset) {
 			t.Fatalf("style left active across panel lines: %q", line)
+		}
+	}
+}
+
+func TestHelpWrapKeepsOptionNamesWhole(t *testing.T) {
+	if got := helpWrap("use --watch now", 8); !slices.Equal(got, []string{"use", "--watch", "now"}) {
+		t.Fatalf("helpWrap = %q", got)
+	}
+	// 줄 끝의 --나 낱말 안의 하이픈은 옵션 이름이나 낱말을 가른 자리다. 혼자 선 -(표준 출력, 빈 값)는 괜찮다.
+	split := regexp.MustCompile(`(--|[A-Za-z0-9]-)$`)
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		for _, doc := range commandDocs {
+			for _, color := range []bool{false, true} {
+				var output strings.Builder
+				renderCommandHelp(&output, doc, 80, color)
+				for _, line := range strings.Split(ansi.Strip(output.String()), "\n") {
+					// 색이 있으면 줄 끝에 테두리 │가 붙는다.
+					text := strings.TrimRight(strings.TrimSuffix(strings.TrimRight(line, " "), "│"), " ")
+					if split.MatchString(text) {
+						t.Errorf("%s %s color=%v: a line ends inside a word: %q", language, doc.name, color, line)
+					}
+					// 하이픈 대신 쓰는 글자가 폭을 바꾸면 줄이 80칸을 넘는다.
+					if width := liveWidth(line); width > 80 {
+						t.Errorf("%s %s color=%v: %d columns: %q", language, doc.name, color, width, line)
+					}
+				}
+			}
 		}
 	}
 }

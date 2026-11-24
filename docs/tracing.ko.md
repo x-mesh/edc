@@ -829,6 +829,8 @@ edc trace syscall --syscall openat,statx --slow 10ms --raw
 
 상세 이벤트는 `read`, `write`, `fsync`, `fdatasync` 등 지원하는 네이티브 호출의 파일 디스크립터 번호를 보여 줍니다. 번호가 0이면 텍스트에 `fd=0`으로 표시하고, raw JSON에는 `fd` 필드를 넣습니다.
 
+이름 변경 상세 이벤트에는 목적지 경로도 표시합니다. 지원하는 `*at` 호출은 경로에 대응하는 디렉터리 디스크립터를 보여 주며, `renameat`과 `renameat2`는 양쪽 디스크립터를 표시합니다. 경로는 호출의 원래 표기를 유지하며, FILES의 이름 변경 행은 출발 경로로 집계합니다.
+
 edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약의 `sampled_out`으로 세고, 표는 모든 호출을 계속 셉니다. event buffer에 들어가지 못한 줄은 `ring_lost`로 셉니다. `--json`을 주면 줄 수만 세고 출력하지 않습니다. `--raw`를 주면 줄마다 JSON으로 출력하고, 마지막 줄에 요약을 붙입니다.
 
 `IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`, `--container`, `--syscall`을 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.

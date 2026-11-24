@@ -54,6 +54,9 @@ func Run(args []string, version string) int {
 		printHistoryPruneHelp(os.Stdout)
 		return 0
 	}
+	if len(args) > 2 && args[0] == "trace" && helpRequested(args[2:]) && printTraceSubHelp(os.Stdout, args[1]) {
+		return 0
+	}
 	// `edc <command> [subcommand] ... --help`는 그 명령의 edc help로 보낸다. flag의 기본 usage는 대시 하나짜리 목록이라
 	// edc help와 모양이 다르다. watch는 http와 fs마다 따로 help를 그리므로 runWatch가 같은 판정으로 처리한다.
 	if len(args) > 1 && args[0] != "watch" && helpRequested(args[1:]) && printCommandHelp(os.Stdout, args[0]) {
@@ -64,6 +67,14 @@ func Run(args []string, version string) int {
 	case "help", "-h", "--help":
 		if len(args) > 2 && args[1] == "history" && args[2] == "prune" {
 			printHistoryPruneHelp(os.Stdout)
+			return 0
+		}
+		if len(args) > 2 && args[1] == "trace" {
+			if !printTraceSubHelp(os.Stdout, args[2]) {
+				fmt.Fprintln(os.Stderr, T("cli.error.unknown_command", "trace "+args[2]))
+				fmt.Fprintln(os.Stderr, T("cli.usage", "edc help trace <"+strings.Join(traceSubNames(), "|")+">"))
+				return 2
+			}
 			return 0
 		}
 		if len(args) > 1 {

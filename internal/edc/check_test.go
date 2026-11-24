@@ -38,6 +38,33 @@ func TestCheckServicesFailsOnFailedUnitsAndWarnsOnChangingOnes(t *testing.T) {
 	}
 }
 
+func TestCheckServicesPutsTransientUnitsLast(t *testing.T) {
+	failed := func(unit string) svcListItem {
+		return svcListItem{Unit: unit, LoadState: "loaded", ActiveState: "failed", SubState: "failed"}
+	}
+	facts := checkFacts{Services: []svcListItem{
+		failed("run-p3070101-i158231388.service"),
+		failed("systemd-networkd-wait-online.service"),
+		failed("run-r0a1b2c3d4e5f6a7b.service"),
+		failed("nginx.service"),
+	}}
+	result := checkServices(facts, checkTestPolicy)
+	want := T("check.service.failed", 4, "systemd-networkd-wait-online.service, nginx.service, run-p3070101-i158231388.service, run-r0a1b2c3d4e5f6a7b.service")
+	if result.Summary != want || result.Next != "edc svc systemd-networkd-wait-online.service" {
+		t.Fatalf("summary = %q, next = %q", result.Summary, result.Next)
+	}
+	// 이름이 run-로 시작해도 systemd-run의 이름 모양이 아니면 일회성 unit으로 보지 않는다.
+	for _, unit := range []string{"run-parts.service", "run-user-1000.mount", "run-r.service", "run-p12.service", "runner.service"} {
+		if checkTransientUnit(unit) {
+			t.Errorf("%s is not a systemd-run unit", unit)
+		}
+	}
+	facts.Services = []svcListItem{facts.Services[0], facts.Services[2]}
+	if result := checkServices(facts, checkTestPolicy); result.Next != "edc svc run-p3070101-i158231388.service" {
+		t.Fatalf("only transient units: next = %q", result.Next)
+	}
+}
+
 func TestCheckServicesSkipsWithoutSystemd(t *testing.T) {
 	if result := checkServices(checkFacts{ServicesErr: errSvcNoSystemd}, checkTestPolicy); result.Status != StatusSkip {
 		t.Fatalf("no systemd = %+v", result)
@@ -502,6 +529,35 @@ func TestCheckRebootNamesTheReason(t *testing.T) {
 	}
 	if result := checkRebootResult(checkFacts{Reboot: checkReboot{Running: kernels[1], Kernels: kernels}}); result.Status != StatusPass {
 		t.Fatalf("newest running = %+v", result)
+	}
+}
+
+// 재부팅을 요청한 패키지가 많으면 -v 없이는 묶음마다 앞의 몇 줄만 보인다. -v와 JSON은 모두 담는다.
+func TestCheckRebootShortensLongEvidenceWithoutVerbose(t *testing.T) {
+	var packages []string
+	for index := range checkRebootEvidenceLines + 4 {
+		packages = append(packages, fmt.Sprintf("linux-image-6.17.0-%d-generic", index))
+	}
+	result := checkRebootResult(checkFacts{Reboot: checkReboot{Flag: true, Packages: packages}})
+	if got := result.Evidence[len(result.Evidence)-1].Value; got != strings.Join(packages, "\n") {
+		t.Fatalf("the result must keep every package: %q", got)
+	}
+	var short, full strings.Builder
+	printResultDetail(&short, result, false, false)
+	printResultDetail(&full, result, true, false)
+	if !strings.Contains(short.String(), packages[checkRebootEvidenceLines-1]) || strings.Contains(short.String(), packages[checkRebootEvidenceLines]) ||
+		!strings.Contains(short.String(), T("cli.evidence_more", 4)) {
+		t.Fatalf("without -v:\n%s", short.String())
+	}
+	if !strings.Contains(full.String(), packages[len(packages)-1]) || strings.Contains(full.String(), T("cli.evidence_more", 4)) {
+		t.Fatalf("with -v:\n%s", full.String())
+	}
+	// 줄 수 이하의 묶음은 그대로 보인다.
+	result = checkRebootResult(checkFacts{Reboot: checkReboot{Flag: true, Packages: packages[:checkRebootEvidenceLines]}})
+	short.Reset()
+	printResultDetail(&short, result, false, false)
+	if strings.Contains(short.String(), "…") || !strings.Contains(short.String(), packages[checkRebootEvidenceLines-1]) {
+		t.Fatalf("a short list was cut:\n%s", short.String())
 	}
 }
 

@@ -1,6 +1,7 @@
 # English messages for command execution and errors. This file is the base.
 cli:
   usage: "usage: %s"
+  evidence_more: "… %d more lines (-v shows all)"
   confirm: "continue? [y/N] "
   prompt:
     target: "target (host or URL)"

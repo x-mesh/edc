@@ -754,7 +754,7 @@ func (call *mysqlCall) respond(packet mysqlPacket, pending *mysqlPending, name s
 	if pending != nil {
 		info.Command, info.SQL, info.SQLTruncated = pending.command, pending.sql, pending.sqlTruncated
 		info.StatementID = cmp.Or(info.StatementID, pending.statementID)
-		event.LatencyMS, event.answered = traceSpan(pending.at, packet.at), 1
+		event.LatencyMS, event.Answered = traceSpan(pending.at, packet.at), 1
 	}
 	call.out = append(call.out, event)
 }
@@ -987,7 +987,7 @@ func (counts *traceMySQLCounts) observe(event captureEvent) {
 		if event.Event == mysqlEventError {
 			counts.Errors++
 		}
-		counts.answered += event.answered
+		counts.answered += event.Answered
 		counts.latency.observe(event.LatencyMS)
 	default:
 		counts.Commands++

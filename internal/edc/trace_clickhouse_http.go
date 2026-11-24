@@ -1226,7 +1226,7 @@ func (call *clickHouseHTTPCall) respond(name string, info traceClickHouseEvent) 
 	info.User, info.Database = asked.User, asked.Database
 	info.QueryID, info.HTTPStatus = cmpOrString(flow.queryID, asked.QueryID), flow.status
 	event := clickHouseEventAt(call.record, call.side, call.offset, name, call.record.size, withHTTPInterface(&info))
-	event.LatencyMS, event.answered = traceSpan(request.origin.bootTimeNS, call.record.bootTimeNS), 1
+	event.LatencyMS, event.Answered = traceSpan(request.origin.bootTimeNS, call.record.bootTimeNS), 1
 	call.out = append(call.out, event)
 }
 

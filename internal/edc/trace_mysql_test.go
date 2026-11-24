@@ -121,7 +121,7 @@ func TestMySQLTrackerPairsAQueryOnBothSides(t *testing.T) {
 			t.Fatalf("request = %#v %#v", request, request.MySQL)
 		}
 		response := mysqlOnly(t, conn.response(4_000_000, mysqlOKFrame(1, 3)))
-		if response.Event != "mysql_ok" || response.Side != side || response.answered != 1 || response.LatencyMS == nil || *response.LatencyMS != 3 || response.MySQL.Command != "query" || response.MySQL.SQL != request.MySQL.SQL || response.MySQL.AffectedRows == nil || *response.MySQL.AffectedRows != 3 {
+		if response.Event != "mysql_ok" || response.Side != side || response.Answered != 1 || response.LatencyMS == nil || *response.LatencyMS != 3 || response.MySQL.Command != "query" || response.MySQL.SQL != request.MySQL.SQL || response.MySQL.AffectedRows == nil || *response.MySQL.AffectedRows != 3 {
 			t.Fatalf("response = %#v %#v", response, response.MySQL)
 		}
 		// 다음 응답 packet은 이미 짝지은 명령과 다시 짝짓지 않는다.
@@ -145,7 +145,7 @@ func TestMySQLTrackerReadsAffectedRowsZeroAndResultsAndErrors(t *testing.T) {
 	}
 	conn.request(4_000_000, mysqlFrame(0, mysqlQueryPayload("INSERT INTO t VALUES (1, 'x')")))
 	failure := mysqlOnly(t, conn.response(5_000_000, mysqlErrorFrame(1, 1062, "23000", "Duplicate entry '1' for key 't.PRIMARY'")))
-	if failure.Event != "mysql_error" || failure.MySQL.ErrorCode != 1062 || failure.MySQL.SQLState != "23000" || failure.MySQL.Message != "Duplicate entry '1' for key 't.PRIMARY'" || failure.answered != 1 {
+	if failure.Event != "mysql_error" || failure.MySQL.ErrorCode != 1062 || failure.MySQL.SQLState != "23000" || failure.MySQL.Message != "Duplicate entry '1' for key 't.PRIMARY'" || failure.Answered != 1 {
 		t.Fatalf("error = %#v", failure.MySQL)
 	}
 	// handshake를 보지 못해도 SQLSTATE가 없는 ERR는 message만 읽는다.
@@ -197,7 +197,7 @@ func TestMySQLTrackerReadsSeveralPacketsInOneRead(t *testing.T) {
 	conn := newMySQLTestConn(t, false, "", false)
 	events := conn.handshake(mysqlTestClientCaps)
 	// auth more data와 OK가 한 읽기에 왔다.
-	if len(events) != 2 || events[0].Event != "mysql_connect" || events[1].Event != "mysql_ok" || events[1].MySQL.Command != "connect" || events[1].answered != 1 {
+	if len(events) != 2 || events[0].Event != "mysql_connect" || events[1].Event != "mysql_ok" || events[1].MySQL.Command != "connect" || events[1].Answered != 1 {
 		t.Fatalf("handshake events = %#v", events)
 	}
 	// COM_STMT_CLOSE 뒤에 명령이 한 쓰기로 이어져도 둘 다 읽는다.
@@ -438,7 +438,7 @@ func TestMySQLTrackerSkipsThePartOfAPacketItDidNotCapture(t *testing.T) {
 	if events := conn.tracker.events(rest, 0); len(events) != 0 {
 		t.Fatalf("rest = %#v", events)
 	}
-	if response := mysqlOnly(t, conn.response(20_000, mysqlOKFrame(1, 0))); response.answered != 1 {
+	if response := mysqlOnly(t, conn.response(20_000, mysqlOKFrame(1, 0))); response.Answered != 1 {
 		t.Fatalf("response = %#v", response)
 	}
 	if event := mysqlOnly(t, conn.request(30_000, mysqlFrame(0, mysqlQueryPayload("SELECT 2")))); event.MySQL.SQL != "SELECT 2" {
@@ -466,7 +466,7 @@ func TestMySQLTrackerCountsSequenceIdsOfA16MiBCommand(t *testing.T) {
 	long := newMySQLTestConn(t, false, "", false)
 	long.tracker.events(first, 0)
 	long.request(2_000, mysqlFrame(1, []byte("tail")))
-	if response := mysqlOnly(t, long.response(3_000, mysqlOKFrame(2, 1))); response.answered != 1 {
+	if response := mysqlOnly(t, long.response(3_000, mysqlOKFrame(2, 1))); response.Answered != 1 {
 		t.Fatalf("response = %#v", response)
 	}
 }

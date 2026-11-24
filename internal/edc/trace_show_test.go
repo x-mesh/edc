@@ -106,6 +106,42 @@ func TestTraceShowReplaysAnHTTPRawFile(t *testing.T) {
 	}
 }
 
+// raw 기록을 다시 읽어도 응답이 답한 요청 수가 남아야 한다. 남지 않으면 모든 요청이 응답 없음으로 보인다.
+func TestTraceShowCountsUnansweredRequestsLikeTheLiveTrace(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tracker := newHTTPTracker("", false, false)
+	var events []any
+	for index, packet := range []httpPacket{
+		httpTestPacket("GET /a HTTP/1.1\r\nHost: api.example\r\n\r\n", 1_000_000, true),
+		httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 3_000_000, false),
+		httpTestPacket("GET /hang HTTP/1.1\r\nHost: api.example\r\n\r\n", 4_000_000, true),
+	} {
+		event, ok := tracker.event(packet, 0)
+		if !ok {
+			t.Fatalf("packet %d made no event", index)
+		}
+		event.Socket = 1
+		events = append(events, event)
+	}
+	output := traceCaptureOutput(t, &os.Stdout, func() { runTraceShow([]string{traceShowWrite(t, "http.jsonl", events...)}) })
+	if !strings.Contains(output, "Unanswered: 1\n") {
+		t.Fatalf("http summary = %q", output)
+	}
+
+	// DNS는 응답 하나가 다시 보낸 질의까지 답한다.
+	latency := 2.0
+	dns := []any{
+		captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "db.internal", QueryType: "A", Destination: "127.0.0.53:53"},
+		captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "db.internal", QueryType: "A", Destination: "127.0.0.53:53"},
+		captureEvent{Protocol: "dns", Event: "dns_noerror", Process: "app", Target: "db.internal", QueryType: "A", Destination: "127.0.0.53:53", LatencyMS: &latency, Answered: 2},
+		captureEvent{Protocol: "dns", Event: traceDNSQueryEvent, Process: "app", Target: "lost.internal", QueryType: "A", Destination: "127.0.0.53:53"},
+	}
+	output = traceCaptureOutput(t, &os.Stdout, func() { runTraceShow([]string{traceShowWrite(t, "dns.jsonl", dns...)}) })
+	if !strings.Contains(output, "Unanswered: 1\n") {
+		t.Fatalf("dns summary = %q", output)
+	}
+}
+
 func TestTraceShowReplaysAnExecRawFile(t *testing.T) {
 	code1, code0 := int32(1), int32(0)
 	short := 50.0

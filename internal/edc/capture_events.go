@@ -112,8 +112,9 @@ type captureEvent struct {
 	ByteDelta  uint64 `json:"-"`
 	TLSNotice  string `json:"-"`
 	LostEvents uint64 `json:"lost_events,omitempty"`
-	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
-	answered uint64
+	// Answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다. trace show가 raw 기록에서
+	// 응답 없는 요청을 다시 세므로 JSON에 남긴다.
+	Answered uint64 `json:"answered,omitempty"`
 	// requestID는 HTTP 요청 event와 그 요청에 짝지은 최종 응답 event가 함께 갖는 번호다. 전체 화면이 둘을 한 행으로 합친다.
 	// 같은 연결에서 같은 URL을 동시에 요청하는 HTTP/2도 URL만으로는 짝을 가를 수 없어서 tracker가 짝지은 결과를 그대로 쓴다.
 	requestID uint64

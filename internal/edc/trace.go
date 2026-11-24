@@ -1454,9 +1454,9 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	observeTraceGroup(group, event)
 	// event 보기는 질의를 dns_query 행에, 응답을 결과 행에 둔다. 응답이 답한 질의를 dns_query 행에서 빼지 않으면
 	// 그 행의 질의가 모두 응답 없음으로 보인다. 다른 보기는 질의와 응답이 같은 행에 들어간다.
-	if summarizer.groupBy == traceGroupByEvent && event.answered > 0 {
+	if summarizer.groupBy == traceGroupByEvent && event.Answered > 0 {
 		if queries := summarizer.groups[traceDNSQueryEvent]; queries != nil && queries.DNS != nil {
-			queries.DNS.answered += event.answered
+			queries.DNS.answered += event.Answered
 		}
 		requestKey := traceHTTPRequestEvent
 		if event.MySQL != nil {
@@ -1479,19 +1479,19 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 			requestKey += "\x00server"
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.HTTP != nil {
-			requests.HTTP.answered += event.answered
+			requests.HTTP.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.MySQL != nil {
-			requests.MySQL.answered += event.answered
+			requests.MySQL.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.ClickHouse != nil {
-			requests.ClickHouse.answered += event.answered
+			requests.ClickHouse.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.Postgres != nil {
-			requests.Postgres.answered += event.answered
+			requests.Postgres.answered += event.Answered
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.Redis != nil {
-			requests.Redis.answered += event.answered
+			requests.Redis.answered += event.Answered
 		}
 	}
 	summarizer.events++

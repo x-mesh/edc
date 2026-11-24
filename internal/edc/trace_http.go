@@ -627,7 +627,7 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 	if request, ok := tracker.h2Pending[packet.socket][stream]; ok {
 		event.Method, event.Path, event.Target = request.method, request.path, request.host
 		if status >= 200 {
-			event.LatencyMS, event.answered, event.requestID = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1, request.id
+			event.LatencyMS, event.Answered, event.requestID = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1, request.id
 			tracker.forgetHTTP2Stream(packet.socket, stream)
 		}
 	}
@@ -711,7 +711,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	// 1xx는 중간 응답이다. 최종 응답이 같은 요청에 다시 온다.
 	if status >= 200 {
 		event.LatencyMS = traceSpan(request.bootTimeNS, packet.bootTimeNS)
-		event.answered = 1
+		event.Answered = 1
 		event.requestID = request.id
 		tracker.pending[packet.socket] = queue[1:]
 		if len(queue) == 1 {
@@ -1132,7 +1132,7 @@ func (counts *traceHTTPCounts) observe(event captureEvent) {
 	case 5:
 		counts.ServerErrors++
 	}
-	counts.answered += event.answered
+	counts.answered += event.Answered
 	counts.latency.observe(event.LatencyMS)
 }
 

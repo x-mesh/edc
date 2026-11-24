@@ -98,7 +98,7 @@ func TestPostgresTailRecordsAnswerLargeResults(t *testing.T) {
 					t.Fatalf("server=%v latency %v at %d, want %d - %d", server, result.LatencyMS, result.BootTimeNS, last, query.BootTimeNS)
 				}
 				info := result.Postgres
-				if info.Tag != "SELECT 1000" || info.Rows == nil || *info.Rows != 1000 || info.SQL != "SELECT repeat('?',100) FROM generate_series(1,1000)" || result.answered != 1 {
+				if info.Tag != "SELECT 1000" || info.Rows == nil || *info.Rows != 1000 || info.SQL != "SELECT repeat('?',100) FROM generate_series(1,1000)" || result.Answered != 1 {
 					t.Fatalf("server=%v result = %s", server, pgJSON(t, events[3:]))
 				}
 				// 응답 byte는 경계를 잃은 뒤의 record까지 더한다. 서버 쪽은 쓰기를 모두 더한 값과 같다.

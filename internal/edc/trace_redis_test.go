@@ -478,17 +478,17 @@ func redisPairs(t *testing.T, label string, events []captureEvent) (commands, an
 		}
 		switch event.Event {
 		case redisEventCommand:
-			if event.LatencyMS != nil || event.answered != 0 {
+			if event.LatencyMS != nil || event.Answered != 0 {
 				t.Fatalf("%s: command with latency", label)
 			}
 			commands = append(commands, info.Command)
 		case redisEventReply, redisEventError:
-			if event.LatencyMS == nil || *event.LatencyMS < 0 || event.answered != 1 {
+			if event.LatencyMS == nil || *event.LatencyMS < 0 || event.Answered != 1 {
 				t.Fatalf("%s: reply without latency: %+v %+v", label, event, info)
 			}
 			answered = append(answered, info.Command)
 		case redisEventPush:
-			if event.LatencyMS != nil || event.answered != 0 {
+			if event.LatencyMS != nil || event.Answered != 0 {
 				t.Fatalf("%s: push with latency", label)
 			}
 		default:

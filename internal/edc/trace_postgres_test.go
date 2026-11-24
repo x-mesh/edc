@@ -334,7 +334,7 @@ func TestPostgresFixtureReplay(t *testing.T) {
 					case postgresEventConnect, postgresEventQuery:
 						requests++
 					case postgresEventResult, postgresEventError:
-						answered += event.answered
+						answered += event.Answered
 						if event.LatencyMS == nil || *event.LatencyMS <= 0 {
 							t.Errorf("%s server=%v run %d: %s latency %v", name, server, run, event.Event, event.LatencyMS)
 						}
@@ -1067,7 +1067,7 @@ func FuzzPostgresTracker(f *testing.F) {
 			t.Fatalf("secret in events: %s", raw)
 		}
 		for _, event := range events {
-			if (event.LatencyMS != nil) != (event.answered == 1) {
+			if (event.LatencyMS != nil) != (event.Answered == 1) {
 				t.Fatalf("latency without an answer: %#v", event)
 			}
 			pgCheckText(t, reflect.ValueOf(event))

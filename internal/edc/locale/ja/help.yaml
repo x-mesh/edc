@@ -495,7 +495,7 @@ command:
       errors: "trace syscall: 失敗した呼び出し。all か errno 名"
       files: "trace syscall: ファイル表。既定で有効、--slow や --errors と併用するときは --files が必要"
       no_files: "trace syscall: ファイル表を省略"
-      fd_path: "詳細イベントの FD をホストの procfs で参照"
+      fd_path: "trace syscall: イベントの FD をホストの procfs で参照。--slow か --errors と、詳細テキストか --raw が必要"
       all: "trace syscall: 表のすべての行を表示。既定は先頭の行のみ"
       denied: "trace priv: 拒否された capability 検査だけ"
       frequency: "trace cpu: CPU ごとの毎秒 sample 数、既定 99"

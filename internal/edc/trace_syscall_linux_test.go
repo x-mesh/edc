@@ -624,6 +624,38 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 	}
 }
 
+// --fd-path가 이벤트 콜백을 감싼 채로 실제 event를 받아, helper가 아직 열어 둔 stdin pipe를 찾는지 본다.
+func TestTraceSyscallLooksUpFDTargetsOfDetailedEvents(t *testing.T) {
+	requireSyscallTrace(t)
+	root := syscallFDTargetRoot("/proc")
+	if root == "" {
+		t.Skip("--fd-path looks up descriptors only in the host PID namespace")
+	}
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, slow: 50 * time.Millisecond}
+	var events []syscallEvent
+	traceSyscallHelpers(t, options, []syscallHelper{helper}, nil, syscallFDTargetEvents(root, func(event syscallEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	found := false
+	for _, event := range events {
+		if event.Syscall == "read" && event.FD != nil && *event.FD == 0 {
+			found = found || strings.HasPrefix(event.FDTargetAtRead, "pipe:[") && strings.Contains(event.line(), "fd_target_at_read=pipe:[")
+		}
+	}
+	if !found {
+		t.Errorf("no read of fd 0 with a pipe target, events %+v", events)
+	}
+}
+
 // onSnapshot은 trace를 떼지 않고 liveInterval마다 지금까지의 값을 받아야 한다. 값은 줄지 않고, 마지막 수집 결과가 이어받는다.
 func TestTraceSyscallSendsSnapshotsWhileRunning(t *testing.T) {
 	requireSyscallTrace(t)

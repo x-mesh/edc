@@ -707,6 +707,68 @@ func TestSyscallFDTargetUsesTheTracingThreadsCurrentDescriptor(t *testing.T) {
 	}
 }
 
+func TestSyscallFDTargetRootNeedsTheHostPIDNamespace(t *testing.T) {
+	for _, test := range []struct {
+		namespace string
+		host      bool
+	}{{auditHostPIDNamespace, true}, {"pid:[4026532000]", false}, {"", false}} {
+		root := t.TempDir()
+		if test.namespace != "" {
+			if err := os.MkdirAll(filepath.Join(root, "1", "ns"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(test.namespace, filepath.Join(root, "1", "ns", "pid")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := ""
+		if test.host {
+			want = root
+		}
+		if got := syscallFDTargetRoot(root); got != want {
+			t.Errorf("namespace %q: root = %q, want %q", test.namespace, got, want)
+		}
+	}
+}
+
+func TestSyscallFDTargetEventsLookUpOnlyDetailedEvents(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "19", "fd"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := "/fixture/database.wal"
+	if err := os.Symlink(target, filepath.Join(root, "19", "fd", "3")); err != nil {
+		t.Fatal(err)
+	}
+	fd := int32(3)
+	var got []syscallEvent
+	onEvent := syscallFDTargetEvents(root, func(event syscallEvent) error {
+		got = append(got, event)
+		return nil
+	})
+	for _, reason := range []uint8{syscallReasonLine, syscallReasonFile, syscallReasonLine | syscallReasonFile} {
+		if err := onEvent(syscallEvent{TID: 19, Syscall: "fsync", FD: &fd, Reason: reason}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("passed %d events, want 3", len(got))
+	}
+	for _, event := range got {
+		want := ""
+		if event.Reason&syscallReasonLine != 0 {
+			want = target
+		}
+		if event.FDTargetAtRead != want || event.FDTargetUnavailable {
+			t.Errorf("reason %d: target %q unavailable %t, want %q", event.Reason, event.FDTargetAtRead, event.FDTargetUnavailable, want)
+		}
+	}
+	wantErr := errors.New("write failed")
+	if err := syscallFDTargetEvents(root, func(syscallEvent) error { return wantErr })(syscallEvent{Reason: syscallReasonLine}); err != wantErr {
+		t.Errorf("error = %v, want %v", err, wantErr)
+	}
+}
+
 func TestSyscallFDPathRequiresDetailedOutput(t *testing.T) {
 	for _, args := range [][]string{
 		{"--fd-path"},

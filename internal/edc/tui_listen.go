@@ -89,9 +89,8 @@ func runListenBrowser(options commonOptions, families listenFamilies, full bool)
 	model.load = func(ctx context.Context) Result {
 		result := probeListen(ctx, families)
 		if sockets, ok := result.Metrics["sockets"].([]listenSocket); ok {
-			if full {
-				attachListenCommands(sockets)
-			}
+			// PROCESS 칸의 인터프리터 꼬리표에 쓰려고 명령줄은 늘 읽는다. 목록 아래쪽의 전체 명령줄은 --full에서만 보인다.
+			attachListenCommands(sockets)
 			if err := attachListenContainers(ctx, sockets); err != nil {
 				result.Warnings = append(result.Warnings, infoSingleLine(err.Error()))
 			}
@@ -504,6 +503,7 @@ func (model listenBrowser) View() tea.View {
 				return cells + svcBrowserCell(process, processWidth) + "  " + svcBrowserCell(pid, 10)
 			}
 			lines = append(lines, liveMuted("  "+row("PORT/PROTO", svcBrowserCell("ADDRESS", addressWidth), "SCOPE", "PROCESS", "PID"), model.color))
+			home, _ := os.UserHomeDir()
 			end := min(len(model.items), model.offset+max(1, model.height-5))
 			for i := model.offset; i < end; i++ {
 				item := model.items[i]
@@ -515,14 +515,18 @@ func (model listenBrowser) View() tea.View {
 				// 글자는 가린 뒤에 칠하고 자른다. 잘린 IPv6 주소는 가리는 패턴에 맞지 않을 수 있고, 칠한 뒤에는 색 코드가
 				// 주소에 붙는다. svcBrowserCell은 색 코드를 폭에 세지 않고 자른다.
 				process := topPrintableText(listenCell(first.Process))
+				label := ""
+				if text := listenProcessLabel(model.activeSocket(item), home); text != "" {
+					label = " · " + text
+				}
 				container := ""
 				if first.Container != nil {
 					container = topPrintableText(" → " + listenContainerLabel(*first.Container))
 				}
 				if model.redact {
-					process, container = redactIPAddresses(process), redactIPAddresses(container)
+					process, label, container = redactIPAddresses(process), redactIPAddresses(label), redactIPAddresses(container)
 				}
-				process += model.paint(container, richCyan, false)
+				process += model.paint(label, richGray, false) + model.paint(container, richCyan, false)
 				address := model.paint(topPrintableText(model.rowAddresses(item)), listenScopeColor(item.scope()), false)
 				lines = append(lines, svcBrowserRow(row(model.paint(port, "", true), svcBrowserCell(address, addressWidth), listenBrowserScope(item.scope()), process, model.paint(model.pidCell(item), richGray, false)), i == model.cursor, model.color, model.width))
 			}
@@ -533,7 +537,6 @@ func (model listenBrowser) View() tea.View {
 					footer = choice + " · " + footer
 				}
 				if model.full {
-					home, _ := os.UserHomeDir()
 					if command := listenCommandLine(model.activeSocket(item), home); command != "" {
 						footer += " · " + command
 					}

@@ -259,3 +259,28 @@ func TestFormatListenTableCommandLines(t *testing.T) {
 		t.Fatalf("command lines without --full:\n%s", plain)
 	}
 }
+
+func TestListenProcessLabel(t *testing.T) {
+	const home = "/home/dev"
+	tests := []struct {
+		name   string
+		socket listenSocket
+		want   string
+	}{
+		{"node script and project", listenSocket{Process: "node", Args: []string{"node", "/home/dev/web/node_modules/.bin/vite", "--port", "5173", "--token", "abc"}, Cwd: "/home/dev/web"}, "vite (web)"},
+		{"versioned interpreter", listenSocket{Process: "python3.13", Args: []string{"/usr/bin/python3.13", "tools/devserver.py"}}, "devserver.py"},
+		{"home directory is not a project", listenSocket{Process: "node", Args: []string{"node", "server.js"}, Cwd: "/home/dev"}, "server.js"},
+		{"root directory is not a project", listenSocket{Process: "ruby", Args: []string{"ruby", "app.rb"}, Cwd: "/"}, "app.rb"},
+		{"interpreter flag first", listenSocket{Process: "node", Args: []string{"node", "--inspect", "app.js"}}, ""},
+		{"interpreter alone", listenSocket{Process: "node", Args: []string{"/usr/bin/node"}}, ""},
+		{"rewritten argv title", listenSocket{Process: "node", Args: []string{"Raycast Backend", "", ""}}, "Raycast Backend"},
+		{"not an interpreter", listenSocket{Process: "nginx", Args: []string{"nginx: master process /usr/sbin/nginx"}}, ""},
+		{"no command", listenSocket{Process: "node"}, ""},
+		{"control characters are replaced", listenSocket{Process: "node", Args: []string{"node", "a\x1b[2Jb.js"}}, "a?[2Jb.js"},
+	}
+	for _, tt := range tests {
+		if got := listenProcessLabel(tt.socket, home); got != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

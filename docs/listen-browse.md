@@ -35,6 +35,8 @@ Refresh preserves the selected row by protocol, port, process name, binding scop
 
 Enter shows the addresses, owner PIDs, receive/send queue of each socket, container association when available, and the same process facts as `edc proc <pid> -v` for each PID. An unknown owner or an exited process leaves the socket details accessible with an explanation. Process details are read on demand and remain a snapshot until reloaded. Esc returns to the socket list without automatically refreshing it.
 
+For node, python, ruby, perl, and php, the PROCESS column adds the script file name and the name of the working directory in gray, for example `node · vite (web)`. If the process replaced its title, for example `Raycast Backend`, the column shows that title. The column does not show other arguments, because they can contain secrets. Use `--full` to see the full command.
+
 `--full` adds the selected process's command and working directory to the list footer. For a row with two or more PIDs, they are those of the PID that `p` selected. The details screen wraps long content and can be scrolled. Terminal display of Arabic and other bidirectional text depends on the terminal emulator.
 
 `--browse` cannot be combined with `--watch`, `--json`, `--interval`/`-i`, or `--duration`. Use `edc listen --watch` for a continuous stream of socket changes. Browse does not change the existing TCP/UDP/Unix filters or the one-shot/JSON output modes. Binding scope describes where a socket is bound; it does not establish external reachability.

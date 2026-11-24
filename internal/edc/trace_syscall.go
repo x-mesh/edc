@@ -108,6 +108,7 @@ type syscallEvent struct {
 	Errno          string  `json:"errno,omitempty"`
 	LatencyMS      float64 `json:"latency_ms"`
 	Path           string  `json:"path,omitempty"`
+	FD             *int32  `json:"fd,omitempty"`
 	PathTruncated  bool    `json:"path_truncated,omitempty"`
 	PathUnreadable bool    `json:"path_unreadable,omitempty"`
 	// Action은 파일 표에 넣는 호출이 파일에 한 일이다. read, write, create, delete, rename, other 중 하나다.
@@ -124,6 +125,9 @@ func (event syscallEvent) line() string {
 		result = strconv.FormatInt(event.Return, 10)
 	}
 	text := fmt.Sprintf("%s  %s %d/%d  %s  %s  %s", time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000000"), event.Process, event.PID, event.TID, event.Syscall, result, syscallTime(event.LatencyMS*float64(time.Millisecond)))
+	if event.FD != nil {
+		text += fmt.Sprintf("  fd=%d", *event.FD)
+	}
 	switch {
 	case event.PathUnreadable:
 		text += "  (path unreadable)"

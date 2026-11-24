@@ -388,7 +388,9 @@ func TestSyscallEventLayoutMatchesTheParser(t *testing.T) {
 		"tid":          {unsafe.Offsetof(record.Tid), 28},
 		"nr":           {unsafe.Offsetof(record.Nr), 32},
 		"path_state":   {unsafe.Offsetof(record.PathState), 36},
+		"fd_valid":     {unsafe.Offsetof(record.FdValid), 39},
 		"comm":         {unsafe.Offsetof(record.Comm), 40},
+		"fd":           {unsafe.Offsetof(record.Fd), syscallEventPathEnd},
 		"path":         {unsafe.Offsetof(record.Path), 56},
 		"end":          {unsafe.Sizeof(record), syscallEventSize},
 	} {
@@ -515,7 +517,7 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat,nanosleep")
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat,nanosleep,read")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,11 +535,11 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 		return nil
 	})
 	for _, sample := range collection.samples {
-		if sample.Syscall != "openat" && sample.Syscall != "nanosleep" {
+		if sample.Syscall != "openat" && sample.Syscall != "nanosleep" && sample.Syscall != "read" {
 			t.Errorf("a call outside --syscall was counted: %+v", sample)
 		}
 	}
-	failed, slept := false, false
+	failed, slept, readStdin := false, false, false
 	for _, event := range events {
 		if event.PID != helper.pid() {
 			t.Errorf("an event of another process: %+v", event)
@@ -546,10 +548,11 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 			t.Errorf("an errno outside --errors: %+v", event)
 		}
 		failed = failed || event.Syscall == "openat" && event.Errno == "ENOENT" && event.Path == syscallHelperPath
-		slept = slept || event.Syscall == "nanosleep" && event.LatencyMS >= float64(options.slow)/float64(time.Millisecond)
+		slept = slept || event.Syscall == "nanosleep" && event.FD == nil && event.LatencyMS >= float64(options.slow)/float64(time.Millisecond)
+		readStdin = readStdin || event.Syscall == "read" && event.FD != nil && *event.FD == 0 && strings.Contains(event.line(), "fd=0")
 	}
-	if !failed || !slept {
-		t.Errorf("failed openat %t, slow nanosleep %t, events %+v", failed, slept, events)
+	if !failed || !slept || !readStdin {
+		t.Errorf("failed openat %t, slow nanosleep %t, read fd=0 %t, events %+v", failed, slept, readStdin, events)
 	}
 	if collection.summary.Events != uint64(len(events)) || collection.summary.RingLost != 0 {
 		t.Errorf("summary = %+v, events %d", collection.summary, len(events))

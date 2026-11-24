@@ -75,12 +75,12 @@ struct syscall_counters { __u64 values[SYSCALL_COUNTERS]; };
 // 그 값을 읽는 방식이다(FLAGS_ARG: 인자 자체, FLAGS_CREAT: creat이라 쓰기와 생성과 비우기, FLAGS_HOW: open_how 구조체라 읽지
 // 않고 OPEN_UNKNOWN만 표시한다). open_how를 읽으려고 stack 변수를 두면 5.15 verifier가 flags를 읽는 두 경로를 한 명령으로
 // 합친 것을 거부한다.
-struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 file; __u8 flags_arg; __u8 flags_mode; __u8 pad[2]; };
+struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 file; __u8 flags_arg; __u8 flags_mode; __u8 fd_arg; __u8 pad; };
 struct syscall_window { __u64 start_ns; __u64 sent; __u64 suppressed; };
 // path_state는 0이면 경로가 없는 호출, 1이면 읽은 경로, 2이면 읽지 못한 경로, 3이면 잘린 경로다.
 // open_kind는 open flags에서 뽑은 OPEN_* bit이고, flags를 읽지 않는 호출은 0이다.
 // reason은 event를 낸 이유의 EVENT_* bit다. 한 호출이 둘 다에 해당할 수 있어 사용자 공간이 줄 출력과 파일 표를 나눈다.
-struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 open_kind; __u8 reason; __u8 pad; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; };
+struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 open_kind; __u8 reason; __u8 fd_valid; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; __s32 fd; __u32 pad; };
 const struct syscall_key *unused_syscall_key __attribute__((unused));
 const struct syscall_stats *unused_syscall_stats __attribute__((unused));
 const struct syscall_start *unused_syscall_start __attribute__((unused));
@@ -301,9 +301,16 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 	record->path_state = 0;
 	record->open_kind = 0;
 	record->reason = reason;
+	record->fd_valid = 0;
+	record->fd = 0;
+	record->pad = 0;
 	leader_comm(task, record->comm);
 	record->path[0] = 0;
 	struct syscall_rule *rule = rule_for(nr);
+	if ((reason & EVENT_LINE) && rule && rule->fd_arg && !(nr & SYSCALL_COMPAT)) {
+		record->fd = (__s32)syscall_arg((void *)ctx[0], rule->fd_arg - 1);
+		record->fd_valid = 1;
+	}
 	// 32비트 호환 호출은 인자가 다른 register에 있어 경로를 읽지 않는다.
 	if (rule && rule->path_arg && !(nr & SYSCALL_COMPAT) && !(rule->path_gone && ret == 0)) {
 		const void *path = (const void *)syscall_arg((void *)ctx[0], rule->path_arg - 1);

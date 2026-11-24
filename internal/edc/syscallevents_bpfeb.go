@@ -41,9 +41,11 @@ type syscallEventsSyscallEvent struct {
 	PathState   uint8
 	OpenKind    uint8
 	Reason      uint8
-	Pad         uint8
+	FdValid     uint8
 	Comm        [16]int8
 	Path        [256]int8
+	Fd          int32
+	Pad         uint32
 }
 
 type syscallEventsSyscallInFlight struct {
@@ -72,7 +74,8 @@ type syscallEventsSyscallRule struct {
 	File      uint8
 	FlagsArg  uint8
 	FlagsMode uint8
-	Pad       [2]uint8
+	FdArg     uint8
+	Pad       uint8
 }
 
 type syscallEventsSyscallStart struct {

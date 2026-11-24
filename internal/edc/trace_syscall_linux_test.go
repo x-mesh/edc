@@ -167,6 +167,19 @@ func TestTraceSyscallHelperProcess(t *testing.T) {
 			}
 			continue
 		}
+		if buffer[0] == 'u' {
+			// BPF가 open_how의 flags를 읽지 못하는 두 호출이다. size가 flags보다 작으면 읽지 않고, 주소가 매핑되지 않으면
+			// 읽기가 실패한다. 커널은 각각 EINVAL과 EFAULT를 돌려준다.
+			path, _ := unix.BytePtrFromString("/dev/null")
+			dirfd := unix.AT_FDCWD
+			var how unix.OpenHow
+			for _, call := range []struct{ how, size uintptr }{{uintptr(unsafe.Pointer(&how)), 4}, {1, unsafe.Sizeof(how)}} {
+				if fd, _, errno := unix.Syscall6(unix.SYS_OPENAT2, uintptr(dirfd), uintptr(unsafe.Pointer(path)), call.how, call.size, 0, 0); errno == 0 {
+					unix.Close(int(fd))
+				}
+			}
+			continue
+		}
 		if buffer[0] == 'p' {
 			for _, path := range []string{syscallHelperExactPath, syscallHelperLongPath} {
 				if fd, err := syscall.Open(path, syscall.O_RDONLY, 0); err == nil {
@@ -537,6 +550,35 @@ func TestTraceSyscallClassifiesOpenat2Flags(t *testing.T) {
 	})
 	if !actions["read"] || !actions["write"] || !actions["create"] || actions["other"] {
 		t.Fatalf("openat2 actions = %v", actions)
+	}
+}
+
+// open_how가 flags보다 작거나 읽을 수 없으면 BPF는 OPEN_UNKNOWN을 표시하고, 파일 표는 other로 분류한다.
+func TestTraceSyscallMarksUnreadableOpenHowAsUnknown(t *testing.T) {
+	requireSyscallTrace(t)
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, files: true}
+	unknown := map[string]bool{}
+	var events []syscallEvent
+	traceSyscallHelpers(t, options, nil, func() {
+		helper.send(t, 'u')
+		time.Sleep(200 * time.Millisecond)
+	}, func(event syscallEvent) error {
+		events = append(events, event)
+		if event.Path == "/dev/null" && event.OpenKind == syscallOpenUnknown && event.Action == "other" {
+			unknown[event.Errno] = true
+		}
+		return nil
+	})
+	if !unknown["EINVAL"] || !unknown["EFAULT"] {
+		t.Fatalf("unknown openat2 errnos = %v, events %+v", unknown, events)
 	}
 }
 

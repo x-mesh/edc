@@ -770,3 +770,67 @@ func TestTraceSyscallSnapshotWithoutAnIntervalUsesTheDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestSyscallProcessStartupStatus(t *testing.T) {
+	root := t.TempDir()
+	previous := traceProcRoot
+	traceProcRoot = root
+	t.Cleanup(func() { traceProcRoot = previous })
+
+	options := syscallTraceOptions{pids: []uint32{42}}
+	if got := syscallProcessStartupStatus(options); !strings.Contains(got, "unavailable") {
+		t.Fatalf("without a host procfs, got %q", got)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "1", "ns"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(auditHostPIDNamespace, filepath.Join(root, "1", "ns", "pid")); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(options); !strings.Contains(got, "no visible matches") {
+		t.Fatalf("before the process appears, got %q", got)
+	}
+	if err := os.Mkdir(filepath.Join(root, "42"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "42", "comm"), []byte("nginx\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, filter := range []syscallTraceOptions{
+		options,
+		{comms: []string{"nginx"}},
+		{pids: []uint32{42}, comms: []string{"nginx"}},
+	} {
+		if got := syscallProcessStartupStatus(filter); !strings.HasSuffix(got, "1 visible match") {
+			t.Errorf("with PID or name match, got %q", got)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "43"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "43", "comm"), []byte("nginx\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	names := syscallTraceOptions{comms: []string{"nginx"}}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches") {
+		t.Errorf("with two name matches, got %q", got)
+	}
+	// comm을 읽다 ENOENT가 아닌 오류가 나면, 센 수는 일부일 수 있다고 알린다.
+	if err := os.MkdirAll(filepath.Join(root, "44", "comm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches (some process names unreadable)") {
+		t.Errorf("with an unreadable process name, got %q", got)
+	}
+	// 사라진 프로세스의 comm은 읽지 못한 이름으로 세지 않는다.
+	if err := os.RemoveAll(filepath.Join(root, "44")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "45"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches") {
+		t.Errorf("with a process that left, got %q", got)
+	}
+}

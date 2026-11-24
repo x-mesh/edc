@@ -324,13 +324,37 @@ func TestSyscallLiveRenderShowsRateAndCtrlC(t *testing.T) {
 	}
 }
 
+func TestSyscallProcessStatusFollowsTheHeadline(t *testing.T) {
+	const status = "PROCESS FILTER AT START  2 visible matches"
+	var final bytes.Buffer
+	syscallReportFor(syscallTestCollection(), "").render(&final, syscallView{rows: 5, processStatus: status})
+	lines := strings.Split(final.String(), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], "SYSCALL TRACE") || lines[1] != status {
+		t.Errorf("final table does not put the status below the headline:\n%s", final.String())
+	}
+
+	file, err := os.CreateTemp(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	newSyscallSnapshotHandler(file, "", nil, nil, true, status)(syscallTestCollection())
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), status) {
+		t.Errorf("live frame lacks the process status:\n%s", data)
+	}
+}
+
 func TestSyscallLiveWriterRedrawsWithTheCallRate(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "live")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	write := newSyscallSnapshotHandler(file, "", nil, nil, true)
+	write := newSyscallSnapshotHandler(file, "", nil, nil, true, "")
 	first := syscallTestCollection()
 	first.summary.DurationMS = 1000
 	write(first)

@@ -256,8 +256,8 @@ func TestSyscallEventDetectorMayBeNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	newSyscallSnapshotHandler(file, "", nil, nil, true)(syscallTestCollection())
-	newSyscallSnapshotHandler(file, "", nil, nil, false)(syscallTestCollection())
+	newSyscallSnapshotHandler(file, "", nil, nil, true, "")(syscallTestCollection())
+	newSyscallSnapshotHandler(file, "", nil, nil, false, "")(syscallTestCollection())
 }
 
 // 실시간 snapshot 처리가 event를 표에 넣는다. 처음에는 빈 패널이고, 조건이 5초 이어지면 event 행이 생긴다.
@@ -274,7 +274,7 @@ func TestSyscallSnapshotHandlerDrawsTheEventsPanel(t *testing.T) {
 		seconds++
 		return clock.start.Add(time.Duration(seconds) * time.Second)
 	}
-	handler := newSyscallSnapshotHandler(file, "", nil, clock.detector, true)
+	handler := newSyscallSnapshotHandler(file, "", nil, clock.detector, true, "")
 	collection := func(errors uint64, seconds int64) syscallCollection {
 		return syscallCollection{
 			samples: []syscallSample{{Process: "api", Syscall: "connect", Calls: errors, Errors: errors, Errnos: map[string]uint64{"ECONNREFUSED": errors}}},

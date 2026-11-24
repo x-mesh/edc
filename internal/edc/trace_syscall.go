@@ -170,6 +170,26 @@ func (event *syscallEvent) lookupFDTarget(procRoot string) {
 	}
 }
 
+// syscallFDTargetRoot returns procRoot when it shows the host PID namespace, because event TIDs are host TIDs.
+// Otherwise it returns "", and every lookup is unavailable.
+func syscallFDTargetRoot(procRoot string) string {
+	namespace, _ := os.Readlink(filepath.Join(procRoot, "1", "ns", "pid"))
+	if namespace != auditHostPIDNamespace {
+		return ""
+	}
+	return procRoot
+}
+
+// syscallFDTargetEvents looks up the descriptor target of detailed events before passing every event to next.
+func syscallFDTargetEvents(procRoot string, next func(syscallEvent) error) func(syscallEvent) error {
+	return func(event syscallEvent) error {
+		if event.Reason&syscallReasonLine != 0 {
+			event.lookupFDTarget(procRoot)
+		}
+		return next(event)
+	}
+}
+
 func syscallEventPathText(path string, truncated, unreadable bool) string {
 	if unreadable {
 		return "  (path unreadable)"
@@ -444,18 +464,7 @@ func runTraceSyscall(args []string) int {
 		}
 	}
 	if fdPath {
-		root := traceProcRoot
-		namespace, _ := os.Readlink(filepath.Join(root, "1", "ns", "pid"))
-		if namespace != auditHostPIDNamespace {
-			root = ""
-		}
-		writeEvent := onEvent
-		onEvent = func(event syscallEvent) error {
-			if event.Reason&syscallReasonLine != 0 {
-				event.lookupFDTarget(root)
-			}
-			return writeEvent(event)
-		}
+		onEvent = syscallFDTargetEvents(syscallFDTargetRoot(traceProcRoot), onEvent)
 	}
 	stopTrace := ctx.Done()
 	exitCode := func() int {

@@ -499,7 +499,7 @@ command:
       errors: "trace syscall: failed calls, all or errno names"
       files: "trace syscall: file table. On by default; with --slow or --errors it needs --files"
       no_files: "trace syscall: leave out the file table"
-      fd_path: "look up detailed event descriptors in host procfs"
+      fd_path: "trace syscall: look up event descriptors in host procfs. Needs --slow or --errors, and detailed text or --raw"
       all: "trace syscall: show every row of the tables, not only the first rows"
       denied: "trace priv: only denied capability checks"
       frequency: "trace cpu: samples per second per CPU, default 99"

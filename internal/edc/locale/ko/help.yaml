@@ -499,7 +499,7 @@ command:
       errors: "trace syscall: 실패한 호출 출력. all이나 errno 이름"
       files: "trace syscall: 파일 표. 기본 켜짐, --slow나 --errors와 함께면 --files 필요"
       no_files: "trace syscall: 파일 표 생략"
-      fd_path: "상세 이벤트의 FD를 호스트 procfs에서 조회"
+      fd_path: "trace syscall: 이벤트의 FD를 호스트 procfs에서 조회. --slow나 --errors, 상세 텍스트나 --raw 필요"
       all: "trace syscall: 표의 모든 행 출력. 기본은 앞의 행만"
       denied: "trace priv: 거부된 capability 검사만"
       frequency: "trace cpu: CPU마다 1초에 샘플링할 횟수, 기본 99"

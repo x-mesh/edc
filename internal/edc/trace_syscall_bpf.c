@@ -42,12 +42,12 @@ enum open_kind { OPEN_WRITE = 1, OPEN_CREATE = 2, OPEN_TRUNC = 4, OPEN_UNKNOWN =
 enum event_reason { EVENT_FILE = 1, EVENT_LINE = 2 };
 enum syscall_flags_mode { FLAGS_NONE, FLAGS_ARG, FLAGS_CREAT, FLAGS_HOW };
 
-enum syscall_counter { SYSCALL_STARTS_FULL, SYSCALL_STATS_FULL, SYSCALL_ERRNOS_FULL, SYSCALL_UNMATCHED, SYSCALL_RING_LOST, SYSCALL_COUNTERS };
+enum syscall_counter { SYSCALL_STARTS_FULL, SYSCALL_STATS_FULL, SYSCALL_ERRNOS_FULL, SYSCALL_UNMATCHED, SYSCALL_RING_LOST, SYSCALL_ENTERED, SYSCALL_RETURNED, SYSCALL_COUNTERS };
 enum syscall_events { SYSCALL_EVENTS_OFF, SYSCALL_EVENTS_ALL_ERRORS, SYSCALL_EVENTS_LISTED_ERRORS };
 
 struct thread_info___x86 { __u32 status; } __attribute__((preserve_access_index));
 struct task_struct___x86 { struct thread_info___x86 thread_info; } __attribute__((preserve_access_index));
-struct task_struct { struct task_struct *group_leader; char comm[TASK_COMM_LEN]; } __attribute__((preserve_access_index));
+struct task_struct { struct task_struct *group_leader; int pid; char comm[TASK_COMM_LEN]; } __attribute__((preserve_access_index));
 // sys_exit tracepoint가 주는 사용자 register다. 하나의 object가 두 아키텍처에서 돌므로 field가 있는 쪽을 쓴다.
 // arm64는 x0을 반환값으로 덮으므로 첫 인자는 orig_x0에 남는다.
 struct pt_regs___x86 { unsigned long di; unsigned long si; unsigned long dx; unsigned long r10; unsigned long r8; unsigned long r9; } __attribute__((preserve_access_index));
@@ -65,7 +65,7 @@ struct syscall_key { __u64 cgroup_id; char comm[TASK_COMM_LEN]; __u32 nr; __u32 
 struct syscall_stats { __u64 calls; __u64 timed; __u64 errors; __u64 sum_ns; __u64 max_ns; __u64 hist[HIST_BUCKETS]; };
 // start_ns가 0이면 그 thread는 syscall 안에 있지 않다.
 struct syscall_start { __u64 start_ns; __u32 tgid; __u32 nr; };
-struct syscall_in_flight { __u64 start_ns; __u32 tgid; __u32 nr; char comm[TASK_COMM_LEN]; };
+struct syscall_in_flight { __u64 start_ns; __u32 tgid; __u32 nr; char comm[TASK_COMM_LEN]; __u32 tid; __u32 pad; };
 struct syscall_errno_key { struct syscall_key owner; __u32 err; __u32 pad; };
 struct syscall_comm { char comm[TASK_COMM_LEN]; };
 struct syscall_counters { __u64 values[SYSCALL_COUNTERS]; };
@@ -101,7 +101,7 @@ struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, ERRNOS_MAX); __typ
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 1024); __type(key, __u32); __type(value, __u8); } allowed_pids SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 64); __type(key, struct syscall_comm); __type(value, __u8); } allowed_comms SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 4096); __type(key, __u64); __type(value, __u8); } allowed_cgroups SEC(".maps");
-struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 1); __type(key, __u32); __type(value, struct syscall_counters); } counters SEC(".maps");
+struct { __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); __uint(max_entries, 1); __type(key, __u32); __type(value, struct syscall_counters); } counters SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 2 * SYSCALL_NR_MAX); __type(key, __u32); __type(value, struct syscall_rule); } rules SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, MAX_ERRNO + 1); __type(key, __u32); __type(value, __u8); } event_errnos SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 1 << 22); } events SEC(".maps");
@@ -338,6 +338,7 @@ SEC("tp_btf/sys_enter") int syscall_enter(__u64 *ctx) {
 		struct syscall_rule *rule = rule_for(nr);
 		if (!rule || !rule->allowed) return 0;
 	}
+	count(SYSCALL_ENTERED);
 	if (nr == exit_nr || nr == exit_group_nr || nr == compat_exit_nr || nr == compat_exit_group_nr) {
 		struct syscall_key key = {};
 		struct syscall_stats *value = stats_for(task, nr, &key);
@@ -366,6 +367,7 @@ SEC("tp_btf/sys_exit") int syscall_exit(__u64 *ctx) {
 		if (!filter_process && !filter_cgroup && !filter_syscall && selected(task, bpf_get_current_pid_tgid() >> 32)) count(SYSCALL_UNMATCHED);
 		return 0;
 	}
+	count(SYSCALL_RETURNED);
 	__u64 latency = bpf_ktime_get_ns() - start->start_ns;
 	__u32 nr = start->nr, tgid = start->tgid;
 	start->start_ns = 0;
@@ -393,7 +395,7 @@ SEC("iter/task") int syscall_iter_in_flight(struct bpf_iter__task *ctx) {
 	if (!task) return 0;
 	struct syscall_start *start = bpf_task_storage_get(&starts, task, 0, 0);
 	if (!start || !start->start_ns) return 0;
-	struct syscall_in_flight record = {.start_ns = start->start_ns, .tgid = start->tgid, .nr = start->nr};
+	struct syscall_in_flight record = {.start_ns = start->start_ns, .tgid = start->tgid, .nr = start->nr, .tid = BPF_CORE_READ(task, pid)};
 	leader_comm(task, record.comm);
 	bpf_seq_write(ctx->meta->seq, &record, sizeof(record));
 	return 0;

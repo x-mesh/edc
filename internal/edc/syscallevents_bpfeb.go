@@ -20,7 +20,7 @@ type syscallEventsSyscallComm struct {
 
 type syscallEventsSyscallCounters struct {
 	_      structs.HostLayout
-	Values [5]uint64
+	Values [7]uint64
 }
 
 type syscallEventsSyscallErrnoKey struct {
@@ -52,6 +52,8 @@ type syscallEventsSyscallInFlight struct {
 	Tgid    uint32
 	Nr      uint32
 	Comm    [16]int8
+	Tid     uint32
+	Pad     uint32
 }
 
 type syscallEventsSyscallKey struct {

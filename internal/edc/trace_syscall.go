@@ -151,6 +151,8 @@ type syscallSample struct {
 
 // syscallInFlightSample은 trace가 끝날 때 아직 돌아오지 않은 호출 하나다. ElapsedNS는 그때까지 머문 시간이다.
 type syscallInFlightSample struct {
+	PID       uint32
+	TID       uint32
 	Process   string
 	Syscall   string
 	ElapsedNS uint64
@@ -161,6 +163,8 @@ type syscallSummary struct {
 	Event      string `json:"event,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
 	Calls      uint64 `json:"calls"`
+	Entered    uint64 `json:"entered"`
+	Returned   uint64 `json:"returned"`
 	Errors     uint64 `json:"errors"`
 	InFlight   uint64 `json:"in_flight"`
 	// Unmatched는 시작 기록 없이 돌아온 호출이다. 필터가 있으면 세지 않아 nil이다.
@@ -218,10 +222,12 @@ type syscallReportRow struct {
 }
 
 type syscallInFlightRow struct {
-	Process   string  `json:"process"`
-	Syscall   string  `json:"syscall"`
-	Threads   int     `json:"threads"`
-	LongestMS float64 `json:"longest_ms"`
+	LongestPID uint32  `json:"longest_pid"`
+	LongestTID uint32  `json:"longest_tid"`
+	Process    string  `json:"process"`
+	Syscall    string  `json:"syscall"`
+	Threads    int     `json:"threads"`
+	LongestMS  float64 `json:"longest_ms"`
 }
 
 func runTraceSyscall(args []string) int {
@@ -534,11 +540,11 @@ func newSyscallSnapshotHandler(out *os.File, groupBy string, files *syscallFileT
 	}
 }
 
-// syscallLiveView는 화면 높이에 맞게 표의 행 수를 정한다. 위 두 줄과 아래 세 줄(파일 표가 있으면 네 줄)은 고정이고, 마지막
+// syscallLiveView는 화면 높이에 맞게 표의 행 수를 정한다. 위 두 줄과 아래 네 줄(파일 표가 있으면 다섯 줄)은 고정이고, 마지막
 // 줄은 비워 스크롤을 막는다. 통계 표는 숨긴 행 안내로 한 줄을, 진행 중인 호출 표와 파일 표는 빈 줄과 제목과 머리글과 안내로
 // 네 줄을 더 쓴다. 남는 행이 16줄 아래이면 진행 중인 호출 표를 빼고, 파일 표는 남는 행의 5분의 2를 받는다.
 func syscallLiveView(height int, files bool, events int) syscallView {
-	free := height - 1 - 2 - 3 - 1
+	free := height - 1 - 2 - 4 - 1
 	view := syscallView{live: true}
 	if events > 0 {
 		view.events = min(events, syscallLiveEventRows)
@@ -765,8 +771,9 @@ func syscallReportFor(collection syscallCollection, groupBy string) syscallRepor
 			inFlight[key] = row
 		}
 		row.Threads++
-		if elapsed := float64(sample.ElapsedNS) / float64(time.Millisecond); elapsed > row.LongestMS {
+		if elapsed := float64(sample.ElapsedNS) / float64(time.Millisecond); row.Threads == 1 || elapsed > row.LongestMS {
 			row.LongestMS = elapsed
+			row.LongestPID, row.LongestTID = sample.PID, sample.TID
 		}
 	}
 	for _, row := range inFlight {
@@ -894,9 +901,9 @@ func (report syscallReport) render(out io.Writer, view syscallView) {
 		} else {
 			style.line(out, style.subheading("IN FLIGHT AT STOP")+style.dim(": calls that started during the trace and had not returned"))
 		}
-		style.line(out, style.dim(fmt.Sprintf("%-16s  %-22s %8s %9s", "PROCESS", "SYSCALL", "THREADS", "LONGEST")))
+		style.line(out, style.dim(fmt.Sprintf("%-16s  %-22s %8s %9s %s", "PROCESS", "SYSCALL", "THREADS", "LONGEST", "PID/TID")))
 		for _, row := range report.InFlight[:min(len(report.InFlight), view.inFlight)] {
-			style.printf(out, "%-16s  %-22s %8d %9s\n", row.Process, row.Syscall, row.Threads, style.measure(syscallTime(row.LongestMS*float64(time.Millisecond))))
+			style.printf(out, "%-16s  %-22s %8d %9s %d/%d\n", row.Process, row.Syscall, row.Threads, style.measure(syscallTime(row.LongestMS*float64(time.Millisecond))), row.LongestPID, row.LongestTID)
 		}
 		if hidden := len(report.InFlight) - view.inFlight; hidden > 0 {
 			style.line(out, style.hint(syscallHiddenRows(hidden, view.live)))
@@ -911,7 +918,8 @@ func (report syscallReport) render(out io.Writer, view syscallView) {
 		unmatched = strconv.FormatUint(*summary.Unmatched, 10)
 	}
 	io.WriteString(out, "\n")
-	style.line(out, style.stats(traceStat{"in_flight", fmt.Sprint(summary.InFlight)}, traceStat{"unmatched", unmatched}, traceStat{"map_full", fmt.Sprint(summary.StatsFull + summary.StartsFull + summary.ErrnosFull)}, traceStat{"stats", fmt.Sprintf("%d/%d", summary.StatsEntries, summary.StatsLimit)}))
+	style.line(out, style.stats(traceStat{"entered", fmt.Sprint(summary.Entered)}, traceStat{"returned", fmt.Sprint(summary.Returned)}, traceStat{"in_flight", fmt.Sprint(summary.InFlight)}))
+	style.line(out, style.stats(traceStat{"unmatched", unmatched}, traceStat{"map_full", fmt.Sprint(summary.StatsFull + summary.StartsFull + summary.ErrnosFull)}, traceStat{"stats", fmt.Sprintf("%d/%d", summary.StatsEntries, summary.StatsLimit)}))
 	if summary.SlowMS != nil || summary.ErrorFilter != "" || summary.Files {
 		style.line(out, style.stats(traceStat{"events", fmt.Sprint(summary.Events)}, traceStat{"sampled_out", fmt.Sprint(summary.SampledOut)}, traceStat{"ring_lost", fmt.Sprint(summary.RingLost)}))
 	}

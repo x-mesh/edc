@@ -52,6 +52,7 @@ func TestSyscallBPFStructsMatchTheParser(t *testing.T) {
 		"tgid":     {unsafe.Offsetof(record.Tgid), 8},
 		"nr":       {unsafe.Offsetof(record.Nr), 12},
 		"comm":     {unsafe.Offsetof(record.Comm), 16},
+		"tid":      {unsafe.Offsetof(record.Tid), 32},
 		"end":      {unsafe.Sizeof(record), syscallInFlightSize},
 	} {
 		if offsets[0] != offsets[1] {
@@ -91,7 +92,9 @@ func TestParseSyscallInFlightReadsEachRecord(t *testing.T) {
 		data := make([]byte, syscallInFlightSize)
 		binary.NativeEndian.PutUint64(data[0:8], start)
 		binary.NativeEndian.PutUint32(data[12:16], nr)
-		copy(data[16:], comm)
+		binary.NativeEndian.PutUint32(data[8:12], 42)
+		binary.NativeEndian.PutUint32(data[32:36], 43)
+		copy(data[16:32], comm)
 		return data
 	}
 	read, _ := syscallNumber(runtime.GOARCH, "read")
@@ -99,7 +102,7 @@ func TestParseSyscallInFlightReadsEachRecord(t *testing.T) {
 	// 끝에 남은 조각은 기록이 아니다.
 	data = append(data, 1, 2, 3)
 	samples := parseSyscallInFlight(data, 3000)
-	if len(samples) != 2 || samples[0] != (syscallInFlightSample{Process: "api", Syscall: "read", ElapsedNS: 2000}) {
+	if len(samples) != 2 || samples[0] != (syscallInFlightSample{PID: 42, TID: 43, Process: "api", Syscall: "read", ElapsedNS: 2000}) {
 		t.Fatalf("samples = %+v", samples)
 	}
 	if samples[1].Process != "legacy" || samples[1].ElapsedNS != 0 || samples[1].Syscall != syscallName(runtime.GOARCH, read, true) {
@@ -269,10 +272,17 @@ func TestTraceSyscallCountsTheSelectedProcesses(t *testing.T) {
 	}
 	waiting := false
 	for _, sample := range collection.inFlight {
-		waiting = waiting || sample.Process == comm && sample.Syscall == "read"
+		waiting = waiting || sample.Process == comm && sample.Syscall == "read" && sample.PID == helpers[1].pid() && sample.TID > 0
 	}
 	if !waiting {
 		t.Errorf("the waiting helper is not in flight: %+v", collection.inFlight)
+	}
+	var timed uint64
+	for _, sample := range collection.samples {
+		timed += sample.Timed
+	}
+	if collection.summary.Returned != timed || collection.summary.Entered <= collection.summary.Returned {
+		t.Errorf("entered = %d, returned = %d, timed = %d", collection.summary.Entered, collection.summary.Returned, timed)
 	}
 	if collection.summary.Unmatched != nil || collection.summary.StatsFull != 0 || collection.summary.StartsFull != 0 {
 		t.Errorf("summary = %+v", collection.summary)

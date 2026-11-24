@@ -72,7 +72,7 @@ func streamListenWatch(ctx context.Context, writer io.Writer, interval, timeout 
 		}
 	} else {
 		fmt.Fprintf(writer, "%s  %s\n", time.Now().Format("15:04:05"), initial.Summary)
-		if table := listenTableOf(initial, false, textStyle{}, nil); table != "" {
+		if table := listenTableOf(initial, false, textStyle{}, nil, redact); table != "" {
 			if redact {
 				table = redactIPAddresses(table)
 			}

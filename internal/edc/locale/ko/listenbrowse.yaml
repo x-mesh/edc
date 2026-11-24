@@ -11,6 +11,11 @@ listenbrowse:
   count: "소켓 %d개"
   rows: "%d줄"
   loopback_hidden: "loopback 숨김"
+  pid_choice: "PID %s (%d/%d) · p 다음 PID"
+  scope:
+    all: "전체"
+    specific: "특정"
+    loopback: "loopback"
   keys: "↑↓ 선택 · Enter 상세 · l loopback · t top · x trace · r 새로고침 · q 종료"
   detail_keys: "↑↓ 스크롤 · t top · x trace · r 다시 읽기 · Esc 뒤로 · q 종료"
   reachability: "외부 도달 가능성은 검사하지 않습니다."

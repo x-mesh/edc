@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,14 +14,14 @@ import (
 )
 
 type listenBrowser struct {
-	openTop                            func(string) tea.Cmd
-	notice                             string
-	work                               chan struct{}
-	full                               bool
-	ctx                                context.Context
-	load                               func(context.Context) Result
-	inspect                            func(context.Context, listenRow) []string
-	timeout                            time.Duration
+	openTop func(string) tea.Cmd
+	notice  string
+	work    chan struct{}
+	full    bool
+	ctx     context.Context
+	load    func(context.Context) Result
+	inspect func(context.Context, listenRow) []string
+	timeout time.Duration
 	// sockets는 마지막으로 읽은 소켓 전부이고, items는 그것을 모으고 거른 화면의 줄이다.
 	sockets                            []listenSocket
 	items                              []listenRow
@@ -33,6 +34,9 @@ type listenBrowser struct {
 	color, redact                      bool
 	detail                             *listenBrowserDetail
 	detailSeq                          int
+	// pidRow와 pid는 p로 고른 PID와 그 줄이다. 다른 줄에서는 줄의 첫 PID를 쓴다.
+	pidRow listenRowKey
+	pid    string
 }
 
 type listenBrowserDetail struct {
@@ -40,6 +44,8 @@ type listenBrowserDetail struct {
 	lines       []string
 	offset, seq int
 	loading     bool
+	// trace면 lines는 x가 만든 trace 안내다. 안내는 PID를 담고 있어서 p로 PID를 바꾸면 다시 만든다.
+	trace bool
 }
 
 type listenBrowserListMsg struct {
@@ -121,13 +127,58 @@ func (model listenBrowser) selectedRow() (listenRow, bool) {
 	return model.items[model.cursor], true
 }
 
-// selected는 고른 줄의 첫 소켓이다. 한 줄에 PID가 여럿이면 t와 x는 첫 PID를 연다.
+// selected는 고른 줄의 첫 소켓이다.
 func (model listenBrowser) selected() (listenSocket, bool) {
 	row, ok := model.selectedRow()
 	if !ok {
 		return listenSocket{}, false
 	}
 	return row.first(), true
+}
+
+// activePID는 t와 x가 다룰 PID다. p로 고른 PID가 그 줄에 남아 있으면 그 PID이고, 아니면 줄의 첫 PID다. 새로고침으로
+// 고른 process가 사라지면 첫 PID로 돌아간다.
+func (model listenBrowser) activePID(row listenRow) string {
+	pids := row.pids()
+	if len(pids) == 0 {
+		return ""
+	}
+	if row.key() == model.pidRow && slices.Contains(pids, model.pid) {
+		return model.pid
+	}
+	return pids[0]
+}
+
+// activeSocket은 activePID가 가진 첫 소켓이다. --full의 명령줄을 그 process의 것으로 보이려고 쓴다.
+func (model listenBrowser) activeSocket(row listenRow) listenSocket {
+	pid := model.activePID(row)
+	for _, socket := range row.Sockets {
+		if socket.PID == pid {
+			return socket
+		}
+	}
+	return row.first()
+}
+
+// nextPID는 줄의 다음 PID를 고른다. PID가 하나뿐인 줄에서는 아무것도 바꾸지 않는다.
+func (model *listenBrowser) nextPID(row listenRow) bool {
+	pids := row.pids()
+	if len(pids) < 2 {
+		return false
+	}
+	at := slices.Index(pids, model.activePID(row))
+	model.pidRow, model.pid = row.key(), pids[(at+1)%len(pids)]
+	return true
+}
+
+// pidChoice는 PID가 여럿인 줄에서 지금 고른 PID와 바꾸는 키를 알린다. PID가 하나면 빈 문자열이다.
+func (model listenBrowser) pidChoice(row listenRow) string {
+	pids := row.pids()
+	if len(pids) < 2 {
+		return ""
+	}
+	active := model.activePID(row)
+	return T("listenbrowse.pid_choice", active, slices.Index(pids, active)+1, len(pids))
 }
 
 // rebuild는 소켓을 줄로 모으고 loopback 숨김을 적용한다. 고른 줄이 남아 있으면 그 줄에 커서를 두고 true를 돌려준다.
@@ -218,6 +269,14 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "t" || key == "x" {
 			return model.navigateProcess(key)
 		}
+		if key == "p" {
+			if row, ok := model.navigationRow(); ok && model.nextPID(row) && model.detail != nil && model.detail.trace {
+				detail := *model.detail
+				detail.lines, detail.offset = listenBrowserTraceHint(model.activePID(row)), 0
+				model.detail = &detail
+			}
+			return model, nil
+		}
 		if model.detail != nil {
 			detail := *model.detail
 			switch key {
@@ -226,7 +285,7 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			case "r":
 				model.detailSeq++
-				detail.seq, detail.loading = model.detailSeq, true
+				detail.seq, detail.loading, detail.trace = model.detailSeq, true, false
 				model.detail = &detail
 				return model, model.loadDetail()
 			case "up", "k":
@@ -316,7 +375,11 @@ func (model listenBrowser) View() tea.View {
 		if model.redact {
 			title = redactIPAddresses(title)
 		}
-		lines = append(lines, svcBrowserHeading("edc listen", []string{viewSanitize(title)}, model.color), liveKeyHints(T("listenbrowse.detail_keys"), model.color), model.notice)
+		notice := model.notice
+		if notice == "" {
+			notice = model.pidChoice(model.detail.row)
+		}
+		lines = append(lines, svcBrowserHeading("edc listen", []string{viewSanitize(title)}, model.color), liveKeyHints(T("listenbrowse.detail_keys"), model.color), notice)
 		if model.detail.loading {
 			lines = append(lines, T("listenbrowse.loading"))
 		} else {
@@ -360,16 +423,30 @@ func (model listenBrowser) View() tea.View {
 		} else {
 			// 고정 칸(PORT/PROTO 10, PID 10, 간격과 선택 표시 8)을 뺀 폭에서 주소 칸은 보이는 주소만큼, 많아야 절반을 쓴다.
 			// 나머지는 프로세스 칸이다. 더 긴 주소는 잘리고 목록 아래쪽에 모두 나온다.
+			visible := model.items[model.offset:min(len(model.items), model.offset+max(1, model.height-5))]
 			addressWidth := liveWidth("ADDRESS")
-			for _, item := range model.items[model.offset:min(len(model.items), model.offset+max(1, model.height-5))] {
+			for _, item := range visible {
 				addressWidth = max(addressWidth, liveWidth(topPrintableText(model.rowAddresses(item))))
 			}
-			addressWidth = max(9, min(addressWidth, (model.width-28)/2))
-			processWidth := max(7, model.width-28-addressWidth)
-			row := func(port, address, process, pid string) string {
-				return svcBrowserCell(port, 10) + "  " + address + "  " + svcBrowserCell(process, processWidth) + "  " + svcBrowserCell(pid, 10)
+			// 색이 없으면 주소의 색이 말하던 범위를 SCOPE 칸에 글자로 적는다. 칸이 생긴 만큼 주소와 프로세스 칸이 줄어든다.
+			scopeWidth, free := 0, model.width-28
+			if !liveRich(model.color) {
+				scopeWidth = liveWidth("SCOPE")
+				for _, item := range visible {
+					scopeWidth = max(scopeWidth, liveWidth(listenBrowserScope(item.scope())))
+				}
+				free -= scopeWidth + 2
 			}
-			lines = append(lines, liveMuted("  "+row("PORT/PROTO", svcBrowserCell("ADDRESS", addressWidth), "PROCESS", "PID"), model.color))
+			addressWidth = max(min(9, free/2), min(addressWidth, free/2))
+			processWidth := max(1, free-addressWidth)
+			row := func(port, address, scope, process, pid string) string {
+				cells := svcBrowserCell(port, 10) + "  " + address + "  "
+				if scopeWidth > 0 {
+					cells += svcBrowserCell(scope, scopeWidth) + "  "
+				}
+				return cells + svcBrowserCell(process, processWidth) + "  " + svcBrowserCell(pid, 10)
+			}
+			lines = append(lines, liveMuted("  "+row("PORT/PROTO", svcBrowserCell("ADDRESS", addressWidth), "SCOPE", "PROCESS", "PID"), model.color))
 			end := min(len(model.items), model.offset+max(1, model.height-5))
 			for i := model.offset; i < end; i++ {
 				item := model.items[i]
@@ -390,13 +467,17 @@ func (model listenBrowser) View() tea.View {
 				}
 				process += model.paint(container, richCyan, false)
 				address := model.paint(topPrintableText(model.rowAddresses(item)), listenScopeColor(item.scope()), false)
-				lines = append(lines, svcBrowserRow(row(model.paint(port, "", true), svcBrowserCell(address, addressWidth), process, model.paint(listenBrowserPIDCell(item), richGray, false)), i == model.cursor, model.color, model.width))
+				lines = append(lines, svcBrowserRow(row(model.paint(port, "", true), svcBrowserCell(address, addressWidth), listenBrowserScope(item.scope()), process, model.paint(model.pidCell(item), richGray, false)), i == model.cursor, model.color, model.width))
 			}
 			if item, ok := model.selectedRow(); ok {
 				footer := T("listenbrowse.address", model.rowAddresses(item))
+				// p 키는 이 줄에만 나온다. 긴 주소 목록 뒤에 두면 폭에서 잘리므로 앞에 둔다.
+				if choice := model.pidChoice(item); choice != "" {
+					footer = choice + " · " + footer
+				}
 				if model.full {
 					home, _ := os.UserHomeDir()
-					if command := listenCommandLine(item.first(), home); command != "" {
+					if command := listenCommandLine(model.activeSocket(item), home); command != "" {
 						footer += " · " + command
 					}
 				}
@@ -439,13 +520,21 @@ func (model listenBrowser) paint(text, color string, bold bool) string {
 	return richPaint(text, color, bold)
 }
 
-// listenBrowserPIDCell은 PID 칸이다. PID가 여럿이면 첫 PID 뒤에 나머지 개수를 붙인다.
-func listenBrowserPIDCell(row listenRow) string {
-	pids := row.pids()
-	if len(pids) > 1 {
-		return fmt.Sprintf("%s +%d", pids[0], len(pids)-1)
+// pidCell은 PID 칸이다. PID가 여럿이면 t와 x가 다룰 PID 뒤에 나머지 개수를 붙인다.
+func (model listenBrowser) pidCell(row listenRow) string {
+	if pids := row.pids(); len(pids) > 1 {
+		return fmt.Sprintf("%s +%d", model.activePID(row), len(pids)-1)
 	}
 	return listenCell(row.first().PID)
+}
+
+// listenBrowserScope는 색이 없을 때 SCOPE 칸에 적는 범위다. 표의 범위 문구는 탐색 화면의 칸에 넣기에 길어서 짧은 문구를 쓴다.
+func listenBrowserScope(scope string) string {
+	switch scope {
+	case "all", "specific", "loopback":
+		return T("listenbrowse.scope." + scope)
+	}
+	return T("observe.listen.scope." + scope)
 }
 
 // listenBrowserLegend는 주소 색의 뜻이다. 색이 없으면 범례도 없다.

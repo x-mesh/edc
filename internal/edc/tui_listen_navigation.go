@@ -31,7 +31,7 @@ func listenBrowserOpenTop(pid string) tea.Cmd {
 	return tea.ExecProcess(command, func(err error) tea.Msg { return listenBrowserTopDoneMsg{err: err} })
 }
 
-// navigationRow는 t와 x가 다룰 줄이다. 한 줄에 PID가 여럿이면 첫 소켓의 PID를 연다.
+// navigationRow는 t, x, p가 다룰 줄이다. 한 줄에 PID가 여럿이면 activePID가 그중 하나를 정한다.
 func (model listenBrowser) navigationRow() (listenRow, bool) {
 	if model.detail != nil {
 		return model.detail.row, true
@@ -44,8 +44,8 @@ func (model listenBrowser) navigateProcess(key string) (listenBrowser, tea.Cmd) 
 	if !ok {
 		return model, nil
 	}
-	socket := row.first()
-	if _, err := listenBrowserTopCommand("edc", socket.PID); err != nil {
+	pid := model.activePID(row)
+	if _, err := listenBrowserTopCommand("edc", pid); err != nil {
 		model.notice = T("listenbrowse.no_owner")
 		return model, nil
 	}
@@ -56,17 +56,22 @@ func (model listenBrowser) navigateProcess(key string) (listenBrowser, tea.Cmd) 
 	switch key {
 	case "t":
 		if model.openTop != nil {
-			return model, model.openTop(socket.PID)
+			return model, model.openTop(pid)
 		}
 	case "x":
 		model.detailSeq++
-		model.detail = &listenBrowserDetail{row: row, seq: model.detailSeq, lines: []string{
-			T("listenbrowse.trace_hint", socket.PID),
-			"",
-			"edc trace cpu --process " + socket.PID + " --duration 15s",
-			"",
-			T("listenbrowse.trace_requirements"),
-		}}
+		model.detail = &listenBrowserDetail{row: row, seq: model.detailSeq, trace: true, lines: listenBrowserTraceHint(pid)}
 	}
 	return model, nil
+}
+
+// listenBrowserTraceHint는 x가 보이는 CPU trace 안내다.
+func listenBrowserTraceHint(pid string) []string {
+	return []string{
+		T("listenbrowse.trace_hint", pid),
+		"",
+		"edc trace cpu --process " + pid + " --duration 15s",
+		"",
+		T("listenbrowse.trace_requirements"),
+	}
 }

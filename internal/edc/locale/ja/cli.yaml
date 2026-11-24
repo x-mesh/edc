@@ -1,6 +1,7 @@
 # 日本語メッセージ。欠けたキーは en の同じキーに落ちる。
 cli:
   usage: "使い方: %s"
+  evidence_more: "… ほか%d行 (-vですべて表示)"
   confirm: "続けますか? [y/N] "
   prompt:
     target: "対象 (host または URL)"
@@ -21,6 +22,7 @@ cli:
     invalid: "config が正しくありません: %v"
   error:
     unknown_command: "不明な command: %s"
+    did_you_mean: "もしかして: %s"
     help_hint: "edc help で command の一覧を表示します"
     flag_help: "オプションは %s で確認できます"
     host_port_required: "host:port の形式が必要です: %s"

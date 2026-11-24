@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -432,5 +433,116 @@ func TestPromptMissingChoiceRefusesAnEmptyList(t *testing.T) {
 	}
 	if got := subcommandChoices("nope"); len(got) != 0 {
 		t.Errorf("an unknown command has no subcommands: %q", got)
+	}
+}
+
+func TestListenHelpNamesEveryBrowserKey(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	doc, ok := findCommandDoc("listen")
+	if !ok {
+		t.Fatal("no listen help")
+	}
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		notes := strings.Join(doc.notes(), "\n")
+		for _, hint := range []string{"listenbrowse.keys", "listenbrowse.detail_keys"} {
+			for _, group := range liveHintSeparator.Split(T(hint), -1) {
+				key, _, _ := strings.Cut(strings.TrimSpace(group), " ")
+				if len(key) != 1 || key[0] < 'a' || key[0] > 'z' {
+					continue
+				}
+				// 48x8의 x처럼 다른 낱말 안의 글자는 키 설명이 아니다.
+				if !regexp.MustCompile(`(^|[^A-Za-z0-9])` + key + `([^A-Za-z0-9]|$)`).MatchString(notes) {
+					t.Errorf("%s: edc help listen does not name the %s key of %s", language, key, hint)
+				}
+			}
+		}
+	}
+}
+
+// helpFlagPattern은 사용법과 예시에서 option 이름을 찾는다.
+var helpFlagPattern = regexp.MustCompile(`(?:^|[\s\[|(])(-{1,2}[A-Za-z][A-Za-z0-9-]*)`)
+
+// helpExampleFlags는 예시에서 edc <명령> 뒤의 option이다. 따옴표 안의 값, pipe 뒤, -- 뒤의 실행할 명령은 보지 않는다.
+func helpExampleFlags(example, command string) []string {
+	example = regexp.MustCompile(`'[^']*'|"[^"]*"`).ReplaceAllString(example, "''")
+	_, rest, ok := strings.Cut(example, "edc "+command)
+	if !ok {
+		return nil
+	}
+	rest, _, _ = strings.Cut(rest, "|")
+	rest, _, _ = strings.Cut(rest, " -- ")
+	// edc log history는 기록한 명령을 그대로 인자로 받는다. 예시의 ls 뒤는 ls의 인자다.
+	if command == "log" {
+		rest, _, _ = strings.Cut(rest, " ls ")
+	}
+	var flags []string
+	for _, match := range helpFlagPattern.FindAllStringSubmatch(rest, -1) {
+		flag, _, _ := strings.Cut(match[1], "=")
+		flags = append(flags, flag)
+	}
+	return flags
+}
+
+func TestCommandExamplesUseTheirOwnOptions(t *testing.T) {
+	for _, doc := range commandDocs {
+		if len(doc.examples) == 0 {
+			// version은 사용법이 명령 한 줄이라 예시가 같은 줄이 된다.
+			if doc.name != "version" {
+				t.Errorf("%s has no examples", doc.name)
+			}
+			continue
+		}
+		known := map[string]bool{}
+		sources := append([]string(nil), doc.usage...)
+		for _, option := range doc.options {
+			sources = append(sources, option.flag)
+		}
+		if doc.usesCommon {
+			for _, option := range commonOptionDocs {
+				sources = append(sources, option.flag)
+			}
+		}
+		for _, source := range sources {
+			for _, match := range helpFlagPattern.FindAllStringSubmatch(source, -1) {
+				known[match[1]] = true
+			}
+		}
+		for _, example := range doc.examples {
+			if !strings.Contains(example, "edc "+doc.name) {
+				t.Errorf("%s: example %q does not run edc %s", doc.name, example, doc.name)
+			}
+			for _, flag := range helpExampleFlags(example, doc.name) {
+				if !known[flag] {
+					t.Errorf("%s: example %q uses %s, which is not in the usage or the options", doc.name, example, flag)
+				}
+			}
+			if width := liveWidth("  " + example); width > helpLineLimit {
+				t.Errorf("%s: example %q is %d columns wide", doc.name, example, width)
+			}
+		}
+	}
+	for _, sub := range traceSubDocs {
+		doc, _ := traceSubCommandDoc(sub.name)
+		known := map[string]bool{}
+		for _, source := range append(append([]string(nil), doc.usage...), func() []string {
+			var flags []string
+			for _, option := range doc.options {
+				flags = append(flags, option.flag)
+			}
+			return flags
+		}()...) {
+			for _, match := range helpFlagPattern.FindAllStringSubmatch(source, -1) {
+				known[match[1]] = true
+			}
+		}
+		for _, example := range sub.examples {
+			for _, flag := range helpExampleFlags(example, "trace "+sub.name) {
+				if !known[flag] {
+					t.Errorf("trace %s: example %q uses %s, which the subcommand help does not list", sub.name, example, flag)
+				}
+			}
+		}
 	}
 }

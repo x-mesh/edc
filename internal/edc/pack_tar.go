@@ -720,11 +720,36 @@ func packPlace(temp, archivePath, output string, crossTop bool) (string, error) 
 	if final == "" {
 		final = packArchiveName(archivePath)
 	}
+	// 임시 디렉터리는 0700으로 만들었다. 여러 항목을 담는 이 디렉터리는 tar에 없으므로 tar에 없는 부모 디렉터리와 같이
+	// umask를 거친 0755를 준다. tar에 적힌 항목은 tar의 권한을 그대로 받는다.
+	mode, err := packUsualDirMode(temp)
+	if err != nil {
+		return "", err
+	}
 	if err := packRenameNoReplace(temp, final); err != nil {
 		return "", err
 	}
-	// 임시 디렉터리는 0700으로 만들었다. 여러 항목을 담는 이 디렉터리는 tar에 없으므로 보통 디렉터리 권한을 준다.
-	return final, os.Chmod(final, 0o755)
+	return final, os.Chmod(final, mode)
+}
+
+// packUsualDirMode는 0755로 만든 디렉터리가 받는 권한이다. umask를 읽으려고 syscall.Umask로 잠시 바꾸면 그동안
+// 다른 goroutine이 만드는 파일이 umask 없이 생기므로, 디렉터리를 하나 만들어 본다. 압축을 푼 임시 디렉터리 안에 만들어서,
+// 중간에 멈춰도 사용자의 디렉터리에는 남지 않는다. 이름은 MkdirTemp가 정하므로 tar의 항목과 겹치지 않는다.
+func packUsualDirMode(parent string) (fs.FileMode, error) {
+	holder, err := os.MkdirTemp(parent, ".edc-pack-mode-*")
+	if err != nil {
+		return 0, err
+	}
+	defer os.RemoveAll(holder)
+	probe := filepath.Join(holder, "probe")
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(probe)
+	if err != nil {
+		return 0, err
+	}
+	return info.Mode().Perm(), nil
 }
 
 // packList는 -l이다. tar면 항목을, 압축한 파일 하나면 형식과 푼 크기를 stdout에 쓴다. 끝까지 읽어 체크섬도 확인한다.

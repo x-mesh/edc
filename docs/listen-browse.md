@@ -12,7 +12,7 @@ edc listen -b --full
 edc listen -b --redact
 ```
 
-The browser requires interactive stdin and stdout, UTF-8, a terminal other than `TERM=dumb`, and at least 48 columns by 8 rows. Resizing below this size displays a size notice; `q` and Ctrl-C still exit. With `NO_COLOR`, the browser retains keyboard navigation and uses a plain selection marker without colors. For screen-reader use, run `edc listen -B` or `edc listen --json -`.
+The browser requires interactive stdin and stdout, UTF-8, a terminal other than `TERM=dumb`, and at least 48 columns by 8 rows. Resizing below this size displays a size notice; `q` and Ctrl-C still exit. With `NO_COLOR`, the browser retains keyboard navigation and uses a plain selection marker without colors. The list then has a SCOPE column after ADDRESS. The column shows the binding scope as `all`, `specific`, or `loopback`. For screen-reader use, run `edc listen -B` or `edc listen --json -`.
 
 | Key | Socket list | Socket details |
 | --- | --- | --- |
@@ -23,17 +23,18 @@ The browser requires interactive stdin and stdout, UTF-8, a terminal other than 
 | t | Open `edc top --interactive --process <pid>` | Open the selected process in top |
 | x | Show a CPU trace command | Show a CPU trace command |
 | l | Hide or show loopback rows | — |
+| p | Select the next PID of a row with two or more PIDs | Select the next PID |
 | r | Refresh the socket list | Reload selected socket's process details |
 | Esc, Backspace | — | Return to the same selection and viewport |
 | q, Ctrl-C | Exit | Exit |
 
-The list puts sockets that differ only by address or PID in one row, as `edc listen -B` does. The header shows the number of sockets and the number of rows. The ADDRESS column shows the addresses of the row. In color, the address is yellow for all addresses, cyan for a specific address, and gray for loopback. The notice line starts with this legend. The port is bold, the PID is gray, and the container after `→` is cyan. The ADDRESS column uses at most half of the free width. A longer address list is cut, and the footer shows all addresses. If a row has two or more PIDs, the PID column shows the first PID and the number of other PIDs, for example `1682348 +1`. `t` and `x` use the first PID. The footer shows all addresses of the selected row.
+The list puts sockets that differ only by address or PID in one row, as `edc listen -B` does. The header shows the number of sockets and the number of rows. The ADDRESS column shows the addresses of the row. In color, the address is yellow for all addresses, cyan for a specific address, and gray for loopback. The notice line starts with this legend. The port is bold, the PID is gray, and the container after `→` is cyan. The ADDRESS column uses at most half of the free width. A longer address list is cut, and the footer shows all addresses. If a row has two or more PIDs, the PID column shows the selected PID and the number of other PIDs, for example `1682348 +1`. At the start, the browser selects the first PID. `p` selects the next PID, and `t` and `x` use the selected PID. The footer shows the selected PID, its position, and the `p` key, for example `PID 1682348 (1/2) · p next PID`. The details screen shows the same text below the key line. If a refresh removes the selected process, the browser selects the first PID of the row again. The footer shows all addresses of the selected row.
 
 Refresh preserves the selected row by protocol, port, process name, binding scope, and container. If it disappears, selection moves to the first remaining row. `l` hides the loopback rows until you press `l` again, also after a refresh. If the selected row is a loopback row, the selection stays at the same position. A failed refresh retains the last successful snapshot and shows an error. It does not imply that the old snapshot is current.
 
 Enter shows the addresses, owner PIDs, receive/send queue of each socket, container association when available, and the same process facts as `edc proc <pid> -v` for each PID. An unknown owner or an exited process leaves the socket details accessible with an explanation. Process details are read on demand and remain a snapshot until reloaded. Esc returns to the socket list without automatically refreshing it.
 
-`--full` adds the selected process's command and working directory to the list footer. The details screen wraps long content and can be scrolled. Terminal display of Arabic and other bidirectional text depends on the terminal emulator.
+`--full` adds the selected process's command and working directory to the list footer. For a row with two or more PIDs, they are those of the PID that `p` selected. The details screen wraps long content and can be scrolled. Terminal display of Arabic and other bidirectional text depends on the terminal emulator.
 
 `--browse` cannot be combined with `--watch`, `--json`, `--interval`/`-i`, or `--duration`. Use `edc listen --watch` for a continuous stream of socket changes. Browse does not change the existing TCP/UDP/Unix filters or the one-shot/JSON output modes. Binding scope describes where a socket is bound; it does not establish external reachability.
 

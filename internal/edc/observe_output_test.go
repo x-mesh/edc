@@ -253,3 +253,21 @@ func TestObserveOutputChangesTableKeepsRowsLimitsAndDetails(t *testing.T) {
 		t.Fatal("legacy changes table changed")
 	}
 }
+
+func TestObserveResultLeavesOutAnErrorThatRepeatsTheLine(t *testing.T) {
+	repeated := Result{Probe: "jobs.list", Status: StatusFail, Summary: "2 jobs failed", Next: "edc jobs -v", Error: &DiagnosticError{Kind: "jobs", Message: "2 jobs failed"}}
+	distinct := Result{Probe: "proc.process", Status: StatusFail, Summary: "no process matches api", Error: &DiagnosticError{Kind: "select", Message: "no process matches api"}}
+	for _, width := range []int{0, 60} {
+		style := infoStyle{textStyle{width: width}}
+		var output strings.Builder
+		printObserveResult(&output, repeated, false, style)
+		if text := output.String(); strings.Contains(text, "ERROR") || strings.Count(text, "2 jobs failed") != 1 || !strings.Contains(text, "edc jobs -v") {
+			t.Errorf("width %d: repeated error:\n%s", width, text)
+		}
+		output.Reset()
+		printObserveResult(&output, distinct, false, style)
+		if text := output.String(); !strings.Contains(text, "ERROR") || !strings.Contains(text, "select") || strings.Count(text, "no process matches api") != 2 {
+			t.Errorf("width %d: distinct error:\n%s", width, text)
+		}
+	}
+}

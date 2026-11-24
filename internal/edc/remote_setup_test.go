@@ -17,6 +17,10 @@ func writeInventoryFixture(t *testing.T, content string) string {
 	if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	// WriteFile의 권한은 umask를 거친다. 저장이 권한을 지키는지 보려면 umask와 상관없이 0640에서 시작해야 한다.
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 

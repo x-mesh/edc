@@ -243,10 +243,19 @@ func TestPackExtractPlacement(t *testing.T) {
 	if code, _, stderr := packTest(t, dir, "many.tgz"); code != 0 || packRead(t, filepath.Join(dir, "many", "b", "c")) != "c" {
 		t.Fatalf("many: %d %s", code, stderr)
 	}
-	// tar에 적히지 않은 부모 b는 보통 권한이다. 여러 항목을 담은 디렉터리도 그렇다.
-	for _, name := range []string{"many", filepath.Join("many", "b")} {
-		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm()&0o755 != 0o755 {
-			t.Fatalf("%s mode %v %v", name, info.Mode(), err)
+	// 여러 항목을 담은 디렉터리와 tar에 적히지 않은 부모 b는 둘 다 umask를 거친 0755다. 같은 umask로 0755를 주어 만든
+	// 디렉터리와 비교한다.
+	reference := filepath.Join(t.TempDir(), "reference")
+	if err := os.Mkdir(reference, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	usual, err := os.Stat(reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]fs.FileMode{"many": usual.Mode().Perm(), filepath.Join("many", "b"): usual.Mode().Perm()} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm() != want {
+			t.Fatalf("%s mode %v %v, want %v", name, info.Mode(), err, want)
 		}
 	}
 	if code, _, _ := packTest(t, dir, "-o", "chosen", "one.tar.gz"); code != 0 || packRead(t, filepath.Join(dir, "chosen", "top", "a")) != "a" {
@@ -844,5 +853,31 @@ func TestPackBundleCancelDeletesThePartialOutput(t *testing.T) {
 	// 경로를 확인하는 동안에도 취소를 본다. 취소한 뒤 남은 경로를 모두 조회하지 않는다.
 	if _, err := packBundle(ctx, []string{filepath.Join(dir, "missing"), filepath.Join(dir, "b.txt")}, packOptions{output: filepath.Join(dir, "all.tar.gz")}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("checks after a cancel: %v", err)
+	}
+}
+
+// 여러 항목을 담는 디렉터리는 tar에 없으므로 umask를 따른다. CI는 umask 022로 돌아 0755와 구별되지 않으므로 여기서 077로 둔다.
+// 권한을 알아보려고 만든 디렉터리는 남지 않는다.
+func TestPackExtractWrapperFollowsTheUmask(t *testing.T) {
+	previous := syscall.Umask(0o077)
+	defer syscall.Umask(previous)
+	dir := t.TempDir()
+	packTarGz(t, filepath.Join(dir, "many.tgz"), packEntry{name: "a", kind: tar.TypeReg, body: "a"}, packEntry{name: "b/c", kind: tar.TypeReg, body: "c"})
+	if code, _, stderr := packTest(t, dir, "many.tgz"); code != 0 {
+		t.Fatalf("many: %d %s", code, stderr)
+	}
+	for _, name := range []string{"many", filepath.Join("many", "b")} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode %v %v, want 0700 under umask 077", name, info.Mode(), err)
+		}
+	}
+	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(entry.Name(), ".edc-pack-mode-") {
+			t.Errorf("left the mode probe %s", name)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -91,8 +91,8 @@ type listenRowKey struct {
 	Port                  int
 	// Address와 PID는 포트가 없는 유닉스 소켓에만 채운다. 유닉스 소켓은 모으지 않는다.
 	Address, PID string
-	Container listenContainer
-	Published bool
+	Container    listenContainer
+	Published    bool
 }
 
 func listenRowKeyOf(socket listenSocket) listenRowKey {
@@ -127,7 +127,9 @@ func (row listenRow) first() listenSocket { return row.Sockets[0] }
 
 func (row listenRow) key() listenRowKey { return listenRowKeyOf(row.first()) }
 
-func (row listenRow) scope() string { return listenBindingScope(row.first().Proto, row.first().Address) }
+func (row listenRow) scope() string {
+	return listenBindingScope(row.first().Proto, row.first().Address)
+}
 
 // values는 소켓마다 읽은 값을 처음 나온 순서로, 겹치지 않게 모은다. 빈 값은 뺀다.
 func (row listenRow) values(read func(listenSocket) string) []string {
@@ -268,6 +270,18 @@ func dedupeListenSockets(sockets []listenSocket) []listenSocket {
 // ADDRESS 칸은 가장 긴 주소 하나의 폭이다. 한 행의 주소가 그 폭을 넘으면 넘는 주소를 아랫줄에 적는다. 긴 IPv6 주소 쌍
 // 하나가 모든 행을 넓혀 PROCESS 칸을 화면 밖으로 밀어내지 않게 한다.
 func formatListenTable(sockets []listenSocket, detail bool, style textStyle, note func(string) string) string {
+	return formatListenTableWith(sockets, detail, style, note, nil)
+}
+
+// formatListenTableWith는 주소 칸의 글자를 address로 바꿔 적는다. --redact가 다 짠 표에서 주소를 가리면 가린 글자의 길이가
+// 달라 칸이 어긋나므로, 폭을 재기 전에 바꾼다. 행을 모으는 기준과 범위는 바꾸기 전의 주소로 정한다.
+func formatListenTableWith(sockets []listenSocket, detail bool, style textStyle, note func(string) string, address func(string) string) string {
+	shown := func(value string) string {
+		if address == nil {
+			return value
+		}
+		return address(value)
+	}
 	headers := []string{T("observe.listen.column.port"), T("observe.listen.column.proto"), T("observe.listen.column.address"), T("observe.listen.column.scope"), T("observe.listen.column.process")}
 	if detail {
 		headers = append(headers, T("observe.listen.column.user"), T("observe.listen.column.fd"), T("observe.listen.column.queue"))
@@ -276,15 +290,15 @@ func formatListenTable(sockets []listenSocket, detail bool, style textStyle, not
 	grouped := groupListenSockets(sockets)
 	widest := 0
 	for _, socket := range sockets {
-		widest = max(widest, liveWidth(socket.Address))
+		widest = max(widest, liveWidth(shown(socket.Address)))
 	}
 	rows := make([][]string, 0, len(grouped))
-	commands := make([]string, 0, len(grouped))
+	commands := make([][]string, 0, len(grouped))
 	addressLines := make([][]string, 0, len(grouped))
 	for _, group := range grouped {
 		socket := group.first()
 		if note != nil {
-			commands = append(commands, listenCommandLine(socket, home))
+			commands = append(commands, listenRowCommandLines(group, home))
 		}
 		process := socket.Process
 		if pids := group.pids(); len(pids) > 0 {
@@ -299,7 +313,11 @@ func formatListenTable(sockets []listenSocket, detail bool, style textStyle, not
 			port = "-"
 		}
 		color := listenScopeColor(group.scope())
-		addresses := packListenAddresses(group.addresses(), widest)
+		addresses := group.addresses()
+		for index := range addresses {
+			addresses[index] = shown(addresses[index])
+		}
+		addresses = packListenAddresses(addresses, widest)
 		for index := range addresses {
 			addresses[index] = style.paint(addresses[index], color)
 		}
@@ -338,8 +356,10 @@ func formatListenTable(sockets []listenSocket, detail bool, style textStyle, not
 		for _, line := range addressLines[index] {
 			builder.WriteString(strings.Repeat(" ", widths[0]+2+widths[1]+2) + line + "\n")
 		}
-		if note != nil && commands[index] != "" {
-			builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+commands[index]) + "\n")
+		if note != nil {
+			for _, command := range commands[index] {
+				builder.WriteString(strings.Repeat(" ", widths[0]+2) + note("↳ "+command) + "\n")
+			}
 		}
 		if container := grouped[index].first().Container; note != nil && container != nil {
 			line := T("observe.listen.container_port", container.Port, container.Proto, container.Image)
@@ -350,6 +370,32 @@ func formatListenTable(sockets []listenSocket, detail bool, style textStyle, not
 		}
 	}
 	return builder.String()
+}
+
+// listenRowCommandLines는 행 아래에 붙일 명령줄이다. 같은 줄은 한 번만 적는다. 한 행의 process들이 서로 다른 명령줄로
+// 떠 있으면 줄마다 그 PID를 앞에 적어 어느 process의 것인지 가린다.
+func listenRowCommandLines(row listenRow, home string) []string {
+	var lines []string
+	owners := map[string][]string{}
+	for _, socket := range row.Sockets {
+		line := listenCommandLine(socket, home)
+		if line == "" {
+			continue
+		}
+		if _, seen := owners[line]; !seen {
+			lines = append(lines, line)
+		}
+		if socket.PID != "" && !slices.Contains(owners[line], socket.PID) {
+			owners[line] = append(owners[line], socket.PID)
+		}
+	}
+	if len(lines) < 2 {
+		return lines
+	}
+	for index, line := range lines {
+		lines[index] = listenCell(strings.Join(owners[line], ", ")) + "   " + line
+	}
+	return lines
 }
 
 // packListenAddresses는 주소를 ", "로 이으면서 width를 넘기 전에 줄을 나눈다. 나눈 줄의 끝에는 ","를 남긴다.

@@ -11,6 +11,11 @@ listenbrowse:
   count: "%d sockets"
   rows: "%d rows"
   loopback_hidden: "loopback hidden"
+  pid_choice: "PID %s (%d/%d) · p next PID"
+  scope:
+    all: "all"
+    specific: "specific"
+    loopback: "loopback"
   keys: "↑↓ select · Enter details · l loopback · t top · x trace · r refresh · q quit"
   detail_keys: "↑↓ scroll · t top · x trace · r reload · Esc back · q quit"
   reachability: "External reachability is not checked."

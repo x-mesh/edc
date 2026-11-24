@@ -126,7 +126,7 @@ func (model svcBrowser) loadDetail(unit string, seq int) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		var buffer strings.Builder
-		printTerminalWithColor(&buffer, evaluateSvc(collectSvcFacts(ctx, unit, sources)), true, color)
+		printTerminalCut(&buffer, evaluateSvc(collectSvcFacts(ctx, unit, sources)), true, color)
 		return svcDetailMsg{seq: seq, lines: strings.Split(strings.TrimRight(buffer.String(), "\n"), "\n")}
 	}
 }

@@ -174,7 +174,8 @@ func TestAppendAndReadAIHookEventsRotate(t *testing.T) {
 	if err := appendAIHookEvent(path, first); err != nil {
 		t.Fatal(err)
 	}
-	appendAIFixture(t, path, strings.Repeat("\n", aiEventsMax))
+	// 파일을 한도 너머로 채운다. 빈 줄 수백만 개로 채우면 줄마다 JSON 오류를 만들어 몇 초가 걸리므로 긴 한 줄로 채운다.
+	appendAIFixture(t, path, strings.Repeat(" ", aiEventsMax)+"\n")
 	second := aiHookEvent{At: time.Unix(2, 0).UTC(), Tool: "claude", Event: "Stop", Session: "a"}
 	if err := appendAIHookEvent(path, second); err != nil {
 		t.Fatal(err)

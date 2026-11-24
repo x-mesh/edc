@@ -337,15 +337,41 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 	deadline := time.Now().Add(duration)
 	var count uint64
 	stopped := false
+	// mark_victim이 붙지 않았으면 OOM 기록이 오지 않으므로 exit을 붙잡지 않는다.
+	var joiner *execOOMJoiner
+	if oomUnavailable == "" {
+		joiner = &execOOMJoiner{}
+	}
+	deliver := func(events []execEvent) error {
+		if onEvent == nil {
+			return nil
+		}
+		for _, event := range events {
+			if err := onEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for duration == 0 || time.Now().Before(deadline) {
 		next := time.Now().Add(time.Second)
 		if duration > 0 && deadline.Before(next) {
 			next = deadline
 		}
+		if joiner != nil {
+			if held, ok := joiner.nextDeadline(); ok && held.Before(next) {
+				next = held
+			}
+		}
 		reader.SetDeadline(next)
 		record, err := reader.Read()
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
+				if joiner != nil {
+					if err := deliver(joiner.flush(time.Now(), false)); err != nil {
+						return execSummary{}, err
+					}
+				}
 				continue
 			}
 			if stop != nil {
@@ -365,10 +391,17 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 			continue
 		}
 		count++
-		if onEvent != nil {
-			if err := onEvent(event); err != nil {
-				return execSummary{}, err
-			}
+		ready := []execEvent{event}
+		if joiner != nil {
+			ready = joiner.add(event, time.Now())
+		}
+		if err := deliver(ready); err != nil {
+			return execSummary{}, err
+		}
+	}
+	if joiner != nil {
+		if err := deliver(joiner.flush(time.Now(), true)); err != nil {
+			return execSummary{}, err
 		}
 	}
 	summary := execSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count, OOMUnavailable: oomUnavailable}

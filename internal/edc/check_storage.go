@@ -19,8 +19,8 @@ var checkWearLimits = topThreshold{warn: 90, danger: 100}
 type checkStorageDevice struct {
 	// Next는 이 장치를 더 볼 명령이다. MegaRAID 뒤의 디스크는 경로가 같아 -d 값까지 있어야 한 장치를 가리킨다.
 	Name, Model, Next string
-	Failing     bool
-	Wear        int
+	Failing           bool
+	Wear              int
 	// SpareLow는 남은 예비 블록이 제조사의 기준보다 적다는 것이다.
 	SpareLow    bool
 	MediaErrors uint64

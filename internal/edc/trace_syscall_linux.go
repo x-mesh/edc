@@ -301,12 +301,21 @@ func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfEx
 		}
 		collection.inFlight = inFlight
 	}
-	var counters syscallEventsSyscallCounters
+	var counters []syscallEventsSyscallCounters
 	if err := objects.Counters.Lookup(uint32(0), &counters); err != nil {
 		return syscallCollection{}, fmt.Errorf("read syscall counters: %w", err)
 	}
 	summary := &collection.summary
-	summary.StartsFull, summary.StatsFull, summary.ErrnosFull, summary.RingLost = counters.Values[0], counters.Values[1], counters.Values[2], counters.Values[4]
+	var unmatched uint64
+	for _, cpu := range counters {
+		summary.StartsFull += cpu.Values[0]
+		summary.StatsFull += cpu.Values[1]
+		summary.ErrnosFull += cpu.Values[2]
+		unmatched += cpu.Values[3]
+		summary.RingLost += cpu.Values[4]
+		summary.Entered += cpu.Values[5]
+		summary.Returned += cpu.Values[6]
+	}
 	summary.Events = events
 	var windows []syscallEventsSyscallWindow
 	if err := objects.EventWindows.Lookup(uint32(0), &windows); err != nil {
@@ -316,7 +325,6 @@ func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfEx
 		summary.SampledOut += window.Suppressed
 	}
 	if !options.processFiltered() && len(options.syscalls)+len(options.compatSyscalls) == 0 && options.container == nil {
-		unmatched := counters.Values[3]
 		summary.Unmatched = &unmatched
 	}
 	return collection, nil
@@ -507,7 +515,7 @@ func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
 }
 
 // syscallInFlightSize는 BPF의 struct syscall_in_flight 크기다. iterator는 이 크기의 기록을 이어서 쓴다.
-const syscallInFlightSize = 32
+const syscallInFlightSize = 40
 
 // readSyscallInFlight는 task iterator를 한 번 돌려 아직 돌아오지 않은 호출을 읽는다. monotonic은 trace를 뗀 시각이다.
 func readSyscallInFlight(program *ebpf.Program, monotonic uint64) ([]syscallInFlightSample, error) {
@@ -538,7 +546,13 @@ func parseSyscallInFlight(data []byte, monotonic uint64) []syscallInFlightSample
 		if monotonic > start {
 			elapsed = monotonic - start
 		}
-		samples = append(samples, syscallInFlightSample{Process: string(bytesTrimNUL(record[16:32])), Syscall: syscallName(runtime.GOARCH, nr&^syscallCompatBit, nr&syscallCompatBit != 0), ElapsedNS: elapsed})
+		samples = append(samples, syscallInFlightSample{
+			PID:       binary.NativeEndian.Uint32(record[8:12]),
+			TID:       binary.NativeEndian.Uint32(record[32:36]),
+			Process:   string(bytesTrimNUL(record[16:32])),
+			Syscall:   syscallName(runtime.GOARCH, nr&^syscallCompatBit, nr&syscallCompatBit != 0),
+			ElapsedNS: elapsed,
+		})
 	}
 	return samples
 }

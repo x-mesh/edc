@@ -282,12 +282,12 @@ func TestSyscallLiveViewFitsTheScreenHeight(t *testing.T) {
 		files                 bool
 		rows, inFlight, shown int
 	}{
-		{24, false, 11, 2, 0},
+		{24, false, 10, 2, 0},
 		{60, false, syscallTraceRows, 8, 0},
 		{8, false, 1, 0, 0},
-		{24, true, 8, 0, 4},
-		{40, true, 12, 4, 8},
-		{60, true, syscallTraceRows, 8, 14},
+		{24, true, 7, 0, 4},
+		{40, true, 12, 4, 7},
+		{60, true, syscallTraceRows, 7, 14},
 	} {
 		view := syscallLiveView(test.height, test.files, 0)
 		if view.rows != test.rows || view.inFlight != test.inFlight || view.files != test.shown || !view.live {
@@ -308,8 +308,11 @@ func TestSyscallLiveViewFitsTheScreenHeight(t *testing.T) {
 
 func TestSyscallLiveRenderShowsRateAndCtrlC(t *testing.T) {
 	var output bytes.Buffer
-	syscallReportFor(syscallTestCollection(), "").render(&output, syscallView{rows: 5, inFlight: 5, live: true, rate: 1234.4})
-	for _, want := range []string{"rate 1234/s", "IN FLIGHT", "Ctrl-C stops and prints the final table"} {
+	collection := syscallTestCollection()
+	collection.summary.Entered, collection.summary.Returned = 9, 7
+	collection.inFlight = append(collection.inFlight, syscallInFlightSample{Process: "api", Syscall: "read", PID: 42, TID: 43, ElapsedNS: uint64(time.Hour)})
+	syscallReportFor(collection, "").render(&output, syscallView{rows: 5, inFlight: 5, live: true, rate: 1234.4})
+	for _, want := range []string{"rate 1234/s", "IN FLIGHT", "42/43", "entered 9", "returned 7", "Ctrl-C stops and prints the final table"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("live output lacks %q:\n%s", want, output.String())
 		}

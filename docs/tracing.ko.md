@@ -829,6 +829,8 @@ edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약
 
 `IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`, `--container`, `--syscall`을 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
 
+`entered`는 추적 중 진입한 필터 대상 호출 수입니다. `returned`는 진입 기록이 있는 호출의 반환 수이며, 시스템 콜별 통계 맵이 가득 차도 셉니다. `exit_group` 같은 호출은 진입하지만 반환하지 않습니다. 진행 중인 호출 표는 각 행에서 가장 오래 기다린 스레드의 호스트 PID/TID를 보여 줍니다.
+
 edc 자신의 호출은 뺍니다. edc가 자기 PID namespace가 있는 container 안에서 실행되면 자신의 호출을 찾을 수 없어서, 요약 뒤에 이 사실을 알립니다. amd64에서 32비트 program은 다른 system call 번호를 씁니다. 이 호출은 이름 뒤에 `(32-bit)`를 붙여 보여 줍니다. 신호로 끊긴 호출은 kernel 안에서만 쓰는 재시작 값으로 돌아올 수 있습니다. 예를 들어 `ERESTARTSYS`입니다. 표는 이 값도 이름으로 보여 줍니다.
 
 집계는 크기가 정해진 per-CPU map에 쌓습니다. edc는 map을 모두 합쳐 32 MiB, 최대 16,384개 항목으로 잡습니다. 항목 하나는 process 이름 하나와 system call 하나입니다. map이 가득 차면 넘친 호출은 세지 않습니다. 요약은 그 수를 `map_full`로 보여 주고, edc는 경고를 출력합니다. `--group-by cgroup`은 항목마다 cgroup을 더하므로 항목을 더 씁니다. 예를 들어 SSH login마다 새 cgroup이 생길 수 있습니다.

@@ -88,7 +88,7 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 			err = fmt.Errorf("invalid Go TLS function table: %v", recovered)
 		}
 	}()
-	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, text.Addr))
+	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, cpuGoText(file, text, cpuPCLN{data, section.Addr})))
 	if err != nil {
 		return fmt.Errorf("Go TLS function table: %w", err)
 	}

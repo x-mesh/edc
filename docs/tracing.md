@@ -166,7 +166,7 @@ Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add th
 
 Use `--group-by pid,syscall` to show one row per host PID and system call. Threads of a worker share its PID row. For example, `edc trace syscall --process nginx --group-by pid,syscall` separates workers with the same name. This uses more statistics entries when many processes match.
 
-With `--process`, `PROCESS FILTER AT START` reports how many processes visible in the host’s `/proc` match the name or host PID when edc starts. The check happens before applying `--container`. A match can have zero recorded calls, and a process that starts later can still be traced. The status appears on stderr for non-interactive output.
+With `--process`, `PROCESS FILTER AT START` reports how many processes visible in the host’s `/proc` match the name or host PID when edc starts. The check happens before applying `--container`. A match can have zero recorded calls, and a process that starts later can still be traced. The status appears on stderr for non-interactive output. If edc does not run in the host PID namespace, or cannot list `/proc`, the status shows `unavailable` and no count.
 
 To trace a command that ends quickly, put it after `--`. edc starts the command in a new cgroup after the trace is on, so the first call is counted. The calls of the processes that the command starts are counted too. The trace ends when the command ends, and edc returns the exit code of the command. Run it as root. You cannot use `--process`, `--container`, or `--duration` with a command. If cgroup v2 is not available, edc counts only the command itself and prints a warning.
 

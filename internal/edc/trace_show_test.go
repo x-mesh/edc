@@ -355,3 +355,24 @@ func TestTraceShowRejectsBadComparisons(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceShowRefusesSymbolicLinksInATraceWhyDirectory(t *testing.T) {
+	summary := captureSummary{Event: "capture_summary", TraceProtocol: "http", StartBootTimeNS: 1, EndBootTimeNS: 10_000 * whyTestMS}
+	outside := traceShowWrite(t, "outside.jsonl", whyTestRequest(7, "/a", 400, 300), summary)
+	directory := t.TempDir()
+	manifest := `{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`
+	if err := os.WriteFile(filepath.Join(directory, traceWhyManifestName), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(directory, "http.jsonl")); err != nil {
+		t.Skip(err)
+	}
+	stderr := captureTraceStderr(t, func() {
+		if code := runTraceShow([]string{directory}); code != 2 {
+			t.Fatalf("exit = %d", code)
+		}
+	})
+	if !strings.Contains(stderr, "not a regular file") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}

@@ -336,7 +336,11 @@ func recordTraceWhy(plan traceWhyPlan, stop <-chan struct{}, finishing func()) e
 // readTraceWhyDirectory는 why.json에 적힌 기록을 읽는다. 적힌 파일이 없으면 디렉터리의 다른 파일로 대신하지 않는다.
 func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest, error) {
 	var manifest traceWhyManifest
-	data, err := os.ReadFile(filepath.Join(directory, traceWhyManifestName))
+	manifestPath := filepath.Join(directory, traceWhyManifestName)
+	if err := requireTraceWhyRegularFile(manifestPath); err != nil {
+		return nil, manifest, err
+	}
+	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, manifest, err
 	}
@@ -352,13 +356,29 @@ func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest
 		if trace.File == "" || trace.File != filepath.Base(trace.File) {
 			return nil, manifest, fmt.Errorf("%s: %q is not a file name in the directory", traceWhyManifestName, trace.File)
 		}
-		file, err := openTraceShowFile(filepath.Join(directory, trace.File))
+		path := filepath.Join(directory, trace.File)
+		if err := requireTraceWhyRegularFile(path); err != nil {
+			return nil, manifest, fmt.Errorf("%s: %w", trace.File, err)
+		}
+		file, err := openTraceShowFile(path)
 		if err != nil {
 			return nil, manifest, fmt.Errorf("%s: %w", trace.File, err)
 		}
 		files = append(files, file)
 	}
 	return files, manifest, nil
+}
+
+// requireTraceWhyRegularFile은 심볼릭 링크를 거부한다. 기록 디렉터리 안의 링크로 디렉터리 밖의 파일을 읽지 않는다.
+func requireTraceWhyRegularFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file in the directory", filepath.Base(path))
+	}
+	return nil
 }
 
 // printTraceWhyDirectory는 기록 디렉터리의 분석을 출력한다. 읽지 못한 디렉터리는 2, 분석할 수 없는 기록은 1을 돌려준다.

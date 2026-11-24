@@ -72,9 +72,7 @@ struct syscall_counters { __u64 values[SYSCALL_COUNTERS]; };
 // path_arg는 경로 인자의 위치에 1을 더한 값이고, 0이면 경로가 없다. path_gone은 성공하면 경로를 읽을 수 없는 호출이다.
 // execve가 성공하면 register와 memory가 새 program의 것으로 바뀐다.
 // file이 1이면 event_files일 때 호출마다 event를 내고, 2이면 실패한 호출만 낸다. stat과 access는 성공이 너무 많아 후자다. flags_arg는 open flags 인자의 위치에 1을 더한 값이고, flags_mode는
-// 그 값을 읽는 방식이다(FLAGS_ARG: 인자 자체, FLAGS_CREAT: creat이라 쓰기와 생성과 비우기, FLAGS_HOW: open_how 구조체라 읽지
-// 않고 OPEN_UNKNOWN만 표시한다). open_how를 읽으려고 stack 변수를 두면 5.15 verifier가 flags를 읽는 두 경로를 한 명령으로
-// 합친 것을 거부한다.
+// FLAGS_HOW는 사용자 메모리의 open_how 구조체에서 flags를 읽는다.
 struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 file; __u8 flags_arg; __u8 flags_mode; __u8 fd_arg; __u8 pad; };
 struct syscall_window { __u64 start_ns; __u64 sent; __u64 suppressed; };
 // path_state는 0이면 경로가 없는 호출, 1이면 읽은 경로, 2이면 읽지 못한 경로, 3이면 잘린 경로다.
@@ -253,6 +251,23 @@ static __always_inline __u64 syscall_arg(void *regs, __u8 index) {
 	return 0;
 }
 
+static __always_inline __u8 classify_open_flags(__u64 flags) {
+	__u8 kind = 0;
+	if (flags & O_ACCMODE) kind |= OPEN_WRITE;
+	if (flags & O_CREAT) kind |= OPEN_CREATE;
+	if (flags & O_TRUNC) kind |= OPEN_TRUNC;
+	if (flags & O_EXCL) kind |= OPEN_EXCL;
+	return kind;
+}
+
+// Keep the stack load separate from register-based flags for the Linux 5.15 verifier.
+static __noinline __u8 classify_open_how(const void *how, __u64 size) {
+	__u64 flags;
+	if (size < sizeof(flags) || bpf_probe_read_user(&flags, sizeof(flags), how) != 0)
+		return OPEN_UNKNOWN;
+	return classify_open_flags(flags);
+}
+
 // event_wanted는 event를 낼 이유의 EVENT_* bit를 돌려준다. 0이면 내지 않는다.
 static __always_inline __u8 event_wanted(__u32 nr, __u64 latency, long ret) {
 	__u8 reason = 0;
@@ -325,14 +340,13 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 		} else record->path_state = 1;
 	}
 	if (rule && rule->flags_mode && !(nr & SYSCALL_COMPAT)) {
-		if (rule->flags_mode == FLAGS_HOW) record->open_kind = OPEN_UNKNOWN;
-		else {
+		if (rule->flags_mode == FLAGS_HOW) {
+			void *regs = (void *)ctx[0];
+			record->open_kind = classify_open_how((const void *)syscall_arg(regs, 2), syscall_arg(regs, 3));
+		} else {
 			__u64 flags = O_CREAT | O_TRUNC | 1;
-			if (rule->flags_mode == FLAGS_ARG) flags = rule->flags_arg ? syscall_arg((void *)ctx[0], rule->flags_arg - 1) : 0;
-			if (flags & O_ACCMODE) record->open_kind |= OPEN_WRITE;
-			if (flags & O_CREAT) record->open_kind |= OPEN_CREATE;
-			if (flags & O_TRUNC) record->open_kind |= OPEN_TRUNC;
-			if (flags & O_EXCL) record->open_kind |= OPEN_EXCL;
+			if (rule->flags_mode == FLAGS_ARG) flags = syscall_arg((void *)ctx[0], rule->flags_arg - 1);
+			record->open_kind = classify_open_flags(flags);
 		}
 	}
 	bpf_ringbuf_submit(record, 0);

@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf/ringbuf"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -132,6 +133,18 @@ func TestTraceSyscallHelperProcess(t *testing.T) {
 		if buffer[0] == 's' {
 			pause := syscall.NsecToTimespec(int64(syscallHelperPause))
 			_ = syscall.Nanosleep(&pause, nil)
+			continue
+		}
+		if buffer[0] == 'o' {
+			for _, flags := range []uint64{unix.O_RDONLY, unix.O_WRONLY, unix.O_RDWR | unix.O_CREAT | unix.O_EXCL} {
+				how := unix.OpenHow{Flags: flags}
+				if flags&unix.O_CREAT != 0 {
+					how.Mode = 0600
+				}
+				if fd, err := unix.Openat2(unix.AT_FDCWD, "/dev/null", &how); err == nil {
+					unix.Close(fd)
+				}
+			}
 			continue
 		}
 		if buffer[0] == 'p' {
@@ -472,6 +485,32 @@ func TestReadSyscallEventsStopsWhileEventsKeepComing(t *testing.T) {
 	}
 	if count != 3 || source.reads != 3 {
 		t.Fatalf("count = %d, reads = %d", count, source.reads)
+	}
+}
+
+func TestTraceSyscallClassifiesOpenat2Flags(t *testing.T) {
+	requireSyscallTrace(t)
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, files: true}
+	actions := map[string]bool{}
+	traceSyscallHelpers(t, options, nil, func() {
+		helper.send(t, 'o')
+		time.Sleep(200 * time.Millisecond)
+	}, func(event syscallEvent) error {
+		if event.Path == "/dev/null" {
+			actions[event.Action] = true
+		}
+		return nil
+	})
+	if !actions["read"] || !actions["write"] || !actions["create"] || actions["other"] {
+		t.Fatalf("openat2 actions = %v", actions)
 	}
 }
 

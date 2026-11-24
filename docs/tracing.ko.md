@@ -805,7 +805,7 @@ edc trace syscall --syscall openat,statx --slow 10ms --raw
 
 빨리 끝나는 명령은 `--` 뒤에 적어 trace할 수 있습니다. edc는 trace를 켠 뒤에 새 cgroup 안에서 명령을 시작하므로 첫 호출부터 셉니다. 명령이 시작한 process의 호출도 함께 셉니다. 명령이 끝나면 trace도 끝나고, edc는 명령의 종료 코드를 돌려줍니다. root로 실행해야 하며, `--process`, `--container`, `--duration`은 명령과 함께 쓸 수 없습니다. cgroup v2를 쓸 수 없으면 명령 자신의 호출만 세고 경고를 출력합니다.
 
-`FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 flags를 읽지 않으므로 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.
+`FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 호출이 반환될 때 `open_how`에서 읽은 플래그로 분류합니다. 플래그를 읽을 수 없으면 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.
 
 파일을 바꾼 행이 먼저 나오고, 실패한 호출이 있는 행, 읽기만 한 행 순서입니다. 표에는 20행이 보이고, `--all`을 주면 모든 행을 보여 줍니다. `--json`의 `files`에도 모든 행이 들어 있습니다. 표를 빼려면 `--no-files`를 쓰십시오. `--slow`나 `--errors`를 주면 `--files`를 함께 줄 때만 파일 표가 나옵니다. edc는 파일 event를 CPU마다 1초에 최대 10,000건, 경로를 최대 10,000개까지 기록합니다. 놓친 event가 있으면 표 아래에 알립니다.
 

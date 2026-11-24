@@ -64,9 +64,19 @@ type helpRenderer struct {
 	color  bool
 }
 
+// helpNoBreakHyphen은 줄을 나누는 동안 하이픈을 대신하는 글자다. 폭은 하이픈과 같은 한 칸이다.
+const helpNoBreakHyphen = "‑"
+
+// helpWrap은 도움말 글을 폭에 맞춰 나눈다. ansi.Wrap은 하이픈을 늘 나눌 자리로 보아 --watch를 -- 와 watch로 가르므로,
+// 나누는 동안 하이픈을 바꿔 두었다가 되돌린다. 폭보다 긴 낱말은 여전히 폭에서 잘린다.
+func helpWrap(text string, width int) []string {
+	wrapped := ansi.Wrap(strings.ReplaceAll(text, "-", helpNoBreakHyphen), width, "")
+	return strings.Split(strings.ReplaceAll(wrapped, helpNoBreakHyphen, "-"), "\n")
+}
+
 func (render helpRenderer) lines(text, first, rest string) {
 	carry := ""
-	for i, line := range strings.Split(ansi.Wrap(text, max(1, render.width-2-liveWidth(first)), ""), "\n") {
+	for i, line := range helpWrap(text, max(1, render.width-2-liveWidth(first))) {
 		prefix := rest
 		if i == 0 {
 			prefix = first
@@ -134,7 +144,7 @@ func renderHelpHeader(output io.Writer, name, summary string, width int, color b
 		return
 	}
 	fmt.Fprintln(output, prefix)
-	for _, line := range strings.Split(ansi.Wrap(summary, width, ""), "\n") {
+	for _, line := range helpWrap(summary, width) {
 		line = ansi.Truncate(line, width, "")
 		if color {
 			line = richBold(line)

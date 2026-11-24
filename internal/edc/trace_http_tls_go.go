@@ -24,13 +24,16 @@ const (
 
 var traceTLSGoVersions = map[string]bool{
 	"go1.21.5":  true,
+	"go1.23.4":  true,
 	"go1.23.7":  true,
 	"go1.23.8":  true,
 	"go1.23.12": true,
 	"go1.25.0":  true,
+	"go1.26.4":  true,
 	"go1.26.5":  true,
 	"go1.26.7":  true,
 	"go1.26.8":  true,
+	"go1.26.10": true,
 	"go1.27.3":  true,
 	"go1.27.4":  true,
 	"go1.27.1":  true,

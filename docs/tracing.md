@@ -859,7 +859,7 @@ An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with 
 
 Go TLS uses the Go function table and probes at function returns.
 
-edc supports Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.7, 1.26.8, 1.27.1, 1.27.3, and 1.27.4.
+edc supports Go 1.21.5, 1.23.4, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.4, 1.26.5, 1.26.7, 1.26.8, 1.26.10, 1.27.1, 1.27.3, and 1.27.4.
 
 Live capture tests pass on Linux amd64 for these versions. Metadata tests cover Linux amd64 and arm64. Native arm64 capture remains unverified.
 

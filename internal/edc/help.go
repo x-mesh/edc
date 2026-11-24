@@ -714,6 +714,7 @@ var commandDocs = []commandDoc{
 			{"--side client|server", "command.trace.option.side"},
 			{"--payload[=all]", "command.trace.option.payload"},
 			{"--show-secrets", "command.trace.option.show_secrets"},
+			{"--stats-only", "command.trace.option.stats_only"},
 			{"--tls[=<path>]", "command.trace.option.tls"},
 			{"--tls-keylog <path>", "command.trace.option.tls_keylog"},
 			{"--port <n>", "command.trace.option.port"},

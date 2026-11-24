@@ -71,6 +71,8 @@ bridge network에서는 주소와 port가 container 안의 값입니다. 예를 
 
 전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `p`로 port 행, `c`로 process 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. `trace http`에서는 `u`로 path 행을 표시합니다. `Tab`은 다음 보기, `Shift+Tab`은 이전 보기로 바꿉니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
+
+보기 하나는 그룹을 10,000개까지 둡니다. 그 뒤로 처음 나온 값의 event는 `(other)` 행에 더하고, 이미 행이 있는 값은 계속 제 행에 셉니다. `Ctrl-C` 후 summary도 같은 상한을 쓰며, `trace http`에서 `--group-by` 없이 끝날 때의 요약 행도 마찬가지입니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
 
 event 목록에서 Up이나 Down(또는 `k`, `j`)을 누르면 event를 고릅니다. event를 고른 동안에는 목록이 멈추고 새 event를 따라가지 않으며, 머리글에 더 새로운 event 수가 표시됩니다. Enter를 누르면 event의 모든 필드와 payload 전체를 보여 주는 상세 보기가 열립니다. 상세 보기는 긴 줄을 화면 폭에 맞춰 나눕니다. Up, Down, PgUp(또는 `b`), PgDn(또는 Space), `g`, `G`로 스크롤하고, Esc나 `q`로 돌아갑니다. 목록에서 `l`, Esc, End 중 하나를 누르면 다시 새 event를 따라갑니다. Mac 자판에는 End 키가 없는 경우가 많습니다. 목록에서도 `b`와 Space는 한 화면씩 고른 위치를 옮깁니다. 고른 event가 목록에서 가장 오래된 event가 되면, 그 아래에 더 새 event를 보여 줍니다. 목록은 payload마다 앞 4KiB만 보관하고, 상세 보기는 최근 event의 payload 전체를 합계 64MiB까지 보여 줍니다.
@@ -261,6 +263,31 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 
 `--group-by path`를 사용하면 요청 path별로 event를 묶습니다. 전체 화면에서는 `u`를 누릅니다. path 보기는 `trace http`에만 있습니다. path에는 query가 없고, host와 method가 달라도 path가 같으면 한 행에 묶습니다. 응답은 짝지은 요청의 행에 들어갑니다. `tls_hello` event와 짝이 없는 응답은 `-` 행에 들어갑니다. `/users/123`처럼 path에 ID가 들어 있으면 ID마다 행이 따로 생깁니다.
 
+`--stats-only`는 그룹 행만 보여 줍니다. event를 보관하지 않고 payload도 수집하지 않으므로, 바쁜 서버에서 메모리를 아낄 때 씁니다.
+
+```bash
+edc trace http --stats-only --port 8080
+edc trace http --stats-only --group-by target
+```
+
+기본 보기는 path입니다. `s`, `t`, `p`, `c`, `e`, `u`나 `Tab`으로 보기를 바꿉니다. event 목록이 없으므로 `g`, `Enter`, `/`, `i`, `v`, `m`은 동작하지 않습니다.
+
+요청 수, 오류 수, 응답 시간은 trace 전체의 누적 값입니다. event rate와 byte rate는 마지막 1초의 값이라, 부하가 멈추면 다음 갱신에서 0이 됩니다. 화면은 1초마다 갱신합니다.
+
+메모리는 event 수가 아니라 그룹 수에 비례합니다. `/users/123`처럼 path에 ID가 들어 있으면 ID마다 그룹이 생기지만, 그룹이 10,000개가 되면 새 path는 `(other)` 행에 더하므로 메모리가 더 늘지 않습니다.
+
+아래 표는 CPU 12개인 Linux host에서 잰 최대 메모리입니다. 시험 부하는 25초 동안 초당 약 2,500건의 요청을 보냈고, 응답 본문은 64 KiB였습니다.
+
+| 화면 | 최대 RSS, path 8개 | 최대 RSS, 요청마다 다른 path | 유실 event, 요청마다 다른 path |
+| --- | --- | --- | --- |
+| `edc trace http` | 1.26 GB | 1.49 GB | 1,120 |
+| `--group-by path --payload=false` | 286 MB | 476 MB | 26,830 |
+| `--stats-only` | 83 MB | 124 MB | 0 |
+
+같은 시험에서 edc의 CPU 사용 시간은 `--stats-only`가 약 8초, `--group-by path --payload=false`가 약 35초였습니다.
+
+`--stats-only`는 `trace http`에서만 쓸 수 있고, `--raw`, `--payload`, `--show-secrets`와 함께 쓸 수 없습니다. 출력이 터미널이 아니면 `--group-by`처럼 끝날 때 요약만 출력합니다.
+
 | 보려는 것 | 명령 |
 | --- | --- |
 | 이 host의 HTTP 전부 | `edc trace http` |
@@ -270,6 +297,7 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 | port 9900의 proxy가 받은 요청만 | `edc trace http --side server --port 9900` |
 | 쪽마다 process별 응답 시간 | `edc trace http --port 9000 --group-by process` |
 | path별 요청, 오류, 응답 시간 | `edc trace http --group-by path` |
+| 그룹 통계만, 메모리를 적게 | `edc trace http --stats-only` |
 | HTTPS 안의 HTTP/1.1과 HTTP/2 요청 | `edc trace http` |
 
 한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.

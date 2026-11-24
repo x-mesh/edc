@@ -365,6 +365,8 @@ In the full-screen terminal view, press `s` for source rows, `t` for target rows
 The full-screen view keeps the last 10,000 events. The live rates use the time that these events cover. The summary after Ctrl-C uses all events.
 Grouped rows in the full-screen view show the groups with the most traffic first. If the rows do not fit the terminal, the view shows the top rows.
 
+A view keeps at most 10,000 groups. After that limit, edc adds the events of each new value to the `(other)` row. A value that already has a row keeps its row. The summary after Ctrl-C has the same limit. In `trace http`, the summary rows without `--group-by` also have this limit.
+
 In the event list, press Up or Down (or `k` and `j`) to select an event. While an event is selected, the list stops and does not follow new events. The header shows the number of newer events. Press Enter to see all the fields of the event and the whole payload. The detail view wraps long lines. Press Up, Down, PgUp (or `b`), PgDn (or Space), `g`, or `G` to scroll, and press Esc or `q` to go back. Press `l`, Esc, or End in the list to follow new events again. Many Mac keyboards have no End key. In the list, `b` and Space also move the selection by a page. If the selected event becomes the oldest one in the list, the list shows newer events below it. The list keeps the first 4 KiB of each payload. The detail view shows the whole payload of recent events, up to 64 MiB in total.
 
 Press `f` to open the newest event and follow new events. Press `f` again to stop at the current event. In `trace http`, the full screen collects up to 1 MiB per message by default. The list keeps a 4 KiB snippet.
@@ -660,6 +662,31 @@ A `tls_hello` event and an unmatched response go into the `-` row.
 
 If the path contains an ID, for example `/users/123`, each ID gets a different row.
 
+`--stats-only` shows only the group rows. edc does not keep the events and does not collect the payload. Use it on a busy server to save memory.
+
+```bash
+edc trace http --stats-only --port 8080
+edc trace http --stats-only --group-by target
+```
+
+The default view is path. To change the view, press `s`, `t`, `p`, `c`, `e`, `u`, or `Tab`. The screen has no event list, so `g`, `Enter`, `/`, `i`, `v`, and `m` do nothing.
+
+The counts and the latency are for the whole trace. The event rate and the byte rate are for the last second. When the load stops, the rates become 0 at the next update. The screen updates every second.
+
+Memory grows with the number of groups, not with the number of events. A path with an ID, for example `/users/123`, makes one group for each ID. After 10,000 groups, edc adds new paths to the `(other)` row, so memory stops growing.
+
+The table shows the peak memory on a Linux host with 12 CPUs. The test load sent about 2,500 requests per second for 25 seconds. Each response had a 64 KiB body.
+
+| Screen | Peak RSS, 8 paths | Peak RSS, one path per request | Lost events, one path per request |
+| --- | --- | --- | --- |
+| `edc trace http` | 1.26 GB | 1.49 GB | 1,120 |
+| `--group-by path --payload=false` | 286 MB | 476 MB | 26,830 |
+| `--stats-only` | 83 MB | 124 MB | 0 |
+
+In the same test, edc used about 8 seconds of CPU time with `--stats-only` and about 35 seconds with `--group-by path --payload=false`.
+
+`--stats-only` works only with `trace http`. You cannot use it with `--raw`, `--payload`, or `--show-secrets`. If the output is not a terminal, edc prints only the summary at the end, as with `--group-by`.
+
 | To see | Command |
 | --- | --- |
 | All HTTP on this host | `edc trace http` |
@@ -669,6 +696,7 @@ If the path contains an ID, for example `/users/123`, each ID gets a different r
 | Only the requests that the proxy on port 9900 received | `edc trace http --side server --port 9900` |
 | The latency of each process on each side | `edc trace http --port 9000 --group-by process` |
 | The requests, errors, and latency of each path | `edc trace http --group-by path` |
+| Only the group stats, with less memory | `edc trace http --stats-only` |
 | The HTTP/1.1 and HTTP/2 requests in HTTPS | `edc trace http` |
 
 Client and server latency measure different times. Client latency includes the network and the wait before the server reads the request.

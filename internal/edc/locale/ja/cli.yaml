@@ -345,6 +345,8 @@ cli:
     raw_json_conflict: "--raw と --json は同時に使えません"
     group_by_range: "--group-by は source、target、port、process、event、path のいずれかで指定します"
     group_by_raw_conflict: "--group-by は --raw と同時に使えません"
+    stats_only_protocol: "--stats-only は trace http でだけ使えます。trace %s では使えません"
+    stats_only_conflict: "--stats-only は event を保持しないため、--raw、--payload、--show-secrets と同時に使えません"
     group_by: "source、target、port、process、event、path (http) ごとに event をまとめて traffic counter を表示します"
     linux_only: "network trace は Linux と macOS でだけ動きます。現在の platform: %s"
     group_by_protocol: "--group-by %s は trace %s では使えません"

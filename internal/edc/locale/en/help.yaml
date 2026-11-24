@@ -487,6 +487,7 @@ command:
       side: "http and database traces: both sides. dns: client"
       payload: "http, socket: first 4 KiB. =all: up to 1 MiB"
       show_secrets: "http: masked headers. databases: SQL, values"
+      stats_only: "http: only cumulative group stats, no events or payload"
       tls: "TLS plaintext. HTTP: auto by default. macOS MySQL/Redis: opt in. =<path>: one file"
       tls_keylog: "http on macOS: decrypt TLS with an SSLKEYLOGFILE file"
       port: "http: only this port. databases: the server port"
@@ -564,6 +565,7 @@ command:
         - "Example: trace http --side server --port 8080 shows one local server."
         - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
         - "It also hides X-Api-Key, X-Goog-Api-Key, Api-Key, X-Amz-Security-Token values."
+        - "--stats-only keeps no events and draws only cumulative group counts and per-second rates every second. The default view is path."
       mysql:
         - "trace mysql shows plain MySQL commands and results on Linux 5.15 or later and macOS."
         - "It shows both sides. Each row starts with client: or server:."

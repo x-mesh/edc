@@ -453,6 +453,8 @@ type tcpTraceOptions struct {
 	// containerRef는 --container 값이고, container는 trace를 시작하기 전에 그 값을 cgroup ID로 푼 것이다.
 	containerRef string
 	container    *traceContainer
+	// statsOnly면 화면이 event를 보관하지 않고 그룹별 누적 통계만 그린다. payload도 수집하지 않는다.
+	statsOnly bool
 }
 
 func traceProtocol(event captureEvent) string {

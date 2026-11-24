@@ -536,6 +536,7 @@ func runTraceProtocol(args []string) int {
 	set.IntVar(&options.httpPort, "http-port", 0, T("command.trace.option.http_port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.dropReasons, "reason", "", T("command.trace.option.reason"))
+	set.BoolVar(&options.statsOnly, "stats-only", false, T("command.trace.option.stats_only"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -564,6 +565,20 @@ func runTraceProtocol(args []string) int {
 	} else if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", "trace "+args[0]))
 		return 2
+	}
+	if options.statsOnly {
+		if args[0] != "http" {
+			fmt.Fprintln(os.Stderr, T("cli.trace.stats_only_protocol", args[0]))
+			return 2
+		}
+		// 통계 화면은 event를 두지 않으므로 event 한 줄씩이나 payload를 내는 option과 맞지 않는다.
+		if options.raw || options.payload != "" || options.showSecrets {
+			fmt.Fprintln(os.Stderr, T("cli.trace.stats_only_conflict"))
+			return 2
+		}
+		if options.groupBy == "" {
+			options.groupBy = traceGroupByPath
+		}
 	}
 	if args[0] == "http" {
 		applyTraceHTTPDefaults(&options)
@@ -725,7 +740,7 @@ func runTraceProtocol(args []string) int {
 		options.container = container
 	}
 	screen := !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout)
-	options.progressive = screen || (!options.raw && options.jsonPath == "" && options.groupBy == "")
+	options.progressive = (screen && !options.statsOnly) || (!options.raw && options.jsonPath == "" && options.groupBy == "")
 	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
 	if options.tls != "" {
 		finder, notices, code, err := resolveTraceHTTPTLSTargets(options.tls, options.implicitTLS, options.process)
@@ -1378,6 +1393,13 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 	return summarizer.report(summary, duration)
 }
 
+// traceGroupLimit는 보기 하나가 두는 그룹 수의 상한이다. path에 ID가 들어 있으면 요청마다 그룹이 생겨, 2026-11에
+// 요청마다 다른 path를 보낸 측정에서 trace http --stats-only가 25초 만에 467MB를 썼다. 상한을 넘은 뒤 처음 보는 값은
+// traceGroupOther 행에 더한다.
+const traceGroupLimit = 10000
+
+const traceGroupOther = "(other)"
+
 type traceGroupSummarizer struct {
 	protocol string
 	side     string
@@ -1401,7 +1423,10 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		if event.Protocol != "http" {
 			return
 		}
-		_, mapKey, _ := traceGroupIdentity(event, summarizer.groupBy)
+		_, mapKey, server := traceGroupIdentity(event, summarizer.groupBy)
+		if summarizer.groups[mapKey] == nil && len(summarizer.groups) >= traceGroupLimit {
+			_, mapKey = traceGroupOtherKey(server)
+		}
 		if group := summarizer.groups[mapKey]; group != nil {
 			group.traceTraffic.observeHTTP(event)
 			summarizer.traffic.observeHTTP(event)
@@ -1418,6 +1443,10 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	}
 	key, mapKey, server := traceGroupIdentity(event, summarizer.groupBy)
 	group := summarizer.groups[mapKey]
+	if group == nil && len(summarizer.groups) >= traceGroupLimit {
+		key, mapKey = traceGroupOtherKey(server)
+		group = summarizer.groups[mapKey]
+	}
 	if group == nil {
 		group = &traceGroup{Group: key, Server: server, Destinations: map[string]struct{}{}, Processes: map[string]struct{}{}}
 		summarizer.groups[mapKey] = group
@@ -1468,6 +1497,13 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	summarizer.events++
 	summarizer.traffic.observe(event)
 	summarizer.traffic.observeHTTP(event)
+}
+
+func traceGroupOtherKey(server bool) (key, mapKey string) {
+	if server {
+		return traceGroupOther, traceGroupOther + "\x00server"
+	}
+	return traceGroupOther, traceGroupOther
 }
 
 func traceGroupIdentity(event captureEvent, groupBy string) (key, mapKey string, server bool) {

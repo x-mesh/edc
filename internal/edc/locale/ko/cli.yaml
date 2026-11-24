@@ -345,6 +345,8 @@ cli:
     raw_json_conflict: "--raw와 --json은 함께 사용할 수 없습니다"
     group_by_range: "--group-by는 source, target, port, process, event, path 중 하나여야 합니다"
     group_by_raw_conflict: "--group-by는 --raw와 함께 사용할 수 없습니다"
+    stats_only_protocol: "--stats-only는 trace http에서만 쓸 수 있습니다. trace %s에는 쓸 수 없습니다"
+    stats_only_conflict: "--stats-only는 event를 보관하지 않으므로 --raw, --payload, --show-secrets와 함께 쓸 수 없습니다"
     group_by: "source, target, port, process, event, path(http)별로 event를 묶고 traffic counter를 표시합니다"
     linux_only: "network trace는 Linux와 macOS에서만 지원합니다. 현재 platform: %s"
     group_by_protocol: "--group-by %s는 trace %s에서 사용할 수 없습니다"

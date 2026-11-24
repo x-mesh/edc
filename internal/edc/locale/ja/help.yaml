@@ -487,6 +487,7 @@ command:
       side: "http と DB の trace は両側、dns は client 側"
       payload: "http、socket: 先頭 4 KiB。=all は 1 MiB まで"
       show_secrets: "http: マスクした header。DB: SQL、redis の値"
+      stats_only: "http: event を保持せずグループ別の累積統計だけ、payload なし"
       tls: "TLS 平文。HTTP: 既定は自動検出。macOS MySQL/Redis: 明示指定。=パス: ファイル 1 つ"
       tls_keylog: "macOS http: SSLKEYLOGFILE ファイルで TLS を復号"
       port: "http: この port。DB: server の port"
@@ -564,6 +565,7 @@ command:
         - "例: trace http --side server --port 8080 は local server を 1 つだけ見ます。"
         - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
         - "X-Api-Key、X-Goog-Api-Key、Api-Key、X-Amz-Security-Token の値も隠します。"
+        - "--stats-only は event を保持せず、グループ別の累積数と毎秒の rate だけを 1 秒ごとに描きます。既定の表示は path です。"
       mysql:
         - "trace mysql は Linux 5.15 以降と macOS で平文 MySQL のコマンドと結果を表示します。"
         - "両側を表示します。各行の先頭に client: か server: が付きます。"

@@ -1354,6 +1354,11 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 	summarizer.traffic.observeHTTP(event)
 	key := httpTraceKey{side: event.Side, method: event.Method, host: event.Target, path: event.Path}
 	stats := summarizer.rows[key]
+	// 그룹 보기와 같은 상한이다. ID가 든 path는 요청마다 행을 만든다.
+	if stats == nil && len(summarizer.rows) >= traceGroupLimit {
+		key = httpTraceKey{side: event.Side, path: traceGroupOther}
+		stats = summarizer.rows[key]
+	}
 	if stats == nil {
 		stats = &httpTraceRowStats{processes: map[string]struct{}{}, statuses: map[string]uint64{}}
 		summarizer.rows[key] = stats

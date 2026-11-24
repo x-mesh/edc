@@ -312,3 +312,51 @@ func TestSyscallEventSpikeCountsTheIncreaseOfCallsOverLongerIntervals(t *testing
 		t.Errorf("count = %d, peak = %.0f, want 40000 calls and 5000/s", events[0].Count, events[0].PeakPerSec)
 	}
 }
+
+func TestSyscallLatencySpikeUsesWindowMeansAndIncludesSampleCount(t *testing.T) {
+	detector := newSyscallEventDetector()
+	start := time.Unix(100, 0)
+	var samples = []syscallSample{
+		{Process: "db", Syscall: "fsync"},
+		{Process: "db", Syscall: "epoll_wait"},
+		{Process: "db", Syscall: "fdatasync"},
+	}
+	step := func(tick int, latency time.Duration) {
+		for index := range samples {
+			count := uint64(20)
+			if samples[index].Syscall == "fdatasync" {
+				count = 19
+			}
+			samples[index].Calls += count
+			samples[index].Timed += count
+			samples[index].SumNS += count * uint64(latency)
+		}
+		detector.observe(start.Add(time.Duration(tick)*time.Second),
+			syscallCollection{samples: samples, summary: syscallSummary{DurationMS: int64(tick) * 1000}}, nil)
+	}
+	for tick := 0; tick <= 5; tick++ {
+		step(tick, time.Millisecond)
+	}
+	for tick := 6; tick <= 10; tick++ {
+		step(tick, 5*time.Millisecond)
+	}
+	if events := detector.report(); len(events) != 0 {
+		t.Fatalf("events before the sustain period: %+v", events)
+	}
+	step(11, 8*time.Millisecond)
+	events := detector.report()
+	if len(events) != 1 || events[0].Kind != syscallKindLatencySpike || events[0].Syscall != "fsync" ||
+		events[0].PeakMS != 8 || events[0].BaselineMS == nil || *events[0].BaselineMS != 1 || events[0].Count != 120 {
+		t.Fatalf("latency events = %+v", events)
+	}
+	var output bytes.Buffer
+	report := syscallReport{Events: events}
+	report.printEvents(&output, newTraceSummaryStyle(&output), 1, true)
+	if text := output.String(); !strings.Contains(text, "latency spike") || !strings.Contains(text, "8.00ms") || !strings.Contains(text, "usually 1.00ms") {
+		t.Fatalf("latency spike output = %q", text)
+	}
+	step(12, time.Millisecond)
+	if recovered := detector.report(); len(recovered) != 1 || recovered[0].Active {
+		t.Fatalf("events after recovery = %+v", recovered)
+	}
+}

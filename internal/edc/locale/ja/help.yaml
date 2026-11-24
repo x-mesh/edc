@@ -638,6 +638,7 @@ command:
         - "trace syscall -- <コマンド> はコマンドを実行し、終了するまでそのコマンドと子プロセスの呼び出しを数え、コマンドの終了コードを返します。"
         - "trace syscall はプロセスが開き、書き込み、削除し、移動し、探したが存在しなかったファイルも表で示します。変更のあった行が先に並びます。--no-files で省略し、--all ですべての行を表示します。"
         - "trace syscall は条件が 5 秒以上続くと event として残します: 同じ呼び出しが毎秒 100 回失敗 (error loop)、1 つのパスへの呼び出しが ENOENT か ENOTDIR で毎秒 50 回失敗 (missing path)、1 つの呼び出しが通常の 10 倍に増加 (call spike)。"
+        - "各区間の完了呼び出しが20件以上で、平均遅延が2ms以上かつ平常時の4倍以上の状態が5秒続くと、latency spikeを記録します。"
         - "trace syscall --process は PID か正確な command 名 (15 byte まで)。"
       priv:
         - "trace priv は capability 検査、uid と gid の変更、module の読み込みを表示。"

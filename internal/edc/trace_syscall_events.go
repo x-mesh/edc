@@ -24,15 +24,19 @@ const (
 	syscallSpikeFactor     = 10.0
 	syscallBaselineSamples = 30
 	syscallBaselineMin     = 5
+	syscallLatencyMinCalls = 20
+	syscallLatencyMinMS    = 2.0
+	syscallLatencyFactor   = 4.0
 	// syscallEventRows는 최종 표에 보이는 event의 수이고, syscallLiveEventRows는 실시간 화면에 보이는 수다.
 	syscallEventRows     = 20
 	syscallLiveEventRows = 3
 )
 
 const (
-	syscallKindErrorLoop   = "error_loop"
-	syscallKindMissingPath = "missing_path"
-	syscallKindCallSpike   = "call_spike"
+	syscallKindErrorLoop    = "error_loop"
+	syscallKindMissingPath  = "missing_path"
+	syscallKindCallSpike    = "call_spike"
+	syscallKindLatencySpike = "latency_spike"
 )
 
 // syscallBenignErrnos는 오류 반복으로 보지 않는 errno다. 비동기 I/O와 신호는 정상 동작에서도 초당 수만 번 실패한다.
@@ -43,6 +47,20 @@ var syscallMissingPathErrnos = map[string]bool{"ENOENT": true, "ENOTDIR": true}
 
 // syscallBenignPairs는 그 호출에서만 정상인 errno다. 시간 제한이 있는 futex 기다림은 ETIMEDOUT로 끝나고, 자식이 없을 때의 wait는 ECHILD다.
 var syscallBenignPairs = map[string]bool{"futex ETIMEDOUT": true, "wait4 ECHILD": true, "waitid ECHILD": true}
+
+// These calls intentionally wait for work, a timeout, or another task.
+func syscallLatencyWait(name string) bool {
+	name = strings.TrimSuffix(name, " (32-bit)")
+	switch name {
+	case "epoll_wait", "epoll_pwait", "epoll_pwait2", "poll", "ppoll",
+		"select", "_newselect", "pselect6", "nanosleep", "clock_nanosleep",
+		"futex", "futex_wait", "futex_waitv", "wait4", "waitid",
+		"pause", "sigsuspend", "rt_sigsuspend", "rt_sigtimedwait":
+		return true
+	default:
+		return false
+	}
+}
 
 // syscallAnomaly는 조건이 syscallEventSustain 이상 이어진 event 하나다. Active는 지금 조건이 켜져 있다는 뜻이다.
 type syscallAnomaly struct {
@@ -56,8 +74,10 @@ type syscallAnomaly struct {
 	End    time.Time `json:"end"`
 	Active bool      `json:"active"`
 	// PeakPerSec는 가장 높았던 초당 횟수이고, BaselinePerSec는 호출 급증이 시작될 때의 평소 초당 횟수다.
-	PeakPerSec     float64  `json:"peak_per_sec"`
+	PeakPerSec     float64  `json:"peak_per_sec,omitempty"`
 	BaselinePerSec *float64 `json:"baseline_per_sec,omitempty"`
+	PeakMS         float64  `json:"peak_ms,omitempty"`
+	BaselineMS     *float64 `json:"baseline_ms,omitempty"`
 	Count          uint64   `json:"count"`
 }
 
@@ -72,6 +92,9 @@ func (anomaly syscallAnomaly) target() string {
 		return anomaly.Errno + " " + anomaly.Path
 	}
 	text := anomaly.Process + " " + anomaly.Syscall
+	if anomaly.BaselineMS != nil {
+		text += " (usually " + syscallTime(*anomaly.BaselineMS*float64(time.Millisecond)) + ")"
+	}
 	if anomaly.BaselinePerSec != nil {
 		text += fmt.Sprintf(" (usually %s/s)", groupThousands(int64(*anomaly.BaselinePerSec)))
 	}
@@ -81,7 +104,7 @@ func (anomaly syscallAnomaly) target() string {
 // syscallHit은 이번 sample에서 켜진 조건 하나다.
 type syscallHit struct {
 	proto    syscallAnomaly
-	rate     float64
+	value    float64
 	count    uint64
 	baseline *float64
 }
@@ -95,23 +118,30 @@ type syscallCondition struct {
 	event    *syscallAnomaly
 }
 
+type syscallLatencyTotal struct {
+	calls uint64
+	ns    uint64
+}
+
 // syscallEventDetector는 snapshot을 받을 때마다 지난 snapshot과의 증가분으로 조건을 본다. snapshot을 부르는 goroutine
 // 하나에서만 쓴다.
 type syscallEventDetector struct {
-	previousMS   int64
-	havePrevious bool
-	calls        map[string]uint64
-	errnos       map[string]uint64
-	pathFailures map[string]uint64
-	history      map[string][]float64
-	conditions   map[string]*syscallCondition
-	events       []*syscallAnomaly
+	previousMS     int64
+	havePrevious   bool
+	calls          map[string]uint64
+	errnos         map[string]uint64
+	pathFailures   map[string]uint64
+	history        map[string][]float64
+	latencyTotals  map[string]syscallLatencyTotal
+	latencyHistory map[string][]float64
+	conditions     map[string]*syscallCondition
+	events         []*syscallAnomaly
 	// now는 snapshot을 읽은 시각이다. test가 바꾼다.
 	now func() time.Time
 }
 
 func newSyscallEventDetector() *syscallEventDetector {
-	return &syscallEventDetector{calls: map[string]uint64{}, errnos: map[string]uint64{}, pathFailures: map[string]uint64{}, history: map[string][]float64{}, conditions: map[string]*syscallCondition{}, now: time.Now}
+	return &syscallEventDetector{calls: map[string]uint64{}, errnos: map[string]uint64{}, pathFailures: map[string]uint64{}, history: map[string][]float64{}, latencyHistory: map[string][]float64{}, conditions: map[string]*syscallCondition{}, now: time.Now}
 }
 
 func syscallBenignErrno(syscall, errno string) bool {
@@ -123,11 +153,18 @@ func syscallBenignErrno(syscall, errno string) bool {
 func (detector *syscallEventDetector) observe(at time.Time, collection syscallCollection, files []syscallFileRow) {
 	currentCalls := map[string]uint64{}
 	currentErrnos := map[string]uint64{}
+	currentLatency := map[string]syscallLatencyTotal{}
 	owners := map[string][2]string{}
 	for _, sample := range collection.samples {
 		key := sample.Process + "\x00" + sample.Syscall
 		currentCalls[key] += sample.Calls
 		owners[key] = [2]string{sample.Process, sample.Syscall}
+		if sample.Timed > 0 && !syscallLatencyWait(sample.Syscall) {
+			total := currentLatency[key]
+			total.calls += sample.Timed
+			total.ns += sample.SumNS
+			currentLatency[key] = total
+		}
 		for errno, count := range sample.Errnos {
 			currentErrnos[key+"\x00"+errno] += count
 		}
@@ -153,12 +190,15 @@ func (detector *syscallEventDetector) observe(at time.Time, collection syscallCo
 				detector.history[key] = history[max(0, len(history)-syscallBaselineSamples):]
 			}
 		}
+		for key, total := range currentLatency {
+			detector.observeLatency(key, owners[key], total, hits)
+		}
 		for key, count := range currentErrnos {
 			delta := count - min(count, detector.errnos[key])
 			rate := float64(delta) / seconds
 			parts := strings.SplitN(key, "\x00", 3)
 			if rate >= syscallErrorLoopRate && !syscallBenignErrno(parts[1], parts[2]) {
-				hits["error\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindErrorLoop, Process: parts[0], Syscall: parts[1], Errno: parts[2]}, rate: rate, count: delta}
+				hits["error\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindErrorLoop, Process: parts[0], Syscall: parts[1], Errno: parts[2]}, value: rate, count: delta}
 			}
 		}
 		for key, count := range currentFailures {
@@ -166,11 +206,12 @@ func (detector *syscallEventDetector) observe(at time.Time, collection syscallCo
 			rate := float64(delta) / seconds
 			path, errno, _ := strings.Cut(key, "\x00")
 			if rate >= syscallMissingPathRate {
-				hits["path\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindMissingPath, Path: path, Errno: errno}, rate: rate, count: delta}
+				hits["path\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindMissingPath, Path: path, Errno: errno}, value: rate, count: delta}
 			}
 		}
 	}
 	detector.calls, detector.errnos, detector.pathFailures = currentCalls, currentErrnos, currentFailures
+	detector.latencyTotals = currentLatency
 	detector.previousMS, detector.havePrevious = elapsedMS, true
 	detector.update(at, hits)
 }
@@ -188,10 +229,39 @@ func (detector *syscallEventDetector) spike(key string, rate float64, delta uint
 	}
 	baseline := sum / float64(len(history))
 	if rate >= syscallSpikeRate && rate >= syscallSpikeFactor*math.Max(baseline, 1) {
-		hits["spike\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindCallSpike, Process: owner[0], Syscall: owner[1]}, rate: rate, count: delta, baseline: &baseline}
+		hits["spike\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindCallSpike, Process: owner[0], Syscall: owner[1]}, value: rate, count: delta, baseline: &baseline}
 		return true
 	}
 	return tracked
+}
+
+func (detector *syscallEventDetector) observeLatency(key string, owner [2]string, total syscallLatencyTotal, hits map[string]syscallHit) {
+	previous := detector.latencyTotals[key]
+	if total.calls < previous.calls || total.ns < previous.ns {
+		return
+	}
+	calls := total.calls - previous.calls
+	if calls < syscallLatencyMinCalls {
+		return
+	}
+	average := float64(total.ns-previous.ns) / float64(calls) / float64(time.Millisecond)
+	history := detector.latencyHistory[key]
+	if len(history) >= syscallBaselineMin && average >= syscallLatencyMinMS {
+		var sum float64
+		for _, value := range history {
+			sum += value
+		}
+		baseline := sum / float64(len(history))
+		if average >= syscallLatencyFactor*baseline {
+			hits["latency\x00"+key] = syscallHit{
+				proto: syscallAnomaly{Kind: syscallKindLatencySpike, Process: owner[0], Syscall: owner[1]},
+				value: average, count: calls, baseline: &baseline,
+			}
+			return
+		}
+	}
+	history = append(history, average)
+	detector.latencyHistory[key] = history[max(0, len(history)-syscallBaselineSamples):]
 }
 
 // update는 켜진 조건과 꺼진 조건으로 event를 만들고 닫는다.
@@ -206,17 +276,26 @@ func (detector *syscallEventDetector) update(at time.Time, hits map[string]sysca
 		if state.onSince.IsZero() {
 			state.onSince = at
 		}
-		state.peak = math.Max(state.peak, hit.rate)
+		state.peak = math.Max(state.peak, hit.value)
 		state.count += hit.count
 		if state.event == nil && at.Sub(state.onSince) >= syscallEventSustain {
 			event := hit.proto
-			event.Start, event.PeakPerSec, event.Count, event.BaselinePerSec = state.onSince, state.peak, state.count, hit.baseline
+			event.Start, event.Count = state.onSince, state.count
+			if event.Kind == syscallKindLatencySpike {
+				event.PeakMS, event.BaselineMS = state.peak, hit.baseline
+			} else {
+				event.PeakPerSec, event.BaselinePerSec = state.peak, hit.baseline
+			}
 			state.event = &event
 			detector.events = append(detector.events, state.event)
 		}
 		if event := state.event; event != nil {
 			event.Active, event.End = true, at
-			event.PeakPerSec = math.Max(event.PeakPerSec, hit.rate)
+			if event.Kind == syscallKindLatencySpike {
+				event.PeakMS = state.peak
+			} else {
+				event.PeakPerSec = state.peak
+			}
 			if event.Count < state.count {
 				event.Count = state.count
 			}
@@ -286,7 +365,7 @@ func (report syscallReport) printEvents(out io.Writer, style traceSummaryStyle, 
 	shown := events[:min(len(events), limit)]
 	io.WriteString(out, "\n")
 	if len(events) == 0 {
-		style.line(out, style.subheading("EVENTS")+style.dim(": none so far. edc watches for error loops, missing paths, and call spikes that last 5 seconds"))
+		style.line(out, style.subheading("EVENTS")+style.dim(": none so far. conditions must last 5 seconds"))
 		return
 	}
 	heading := ": a condition that held for 5 seconds. ● means it is still on"
@@ -294,13 +373,17 @@ func (report syscallReport) printEvents(out io.Writer, style traceSummaryStyle, 
 		heading = fmt.Sprintf(": %d in total, the newest first. ● means it is still on", len(events))
 	}
 	style.line(out, style.subheading("EVENTS")+style.dim(heading))
-	style.line(out, style.dim(fmt.Sprintf("  %-8s %7s  %-12s %9s %10s  %s", "START", "FOR", "KIND", "PEAK", "COUNT", "TARGET")))
+	style.line(out, style.dim(fmt.Sprintf("  %-8s %7s  %-13s %9s %10s  %s", "START", "FOR", "KIND", "PEAK", "COUNT", "TARGET")))
 	for _, event := range shown {
 		mark := " "
 		if event.Active {
 			mark = "●"
 		}
-		style.printf(out, "%s %-8s %7s  %-12s %9s %10s  %s\n", mark, event.Start.Format("15:04:05"), syscallTime(float64(event.End.Sub(event.Start))), event.kindName(), groupThousands(int64(event.PeakPerSec))+"/s", groupThousands(int64(event.Count)), execPrintable([]byte(event.target())))
+		peak := groupThousands(int64(event.PeakPerSec)) + "/s"
+		if event.Kind == syscallKindLatencySpike {
+			peak = syscallTime(event.PeakMS * float64(time.Millisecond))
+		}
+		style.printf(out, "%s %-8s %7s  %-13s %9s %10s  %s\n", mark, event.Start.Format("15:04:05"), syscallTime(float64(event.End.Sub(event.Start))), event.kindName(), peak, groupThousands(int64(event.Count)), execPrintable([]byte(event.target())))
 	}
 	if hidden := len(events) - len(shown); hidden > 0 && !live {
 		style.line(out, style.hint(syscallHiddenRows(hidden, false)))

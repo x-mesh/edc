@@ -328,7 +328,7 @@ NSS 프로그램을 시작하기 전에 trace를 시작합니다. TLS와 일반 
 
 NSS 평문은 `PR_Read`, `PR_Recv`, `PR_Write`, `PR_Send`에서 읽습니다. NSPR은 이 함수로 일반 파일과 socket도 읽고 쓰므로, TLS를 쓰지 않는 program에서도 NSPR의 읽기와 쓰기마다 probe가 실행됩니다. `SSL_SECURITY`와 기본값 변경, model 복사, accept한 연결, `PR_Close`도 추적합니다. `SSL_SECURITY`를 끈 연결과 `PR_MSG_PEEK`로 읽은 내용은 TLS event로 표시하지 않습니다.
 
-Go TLS는 Go 함수 표를 읽고 함수 반환 지점에 probe를 붙여 평문을 읽습니다. edc는 Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.8, 1.27.1, 1.27.3을 지원합니다. 이 버전의 실시간 캡처를 Linux amd64에서 검증했습니다. Linux amd64와 arm64의 normal, stripped, PIE ELF metadata도 확인했습니다. arm64 실시간 캡처는 검증하지 않았습니다. 현재 형식의 유효한 Go 함수 표에서 TLS Read, Write, Close 메서드가 모두 없으면 자동 탐지에서 제외하고 오류를 내지 않습니다. 메서드가 일부만 있거나 함수 표가 손상되면 자동 탐지 안내를 표시합니다. `--tls`로 TLS 메서드가 없는 Go 바이너리를 지정하면 오류를 반환합니다. 이전 형식의 Go 함수 표는 지원하지 않습니다.
+Go TLS는 Go 함수 표를 읽고 함수 반환 지점에 probe를 붙여 평문을 읽습니다. edc는 Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.7, 1.26.8, 1.27.1, 1.27.3을 지원합니다. 이 버전의 실시간 캡처를 Linux amd64에서 검증했습니다. Linux amd64와 arm64의 normal, stripped, PIE ELF metadata도 확인했습니다. arm64 실시간 캡처는 검증하지 않았습니다. 이 버전들을 `GOEXPERIMENT=boringcrypto`로 빌드한 바이너리도 지원합니다. BoringCrypto 빌드의 실시간 캡처는 Linux amd64에서 Go 1.25.0, 1.26.7, 1.26.8, 1.27.1로 검증했습니다. 다른 Go 실험을 쓰거나 실험을 여러 개 함께 쓴 빌드는 지원하지 않는 ABI 오류로 거부합니다. 현재 형식의 유효한 Go 함수 표에서 TLS Read, Write, Close 메서드가 모두 없으면 자동 탐지에서 제외하고 오류를 내지 않습니다. 메서드가 일부만 있거나 함수 표가 손상되면 자동 탐지 안내를 표시합니다. `--tls`로 TLS 메서드가 없는 Go 바이너리를 지정하면 오류를 반환합니다. 이전 형식의 Go 함수 표는 지원하지 않습니다.
 
 ```bash
 edc trace http --tls=my-go-program

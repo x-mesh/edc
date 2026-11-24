@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 
 	"golang.org/x/arch/x86/x86asm"
 )
@@ -28,6 +29,7 @@ var traceTLSGoVersions = map[string]bool{
 	"go1.23.12": true,
 	"go1.25.0":  true,
 	"go1.26.5":  true,
+	"go1.26.7":  true,
 	"go1.26.8":  true,
 	"go1.27.3":  true,
 	"go1.27.1":  true,
@@ -125,7 +127,7 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	if err != nil {
 		return fmt.Errorf("Go build info: %w", err)
 	}
-	if !traceTLSGoVersions[version] || (file.Machine != elf.EM_X86_64 && file.Machine != elf.EM_AARCH64) || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
+	if !traceTLSGoSupported(version) || (file.Machine != elf.EM_X86_64 && file.Machine != elf.EM_AARCH64) || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
 		return fmt.Errorf("unsupported Go TLS ABI: %s %s %s", version, file.Machine, file.Type)
 	}
 	entries := map[string]uint64{}
@@ -155,6 +157,17 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	target.goReturns = returns
 	target.goMachine = file.Machine
 	return nil
+}
+
+// traceTLSGoSupported는 실제 캡처로 확인한 Go 버전인지 본다. GOEXPERIMENT=boringcrypto로 build하면 linker가 버전 뒤에
+// "-X:boringcrypto"를 붙이고, Go 1.25.0의 linker는 " X:boringcrypto"를 붙인다. BoringCrypto build의 캡처는 Go 1.25.0,
+// 1.26.7, 1.26.8, 1.27.1에서 확인했고, 목록의 다른 버전에도 같은 접미사를 받는다. 다른 실험이나 여러 실험을 함께 쓴 build는 받지 않는다.
+func traceTLSGoSupported(version string) bool {
+	base, boring := strings.CutSuffix(version, "-X:boringcrypto")
+	if !boring {
+		base, _ = strings.CutSuffix(version, " X:boringcrypto")
+	}
+	return traceTLSGoVersions[base]
 }
 
 func traceTLSGoBuildVersion(file *elf.File) (string, error) {
@@ -217,8 +230,9 @@ func traceTLSGoBuildVersion(file *elf.File) (string, error) {
 	if n != len(version) {
 		return "", fmt.Errorf("short Go build version read")
 	}
+	// linker는 GOEXPERIMENT가 있으면 버전 뒤에 "-X:a,b"나 " X:a,b"를 붙인다.
 	for _, character := range version {
-		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && character != '.' && character != '+' && character != '-' {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && !strings.ContainsRune(".+- :,", rune(character)) {
 			return "", fmt.Errorf("invalid Go build version characters")
 		}
 	}

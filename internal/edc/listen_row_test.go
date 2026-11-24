@@ -434,3 +434,32 @@ func TestFormatListenTableListsEachCommandOfARow(t *testing.T) {
 		t.Fatalf("equal command lines must show once, without a PID:\n%s", table)
 	}
 }
+
+// p는 Enter로 연 상세 화면에서도 PID를 바꾸고, 그 화면의 안내 줄과 t가 바뀐 PID를 따른다.
+func TestListenBrowserPicksThePIDInTheDetails(t *testing.T) {
+	model := listenRowBrowser(t)
+	var launched []string
+	model.openTop = func(pid string) tea.Cmd { launched = append(launched, pid); return nil }
+	model.inspect = func(context.Context, listenRow) []string { return []string{"details"} }
+	for model.items[model.cursor].first().Process != "docker-proxy" {
+		model, _ = listenBrowserKey(model, "down")
+	}
+	model, load := listenBrowserKey(model, "enter")
+	next, _ := model.Update(load())
+	model = next.(listenBrowser)
+	if text := model.View().Content; !strings.Contains(text, T("listenbrowse.pid_choice", "50", 1, 2)) {
+		t.Fatalf("details before p:\n%s", text)
+	}
+	model, cmd := listenBrowserKey(model, "p")
+	if cmd != nil || model.detail == nil || model.detail.trace {
+		t.Fatal("p must stay on the details without a reload")
+	}
+	if text := model.View().Content; !strings.Contains(text, T("listenbrowse.pid_choice", "51", 2, 2)) {
+		t.Fatalf("details after p:\n%s", text)
+	}
+	model, _ = listenBrowserKey(model, "t")
+	model, _ = listenBrowserKey(model, "esc")
+	if row, _ := model.selectedRow(); model.activePID(row) != "51" || !slices.Equal(launched, []string{"51"}) {
+		t.Fatalf("after esc: active %q, t opened %v", model.activePID(row), launched)
+	}
+}

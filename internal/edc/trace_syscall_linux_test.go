@@ -842,4 +842,32 @@ func TestSyscallProcessStartupStatus(t *testing.T) {
 			t.Errorf("with PID or name match, got %q", got)
 		}
 	}
+
+	if err := os.MkdirAll(filepath.Join(root, "43"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "43", "comm"), []byte("nginx\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	names := syscallTraceOptions{comms: []string{"nginx"}}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches") {
+		t.Errorf("with two name matches, got %q", got)
+	}
+	// comm을 읽다 ENOENT가 아닌 오류가 나면, 센 수는 일부일 수 있다고 알린다.
+	if err := os.MkdirAll(filepath.Join(root, "44", "comm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches (some process names unreadable)") {
+		t.Errorf("with an unreadable process name, got %q", got)
+	}
+	// 사라진 프로세스의 comm은 읽지 못한 이름으로 세지 않는다.
+	if err := os.RemoveAll(filepath.Join(root, "44")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "45"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := syscallProcessStartupStatus(names); !strings.HasSuffix(got, "  2 visible matches") {
+		t.Errorf("with a process that left, got %q", got)
+	}
 }

@@ -165,3 +165,38 @@ func TestTraceShowRejectsBadFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceShowComparesNetworkRecordings(t *testing.T) {
+	second := uint64(time.Second)
+	source, peer := "127.0.0.1:40111", "127.0.0.1:443"
+	tcp := traceShowWrite(t, "tcp.jsonl",
+		captureEvent{Protocol: "tcp", Event: "tcp_connect", Socket: 1, TimestampNS: second, Process: "curl", Source: source, Destination: peer},
+		captureEvent{Protocol: "tcp", Event: "tcp_sample", Socket: 1, TimestampNS: 2 * second, TCPValid: 1 | 64, RTTUS: 150, ZeroWindow: 1},
+		captureEvent{Protocol: "tcp", Event: "tcp_retransmit", Socket: 1, TimestampNS: 3 * second},
+		captureEvent{Protocol: "tcp", Event: "tcp_sample", Socket: 1, TimestampNS: 4 * second, TCPValid: 1 | 64, RTTUS: 50},
+	)
+	dns := traceShowWrite(t, "dns.jsonl",
+		captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: 2 * second, Destination: "127.0.0.53:53", Target: "example.com"},
+		captureEvent{Protocol: "dns", Event: "dns_query", TimestampNS: 5 * second, Destination: "127.0.0.53:53", Target: "example.org"},
+	)
+	drop := traceShowWrite(t, "drop.jsonl", captureSummary{Event: "capture_summary", TraceProtocol: "drop", TraceOS: "linux"})
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{tcp, dns}, []string{"Shared event time range 1970-01-01T00:00:02Z to 1970-01-01T00:00:04Z", "avg 100us, max 150us, n=2", "Peer advertised a zero window", "Retransmit events observed (1)"}},
+		{[]string{tcp, drop}, []string{"Shared event time range unavailable.", "Drops: 0"}},
+		{[]string{tcp, "--group-by", "target"}, []string{"Highest observed RTT", peer}},
+	} {
+		output := traceCaptureOutput(t, &os.Stdout, func() {
+			if code := runTraceShow(test.args); code != 0 {
+				t.Errorf("exit = %d", code)
+			}
+		})
+		for _, want := range test.want {
+			if !strings.Contains(output, want) {
+				t.Errorf("missing %q in %s", want, output)
+			}
+		}
+	}
+}

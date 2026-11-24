@@ -470,7 +470,10 @@ command:
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
     summary: "Trace network, I/O, socket, drop, sched, process, syscall, and CPU"
+    tcp_summary: "Trace TCP handshakes, retransmissions, and connection latency"
     option:
+      tcp_group_by: "group by source, target, port, process, or event"
+      tcp_destination: "filter by destination host and port"
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "min latency, e.g. 20us, 250ms. Default io/sched 1ms"
       raw: "print raw event JSONL"
@@ -479,7 +482,8 @@ command:
       process: "match PIDs or command names, comma-separated"
       destination: "filter by destination host and port; for dns, also by a domain in the query name"
       detail: "list each connection or flow in the summary"
-      yes: "skip the question"
+      yes: "skip the interactive TLS start confirmation"
+      cpu_yes: "accepted for compatibility. CPU tracing starts without a prompt"
       side: "http and database traces: both sides. dns: client"
       payload: "http, socket: first 4 KiB. =all: up to 1 MiB"
       show_secrets: "http: masked headers. databases: SQL, values"
@@ -649,6 +653,7 @@ command:
         - "trace lock shows kernel lock contention and futex waits by address."
       show:
         - "trace show <raw.jsonl> prints the summary of a saved --raw file, without root."
+        - "Pass several files to see their shared UTC event range and individual summaries. Multi-file mode accepts --process, --destination and -d."
   ai:
     summary: "AI coding tool usage and reset times"
     option:

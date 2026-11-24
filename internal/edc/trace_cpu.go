@@ -131,6 +131,7 @@ func runTraceCPU(args []string) int {
 	var process string
 	set := newFlagSet("trace cpu")
 	set.SetOutput(os.Stderr)
+	set.Bool("yes", false, T("command.trace.option.cpu_yes"))
 	durationFlagVar(set, &options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.IntVar(&options.frequency, "frequency", cpuDefaultFrequency, T("command.trace.option.frequency"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))

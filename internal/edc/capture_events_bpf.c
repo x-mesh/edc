@@ -527,6 +527,7 @@ static __always_inline void emit_tcp_sample(struct sock *sk) {
 	if (!event) return;
 	event->skaddr = key;
 	apply_sock_owner(event);
+	fill_tcp_addresses(event, sk);
 	event->tcp_valid = current.valid;
 	event->rtt_us = current.rtt_us;
 	event->rttvar_us = current.rttvar_us;

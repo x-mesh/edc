@@ -26,7 +26,7 @@ On Linux, `trace tcp` also reports change-based `tcp_sample` events. These event
 
 `tcp_accept` records TCP handshake completion. `tcp_app_accept` records a successful return from `inet_csk_accept`. It reports the time from child ESTABLISHED to application accept and the listener accept queue values. Failed accepts do not produce `tcp_app_accept`. `ListenDrops` and `ListenOverflows` are network namespace counters. edc does not assign them to one listener.
 
-Use Enter in the terminal view to see raw event JSON. The TCP connection JSON includes the last observed diagnostic values. The text summary shows mean RTT, lost packets, zero-window state, and mean application accept time for each process and peer. Linux 5.15 load and attach verification is not complete.
+Use Enter in the terminal view to see raw event JSON. The TCP connection JSON includes the last observed diagnostic values. The text summary highlights observed handshake, retransmission, zero-window, and app accept signals with the affected process and peer. RTT statistics include the average, maximum, and count of recorded samples. The process and peer summary also includes app accept wait statistics. Linux 5.15 load and attach verification is not complete.
 
 ## trace io
 
@@ -374,6 +374,15 @@ On macOS, the process name holds up to 32 bytes. `edc` reads the ephemeral port 
 Without root, the macOS trace shows only the kernel sockets of the current user. It does not show the connections that the user-space network stack of macOS handles. Network.framework can send traffic through that stack. The trace also does not show a `target` hostname, so `--group-by target` groups events by the destination address.
 
 If you run the trace with `sudo`, it shows the processes of all users and the connections of the user-space network stack. It also shows the domain name that macOS records for a connection as the `target`, and `target_source` shows `system`. If macOS has no domain name for a connection, `--group-by target` uses the destination address. QUIC uses UDP, so `trace udp` shows the QUIC connections of the user-space network stack.
+
+To inspect recordings from the same incident together, pass their file paths:
+
+```bash
+edc trace show tcp.jsonl dns.jsonl http.jsonl drop.jsonl
+```
+
+The table shows the first and last event in each file and their shared range in UTC. Compare timestamps across hosts with synchronized clocks. Each summary covers its full recording and uses its protocol’s own grouping. In multi-file mode, use `--process`, `--destination`, and `-d`. Replay filters work the same way as in single-file mode. A recording without timestamped events has no event range.
+
 
 ## trace dns
 
@@ -749,7 +758,7 @@ It needs no certificate or key file.
 
 TLS probes support only Linux amd64 and arm64. Unsupported architecture or ABI, missing access, and attach failures show a reason. HTTP capture continues.
 
-Use `--tls=false` to disable TLS observation. Use `--tls=<path>` to probe only one file. An explicit `--tls` keeps its existing warning and confirmation on risky kernels.
+Use `--tls=false` to disable TLS observation. Use `--tls=<path>` to probe only one file. An explicit `--tls` keeps its warning and confirmation on risky kernels. In a terminal, use `--yes` to skip the start confirmation. The warning still appears.
 
 ```bash
 edc trace http --tls

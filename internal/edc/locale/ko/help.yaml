@@ -470,7 +470,10 @@ command:
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
     summary: "network, I/O, socket, drop, sched, process, syscall, CPU 출력과 요약"
+    tcp_summary: "TCP 연결 수립, 재전송, 연결 지연을 추적합니다"
     option:
+      tcp_group_by: "출발지, 대상, 포트, 프로세스 또는 이벤트별로 묶습니다"
+      tcp_destination: "목적지 호스트와 포트로 필터링합니다"
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       slow: "최소 latency. 예: 20us, 250ms. io/sched 기본 1ms"
       raw: "raw event JSONL 출력"
@@ -479,7 +482,8 @@ command:
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
       destination: "destination host와 port로 필터. dns는 조회 이름의 도메인으로도 필터"
       detail: "요약에 연결이나 flow를 하나씩 표시"
-      yes: "확인 질문 생략"
+      yes: "대화형 TLS 추적 시작 확인 생략"
+      cpu_yes: "호환성 옵션. CPU 추적은 확인 없이 시작합니다"
       side: "http와 DB trace는 두 쪽, dns는 client 쪽"
       payload: "http, socket: 앞 4KiB. =all: 1MiB까지"
       show_secrets: "http: 가린 header. DB: SQL, redis 값"
@@ -649,6 +653,7 @@ command:
         - "trace lock은 kernel lock 경합과 주소별 futex 기다림을 보여 줍니다."
       show:
         - "trace show <raw.jsonl>은 저장한 --raw 파일의 요약을 root 없이 냅니다."
+        - "파일을 여러 개 넘기면 공통 이벤트 시간대(UTC)와 파일별 요약을 표시합니다. 이때 --process, --destination, -d를 사용할 수 있습니다."
   ai:
     summary: "AI 코딩 도구 사용량과 리셋 시각"
     option:

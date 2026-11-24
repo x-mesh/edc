@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -1917,12 +1918,13 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		return 1
 	}
 	printTraceTLSExecProblem(result.summary)
+	result.summary.TraceOS = runtime.GOOS
 	duration := options.duration
 	if duration == 0 || screen.stopping || ctx.Err() != nil {
 		duration = time.Since(started)
 	}
 	if screen.groupBy != "" {
-		printTraceGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration))
+		aggregate.printGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration), result.summary, duration)
 		return 0
 	}
 	aggregate.summary.summarize(result.summary, duration).print(options.detail)

@@ -470,7 +470,10 @@ command:
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
     summary: "network、I/O、socket、drop、sched、process、syscall、CPU の要約"
+    tcp_summary: "TCP 接続の確立、再送、接続遅延を追跡します"
     option:
+      tcp_group_by: "送信元、対象、ポート、プロセス、イベントで集計"
+      tcp_destination: "宛先のホストとポートで絞り込む"
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       slow: "最小 latency。例: 20us、250ms。io/sched の既定 1ms"
       raw: "raw event JSONL を表示"
@@ -479,7 +482,8 @@ command:
       process: "一致する PID か command 名のみ、カンマ区切り"
       destination: "宛先 host と port で絞る。dns は問い合わせ名のドメインでも絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
-      yes: "確認を省く"
+      yes: "対話モードの TLS トレース開始確認を省く"
+      cpu_yes: "互換性のためのオプション。CPU トレースは確認なしで開始します"
       side: "http と DB の trace は両側、dns は client 側"
       payload: "http、socket: 先頭 4 KiB。=all は 1 MiB まで"
       show_secrets: "http: マスクした header。DB: SQL、redis の値"
@@ -649,6 +653,7 @@ command:
         - "trace lock は kernel lock の競合とアドレスごとの futex 待ちを表示します。"
       show:
         - "trace show <raw.jsonl> は保存した --raw の要約を root なしで出します。"
+        - "複数のファイルを指定すると、共通するイベントの時間範囲（UTC）と各ファイルの要約を表示します。--process、--destination、-d を使えます。"
   ai:
     summary: "AI コーディングツールの使用量とリセット時刻"
     option:

@@ -3,6 +3,7 @@ package edc
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type http_record captureEvents capture_events_bpf.c -- -I./bpf
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -121,10 +122,12 @@ type captureEvent struct {
 }
 
 type captureSummary struct {
-	TimestampNS uint64 `json:"timestamp_ns"`
-	Event       string `json:"event"`
-	EventCount  uint64 `json:"event_count"`
-	LostEvents  uint64 `json:"lost_events"`
+	TraceProtocol string `json:"trace_protocol,omitempty"`
+	TraceOS       string `json:"trace_os,omitempty"`
+	TimestampNS   uint64 `json:"timestamp_ns"`
+	Event         string `json:"event"`
+	EventCount    uint64 `json:"event_count"`
+	LostEvents    uint64 `json:"lost_events"`
 	// TLSUnmapped는 socket 주소나 TLS key log가 없어 해석하지 못한 TLS 레코드 수다.
 	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 	// TLSExecProblem은 --tls 자동 탐색이 trace 중에 exec 알림을 받지 못한 이유다. trace가 끝난 뒤 stderr로 알린다.
@@ -164,12 +167,14 @@ type tcpTraceConnection struct {
 	reset           bool
 	tcpValid        uint32
 	rttUS           uint32
+	rttStats        tcpRTTStats
 	rttvarUS        uint32
 	cwnd            uint32
 	ssThresh        uint32
 	unacked         uint32
 	lost            uint32
 	zeroWindow      bool
+	zeroWindowSeen  bool
 	acceptLatencyNS uint64
 	acceptQueueUsed uint32
 	acceptQueueMax  uint32
@@ -243,7 +248,8 @@ type tcpTraceReport struct {
 	// ConnectionsOmitted는 합계에는 들어갔지만 행을 남기지 않은 끝난 연결의 수다.
 	ConnectionsOmitted int `json:"connections_omitted"`
 	// groups는 텍스트 요약의 기본 행이다. JSON은 연결별 행만 쓴다.
-	groups []tcpTraceGroupRow
+	groups  []tcpTraceGroupRow
+	traceOS string
 	traceTraffic
 }
 
@@ -262,13 +268,35 @@ type tcpTraceGroupRow struct {
 	retransmissions uint64
 	connectTotalMS  int64
 	connectCount    int
-	rttTotalUS      uint64
-	rttCount        int
+	rttStats        tcpRTTStats
+	acceptMaxNS     uint64
+	acceptQueueFull bool
 	lost            uint64
 	zeroWindow      bool
 	acceptTotalNS   uint64
 	acceptCount     int
 	traceTraffic
+}
+
+type tcpRTTStats struct {
+	total uint64
+	count uint64
+	peak  uint32
+}
+
+func (stats *tcpRTTStats) add(other tcpRTTStats) {
+	stats.total += other.total
+	stats.count += other.count
+	if other.peak > stats.peak {
+		stats.peak = other.peak
+	}
+}
+
+func (stats tcpRTTStats) text() string {
+	if stats.count == 0 {
+		return "no samples"
+	}
+	return fmt.Sprintf("avg %dus, max %dus, n=%d", stats.total/stats.count, stats.peak, stats.count)
 }
 
 type tcpTraceGroupKey struct {
@@ -315,18 +343,19 @@ func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection 
 		row.connectTotalMS += connection.connectMS
 		row.connectCount++
 	}
-	if connection.tcpValid&1 != 0 {
-		row.rttTotalUS += uint64(connection.rttUS)
-		row.rttCount++
-	}
+	row.rttStats.add(connection.rttStats)
 	if connection.tcpValid&32 != 0 {
 		row.lost += uint64(connection.lost)
 	}
-	row.zeroWindow = row.zeroWindow || connection.tcpValid&64 != 0 && connection.zeroWindow
+	row.zeroWindow = row.zeroWindow || connection.zeroWindowSeen
 	if connection.acceptLatencyNS != 0 {
 		row.acceptTotalNS += connection.acceptLatencyNS
 		row.acceptCount++
+		if connection.acceptLatencyNS > row.acceptMaxNS {
+			row.acceptMaxNS = connection.acceptLatencyNS
+		}
 	}
+	row.acceptQueueFull = row.acceptQueueFull || connection.acceptQueueMax > 0 && connection.acceptQueueUsed >= connection.acceptQueueMax
 	row.TXBytes += connection.TXBytes
 	row.RXBytes += connection.RXBytes
 	return key
@@ -614,12 +643,16 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	case "tcp_sample":
 		connection.tcpValid = event.TCPValid
 		connection.rttUS = event.RTTUS
+		if event.TCPValid&1 != 0 {
+			connection.rttStats.add(tcpRTTStats{total: uint64(event.RTTUS), count: 1, peak: event.RTTUS})
+		}
 		connection.rttvarUS = event.RTTVarUS
 		connection.cwnd = event.CWND
 		connection.ssThresh = event.SSThresh
 		connection.unacked = event.Unacked
 		connection.lost = event.Lost
 		connection.zeroWindow = event.ZeroWindow != 0
+		connection.zeroWindowSeen = connection.zeroWindowSeen || event.TCPValid&64 != 0 && connection.zeroWindow
 	case "tcp_app_accept":
 		connection.acceptLatencyNS = event.AcceptLatencyNS
 		connection.acceptQueueUsed = event.AcceptQueueUsed
@@ -678,7 +711,7 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) (tcpTraceFinishedSoc
 }
 
 func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration time.Duration) tcpTraceReport {
-	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, ConnectionsOmitted: summarizer.omitted, traceTraffic: summarizer.traffic}
+	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceOS: summary.TraceOS, ConnectionsOmitted: summarizer.omitted, traceTraffic: summarizer.traffic}
 	totals := summarizer.totals
 	groups := make(map[tcpTraceGroupKey]*tcpTraceGroupRow, len(summarizer.groups))
 	for key, stored := range summarizer.groups {

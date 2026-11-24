@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -198,11 +199,31 @@ func TestTraceShowRejectsBadTraceWhyDirectories(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(noRange, "http.jsonl"), oldData, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// 받은 기록 안의 링크가 디렉터리 밖의 파일을 가리켜도 그 파일을 읽지 않는다.
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("root:secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedRecording := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`)
+	if err := os.Symlink(outside, filepath.Join(linkedRecording, "http.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	linkedManifest := directory("", "http.jsonl")
+	if err := os.Symlink(outside, filepath.Join(linkedManifest, traceWhyManifestName)); err != nil {
+		t.Fatal(err)
+	}
+	fifoRecording := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`)
+	if err := syscall.Mkfifo(filepath.Join(fifoRecording, "http.jsonl"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for name, test := range map[string]struct {
 		args []string
 		code int
 		want string
 	}{
+		"linked recording":  {[]string{linkedRecording}, 2, "http.jsonl: is a symbolic link"},
+		"linked manifest":   {[]string{linkedManifest}, 2, traceWhyManifestName + ": is a symbolic link"},
+		"fifo recording":    {[]string{fifoRecording}, 2, "http.jsonl: is not a regular file"},
 		"no manifest":       {[]string{directory("", "http.jsonl")}, 2, traceWhyManifestName},
 		"broken manifest":   {[]string{directory("{", "http.jsonl")}, 2, traceWhyManifestName},
 		"other version":     {[]string{directory(`{"version":2,"traces":[]}`, "http.jsonl")}, 2, "version 2 is not supported"},
@@ -217,7 +238,7 @@ func TestTraceShowRejectsBadTraceWhyDirectories(t *testing.T) {
 		stderr := traceCaptureOutput(t, &os.Stderr, func() {
 			stdout = traceCaptureOutput(t, &os.Stdout, func() { code = runTraceShow(test.args) })
 		})
-		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) {
+		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) || strings.Contains(stderr, "root:secret") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout, stderr)
 		}
 	}
@@ -372,7 +393,7 @@ func TestTraceShowRefusesSymbolicLinksInATraceWhyDirectory(t *testing.T) {
 			t.Fatalf("exit = %d", code)
 		}
 	})
-	if !strings.Contains(stderr, "not a regular file") {
+	if !strings.Contains(stderr, "is a symbolic link") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }

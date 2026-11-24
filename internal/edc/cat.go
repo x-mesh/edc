@@ -115,6 +115,7 @@ type catPager struct {
 	command *exec.Cmd
 	stdin   io.WriteCloser
 	held    bytes.Buffer
+	exited  chan struct{}
 }
 
 // startCatPager는 pager를 띄운다. 명령이 비었으면 nil이다. shell을 거치지 않고 공백으로 나눈 명령을 직접 실행해서,
@@ -139,15 +140,23 @@ func startCatPager(command string) *catPager {
 		return nil
 	}
 	// Ctrl-C는 pager와 edc가 함께 받는다. edc가 먼저 죽으면 pager가 터미널을 쥔 채 남으므로 pager가 끝날 때까지 무시한다.
-	signal.Ignore(os.Interrupt)
-	return &catPager{command: process, stdin: stdin}
+	// pager가 끝나면 바로 되돌린다. 끝나지 않는 입력을 읽고 있으면 그 뒤의 Ctrl-C로 edc를 멈출 수 있어야 한다.
+	// signal.Ignore는 쓰지 않는다. 한 번 무시한 SIGINT는 signal.Reset으로 기본 동작에 돌아오지 않는다.
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt)
+	pager := &catPager{command: process, stdin: stdin, exited: make(chan struct{})}
+	go func() {
+		_ = process.Wait()
+		signal.Stop(interrupts)
+		close(pager.exited)
+	}()
+	return pager
 }
 
 // wait는 pager가 끝나기를 기다린 뒤, 모아 둔 문제 줄을 stderr에 쓴다. 종료 상태는 edc가 정하므로 pager의 것은 버린다.
 func (pager *catPager) wait() {
 	pager.stdin.Close()
-	_ = pager.command.Wait()
-	signal.Reset(os.Interrupt)
+	<-pager.exited
 	os.Stderr.Write(pager.held.Bytes())
 }
 
@@ -327,16 +336,37 @@ func (output *catOutput) content(title, name string, source io.Reader, size int6
 	}
 	reader := bufio.NewReader(rest)
 	lexer := catLexer{format: syntax.format, mask: output.mask}
-	for number := 1; ; number++ {
-		line, err := reader.ReadString('\n')
+	for number, continued := 1, false; ; {
+		line, cut, err := readCatLine(reader)
 		if line != "" {
-			body := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-			ending := line[len(body):]
+			// 나누어 읽은 줄은 lexer가 값의 끝을 알 수 없다. 가리지 못한 값을 내보내지 않고 멈춘다.
+			if cut && output.mask {
+				output.problem(T("cat.failed", fmt.Errorf("%s: a line is longer than %d bytes and cannot be masked", title, catLineLimit)))
+				return false
+			}
+			body, ending := line, ""
+			if !cut {
+				body = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+				ending = line[len(body):]
+			}
 			if output.terminal {
 				// 파일에 든 escape가 터미널을 움직이지 못하게 지운다. 마지막 줄에 줄바꿈이 없어도 다음 위치 줄이 붙지 않게 한다.
-				body, ending = viewSanitize(body), "\n"
+				body = viewSanitize(body)
+				if !cut {
+					ending = "\n"
+				}
 			}
-			output.line(number, catRender(lexer.line(body), output.color)+ending)
+			switch {
+			case continued:
+				output.write(body + ending)
+			case cut:
+				output.line(number, body)
+			default:
+				output.line(number, catRender(lexer.line(body), output.color)+ending)
+			}
+		}
+		if continued = cut; !cut {
+			number++
 		}
 		if err == io.EOF || output.failed != nil {
 			return true
@@ -348,6 +378,25 @@ func (output *catOutput) content(title, name string, source io.Reader, size int6
 		// 읽어 둔 줄을 다 냈으면 내보낸다. 느리게 들어오는 pipe 입력이 buffer가 찰 때까지 묶이지 않는다.
 		if reader.Buffered() == 0 {
 			output.stdout.Flush()
+		}
+	}
+}
+
+// catLineLimit은 한 번에 모으는 줄의 크기 상한이다. minified 파일처럼 줄바꿈이 없는 큰 입력도 이만큼씩 나누어 내서
+// 파일 크기만큼 메모리를 쓰지 않는다.
+const catLineLimit = 1 << 20
+
+// readCatLine은 줄 하나를 읽는다. 줄이 catLineLimit보다 길면 그만큼에서 끊고 cut을 참으로 돌려준다.
+func readCatLine(reader *bufio.Reader) (line string, cut bool, err error) {
+	var data []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		data = append(data, chunk...)
+		if err != bufio.ErrBufferFull {
+			return string(data), false, err
+		}
+		if len(data) >= catLineLimit {
+			return string(data), true, nil
 		}
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,16 +55,23 @@ func traceTLSGoBuildFixture(t *testing.T, goCommand, source, mode, arch string, 
 	t.Helper()
 	fixture := filepath.Join(t.TempDir(), "edc-go-tls")
 	args := []string{"build", "-o", fixture}
+	// "boring-" mode는 GOEXPERIMENT=boringcrypto로 build한다. linker가 build 정보의 Go 버전 뒤에 실험 이름을 붙인다.
+	mode, boring := strings.CutPrefix(mode, "boring-")
 	// "external-" mode는 외부 linker로 build한다. 외부 linker는 C 시작 코드를 .text 앞에 두므로 runtime.text가 .text의
 	// 시작보다 뒤에 온다.
 	mode, external := strings.CutPrefix(mode, "external-")
-	cgo := "CGO_ENABLED=0"
+	env := []string{"GOOS=linux", "GOARCH=" + arch, "CGO_ENABLED=0"}
 	var ldflags []string
-	if external {
+	if boring || external {
 		if _, err := exec.LookPath("gcc"); err != nil {
-			t.Skip("needs gcc for external linking")
+			t.Skip("needs gcc for cgo")
 		}
-		cgo = "CGO_ENABLED=1"
+		env[2] = "CGO_ENABLED=1"
+	}
+	if boring {
+		env = append(env, "GOEXPERIMENT=boringcrypto")
+	}
+	if external {
 		ldflags = append(ldflags, "-linkmode=external")
 	}
 	if mode == "stripped" {
@@ -76,7 +84,7 @@ func traceTLSGoBuildFixture(t *testing.T, goCommand, source, mode, arch string, 
 	}
 	args = append(args, source)
 	command := exec.Command(goCommand, args...)
-	command.Env = traceTLSGoCompilerEnv(stdlib, "GOOS=linux", "GOARCH="+arch, cgo)
+	command.Env = traceTLSGoCompilerEnv(stdlib, env...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Go TLS fixture: %v\n%s", err, output)
 	}
@@ -96,7 +104,13 @@ func traceTLSGoBuildFixture(t *testing.T, goCommand, source, mode, arch string, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version := traceTLSGoVersion(t, goCommand); info.GoVersion != version {
+	version := traceTLSGoVersion(t, goCommand)
+	want := []string{version}
+	if boring {
+		// Go 1.25.0은 버전과 실험 이름 사이에 공백을 쓰고, 1.26.8과 1.27.1은 '-'를 쓴다.
+		want = []string{version + "-X:boringcrypto", version + " X:boringcrypto"}
+	}
+	if !slices.Contains(want, info.GoVersion) {
 		t.Fatalf("Go TLS fixture compiler=%s buildinfo=%s", version, info.GoVersion)
 	}
 	return fixture
@@ -277,6 +291,37 @@ func TestTraceTLSGoExternalLinkEntries(t *testing.T) {
 	}
 }
 
+// GOEXPERIMENT=boringcrypto로 build하면 build 정보의 Go 버전 뒤에 실험 이름이 붙는다. 검증한 Go 버전의 BoringCrypto
+// build에서 진입 offset을 찾는지 본다. "boring-external-normal"은 외부 linker도 함께 쓴 build다.
+func TestTraceTLSGoBoringCryptoEntries(t *testing.T) {
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("BoringCrypto fixture needs a supported Linux amd64 or arm64 Go version")
+	}
+	for _, mode := range []string{"boring-normal", "boring-external-normal"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := traceTLSGoFixture(t, goCommand, mode)
+			file, err := elf.Open(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			target := traceTLSTarget{path: fixture}
+			if err := traceTLSGo(file, &target); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose} {
+				if _, ok := target.offsets[name]; !ok {
+					t.Errorf("missing entry: %s", name)
+				}
+				if name != traceTLSGoClose && len(target.goReturns[name]) == 0 {
+					t.Errorf("missing returns: %s", name)
+				}
+			}
+		})
+	}
+}
+
 func TestTraceTLSGoMissingMethodsAreClassified(t *testing.T) {
 	if !traceTLSGoVersions[traceTLSGoVersion(t, traceTLSGoCommand(t))] {
 		t.Skip("fixture compiler version is not supported")
@@ -397,6 +442,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 	}{
 		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443}, {"normal", "errors", 0},
 		{"external-normal", "", 0}, {"external-stripped", "", 0}, {"external-pie", "", 0},
+		{"boring-normal", "", 0}, {"boring-external-normal", "", 0},
 	} {
 		t.Run(tc.mode+"-"+tc.argument+"-"+fmt.Sprint(tc.port), func(t *testing.T) {
 			fixture := traceTLSGoFixture(t, goCommand, tc.mode)

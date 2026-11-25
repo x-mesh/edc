@@ -707,8 +707,8 @@ func (scanner *aiTokenScanner) walk(root string, oldest time.Time, line func(*ai
 	})
 }
 
-// readKnown은 이미 아는 파일 가운데 root 아래에 있고 읽은 뒤 자란 파일만 읽는다. 사라진 파일은 건너뛰고, 다음 전체
-// 탐색도 그 파일을 만나지 않는다.
+// readKnown은 이미 아는 파일 가운데 root 아래에 있고 읽은 뒤 자란 파일만 읽는다. 사라진 파일은 목록에서 뺀다. 지운 세션
+// 파일을 scan마다 다시 lstat하지 않는다.
 func (scanner *aiTokenScanner) readKnown(root string, oldest time.Time, line func(*aiScanFile, []byte, time.Time)) error {
 	prefix := root + string(filepath.Separator)
 	for path, file := range scanner.files {
@@ -716,6 +716,10 @@ func (scanner *aiTokenScanner) readKnown(root string, oldest time.Time, line fun
 			continue
 		}
 		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			delete(scanner.files, path)
+			continue
+		}
 		if err != nil || info.Size() == file.offset {
 			continue
 		}

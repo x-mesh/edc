@@ -95,12 +95,37 @@ const resultLabelWidth = 24
 
 func formatResultLine(result Result, color bool) string {
 	// command 오류 summary는 여러 줄일 수 있다. 목록의 한 줄을 유지하려고 첫 줄만 쓴다. 전문은 실패 상자에 남는다.
+	label, tag := resultLabel(result), resultLabelTag(result)
 	if color {
-		// 배지와 굵은 글씨의 escape는 폭이 없으므로, 칸 맞춤은 색을 입히기 전의 label로 한다.
-		label := fmt.Sprintf("%-*s", resultLabelWidth, resultLabel(result))
-		return richStatusBadge(result.Status) + "  " + richBold(label) + "  " + firstLine(result.Summary) + "\n"
+		// 배지와 굵은 글씨의 escape는 폭이 없으므로, 칸 맞춤은 색을 입히기 전의 글자 수로 한다.
+		cell, width := richBold(label), len(label)
+		if tag != "" {
+			tagColor := richCyan
+			if tag == protocolUnknown {
+				tagColor = richGray
+			}
+			cell += " " + richPaint(tag, tagColor, false)
+			width += 1 + len(tag)
+		}
+		if width < resultLabelWidth {
+			cell += strings.Repeat(" ", resultLabelWidth-width)
+		}
+		return richStatusBadge(result.Status) + "  " + cell + "  " + firstLine(result.Summary) + "\n"
 	}
-	return fmt.Sprintf(resultLineFormat, terminalStatus(result.Status, color), resultLabel(result), firstLine(result.Summary))
+	if tag != "" {
+		label += " " + tag
+	}
+	return fmt.Sprintf(resultLineFormat, terminalStatus(result.Status, color), label, firstLine(result.Summary))
+}
+
+// resultLabelTag는 label 열의 남는 자리에 붙이는 짧은 값이다. tcp.check는 판별한 프로토콜을 둔다. metrics에서 읽으므로 저장한
+// report를 다시 그려도 같게 보인다.
+func resultLabelTag(result Result) string {
+	if resultLabel(result) != "tcp.check" {
+		return ""
+	}
+	protocol, _ := result.Metrics["protocol"].(string)
+	return protocol
 }
 
 // resultPendingStatus는 실시간 화면의 대기 줄 상태 칸이다. 끝난 줄의 상태 칸과 폭을 맞춘다.
@@ -160,6 +185,12 @@ func errorRepeatsResultLine(result Result) bool {
 
 func printResultDetailWith(writer io.Writer, result Result, verbose, color, lineAbove bool) {
 	printCollectionDetail(writer, result, verbose, color)
+	// --debug 기록은 그것을 보려고 준 옵션이므로 -v 없이 보인다.
+	if len(result.Debug) > 0 {
+		for _, line := range formatDebugLines(result.Debug, color) {
+			fmt.Fprintln(writer, line)
+		}
+	}
 	if result.Status == StatusFail {
 		box := result
 		if lineAbove && errorRepeatsResultLine(result) {

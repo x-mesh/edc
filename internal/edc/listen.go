@@ -463,6 +463,45 @@ func listenCommandLine(socket listenSocket, home string) string {
 	return topPrintableText(line)
 }
 
+// listenProcessLabel은 탐색 목록의 PROCESS 칸에서 이름 뒤에 붙일 짧은 꼬리표다. node처럼 이름만으로는 무엇을 띄웠는지
+// 알 수 없는 인터프리터에만 붙인다. 스크립트 파일 이름과 작업 디렉터리의 마지막 이름만 쓰고 인자는 넣지 않는다. 인자에는
+// 가리지 못한 비밀이 남을 수 있고, 목록은 --full 없이도 보이기 때문이다.
+func listenProcessLabel(socket listenSocket, home string) string {
+	if len(socket.Args) == 0 || !listenInterpreters[strings.TrimRight(socket.Process, "0123456789.")] {
+		return ""
+	}
+	program, args := socket.Args[0], socket.Args[1:]
+	label := ""
+	switch {
+	case listenInterpreters[strings.TrimRight(filepath.Base(program), "0123456789.")]:
+		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+			return ""
+		}
+		label = filepath.Base(args[0])
+		if listenLooksSecret(label) {
+			return ""
+		}
+	// Raycast Backend처럼 argv[0]을 제목으로 바꿔 쓴 process는 그 제목이 무엇인지 알려 준다. 제목도 process가 마음대로
+	// 쓰므로, 비밀 이름이나 URL 자격 증명처럼 보이는 낱말이 있으면 보이지 않는다.
+	case !strings.HasPrefix(program, "/"):
+		if listenLooksSecret(program) {
+			return ""
+		}
+		return topPrintableText(program)
+	default:
+		return ""
+	}
+	if socket.Cwd != "" && socket.Cwd != "/" && socket.Cwd != home && !listenLooksSecret(filepath.Base(socket.Cwd)) {
+		label += " (" + filepath.Base(socket.Cwd) + ")"
+	}
+	return topPrintableText(label)
+}
+
+// listenLooksSecret은 꼬리표에 쓸 낱말에 비밀 이름이나 URL 자격 증명처럼 보이는 것이 있는지 본다.
+func listenLooksSecret(text string) bool {
+	return listenURLCredential.MatchString(text) || slices.ContainsFunc(strings.FieldsFunc(text, func(r rune) bool { return r == ' ' || r == '=' || r == ':' }), listenSecretFlag.MatchString)
+}
+
 func listenShortPath(text, home string) string {
 	if home == "" || home == "/" {
 		return text

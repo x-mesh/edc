@@ -151,7 +151,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "tcp", group: "diagnose",
 		usage: []string{
-			"edc tcp check [options] <host:port>",
+			"edc tcp check [--identify[=10s|false]] [--debug[=raw]] [options] <host:port>",
 			"edc tcp check -w[=5m] [options] <host:port>",
 			"edc tcp check --diagnose [--count N] [--interval 1s] [--peer <ssh-host>] [options] <host:port>",
 			"edc tcp expect [--from <ip|cidr>] [--duration 30s] [--until syn|handshake] [--stop-after N] [--listen] [options] <port>",
@@ -159,6 +159,9 @@ var commandDocs = []commandDoc{
 		},
 		options: []optionDoc{
 			{"-w, --wait[=5m]", "command.tcp.option.wait"},
+			{"--identify[=10s|false]", "command.tcp.option.identify"},
+			{"--debug, -vv", "command.tcp.option.debug"},
+			{"--debug=raw, -vvv", "command.tcp.option.debug_raw"},
 			{"--diagnose", "command.tcp.option.diagnose"},
 			{"--count N", "command.tcp.option.count"},
 			{"--interval 1s", "command.tcp.option.interval"},

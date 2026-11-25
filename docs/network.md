@@ -52,6 +52,90 @@ edc tcp check -w=5m 10.0.0.9:5432   # stop after 5 minutes
 
 `-w` tries again every second, and each attempt waits at most `--timeout`, 3s by default. A target that drops SYNs is then tried again every 3s, not once in 15s. In a terminal, one line shows the time, the attempt number, and the last cause. In a pipe or with `--json`, stderr gets a line only when the cause changes. When it ends, it prints the last attempt like a normal check, with the time it waited and the attempt number. The exit code is `0` when it connects, `1` when the time runs out, and `4` after Ctrl-C. Write the time limit with `=`: `-w 5m` reads `5m` as a second target, and edc tells you to write `-w=5m`. `edc alias` adds `etw` for `edc tcp check -w`.
 
+After the connect, `tcp check` also finds the protocol behind the port, and shows its name after the probe name:
+
+```text
+PASS  tcp.check goloop-p2p      10.0.0.9:7100 connected (38ms), peer 10.0.0.9
+```
+
+Add `-v` to see the detail:
+
+```bash
+edc tcp check -v 10.0.0.9:7100
+```
+
+```text
+PASS  tcp.check goloop-p2p      10.0.0.9:7100 connected (38ms)
+      protocol detail:
+        peer           10.0.0.9
+        node           hx0123456789abcdef0123456789abcdef01234567
+        secure suites  none, tls, ecdhe
+        aead suites    chacha, aes128, aes256
+        basis          goloop SecureResponse
+```
+
+With `-v`, the peer address moves from the result line to the detail, with the basis for the match. Add `--identify=false` to skip the protocol check.
+
+The port number does not decide the protocol. edc finds the protocol from the reply, so a service on an unusual port is found too. To find the protocol, edc opens a new connection for each step and stops at the first match:
+
+1. Read for 500ms and send nothing. This finds SSH, SMTP, FTP, POP3, IMAP, VNC, MySQL, and NATS from their first bytes. A plaintext HTTP/2 server such as a grpc-go server sends a `SETTINGS` frame first. Then edc goes to the HTTP/2 step at once.
+2. Send a Redis `PING`. A Redis server answers `+PONG`, or an error such as `-NOAUTH` when it needs a password.
+3. Send the Memcached `version` command.
+4. Send the PostgreSQL `SSLRequest`. A PostgreSQL server or PgBouncer answers with one byte, `S` or `N`.
+5. Start a TLS handshake, then find the protocol inside TLS:
+   - With ALPN `h2`, edc sends one gRPC health check request. A gRPC server answers with `grpc-status`, and other servers show as `https`. This request shows in the access log of the server as a `POST`.
+   - With ALPN `http/1.1`, edc sends `GET /` and shows `https`.
+   - With no ALPN, edc reads for 300ms for a greeting (`imaps`, `pop3s`, `smtps`), then sends a Redis `PING`. A Redis server shows as `rediss`, and an HTTPS server answers `400` and shows as `https`. If neither answers, edc sends `GET /` on a new connection. If nothing matches, the result shows `tls`.
+   - edc does not check the certificate here. Use `edc tls check` for that.
+6. Send the MongoDB `hello` command.
+7. Send `GET / HTTP/1.0` with no `Host:` header. The result shows the status line and the `Server` header, and `ClickHouse` when the server sends `X-ClickHouse-` headers. If the server waits and sends nothing, edc sends the request again with a `Host:` header. If the port is an HTTP port, the first request has the `Host:` header. The native port of ClickHouse answers this request with `Port 9000 is for clickhouse-client program`, and the result shows `clickhouse`.
+8. Send the first goloop P2P authentication packet. A goloop node answers with its node address. edc then asks two more times, and lists the secure suites (`none`, `tls`, `ecdhe`) and the AEAD suites (`chacha`, `aes128`, `aes256`) that the node accepts. These lines show with `-v`. edc does not sign, so it does not join the node as a peer, and it cannot read the node role. A goloop node limits new connections from one address in each second. If the node closes the connection with no reply, edc tries again at most two times, 1s apart, and `--json` adds `protocol_retried`.
+9. Send the HTTP/2 connection preface with no TLS (h2c), then one gRPC health check request. A plaintext gRPC server shows as `grpc`, and another HTTP/2 server shows as `h2c`.
+10. Send the AMQP 0-9-1 protocol header. A broker answers with `Connection.Start`, and the result shows its product and version, for example `RabbitMQ 4.4.1`. A broker that sends back its own protocol header shows the version it offers.
+11. Send a Kafka `ApiVersions` request. A broker answers before any login.
+12. Send an MQTT `CONNECT` with no user name and a new client ID, for example `edc-3db18691`. The result shows the `CONNACK` code, for example `accepted` or `not authorized`. If the broker accepts, a client session opens, and edc sends `DISCONNECT` at once.
+13. Send a Cassandra `OPTIONS` request. The result shows the CQL version. ScyllaDB answers the same request.
+
+The order keeps a probe away from a service that it can disturb. Redis logs `Possible SECURITY ATTACK detected` when it gets an HTTP `Host:` header. Thus the Redis `PING` goes before the HTTP request, and the first HTTP request has no `Host:` header. If the Redis step misses a Redis server, Redis answers the HTTP request with a `GET` command error, and edc finds Redis from that error. A server-first service that gets a probe still sends its greeting, and edc finds it from that greeting. The steps after goloop send fewer than 30 bytes, and a goloop node waits for 30 bytes. Thus they go after goloop, so they do not stop a goloop node on an unusual port. The Cassandra step goes after the Kafka step, because Kafka reads the first 4 bytes of the Cassandra request as a size of about 64MB.
+
+If the port is a usual port for a step, that step goes first, and edc does not wait for a greeting. For example, port 6379 starts with Redis, 5432 with PostgreSQL, 27017 with MongoDB, 443 with TLS, 80, 8080, 8123, and 9000 with HTTP, 7100 with goloop, 50051 with h2c, 5672 with AMQP, 9092 with Kafka, 1883 with MQTT, and 9042 with Cassandra. The port only sets the order. If an SSH server listens on 6379, the result still shows `ssh`.
+
+A step that the port points to waits at most 1s. Other steps wait for a time that edc calculates from the connect time, from 200ms to 1s. The HTTP step waits at least 500ms. On one host with the services on usual ports, a check took about 50ms. With the same services on unusual ports, it took about 0.55s for Redis, PostgreSQL, Memcached, nginx, RabbitMQ, MQTT, and Cassandra, 0.75s for the ClickHouse native port, 0.96s for Kafka, 1.16s for the ClickHouse HTTP interface, and 1.2s for MongoDB and goloop. The whole check stops after 3s. A server that accepts the connection and never answers reaches this limit. Then the result shows `unknown`, `-v` shows `stopped`, and `--json` adds `protocol_timed_out`. If no probe got a reply, `-v` shows `replies` and `--json` adds `protocol_no_reply`. If more time can help, a `next` line shows the command again with `--identify=10s`. With a time such as `--identify=10s`, the check stops at that time, and each step waits 1s, so a server that answers slowly is found too. A server that sends bytes that edc does not know shows `unknown` with no `next` line, because more time does not change the result. When no step matches, the result shows `unknown`. If the server sent bytes, `-v` shows the first bytes. The protocol does not change the status or the exit code. The target sees short connections that end before any login, and its log can show them as errors. For example, PostgreSQL on an unusual port logs `invalid length of startup packet`, and an HTTP server logs each probe as a request with status 400. On unusual ports, RabbitMQ logs `client did not start with AMQP protocol header`, Kafka logs `InvalidReceiveException`, Cassandra logs `Protocol exception`, and Mosquitto logs `protocol error` for the probes of the earlier steps. On its usual port, RabbitMQ logs `client unexpectedly closed TCP connection`. If that is a problem, add `--identify=false`. `--json` adds the `protocol`, `protocol_detail`, and `protocol_basis` metrics. For goloop, it also adds `goloop_node`, `goloop_secure_suites`, and `goloop_aead_suites`, and `goloop_unchecked` when a reply did not come. `-w` and `--diagnose` do not check the protocol, and they do not accept `--identify`. `edc doctor` does not check the protocol.
+
+Add `--debug` (or `-vv`) to see what happened, step by step:
+
+```text
+$ edc tcp check --debug 127.0.0.1:5672
+PASS  tcp.check amqp            127.0.0.1:5672 connected (0s), peer 127.0.0.1
+      debug:
+         +0.0ms  connect     127.0.0.1:59434 → 127.0.0.1:5672 · 0.3ms
+                 tcp         rtt 0.1ms · rto 201ms · mss 32741 · SACK on · timestamps on · window scale on · ECN off · retransmits 0
+                 identify    port 5672 points to amqp: send it first, no banner wait
+         +2.8ms  amqp        matched amqp · 1.9ms
+                               → protocol header AMQP 0-9-1 · 8 B
+                               ← Connection.Start · AMQP 0-9 · 556 B in 1.1ms
+                                 product RabbitMQ · version 4.4.1 · platform Erlang/OTP 29.1.3 · cluster_name rabbit@5d4470206a51
+                                 mechanisms PLAIN AMQPLAIN ANONYMOUS · locales en_US
+```
+
+The lines show:
+
+- `dns`: the addresses of the name. edc looks up the name one more time for this line, because the connect looks it up inside Go.
+- `connect`: the local and remote address, and the connect time.
+- `tcp`: the values that the kernel agreed on in the handshake: RTT, RTO, MSS, SACK, timestamps, window scale, ECN, and retransmits. On Linux, the window scale shows only `on` or `off`. If the connect takes 900ms or more, a line says that a SYN retransmit is likely. This comes from the time only.
+- One line for each step. The step that matched opens up. `→` marks what edc sent and `←` marks what it received, in the words of the protocol. Other steps show what edc sent and what the server did: `waited`, `closed by the server`, `reset by the server`, or a reply that matched nothing.
+- A goloop node gets three connections, one for each secure suite. edc shows the packet once, and then one row for each connection: the suite that edc proposed and the suite that the node chose. `--debug=raw` shows each connection in full.
+- `stopped`: the steps that the time limit cut.
+- `result`: why the result is what it is. The line shows when the protocol is unknown, or when edc tried more than one step. For one matched step, the step line already says it.
+
+On a color terminal, the matched step is bold green. `→` is blue and `←` is green. Steps that did not match are gray, and a closed or reset connection is yellow. The text has the same meaning without color.
+
+edc cannot see the SYN and SYN-ACK packets without root. The `tcp` line shows what the handshake agreed on. Use `edc tcp check --diagnose` as root on Linux to see the packets.
+
+Inside TLS, the records are encrypted, so edc shows the TLS version, the cipher, ALPN, and the certificate, and then the plain exchange inside TLS. edc does not verify the certificate here. Values from the server, such as `Set-Cookie`, authorization headers, and the MySQL salt, are hidden. `--redact` also hides the addresses in these lines.
+
+`--debug=raw` (or `-vvv`) also shows the bytes of each probe as hex, up to 256 bytes for each direction. For goloop, MongoDB, AMQP, and Cassandra, the hex is in parts, for example `header`, `payload (msgpack)`, and `footer`. With `--json`, the lines are in `debug`.
+
 `edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.

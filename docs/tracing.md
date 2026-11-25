@@ -324,7 +324,7 @@ Use `--raw` to print JSONL events as they arrive. Use `--json` to write the conn
 
 ## trace why
 
-Use `trace why` on Linux to find where the time of an HTTP request goes. One command records `trace http`, `trace dns`, and `trace tcp` together. When the traces stop, edc divides the latency of each request into the calls that the server made for that request.
+Use `trace why` on Linux to find where the time of an HTTP request goes. One command records `trace http` and `trace dns` together. When the traces stop, edc divides the latency of each request into the calls that the server made for that request.
 
 ```bash
 sudo edc trace why --duration 30s
@@ -358,7 +358,7 @@ The rows below a path are the calls of those requests: `dns` queries, `http` req
 
 The kernel records do not connect a call to a request. edc connects them with the process ID and the time. A call belongs to a request if the same process made the call, and the call started and ended while the server handled that request.
 
-If one process handles several requests at the same time, a call can occur while the process handles two or more requests. edc adds that call to no request. The `(ambiguous)` row shows the request time that only those calls cover.
+If one process handles several requests at the same time, a call can occur while the process handles two or more requests. edc adds that call to no request. The `(ambiguous)` row shows the request time that only those calls cover. The `maybe` rows below it show the names of those calls. `COUNT` is the number of calls that happened while the request ran.
 
 ```text
 PROCESS  REQUEST / CALL                 COUNT  AVG      MAX      SHARE
@@ -381,9 +381,11 @@ Use these options:
 
 - `--with` adds database traces. The names are `mysql`, `postgres`, and `redis`. `--with mysql:13306` sets the server port.
 - `--port` keeps only the requests that the server on that local port received. edc records all HTTP connections, so the requests that this server sent stay visible.
-- `--process` limits each trace to that process. `trace why` records all HTTP traffic of the host. On a busy host, use `--process`.
+- `--process` limits each trace to the process with that name. The name can have 15 characters or fewer. For `trace http` and the database traces, the kernel drops the events of other processes, so a busy host sends fewer events. In one test, another process sent 31,000 requests each second. With `--process`, the CPU time of the trace fell from 25.8 s to 17.2 s in 20 s, and the lost events fell from 17% to 0%. `trace dns` and `trace tcp` filter after the kernel sends the events.
 - `--out` sets the directory for the recordings. The default is `edc-why-<time>` in the current directory. edc does not write into a path that exists.
 - If you do not use `--duration`, press Ctrl-C to stop the traces.
+
+`trace why` adds load to the host, because `trace http` sends an event for each HTTP message. In one test, a Go server on two CPUs handled 45,900 small requests each second. With `trace why`, it handled 39,300 requests each second (14% fewer), and the two traces used about 1.3 CPUs. The p99 latency changed from 4.2 ms to 4.6 ms. Requests that do more work than this test request cause a smaller change. To limit the load, record for 10 to 20 seconds. At 40,000 requests each second, `trace http` lost 14% of its events, and the output shows the count as `Lost events`. Use a lower request rate for a complete recording.
 
 Each trace starts at a different time. `trace http` starts some seconds later, because it looks for TLS libraries first. edc compares only the time range that all the traces recorded. The first line of the output shows that range and the full recorded time. Send the load until the traces stop.
 
@@ -939,7 +941,7 @@ An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with 
 
 Go TLS uses the Go function table and probes at function returns.
 
-edc supports Go 1.21.5, 1.23.4, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.4, 1.26.5, 1.26.7, 1.26.8, 1.26.10, 1.27.1, 1.27.3, and 1.27.4.
+edc supports Go 1.21.5, 1.21.7, 1.23.4, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.4, 1.26.5, 1.26.7, 1.26.8, 1.26.10, 1.27.1, 1.27.3, and 1.27.4.
 
 Live capture tests pass on Linux amd64 for these versions. Metadata tests cover Linux amd64 and arm64. Native arm64 capture remains unverified.
 

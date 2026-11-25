@@ -506,7 +506,14 @@ type aiTokenScanner struct {
 	seconds map[string]map[int64][]aiStampedUsage
 	// seen은 Claude 응답 하나가 여러 줄에 기록되는 것을 한 번만 센다.
 	seen map[string]aiSeenMessage
+	// walked는 마지막으로 디렉터리를 모두 훑은 시각이다. 그 사이의 scan은 이미 아는 파일의 크기만 본다.
+	walked time.Time
 }
+
+// aiWalkInterval은 새 세션 파일을 찾으려고 디렉터리를 모두 훑는 간격이다. 기록 디렉터리에는 파일 수천 개와 디렉터리
+// 수백 개가 쌓이는데 하루 안에 바뀌는 파일은 수십 개라, scan마다 훑으면 탐색이 top의 CPU 대부분을 차지했다. 새로 시작한
+// 세션의 token은 이 간격만큼 늦게 잡힐 수 있다.
+const aiWalkInterval = 15 * time.Second
 
 func newAITokenScanner(claudeDir, codexDir string) *aiTokenScanner {
 	return &aiTokenScanner{
@@ -612,6 +619,8 @@ func (snapshot aiUsageSnapshot) rows(end time.Time, size time.Duration, count in
 
 func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 	oldest := now.Add(-aiRetention)
+	// 시계가 뒤로 가도 훑도록 차이의 절댓값을 본다.
+	walk := scanner.walked.IsZero() || now.Sub(scanner.walked).Abs() >= aiWalkInterval
 	var errs []string
 	failed := map[string]bool{}
 	for _, source := range []struct {
@@ -621,10 +630,20 @@ func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 		{"claude", filepath.Join(scanner.claudeDir, "projects"), scanner.claudeLine},
 		{"codex", filepath.Join(scanner.codexDir, "sessions"), scanner.codexLine},
 	} {
-		if err := scanner.walk(source.dir, oldest, source.line); err != nil {
+		var err error
+		if walk {
+			err = scanner.walk(source.dir, oldest, source.line)
+		} else {
+			err = scanner.readKnown(source.dir, oldest, source.line)
+		}
+		if err != nil {
 			errs = append(errs, source.provider+": "+err.Error())
 			failed[source.provider] = true
 		}
+	}
+	// 탐색이 실패하면 다음 scan도 다시 훑는다. 아는 파일만 읽으면 그 오류가 다음 탐색까지 보이지 않는다.
+	if walk && len(errs) == 0 {
+		scanner.walked = now
 	}
 	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Seconds: map[string]map[int64][]aiStampedUsage{}, Failed: failed, Err: strings.Join(errs, " · ")}
 	for provider, seconds := range scanner.seconds {
@@ -667,18 +686,49 @@ func (scanner *aiTokenScanner) walk(root string, oldest time.Time, line func(*ai
 		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".jsonl") {
 			return err
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
 		file, tracked := scanner.files[path]
 		if !tracked {
-			info, err := entry.Info()
 			// 기록이 멈춘 파일은 보관 구간에 더할 줄이 없다.
-			if err != nil || info.ModTime().Before(oldest) {
+			if info.ModTime().Before(oldest) {
 				return nil
 			}
 			file = &aiScanFile{}
 			scanner.files[path] = file
 		}
+		// 읽은 뒤 자라지 않은 파일은 열지 않는다. 세션 파일은 수천 개인데 2초마다 대부분 그대로라, 열고 fstat하고 닫는 비용이
+		// 탐색의 대부분이었다. 크기가 줄었으면 readFile이 처음부터 다시 읽는다.
+		if info.Size() == file.offset {
+			return nil
+		}
 		return scanner.readFile(path, file, oldest, line)
 	})
+}
+
+// readKnown은 이미 아는 파일 가운데 root 아래에 있고 읽은 뒤 자란 파일만 읽는다. 사라진 파일은 목록에서 뺀다. 지운 세션
+// 파일을 scan마다 다시 lstat하지 않는다.
+func (scanner *aiTokenScanner) readKnown(root string, oldest time.Time, line func(*aiScanFile, []byte, time.Time)) error {
+	prefix := root + string(filepath.Separator)
+	for path, file := range scanner.files {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			delete(scanner.files, path)
+			continue
+		}
+		if err != nil || info.Size() == file.offset {
+			continue
+		}
+		if err := scanner.readFile(path, file, oldest, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readFile은 줄바꿈으로 끝난 줄만 읽는다. 기록 중인 마지막 줄은 다음 scan에서 온전히 읽는다.
@@ -699,25 +749,35 @@ func (scanner *aiTokenScanner) readFile(path string, file *aiScanFile, oldest ti
 		// 파일이 잘렸거나 새로 쓰였다. 처음부터 다시 읽는다.
 		*file = aiScanFile{}
 	}
-	// io.ReadAll은 버퍼를 두 배씩 늘리며 복사하고 지운다. 크기를 아는 파일이라 한 번에 잡는다.
-	data := make([]byte, info.Size()-file.offset)
-	read, err := handle.ReadAt(data, file.offset)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
+	// 처음 추적하는 세션 파일은 수백 MB일 수 있다. 한 번에 읽으면 시작할 때 그만큼 heap을 잡고, runtime이 그 메모리를 곧바로
+	// 돌려주지 않아 RSS가 수백 MB로 남는다. 버퍼 크기만큼씩 읽고, 버퍼보다 긴 줄만 따로 이어 붙인다.
+	remaining := info.Size() - file.offset
+	reader := bufio.NewReaderSize(io.NewSectionReader(handle, file.offset, remaining), int(min(remaining, aiReadChunk)))
+	var long []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			long = append(long, chunk...)
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		record := chunk
+		if long != nil {
+			record = append(long, chunk...)
+		}
+		line(file, record[:len(record)-1], oldest)
+		file.offset += int64(len(record))
+		long = nil
 	}
-	data = data[:read]
-	end := bytes.LastIndexByte(data, '\n')
-	if end < 0 {
-		return nil
-	}
-	for rest := data[:end+1]; len(rest) > 0; {
-		cut := bytes.IndexByte(rest, '\n')
-		line(file, rest[:cut], oldest)
-		rest = rest[cut+1:]
-	}
-	file.offset += int64(end + 1)
-	return nil
 }
+
+// aiReadChunk는 세션 파일을 읽는 버퍼 크기다.
+const aiReadChunk = 1 << 20
 
 func (scanner *aiTokenScanner) add(provider string, at, oldest time.Time, usage aiUsage) {
 	if usage.empty() || at.Before(oldest) {

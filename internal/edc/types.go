@@ -34,6 +34,16 @@ type Result struct {
 	Evidence []Evidence             `json:"evidence,omitempty"`
 	Warnings []string               `json:"warnings,omitempty"`
 	Error    *DiagnosticError       `json:"error,omitempty"`
+	// Debug는 tcp check --debug가 남기는 과정 기록이다. 결과 줄 아래에 그리고, JSON에도 그대로 남긴다.
+	Debug []DebugLine `json:"debug,omitempty"`
+}
+
+// DebugLine은 --debug 기록의 한 줄이다. AtMS는 명령 시작부터의 경과이고, 0보다 작으면 시각 없이 그린다. Depth는 들여쓰기 단계다.
+type DebugLine struct {
+	AtMS  float64 `json:"at_ms"`
+	Kind  string  `json:"kind"`
+	Depth int     `json:"depth,omitempty"`
+	Text  string  `json:"text"`
 }
 
 type ToolInfo struct {

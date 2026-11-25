@@ -322,6 +322,8 @@ const (
 	captureEventsVarMysqlPort                  = "mysql_port"
 	captureEventsVarMysqlResponseSize          = "mysql_response_size"
 	captureEventsVarMysqlTailSize              = "mysql_tail_size"
+	captureEventsVarProcessFilterHigh          = "process_filter_high"
+	captureEventsVarProcessFilterLow           = "process_filter_low"
 	captureEventsVarTcpLengthFallback          = "tcp_length_fallback"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
@@ -481,6 +483,8 @@ type captureEventsVariableSpecs struct {
 	MysqlPort          *ebpf.VariableSpec `ebpf:"mysql_port"`
 	MysqlResponseSize  *ebpf.VariableSpec `ebpf:"mysql_response_size"`
 	MysqlTailSize      *ebpf.VariableSpec `ebpf:"mysql_tail_size"`
+	ProcessFilterHigh  *ebpf.VariableSpec `ebpf:"process_filter_high"`
+	ProcessFilterLow   *ebpf.VariableSpec `ebpf:"process_filter_low"`
 	TcpLengthFallback  *ebpf.VariableSpec `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
@@ -586,6 +590,8 @@ type captureEventsVariables struct {
 	MysqlPort          *ebpf.Variable `ebpf:"mysql_port"`
 	MysqlResponseSize  *ebpf.Variable `ebpf:"mysql_response_size"`
 	MysqlTailSize      *ebpf.Variable `ebpf:"mysql_tail_size"`
+	ProcessFilterHigh  *ebpf.Variable `ebpf:"process_filter_high"`
+	ProcessFilterLow   *ebpf.Variable `ebpf:"process_filter_low"`
 	TcpLengthFallback  *ebpf.Variable `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`

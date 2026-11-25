@@ -53,6 +53,9 @@ command:
       interval: "time between attempts (default 1s); implies --diagnose"
       peer: "run tcp expect on this host over ssh at the same time and join both results; implies --diagnose"
       wait: "try again every second until it connects (attempt timeout --timeout, default 3s); -w=5m stops after 5 minutes"
+      identify: "on by default: after the connect, send a few probes to name the protocol (banners such as SSH, MySQL and NATS, Redis, Memcached, PostgreSQL, TLS and the protocol inside it, MongoDB, HTTP and ClickHouse, goloop P2P, h2c and gRPC, AMQP, Kafka, MQTT, Cassandra; a usual port tries its protocol first), and show the detail with -v; it stops after 3s, and --identify=10s waits longer and gives each probe 1s; the target sees short connections that end before any login; --identify=false skips it"
+      debug: "show what happened: the name lookup, the connect, the TCP values the kernel agreed on, and each probe with what it sent and received, decoded for the protocol; -vv is the same"
+      debug_raw: "--debug=raw (or -vvv) also shows the raw bytes of each probe as hex"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
       until: "expect: stop 1s after the first SYN (syn), so the reply is recorded, or at the first completed handshake (handshake)"
@@ -404,8 +407,9 @@ command:
       full: "show the working directory and the command line below each row"
     notes:
       - "By default, listen opens a browser in an interactive terminal and prints once in pipes or TERM=dumb. -B/--no-browse always prints once. Configure auto/always/never with edc setup listen.browse; NO_COLOR only disables colors."
-      - "In browse: arrows select, Enter reads socket and process details, l hides or shows loopback rows, t opens edc top for the process, x shows a CPU trace command, r refreshes, Esc returns, q quits. Requires a 48x8 interactive terminal; NO_COLOR keeps navigation without colors."
+      - "In browse: arrows select, Enter reads socket and process details, / filters rows by text (Esc clears), l hides or shows loopback rows, t opens edc top for the process, x shows a CPU trace command, r refreshes, Esc returns, q quits. Requires a 48x8 interactive terminal; NO_COLOR keeps navigation without colors."
       - "A row can hold several PIDs. In browse, p selects the next PID of the row, and t and x use the selected PID."
+      - "In browse, S asks for confirmation and then sends SIGTERM to the selected PID. The default answer is no. S is not available with --redact or for ports that a container publishes."
       - "Without colors, the browse list shows the binding scope in a SCOPE column."
       - "--browse cannot be combined with --watch, --json, --interval, or --duration."
       - "It shows TCP LISTEN sockets and bound UDP sockets."
@@ -678,13 +682,13 @@ command:
       lock:
         - "trace lock shows kernel lock contention and futex waits by address."
       why:
-        - "trace why records http, dns, and tcp together on Linux, then shows where the time of each HTTP request went."
+        - "trace why records http and dns together on Linux, then shows where the time of each HTTP request went."
         - "Each row is a process and a request path that a local server received. The rows below it are the calls of that request: DNS queries, outgoing HTTP requests, and database commands."
         - "edc assigns a call to a request when the same process made the call and the call started and ended during that request."
         - "(ambiguous) is the request time that only calls of an unknown request cover. Such a call occurred during several requests of one process, so edc adds it to no request. A server that handles many requests in one process has more of it."
         - "self is the time of the request that no assigned call covers."
         - "--with adds database traces, for example --with mysql,redis:6380. --port keeps only the requests to that local server port."
-        - "--process limits each trace to that process. Use it on a busy host."
+        - "--process limits each trace to the process with that name (15 characters or fewer). On a busy host, it lowers the load of trace http and the database traces. A recording of 10 to 20 seconds limits the load."
         - "edc compares only the time range that all the traces recorded. If a trace fails, edc stops and prints no breakdown."
         - "The recordings stay in a directory. edc trace show <dir> prints the same breakdown again. HTTP payload is not recorded."
       show:

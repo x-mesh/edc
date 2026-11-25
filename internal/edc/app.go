@@ -313,6 +313,11 @@ func runTCP(args []string, version string) int {
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
+	// --identify와 --debug는 보통 check에만 있다. -w나 diagnose로 넘어가면 그쪽 parse가 모르는 flag라고만 해서 이유를 따로 알린다.
+	case (hasValueFlag(args[1:], "identify") || hasValueFlag(args[1:], "debug") || hasBoolFlag(args[1:], "vv") || hasBoolFlag(args[1:], "vvv")) &&
+		(tcpWaitRequested(args[1:]) || hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer")):
+		fmt.Fprintln(os.Stderr, T("cli.error.tcp_identify_conflict"))
+		return 2
 	// -w는 연결될 때까지 기다린다. --count, --interval과 함께 쓰면 그 flag를 모르는 wait 쪽 parse가 오류를 낸다.
 	case tcpWaitRequested(args[1:]):
 		return runTCPWait(args[1:], version)
@@ -320,11 +325,28 @@ func runTCP(args []string, version string) int {
 	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer"):
 		return runTCPDiagnose(args[1:], version)
 	}
-	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", T("cli.prompt.host_port"), func(ctx context.Context, target string) Result {
+	identify, debug, verbose := identifyFlag{on: true}, debugFlag{}, false
+	var debugShort, debugRaw bool
+	flags := probeFlags{prompt: T("cli.prompt.host_port"), bind: func(set *flag.FlagSet) {
+		set.Var(&identify, "identify", T("command.tcp.option.identify"))
+		set.Var(&debug, "debug", T("command.tcp.option.debug"))
+		set.BoolVar(&debugShort, "vv", false, T("command.tcp.option.debug"))
+		set.BoolVar(&debugRaw, "vvv", false, T("command.tcp.option.debug_raw"))
+	}, parsed: func(options commonOptions) error {
+		verbose = options.verbose
+		if debugShort {
+			debug.on = true
+		}
+		if debugRaw {
+			debug = debugFlag{on: true, raw: true}
+		}
+		return nil
+	}}
+	return runTargetProbeWithFlags(args[1:], version, "tcp check", "tcp.check", flags, func(ctx context.Context, target string) Result {
 		if _, _, err := net.SplitHostPort(target); err != nil {
 			return resultFromError("tcp.check", time.Now(), "input", errors.New(T("cli.error.host_port_required", target)))
 		}
-		return probeTCP(ctx, target)
+		return checkTCPWithProtocol(ctx, target, identify, debug, verbose)
 	})
 }
 

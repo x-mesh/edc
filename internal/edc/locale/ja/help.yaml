@@ -53,6 +53,9 @@ command:
       interval: "試行間隔 (既定 1s)、指定すると --diagnose で実行"
       peer: "この host で ssh 経由で tcp expect を同時に実行し、両方の結果を結合します。指定すると --diagnose で実行"
       wait: "接続できるまで 1 秒ごとに再試行 (1 回の試行は --timeout、既定 3s)。-w=5m なら 5 分後に停止"
+      identify: "既定で有効: 接続後にいくつかの probe を送ってプロトコルを判別 (SSH・MySQL・NATS などのバナー、Redis、Memcached、PostgreSQL、TLS とその内側のプロトコル、MongoDB、HTTP と ClickHouse、goloop P2P、h2c と gRPC、AMQP、Kafka、MQTT、Cassandra。よく使う port はそのプロトコルから試す)、詳細は -v で表示。3 秒で止まり、--identify=10s なら長く待って probe ごとに 1 秒待つ。相手にはログイン前に終わる短い接続が残る。--identify=false でスキップ"
+      debug: "過程を表示: 名前解決、接続、カーネルが合意した TCP の値、probe ごとに送ったものと受け取ったものをプロトコルに合わせて解釈。-vv と同じ"
+      debug_raw: "--debug=raw (または -vvv) は probe ごとの生のバイトも hex で表示"
       from: "expect: このアドレスや範囲から来た packet だけを数えます"
       duration: "expect: 待つ時間、省略すると Ctrl-C まで"
       until: "expect: 最初の SYN (syn) を見た 1 秒後 (応答も記録するため) か、最初の handshake 完了 (handshake) で止まります"
@@ -404,8 +407,9 @@ command:
       full: "各行の下に作業ディレクトリとコマンドラインを表示します"
     notes:
       - "既定では対話型端末で一覧を開き、パイプやTERM=dumbでは一度表示します。-B/--no-browseは一度表示します。edc setup listen.browseでauto/always/neverを設定でき、NO_COLORは色のみ無効にします。"
-      - "一覧操作: 矢印で選択、Enterでソケット・プロセス詳細、lでloopback行の表示切替、tでそのプロセスをtopで開く、xでCPUのtraceコマンドを表示、rで更新、Escで戻る、qで終了。48列8行の対話型端末が必要です。NO_COLORでも色なしで操作できます。"
+      - "一覧操作: 矢印で選択、Enterでソケット・プロセス詳細、/で文字による行の絞り込み(Escで解除)、lでloopback行の表示切替、tでそのプロセスをtopで開く、xでCPUのtraceコマンドを表示、rで更新、Escで戻る、qで終了。48列8行の対話型端末が必要です。NO_COLORでも色なしで操作できます。"
       - "1行に複数のPIDが入ることがあります。一覧ではpでその行の次のPIDを選び、tとxは選んだPIDを使います。"
+      - "一覧ではSで確認後、選んだPIDにSIGTERMを送ります。既定の答えはいいえです。--redactとコンテナが公開したポートでは使えません。"
       - "色がない場合、一覧はバインド範囲をSCOPE列に文字で表示します。"
       - "--browseは--watch、--json、--interval、--durationと併用できません。"
       - "既定は LISTEN 状態の TCP socket とバインドされた UDP socket です。"
@@ -678,13 +682,13 @@ command:
       lock:
         - "trace lock は kernel lock の競合とアドレスごとの futex 待ちを表示します。"
       why:
-        - "trace why は Linux で http、dns、tcp を同時に記録し、HTTP リクエストごとに時間の内訳を表示します。"
+        - "trace why は Linux で http と dns を同時に記録し、HTTP リクエストごとに時間の内訳を表示します。"
         - "1 行はローカルの server が受けたリクエストの process と path です。その下の行はそのリクエストの呼び出しです: DNS クエリ、外向きの HTTP リクエスト、DB コマンド。"
         - "同じ process の呼び出しで、そのリクエストの処理中に始まって終わったものを、そのリクエストの呼び出しとします。"
         - "(ambiguous) は、どのリクエストのものか判別できない呼び出しだけが占めるリクエスト時間です。その呼び出しは 1 つの process の複数のリクエストの処理中に起きたため、どのリクエストにも加えません。1 つの process が多くのリクエストを同時に処理するほど増えます。"
         - "self はリクエストの時間のうち、どの呼び出しにも含まれない時間です。"
         - "--with で DB trace を追加します。例: --with mysql,redis:6380。--port はそのローカル server port へのリクエストだけを残します。"
-        - "--process はすべての trace をその process に限定します。負荷の高い host で使ってください。"
+        - "--process はすべての trace をその名前（15 文字以下）の process に限定します。負荷の高い host で trace http と DB trace の負荷を下げます。記録は 10〜20 秒にしてください。"
         - "すべての trace が記録した時間範囲だけを比較します。trace が 1 つ失敗すると中断し、内訳を出しません。"
         - "記録はディレクトリに残ります。edc trace show <dir> で同じ内訳をもう一度表示します。HTTP payload は記録しません。"
       show:

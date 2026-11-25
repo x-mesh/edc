@@ -633,6 +633,9 @@ type captureEventFilter struct {
 	mysqlResponseSize uint32
 	// mysqlTailSize가 0이 아니면 응답 방향에서 앞부분보다 긴 쓰기나 읽기의 끝 이 byte 수를 끝부분 레코드로 더 읽는다.
 	mysqlTailSize uint32
+	// processLow와 processHigh는 --process 이름을 comm 배치(16 byte, 0으로 채움)로 나눈 값이다. 이름이 comm보다 길면 어떤 process와도
+	// 같지 않으므로 사용자 공간 필터만 쓴다.
+	processLow, processHigh uint64
 	// allTCPDestroys는 끝난 socket을 port와 관계없이 알린다. 서버 쪽 socket은 닫힐 때 port를 놓아 port로 고를 수 없다.
 	allTCPDestroys bool
 	// clickHouseHTTPPort가 0이 아니면 trace clickhouse가 이 port의 socket도 mysqlPort와 같은 경로로 읽는다.
@@ -641,8 +644,20 @@ type captureEventFilter struct {
 	tlsPlaintext bool
 }
 
+// captureProcessFilter는 --process 이름을 BPF가 comm과 비교할 두 값으로 바꾼다. comm은 NUL을 포함해 16 byte이므로 15 byte를 넘는
+// 이름은 어떤 process와도 같지 않다. 그때는 BPF 필터를 켜지 않고 사용자 공간 필터가 모두 거른다.
+func captureProcessFilter(name string) (low, high uint64) {
+	if name == "" || len(name) > 15 || strings.IndexByte(name, 0) >= 0 {
+		return 0, 0
+	}
+	var comm [16]byte
+	copy(comm[:], name)
+	return binary.NativeEndian.Uint64(comm[:8]), binary.NativeEndian.Uint64(comm[8:])
+}
+
 func captureEventFilterFor(scope traceScope) captureEventFilter {
 	filter := captureEventFilter{udpEvents: true, dnsSent: true}
+	filter.processLow, filter.processHigh = captureProcessFilter(scope.process)
 	switch scope.protocol {
 	case "tcp":
 		// skb_consume_udp는 target 이름을 지을 DNS 응답만 보낸다.
@@ -703,7 +718,7 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		return 0
 	}
 	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort), variables.TcpLengthFallback.Set(flag(tcpLengthFallback)),
-		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort), variables.MysqlPort.Set(filter.mysqlPort), variables.MysqlResponseSize.Set(filter.mysqlResponseSize), variables.MysqlTailSize.Set(filter.mysqlTailSize), variables.EmitAllTcpDestroys.Set(flag(filter.allTCPDestroys)), variables.ClickhouseHttpPort.Set(filter.clickHouseHTTPPort)); err != nil {
+		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort), variables.MysqlPort.Set(filter.mysqlPort), variables.MysqlResponseSize.Set(filter.mysqlResponseSize), variables.MysqlTailSize.Set(filter.mysqlTailSize), variables.EmitAllTcpDestroys.Set(flag(filter.allTCPDestroys)), variables.ClickhouseHttpPort.Set(filter.clickHouseHTTPPort), variables.ProcessFilterLow.Set(filter.processLow), variables.ProcessFilterHigh.Set(filter.processHigh)); err != nil {
 		return err
 	}
 	if filter.httpPayload {
@@ -1384,12 +1399,12 @@ func (raw captureEventRaw) event(clockOffset int64) captureEvent {
 
 func formatCaptureAddress(family uint16, address [16]byte, port uint16) string {
 	if family == 2 {
-		return fmt.Sprintf("%d.%d.%d.%d:%d", address[0], address[1], address[2], address[3], port)
+		return netip.AddrPortFrom(netip.AddrFrom4([4]byte(address[:4])), port).String()
 	}
 	if family == 10 {
 		// dual-stack socket의 IPv4 상대는 ::ffff:a.b.c.d로 담겨 온다. IPv4로 써야 같은 상대가 한 주소로 보인다.
 		if netip.AddrFrom16(address).Is4In6() {
-			return fmt.Sprintf("%d.%d.%d.%d:%d", address[12], address[13], address[14], address[15], port)
+			return netip.AddrPortFrom(netip.AddrFrom4([4]byte(address[12:16])), port).String()
 		}
 		// RFC 5952 축약형으로 쓴다. 풀어 쓰면 ::1이 0:0:0:0:0:0:0:1이 되어 읽기 어렵다.
 		return netip.AddrPortFrom(netip.AddrFrom16(address), port).String()

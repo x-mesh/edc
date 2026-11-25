@@ -17,13 +17,14 @@ const (
 	traceTLSGoWrite      = "crypto/tls.(*Conn).Write"
 	traceTLSGoClose      = "crypto/tls.(*Conn).Close"
 	traceTLSGoMaxCode    = 1 << 20
-	traceTLSGoMaxTable   = 64 << 20
+	traceTLSGoMaxTable   = 256 << 20
 	traceTLSGoMaxReturns = 128
 	traceTLSGoBuildMagic = "\xff Go buildinf:"
 )
 
 var traceTLSGoVersions = map[string]bool{
 	"go1.21.5":  true,
+	"go1.21.7":  true,
 	"go1.23.4":  true,
 	"go1.23.7":  true,
 	"go1.23.8":  true,

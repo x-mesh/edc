@@ -35,6 +35,8 @@ const (
 	identifySuggestedLimit = 10 * time.Second
 	// identifyTLSBannerWait는 ALPN이 없는 TLS 연결에서 안쪽 인사말(imaps, pop3s, smtps)을 기다리는 시간이다.
 	identifyTLSBannerWait = 300 * time.Millisecond
+	// identifyBodyWait는 HTTP 400 응답의 header 뒤에 따로 오는 본문을 기다리는 시간이다. ClickHouse native port를 가린다.
+	identifyBodyWait = 200 * time.Millisecond
 	// identifyReadLimit은 탐침 하나가 읽는 바이트의 상한이다.
 	identifyReadLimit = 4096
 	// identifyPreviewBytes는 판별하지 못한 응답에서 결과에 남기는 앞부분이다.
@@ -941,7 +943,7 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 		return "", []byte(status), false, status == "" && errors.As(err, &timeout) && timeout.Timeout()
 	}
 	parts := []string{strings.TrimSpace(status)}
-	clickhouse := false
+	clickhouse, emptyBody := false, false
 	for err == nil {
 		var line string
 		line, err = reader.ReadString('\n')
@@ -954,6 +956,8 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 		case !ok:
 		case strings.EqualFold(name, "server"):
 			parts = append(parts, "server "+strings.TrimSpace(value))
+		case strings.EqualFold(name, "content-length"):
+			emptyBody = strings.TrimSpace(value) == "0"
 		// ClickHouse의 HTTP 인터페이스는 Server header 대신 X-ClickHouse-Summary 같은 header를 보낸다(26.3에서 확인).
 		case !clickhouse && len(name) > len("X-ClickHouse-") && strings.EqualFold(name[:len("X-ClickHouse-")], "X-ClickHouse-"):
 			clickhouse = true
@@ -961,9 +965,13 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 		}
 	}
 	// ClickHouse의 native port는 HTTP 요청에 400과 "Port 9000 is for clickhouse-client program" 본문으로 답한다. 본문 첫 줄을
-	// HTTP가 아닌 응답으로 돌려주면 matchBanner가 clickhouse로 맞춘다. 본문은 400이고 header와 함께 이미 받은 바이트가 있을 때만
-	// 읽는다. 본문 없는 400을 보내고 연결을 열어 둔 서버에서 기다리지 않게 한다.
-	if err == nil && strings.Contains(status, " 400 ") && reader.Buffered() > 0 {
+	// HTTP가 아닌 응답으로 돌려주면 matchBanner가 clickhouse로 맞춘다. 이 응답에는 Content-Length가 없고 본문이 header와 다른
+	// 조각으로 올 수 있다. header와 함께 받은 바이트가 없으면 identifyBodyWait만 기다린다. 본문 없는 400을 보내고 연결을 열어
+	// 둔 서버에서 단계의 상한까지 기다리지 않게 한다.
+	if err == nil && strings.Contains(status, " 400 ") && !emptyBody {
+		if reader.Buffered() == 0 {
+			connection.SetReadDeadline(time.Now().Add(identifyBodyWait))
+		}
 		for range 2 {
 			line, readErr := reader.ReadString('\n')
 			if line = strings.TrimSpace(line); strings.Contains(line, "clickhouse-client") {

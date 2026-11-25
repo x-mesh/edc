@@ -46,7 +46,6 @@ func whyTestRecordings(t *testing.T) map[string]string {
 	return map[string]string{
 		"http":  traceShowWrite(t, "http.jsonl", whyTestRequest(7, "/dns", 400, 300), summary("http")),
 		"dns":   traceShowWrite(t, "dns.jsonl", whyTestDNS(7, "slow.test", 395, 290), summary("dns")),
-		"tcp":   traceShowWrite(t, "tcp.jsonl", summary("tcp")),
 		"mysql": traceShowWrite(t, "mysql.jsonl", summary("mysql")),
 	}
 }
@@ -74,13 +73,12 @@ func TestTraceWhyRecordsEveryTraceAndPrintsTheBreakdown(t *testing.T) {
 	want := [][]string{
 		{"trace", "http", "--raw", "--duration", "5s", "--process", "app", "--payload=false"},
 		{"trace", "dns", "--raw", "--duration", "5s", "--process", "app"},
-		{"trace", "tcp", "--raw", "--duration", "5s", "--process", "app"},
 		{"trace", "mysql", "--raw", "--duration", "5s", "--process", "app", "--port", "13306"},
 	}
 	if !slices.EqualFunc(*started, want, slices.Equal[[]string]) {
 		t.Fatalf("children = %v", *started)
 	}
-	if !strings.Contains(stderr, "recording http, dns, tcp, mysql 5s\n") || strings.Count(stderr, "waiting for the traces to stop") != 1 {
+	if !strings.Contains(stderr, "recording http, dns, mysql 5s\n") || strings.Count(stderr, "waiting for the traces to stop") != 1 {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	for _, text := range []string{"app\tGET /dns\t1\t300.0ms", "\t  dns slow.test A\t1\t290.0ms\t\t97%", "saved: " + out} {
@@ -101,7 +99,7 @@ func TestTraceWhyRecordsEveryTraceAndPrintsTheBreakdown(t *testing.T) {
 	if err != nil || json.Unmarshal(data, &manifest) != nil {
 		t.Fatalf("manifest = %q, %v", data, err)
 	}
-	if manifest.Version != 1 || manifest.Port != 8080 || manifest.Process != "app" || len(manifest.Traces) != 4 || manifest.Traces[3] != (traceWhyManifestTrace{"mysql", "mysql.jsonl"}) {
+	if manifest.Version != 1 || manifest.Port != 8080 || manifest.Process != "app" || len(manifest.Traces) != 3 || manifest.Traces[2] != (traceWhyManifestTrace{"mysql", "mysql.jsonl"}) {
 		t.Fatalf("manifest = %+v", manifest)
 	}
 
@@ -122,7 +120,6 @@ func TestTraceWhyStopsWhenOneTraceFails(t *testing.T) {
 	whyTestChildren(t, map[string]string{
 		"http": whyTestWaiting("cat " + recordings["http"] + ";"),
 		"dns":  "echo 'kernel BTF is missing' >&2; exit 3",
-		"tcp":  whyTestWaiting(""),
 	})
 	out := filepath.Join(t.TempDir(), "incident")
 	began := time.Now()
@@ -149,7 +146,7 @@ func TestTraceWhyStopsWhenATraceCannotStart(t *testing.T) {
 	if err := os.Mkdir(out, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := recordTraceWhy(traceWhyPlan{traces: []traceWhyTrace{{name: "http"}, {name: "dns"}, {name: "tcp"}}, out: out}, nil, nil)
+	err := recordTraceWhy(traceWhyPlan{traces: []traceWhyTrace{{name: "http"}, {name: "dns"}}, out: out}, nil, nil)
 	var failure *traceWhyChildError
 	if !errors.As(err, &failure) || failure.name != "dns" || len(*started) != 2 {
 		t.Fatalf("error = %v, started %v", err, *started)
@@ -169,7 +166,7 @@ func TestTraceWhyKeepsTheRecordingWhenItIsStopped(t *testing.T) {
 	}
 	stop := make(chan struct{})
 	time.AfterFunc(300*time.Millisecond, func() { close(stop) })
-	if err := recordTraceWhy(traceWhyPlan{traces: []traceWhyTrace{{name: "http"}, {name: "dns"}, {name: "tcp"}}, out: out}, stop, nil); err != nil {
+	if err := recordTraceWhy(traceWhyPlan{traces: []traceWhyTrace{{name: "http"}, {name: "dns"}}, out: out}, stop, nil); err != nil {
 		t.Fatal(err)
 	}
 	files, _, err := readTraceWhyDirectory(out)

@@ -123,6 +123,11 @@ volatile const __u8 tcp_length_fallback = 0;
 // emit_tls_plaintext는 trace http --tls다. OpenSSL uprobe가 암호화 전과 복호화 뒤의 평문을 넘긴다. 이 객체는 모든
 // trace가 불러오므로, 꺼져 있으면 uprobe program이 첫 명령에서 돌아가고 TCP hook도 SSL 상태를 보지 않는다.
 volatile const __u8 emit_tls_plaintext = 0;
+// process_filter_low와 process_filter_high는 --process 이름의 앞 8 byte와 뒤 8 byte다. 둘이 모두 0이 아니면 HTTP 계열 레코드(http,
+// mysql, postgres, redis, clickhouse)는 comm이 이 이름과 같은 process의 것만 ring buffer에 넣는다. 사용자 공간도 같은 이름 비교로
+// 거르지만, 여기서 버리면 다른 process의 레코드가 ring buffer와 JSON 인코딩을 거치지 않는다. 0이면 모두 넘긴다.
+volatile const __u64 process_filter_low = 0;
+volatile const __u64 process_filter_high = 0;
 // uprobe_arch는 uprobe 인자를 읽을 pt_regs 배치다. bpfel 객체 하나가 amd64와 arm64를 함께 섬겨서 compile 때 정할 수 없다.
 volatile const __u8 uprobe_arch = 0;
 
@@ -1190,6 +1195,20 @@ struct http_record {
 	__u8 payload[HTTP_PAYLOAD_SIZE];
 };
 
+// http_record_output은 process 필터를 통과한 레코드만 ring buffer에 넣는다. 걸러진 레코드는 성공으로 돌려서 호출한 쪽이 잃은 event로
+// 세지 않는다.
+static __always_inline long http_record_output(struct http_record *record, __u64 size) {
+	if (process_filter_low | process_filter_high) {
+		__u64 low, high;
+		__builtin_memcpy(&low, record->comm, 8);
+		__builtin_memcpy(&high, record->comm + 8, 8);
+		if (low != process_filter_low || high != process_filter_high) {
+			return 0;
+		}
+	}
+	return bpf_ringbuf_output(&events, record, size, 0);
+}
+
 // ringbuf에만 쓰는 구조체는 BTF에 남지 않는다. bpf2go -type이 Go 구조체를 만들어 offset을 테스트하도록 남긴다.
 const struct http_record *unused_http_record __attribute__((unused));
 
@@ -1796,7 +1815,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		record->len = TLS_HANDSHAKE_HEADER_SIZE;
 		record->kind = TLS_HANDSHAKE;
 		record->offset = 0;
-		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + TLS_HANDSHAKE_HEADER_SIZE, 0)) {
+		if (http_record_output(record, __builtin_offsetof(struct http_record, payload) + TLS_HANDSHAKE_HEADER_SIZE)) {
 			return;
 		}
 	}
@@ -1837,7 +1856,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		record->len = len;
 		record->kind = cursor->kind;
 		record->offset = cursor->offset;
-		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+		if (http_record_output(record, __builtin_offsetof(struct http_record, payload) + len)) {
 			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);
@@ -1879,7 +1898,7 @@ static __always_inline void emit_mysql_tail(struct http_record *record, __u64 en
 	}
 	record->event_type = MYSQL_TAIL_RECORD;
 	record->len = tail;
-	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + tail, 0)) {
+	if (http_record_output(record, __builtin_offsetof(struct http_record, payload) + tail)) {
 		__u32 zero = 0;
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
@@ -1959,7 +1978,7 @@ static __always_inline void emit_mysql_iov(struct sock *sk, __u64 buffer, __u64 
 	record->len = copied;
 	record->kind = server;
 	record->offset = (__u32)size;
-	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + copied, 0)) {
+	if (http_record_output(record, __builtin_offsetof(struct http_record, payload) + copied)) {
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -2026,7 +2045,7 @@ static __always_inline void emit_mysql_buffer(struct sock *sk, __u64 buffer, __u
 	record->len = len;
 	record->kind = server;
 	record->offset = (__u32)size;
-	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+	if (http_record_output(record, __builtin_offsetof(struct http_record, payload) + len)) {
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -2416,7 +2435,7 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 		record->len = len;
 		record->kind = cursor->kind;
 		record->offset = cursor->offset;
-		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+		if (http_record_output(record, __builtin_offsetof(struct http_record, payload) + len)) {
 			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);

@@ -112,12 +112,10 @@ PASS  tcp.check amqp            127.0.0.1:5672 connected (0s), peer 127.0.0.1
                  tcp         rtt 0.1ms · rto 201ms · mss 32741 · SACK on · timestamps on · window scale on · ECN off · retransmits 0
                  identify    port 5672 points to amqp: send it first, no banner wait
          +2.8ms  amqp        matched amqp · 1.9ms
-                               new connection · 0.3ms
-                               sent  protocol header AMQP 0-9-1 · 8 B
-                               recv  Connection.Start · AMQP 0-9 · 556 B in 1.1ms
+                               → protocol header AMQP 0-9-1 · 8 B
+                               ← Connection.Start · AMQP 0-9 · 556 B in 1.1ms
                                  product RabbitMQ · version 4.4.1 · platform Erlang/OTP 29.1.3 · cluster_name rabbit@5d4470206a51
                                  mechanisms PLAIN AMQPLAIN ANONYMOUS · locales en_US
-                 result      amqp in 1.9ms
 ```
 
 The lines show:
@@ -125,8 +123,12 @@ The lines show:
 - `dns`: the addresses of the name. edc looks up the name one more time for this line, because the connect looks it up inside Go.
 - `connect`: the local and remote address, and the connect time.
 - `tcp`: the values that the kernel agreed on in the handshake: RTT, RTO, MSS, SACK, timestamps, window scale, ECN, and retransmits. On Linux, the window scale shows only `on` or `off`. If the connect takes 900ms or more, a line says that a SYN retransmit is likely. This comes from the time only.
-- One line for each step. The step that matched opens up: what edc sent and what it received, in the words of the protocol. Other steps show what edc sent and what the server did: `waited`, `closed by the server`, `reset by the server`, or a reply that matched nothing.
-- `stopped` and `result`: the steps that the time limit cut, and why the result is what it is.
+- One line for each step. The step that matched opens up. `→` marks what edc sent and `←` marks what it received, in the words of the protocol. Other steps show what edc sent and what the server did: `waited`, `closed by the server`, `reset by the server`, or a reply that matched nothing.
+- A goloop node gets three connections, one for each secure suite. edc shows the packet once, and then one row for each connection: the suite that edc proposed and the suite that the node chose. `--debug=raw` shows each connection in full.
+- `stopped`: the steps that the time limit cut.
+- `result`: why the result is what it is. The line shows when the protocol is unknown, or when edc tried more than one step. For one matched step, the step line already says it.
+
+On a color terminal, the matched step is bold green. `→` is blue and `←` is green. Steps that did not match are gray, and a closed or reset connection is yellow. The text has the same meaning without color.
 
 edc cannot see the SYN and SYN-ACK packets without root. The `tcp` line shows what the handshake agreed on. Use `edc tcp check --diagnose` as root on Linux to see the packets.
 

@@ -43,42 +43,49 @@ var debugDecoders = map[string]debugDecoder{
 	"kafka": decodeKafkaExchange, "mqtt": decodeMQTTExchange, "cassandra": decodeCassandraExchange,
 }
 
+// debug 줄의 방향 글머리다. 색을 입히는 쪽(formatDebugLines)이 이 글머리로 보낸 줄과 받은 줄을 가른다.
+const (
+	debugSendMark    = "→ "
+	debugReceiveMark = "← "
+)
+
 // exchangeLines는 연결 하나를 보낸 것, 받은 것 순으로 풀어 쓴다. raw면 원본 바이트를 구간별 hex로 덧붙인다.
-func exchangeLines(stage string, exchange *debugExchange, raw bool) []debugTextLine {
-	connection := "new connection"
-	switch {
-	case exchange.reused:
-		connection = "reused the banner connection"
-	case exchange.dial > 0:
-		connection = "new connection · " + debugDuration(exchange.dial)
-	}
-	if exchange.label != "" {
-		connection = exchange.label
-	}
+// showConnection은 연결 줄을 쓸지다. 단계에 연결이 하나뿐이고 평범하게 새로 열었다면, 시간은 단계 줄에 이미 있어 줄을 아낀다.
+func exchangeLines(stage string, exchange *debugExchange, raw, showConnection bool) []debugTextLine {
 	if exchange.dialErr != "" {
 		return []debugTextLine{{1, "connect failed: " + exchange.dialErr}}
 	}
-	lines := []debugTextLine{{1, connection}}
+	var lines []debugTextLine
+	switch {
+	case exchange.label != "":
+		lines = append(lines, debugTextLine{1, exchange.label})
+	case exchange.reused:
+		lines = append(lines, debugTextLine{1, "reused the banner connection"})
+	case showConnection && exchange.dial > 0:
+		lines = append(lines, debugTextLine{1, "new connection · " + debugDuration(exchange.dial)})
+	case showConnection:
+		lines = append(lines, debugTextLine{1, "new connection"})
+	}
 	decoder := debugDecoders[stage]
 	if exchange.label == "inside TLS" || decoder == nil {
 		decoder = decodeAutoExchange
 	}
 	decoded := decoder(exchange)
 	if exchange.sentAny {
-		lines = append(lines, firstAndRest(decoded.sent, fmt.Sprintf("sent  %%s · %d B", exchange.sentTotal))...)
+		lines = append(lines, firstAndRest(decoded.sent, debugSendMark+fmt.Sprintf("%%s · %d B", exchange.sentTotal))...)
 		if raw {
 			lines = append(lines, hexLines(exchange.sent, exchange.sentTotal, decoded.sentRegions)...)
 		}
 	}
 	switch {
 	case exchange.receivedAny:
-		header := fmt.Sprintf("recv  %%s · %d B in %s", exchange.receivedTotal, debugDuration(exchange.firstReceive-exchange.firstSendOrOpen()))
+		header := debugReceiveMark + fmt.Sprintf("%%s · %d B in %s", exchange.receivedTotal, debugDuration(exchange.firstReceive-exchange.firstSendOrOpen()))
 		lines = append(lines, firstAndRest(decoded.received, header)...)
 		if raw {
 			lines = append(lines, hexLines(debugRawReceived(exchange.received), exchange.receivedTotal, decoded.receivedRegions)...)
 		}
 	case exchange.end != "":
-		lines = append(lines, debugTextLine{1, "recv  nothing · " + endText(exchange)})
+		lines = append(lines, debugTextLine{1, debugReceiveMark + "nothing · " + endText(exchange)})
 	}
 	return lines
 }
@@ -582,56 +589,218 @@ func decodeGoloopExchange(exchange *debugExchange) debugDecoded {
 	return decoded
 }
 
-// goloopPacketLines는 goloop P2P packet의 header, msgpack payload, footer를 풀어 쓴다.
-func goloopPacketLines(data []byte, request bool) ([]string, []hexRegion) {
+// goloopSecure는 읽은 goloop SecureRequest나 SecureResponse다.
+type goloopSecure struct {
+	name                  string
+	protocol, subProtocol uint16
+	destination, ttl      byte
+	length                int
+	node                  string
+	channel               string
+	suites, aeads         []byte // 요청이 제안한 방식
+	suite, aead           byte   // 응답이 고른 방식
+	secureError           string
+	cut                   bool // payload가 받은 바이트보다 길다
+	body                  bool // msgpack 항목을 읽었다
+	footer                bool
+	hash                  string // "ok", "mismatch", 확인하지 않았으면 ""
+	end                   int
+}
+
+// parseGoloopSecure는 packet을 읽는다. 읽을 수 없으면 한 줄 설명을 돌려준다.
+func parseGoloopSecure(data []byte, request bool) (goloopSecure, string) {
 	if len(data) < goloopHeaderSize {
-		return []string{describeBytes(data)}, nil
+		return goloopSecure{}, describeBytes(data)
 	}
-	protocol, subProtocol := binary.BigEndian.Uint16(data[0:2]), binary.BigEndian.Uint16(data[2:4])
-	length := int(binary.BigEndian.Uint32(data[26:30]))
-	name := map[uint16]string{goloopSecureRequest: "SecureRequest", goloopSecureResponse: "SecureResponse"}[subProtocol]
-	if protocol != 0 || name == "" {
-		return []string{fmt.Sprintf("not a goloop secure packet: protocol 0x%04x / 0x%04x", protocol, subProtocol)}, nil
+	packet := goloopSecure{
+		protocol: binary.BigEndian.Uint16(data[0:2]), subProtocol: binary.BigEndian.Uint16(data[2:4]),
+		length: int(binary.BigEndian.Uint32(data[26:30])), destination: data[24], ttl: data[25],
 	}
-	lines := []string{fmt.Sprintf("%s (auth 0x%04x / 0x%04x) · dest 0x%02x · ttl %d · payload %d B", name, protocol, subProtocol, data[24], data[25], length)}
+	packet.name = map[uint16]string{goloopSecureRequest: "SecureRequest", goloopSecureResponse: "SecureResponse"}[packet.subProtocol]
+	if packet.protocol != 0 || packet.name == "" {
+		return goloopSecure{}, fmt.Sprintf("not a goloop secure packet: protocol 0x%04x / 0x%04x", packet.protocol, packet.subProtocol)
+	}
 	if !request {
-		lines = append(lines, "node hx"+hex.EncodeToString(data[4:24]))
+		packet.node = "hx" + hex.EncodeToString(data[4:24])
 	}
-	regions := []hexRegion{{"header", 0, goloopHeaderSize}}
-	end := goloopHeaderSize + length
-	if end > len(data) {
-		return append(lines, "payload cut"), regions
+	packet.end = goloopHeaderSize + packet.length
+	if packet.end > len(data) {
+		packet.cut = true
+		return packet, ""
 	}
-	payload := data[goloopHeaderSize:end]
-	regions = append(regions, hexRegion{"payload (msgpack)", goloopHeaderSize, end})
+	payload := data[goloopHeaderSize:packet.end]
 	cursor := &msgpackCursor{data: payload}
 	count := cursor.arrayLength()
-	channel := cursor.str()
+	packet.channel = cursor.str()
 	if request && count >= 4 {
-		suites, aeads, key := cursor.binary(), cursor.binary(), cursor.binary()
-		lines = append(lines, fmt.Sprintf("channel %q · secure suites [%s] · aead suites [%s]", channel, goloopNames(goloopSuiteNames, suites), goloopNames(goloopAeadNames, aeads)))
-		lines = append(lines, "key "+shortKey(key))
+		packet.suites, packet.aeads = cursor.binary(), cursor.binary()
+		packet.body = true
 	} else if !request && count >= 5 {
-		suite, aead := byte(cursor.uint()), byte(cursor.uint())
-		key, secureError := cursor.binary(), cursor.str()
-		if secureError == "" {
-			secureError = "none"
-		}
-		lines = append(lines, fmt.Sprintf("channel %q · secure suite %s · aead suite %s · error %s", channel, goloopName(goloopSuiteNames, suite), goloopName(goloopAeadNames, aead), secureError))
-		lines = append(lines, "key "+shortKey(key))
+		packet.suite, packet.aead = byte(cursor.uint()), byte(cursor.uint())
+		cursor.binary()
+		packet.secureError = cursor.str()
+		packet.body = true
 	}
-	if end+goloopFooterSize <= len(data) {
-		regions = append(regions, hexRegion{"footer (FNV-64a, ext)", end, end + goloopFooterSize})
+	if packet.end+goloopFooterSize <= len(data) {
+		packet.footer = true
 		// 보낸 packet은 edc가 만든 것이라 hash를 따로 쓰지 않는다.
 		if !request {
-			hash := "ok"
-			if binary.BigEndian.Uint64(data[end:end+8]) != goloopPacketHash(data[:goloopHeaderSize], payload) {
-				hash = "mismatch"
+			packet.hash = "ok"
+			if binary.BigEndian.Uint64(data[packet.end:packet.end+8]) != goloopPacketHash(data[:goloopHeaderSize], payload) {
+				packet.hash = "mismatch"
 			}
-			lines[0] += " · hash " + hash
 		}
 	}
+	return packet, ""
+}
+
+func (packet goloopSecure) head() string { return packet.headWith(true) }
+
+// headWith는 packet의 첫 줄이다. withLength가 false면 payload 크기를 뺀다. 접힌 줄은 연결마다 크기가 다르면 대표값을 쓸 수 없다.
+func (packet goloopSecure) headWith(withLength bool) string {
+	text := fmt.Sprintf("%s (auth 0x%04x / 0x%04x) · dest 0x%02x · ttl %d", packet.name, packet.protocol, packet.subProtocol, packet.destination, packet.ttl)
+	if withLength {
+		text += fmt.Sprintf(" · payload %d B", packet.length)
+	}
+	if packet.hash != "" {
+		text += " · hash " + packet.hash
+	}
+	return text
+}
+
+// goloopPacketLines는 goloop P2P packet의 header, msgpack payload, footer를 풀어 쓴다. 비어 있거나 정상인 값(빈 channel,
+// 오류 없음)은 쓰지 않는다. 공개 키는 해석 줄에 쓰지 않고 raw의 hex로만 보인다.
+func goloopPacketLines(data []byte, request bool) ([]string, []hexRegion) {
+	packet, problem := parseGoloopSecure(data, request)
+	if problem != "" {
+		return []string{problem}, nil
+	}
+	lines := []string{packet.head()}
+	if packet.node != "" {
+		lines = append(lines, "node "+packet.node)
+	}
+	regions := []hexRegion{{"header", 0, goloopHeaderSize}}
+	if packet.cut {
+		return append(lines, "payload cut"), regions
+	}
+	regions = append(regions, hexRegion{"payload (msgpack)", goloopHeaderSize, packet.end})
+	var parts []string
+	if packet.channel != "" {
+		parts = append(parts, fmt.Sprintf("channel %q", packet.channel))
+	}
+	switch {
+	case packet.body && request:
+		parts = append(parts, fmt.Sprintf("secure suites [%s] · aead suites [%s]", goloopNames(goloopSuiteNames, packet.suites), goloopNames(goloopAeadNames, packet.aeads)))
+	case packet.body:
+		parts = append(parts, fmt.Sprintf("secure suite %s · aead suite %s", goloopName(goloopSuiteNames, packet.suite), goloopName(goloopAeadNames, packet.aead)))
+		if packet.secureError != "" {
+			parts = append(parts, "error "+packet.secureError)
+		}
+	}
+	if len(parts) > 0 {
+		lines = append(lines, strings.Join(parts, " · "))
+	}
+	if packet.footer {
+		regions = append(regions, hexRegion{"footer (FNV-64a, ext)", packet.end, packet.end + goloopFooterSize})
+	}
 	return lines, regions
+}
+
+// foldGoloopStep은 goloop 단계가 방식 후보마다 연결을 열어 같은 모양을 반복한 것을 한 묶음으로 접는다. 요청과 응답의 모양은
+// 한 번만 쓰고, 연결마다 제안한 방식과 노드가 고른 방식을 한 줄씩 쓴다. 접을 수 없으면(연결이 하나이거나 읽지 못한 packet이
+// 있으면) nil이다.
+func foldGoloopStep(step *debugStep) []debugTextLine {
+	if len(step.exchanges) < 2 {
+		return nil
+	}
+	type probe struct {
+		request, response goloopSecure
+		replied           bool
+		exchange          *debugExchange
+	}
+	probes := make([]probe, 0, len(step.exchanges))
+	replies := 0
+	for _, exchange := range step.exchanges {
+		if exchange.dialErr != "" || !exchange.sentAny {
+			return nil
+		}
+		request, problem := parseGoloopSecure(exchange.sent, true)
+		if problem != "" || !request.body {
+			return nil
+		}
+		current := probe{request: request, exchange: exchange}
+		if exchange.receivedAny {
+			response, problem := parseGoloopSecure(exchange.received, false)
+			if problem != "" || !response.body {
+				return nil
+			}
+			current.response, current.replied = response, true
+			replies++
+		}
+		probes = append(probes, current)
+	}
+	if replies == 0 {
+		return nil
+	}
+	first := probes[0]
+	var firstResponse *probe
+	nodes := map[string]bool{}
+	hashes := map[string]bool{}
+	sameRequestSize, sameResponseSize := true, true
+	for index := range probes {
+		sameRequestSize = sameRequestSize && probes[index].exchange.sentTotal == first.exchange.sentTotal
+		if !probes[index].replied {
+			continue
+		}
+		if firstResponse == nil {
+			firstResponse = &probes[index]
+		}
+		sameResponseSize = sameResponseSize && probes[index].exchange.receivedTotal == firstResponse.exchange.receivedTotal
+		nodes[probes[index].response.node] = true
+		hashes[probes[index].response.hash] = true
+	}
+	hash := ""
+	switch {
+	case hashes["mismatch"]:
+		hash = " · hash mismatch"
+	case len(hashes) == 1 && hashes["ok"]:
+		hash = " · hash ok"
+	}
+	response := firstResponse.response
+	response.hash = ""
+	sent, received := first.request.headWith(sameRequestSize), response.headWith(sameResponseSize)
+	if sameRequestSize {
+		sent += fmt.Sprintf(" · %d B", first.exchange.sentTotal)
+	}
+	if sameResponseSize {
+		received += fmt.Sprintf("%s · %d B", hash, firstResponse.exchange.receivedTotal)
+	} else {
+		received += hash
+	}
+	lines := []debugTextLine{{1, debugSendMark + sent}, {1, debugReceiveMark + received}}
+	summary := fmt.Sprintf("%d connections, each proposes one secure suite", len(probes))
+	if len(nodes) == 1 {
+		summary = "node " + response.node + " · " + summary
+	}
+	lines = append(lines, debugTextLine{1, summary})
+	for _, current := range probes {
+		proposed := fmt.Sprintf("%s + %s", goloopNames(goloopSuiteNames, current.request.suites), goloopNames(goloopAeadNames, current.request.aeads))
+		if !current.replied {
+			lines = append(lines, debugTextLine{2, fmt.Sprintf("proposed %s → no reply (%s)", proposed, endText(current.exchange))})
+			continue
+		}
+		took := debugDuration(current.exchange.firstReceive - current.exchange.firstSendOrOpen())
+		text := fmt.Sprintf("proposed %s → answered %s + %s · %s", proposed,
+			goloopName(goloopSuiteNames, current.response.suite), goloopName(goloopAeadNames, current.response.aead), took)
+		if current.response.secureError != "" {
+			text = fmt.Sprintf("proposed %s → refused (%s) · %s", proposed, current.response.secureError, took)
+		}
+		if len(nodes) > 1 {
+			text += " · node " + current.response.node
+		}
+		lines = append(lines, debugTextLine{2, text})
+	}
+	return lines
 }
 
 func goloopName(names map[byte]string, value byte) string {
@@ -650,21 +819,6 @@ func goloopNames(names map[byte]string, values []byte) string {
 		parts[index] = goloopName(names, value)
 	}
 	return strings.Join(parts, ", ")
-}
-
-// shortKey는 공개 키를 앞뒤 2바이트와 길이로 줄인다. P-256 비압축 키는 65바이트이고 0x04로 시작한다.
-func shortKey(key []byte) string {
-	if len(key) == 0 {
-		return "none"
-	}
-	kind := ""
-	if len(key) == 65 && key[0] == 0x04 {
-		kind = "P-256 "
-	}
-	if len(key) <= 4 {
-		return kind + hex.EncodeToString(key)
-	}
-	return fmt.Sprintf("%s%s…%s (%d B)", kind, hex.EncodeToString(key[:2]), hex.EncodeToString(key[len(key)-2:]), len(key))
 }
 
 // binary는 msgpack bin 값을 읽는다.

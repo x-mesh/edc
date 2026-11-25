@@ -406,6 +406,7 @@ command:
       - "By default, listen opens a browser in an interactive terminal and prints once in pipes or TERM=dumb. -B/--no-browse always prints once. Configure auto/always/never with edc setup listen.browse; NO_COLOR only disables colors."
       - "In browse: arrows select, Enter reads socket and process details, l hides or shows loopback rows, t opens edc top for the process, x shows a CPU trace command, r refreshes, Esc returns, q quits. Requires a 48x8 interactive terminal; NO_COLOR keeps navigation without colors."
       - "A row can hold several PIDs. In browse, p selects the next PID of the row, and t and x use the selected PID."
+      - "In browse, S asks for confirmation and then sends SIGTERM to the selected PID. The default answer is no. S is not available with --redact or for ports that a container publishes."
       - "Without colors, the browse list shows the binding scope in a SCOPE column."
       - "--browse cannot be combined with --watch, --json, --interval, or --duration."
       - "It shows TCP LISTEN sockets and bound UDP sockets."

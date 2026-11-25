@@ -315,12 +315,12 @@ func TestIdentifyHintOnlyReorders(t *testing.T) {
 		io.WriteString(c, "SSH-2.0-OpenSSH_9.6\r\n")
 		io.Copy(io.Discard, c)
 	})
-	if got := identifyWithStages(context.Background(), ssh, 0, redisFirst, 1); got.Name != "ssh" {
+	if got := identifyWithStages(context.Background(), ssh, 0, redisFirst, 1, nil); got.Name != "ssh" {
 		t.Fatalf("ssh behind a redis port: %+v", got)
 	}
 	redis := identifyListener(t, fakeRedis("+PONG\r\n"))
 	started := time.Now()
-	if got := identifyWithStages(context.Background(), redis, 0, redisFirst, 1); got.Name != "redis" {
+	if got := identifyWithStages(context.Background(), redis, 0, redisFirst, 1, nil); got.Name != "redis" {
 		t.Fatalf("hinted redis: %+v", got)
 	}
 	if elapsed := time.Since(started); elapsed >= identifyBannerWait {

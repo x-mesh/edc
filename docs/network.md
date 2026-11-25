@@ -100,6 +100,38 @@ If the port is a usual port for a step, that step goes first, and edc does not w
 
 A step that the port points to waits at most 1s. Other steps wait for a time that edc calculates from the connect time, from 200ms to 1s. The HTTP step waits at least 500ms. On one host with the services on usual ports, a check took about 50ms. With the same services on unusual ports, it took about 0.55s for Redis, PostgreSQL, Memcached, nginx, RabbitMQ, MQTT, and Cassandra, 0.75s for the ClickHouse native port, 0.96s for Kafka, 1.16s for the ClickHouse HTTP interface, and 1.2s for MongoDB and goloop. The whole check stops after 3s. A server that accepts the connection and never answers reaches this limit. Then the result shows `unknown`, `-v` shows `stopped`, and `--json` adds `protocol_timed_out`. If no probe got a reply, `-v` shows `replies` and `--json` adds `protocol_no_reply`. If more time can help, a `next` line shows the command again with `--identify=10s`. With a time such as `--identify=10s`, the check stops at that time, and each step waits 1s, so a server that answers slowly is found too. A server that sends bytes that edc does not know shows `unknown` with no `next` line, because more time does not change the result. When no step matches, the result shows `unknown`. If the server sent bytes, `-v` shows the first bytes. The protocol does not change the status or the exit code. The target sees short connections that end before any login, and its log can show them as errors. For example, PostgreSQL on an unusual port logs `invalid length of startup packet`, and an HTTP server logs each probe as a request with status 400. On unusual ports, RabbitMQ logs `client did not start with AMQP protocol header`, Kafka logs `InvalidReceiveException`, Cassandra logs `Protocol exception`, and Mosquitto logs `protocol error` for the probes of the earlier steps. On its usual port, RabbitMQ logs `client unexpectedly closed TCP connection`. If that is a problem, add `--identify=false`. `--json` adds the `protocol`, `protocol_detail`, and `protocol_basis` metrics. For goloop, it also adds `goloop_node`, `goloop_secure_suites`, and `goloop_aead_suites`, and `goloop_unchecked` when a reply did not come. `-w` and `--diagnose` do not check the protocol, and they do not accept `--identify`. `edc doctor` does not check the protocol.
 
+Add `--debug` (or `-vv`) to see what happened, step by step:
+
+```text
+$ edc tcp check --debug 127.0.0.1:5672
+PASS  tcp.check amqp            127.0.0.1:5672 connected (0s), peer 127.0.0.1
+      debug:
+         +0.0ms  connect     127.0.0.1:59434 → 127.0.0.1:5672 · 0.3ms
+                 tcp         rtt 0.1ms · rto 201ms · mss 32741 · SACK on · timestamps on · window scale on · ECN off · retransmits 0
+                 identify    port 5672 points to amqp: send it first, no banner wait
+         +2.8ms  amqp        matched amqp · 1.9ms
+                               new connection · 0.3ms
+                               sent  protocol header AMQP 0-9-1 · 8 B
+                               recv  Connection.Start · AMQP 0-9 · 556 B in 1.1ms
+                                 product RabbitMQ · version 4.4.1 · platform Erlang/OTP 29.1.3 · cluster_name rabbit@5d4470206a51
+                                 mechanisms PLAIN AMQPLAIN ANONYMOUS · locales en_US
+                 result      amqp in 1.9ms
+```
+
+The lines show:
+
+- `dns`: the addresses of the name. edc looks up the name one more time for this line, because the connect looks it up inside Go.
+- `connect`: the local and remote address, and the connect time.
+- `tcp`: the values that the kernel agreed on in the handshake: RTT, RTO, MSS, SACK, timestamps, window scale, ECN, and retransmits. On Linux, the window scale shows only `on` or `off`. If the connect takes 900ms or more, a line says that a SYN retransmit is likely. This comes from the time only.
+- One line for each step. The step that matched opens up: what edc sent and what it received, in the words of the protocol. Other steps show what edc sent and what the server did: `waited`, `closed by the server`, `reset by the server`, or a reply that matched nothing.
+- `stopped` and `result`: the steps that the time limit cut, and why the result is what it is.
+
+edc cannot see the SYN and SYN-ACK packets without root. The `tcp` line shows what the handshake agreed on. Use `edc tcp check --diagnose` as root on Linux to see the packets.
+
+Inside TLS, the records are encrypted, so edc shows the TLS version, the cipher, ALPN, and the certificate, and then the plain exchange inside TLS. edc does not verify the certificate here. Values from the server, such as `Set-Cookie`, authorization headers, and the MySQL salt, are hidden. `--redact` also hides the addresses in these lines.
+
+`--debug=raw` (or `-vvv`) also shows the bytes of each probe as hex, up to 256 bytes for each direction. For goloop, MongoDB, AMQP, and Cassandra, the hex is in parts, for example `header`, `payload (msgpack)`, and `footer`. With `--json`, the lines are in `debug`.
+
 `edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.

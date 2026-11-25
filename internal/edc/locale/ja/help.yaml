@@ -54,6 +54,8 @@ command:
       peer: "この host で ssh 経由で tcp expect を同時に実行し、両方の結果を結合します。指定すると --diagnose で実行"
       wait: "接続できるまで 1 秒ごとに再試行 (1 回の試行は --timeout、既定 3s)。-w=5m なら 5 分後に停止"
       identify: "既定で有効: 接続後にいくつかの probe を送ってプロトコルを判別 (SSH・MySQL・NATS などのバナー、Redis、Memcached、PostgreSQL、TLS とその内側のプロトコル、MongoDB、HTTP と ClickHouse、goloop P2P、h2c と gRPC、AMQP、Kafka、MQTT、Cassandra。よく使う port はそのプロトコルから試す)、詳細は -v で表示。3 秒で止まり、--identify=10s なら長く待って probe ごとに 1 秒待つ。相手にはログイン前に終わる短い接続が残る。--identify=false でスキップ"
+      debug: "過程を表示: 名前解決、接続、カーネルが合意した TCP の値、probe ごとに送ったものと受け取ったものをプロトコルに合わせて解釈。-vv と同じ"
+      debug_raw: "--debug=raw (または -vvv) は probe ごとの生のバイトも hex で表示"
       from: "expect: このアドレスや範囲から来た packet だけを数えます"
       duration: "expect: 待つ時間、省略すると Ctrl-C まで"
       until: "expect: 最初の SYN (syn) を見た 1 秒後 (応答も記録するため) か、最初の handshake 完了 (handshake) で止まります"

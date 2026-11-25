@@ -88,7 +88,34 @@ type identifyTarget struct {
 	// hinted는 port가 이 단계를 가리켰는지다.
 	hinted bool
 	open   func(ctx context.Context, wait time.Duration) (net.Conn, error)
+	// recorder는 --debug일 때 단계마다 연결과 송수신을 남긴다. nil이면 기록하지 않는다.
+	recorder *identifyRecorder
 }
+
+// dial은 open을 거치지 않는 연결(HTTP 재시도, TLS 안쪽의 새 연결)을 열고 label을 붙여 기록한다.
+func (target identifyTarget) dial(ctx context.Context, wait time.Duration, label string) (net.Conn, error) {
+	started := time.Now()
+	connection, err := dialIdentify(ctx, target.address, wait)
+	exchange := target.recorder.exchange(label, false, time.Since(started), err)
+	if err != nil {
+		return nil, err
+	}
+	if target.recorder == nil {
+		return connection, nil
+	}
+	return &probeConn{Conn: connection, recorder: target.recorder, exchange: exchange}, nil
+}
+
+// record는 이미 연 연결(TLS 안쪽 평문)을 label을 붙여 기록한다.
+func (target identifyTarget) record(connection net.Conn, label string) net.Conn {
+	if target.recorder == nil {
+		return connection
+	}
+	return &probeConn{Conn: connection, recorder: target.recorder, exchange: target.recorder.exchange(label, false, 0, nil)}
+}
+
+// note는 바이트로 남지 않는 사실(TLS 협상 결과, HTTP/2 응답)을 지금 단계에 남긴다.
+func (target identifyTarget) note(text string) { target.recorder.note(text) }
 
 // identifyStage는 클라이언트가 먼저 말하는 프로토콜의 탐침이다. ports에 있는 port면 일반 순서보다 먼저 보낸다. port는 순서만
 // 정하고 판정은 언제나 응답으로 한다. run이 false를 돌려줄 때 reply는 서버가 보낸 바이트다. 서버가 먼저 말하는 서비스는
@@ -200,6 +227,18 @@ func (value *identifyFlag) IsBoolFlag() bool { return true }
 type identifyOptions struct {
 	limit   time.Duration
 	patient bool
+	// recorder가 있으면 단계마다 연결과 송수신을 남긴다(--debug).
+	recorder *identifyRecorder
+}
+
+// identifyExpired는 ctx가 끝났거나 deadline 시각이 지났는지다. 연결의 deadline이 상한과 같은 시각에 끝나면 context의
+// 타이머가 아직 돌지 않아 ctx.Err()가 nil일 수 있다. 그러면 상한에 걸리고도 다음 단계를 시작하고 TimedOut을 놓친다.
+func identifyExpired(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !time.Now().Before(deadline)
 }
 
 func identifyProtocolWith(ctx context.Context, address string, connect time.Duration, options identifyOptions) protocolIdentification {
@@ -218,7 +257,7 @@ func identifyProtocolWith(ctx context.Context, address string, connect time.Dura
 	}
 	limited, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	identified := identifyWithStages(limited, address, connect, stages, hinted)
+	identified := identifyWithStages(limited, address, connect, stages, hinted, options.recorder)
 	identified.Limit = limit
 	if identified.Name != protocolUnknown {
 		return identified
@@ -226,7 +265,7 @@ func identifyProtocolWith(ctx context.Context, address string, connect time.Dura
 	// unknown의 이유를 나눈다. 상한에 걸려 끝까지 보지 못한 것, 어떤 탐침에도 답이 없었던 것, 모르는 바이트를 받은 것이다.
 	// 앞의 둘은 시간을 늘리면 달라질 수 있어 next로 늘린 명령을 안내한다.
 	switch {
-	case errors.Is(limited.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
+	case identifyExpired(limited) && ctx.Err() == nil:
 		identified.TimedOut = true
 		identified.Suggest = identifySuggestedLimit
 		if options.patient {
@@ -242,7 +281,7 @@ func identifyProtocolWith(ctx context.Context, address string, connect time.Dura
 }
 
 // identifyWithStages는 정해진 순서로 탐침을 보낸다. 앞의 hinted개는 port에 맞는 탐침이라 배너를 기다리지 않고 바로 보낸다.
-func identifyWithStages(ctx context.Context, address string, connect time.Duration, stages []identifyStage, hinted int) (identified protocolIdentification) {
+func identifyWithStages(ctx context.Context, address string, connect time.Duration, stages []identifyStage, hinted int, recorder *identifyRecorder) (identified protocolIdentification) {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return protocolIdentification{Name: protocolUnknown}
@@ -253,26 +292,31 @@ func identifyWithStages(ctx context.Context, address string, connect time.Durati
 			idle.Close()
 		}
 	}()
-	target := identifyTarget{address: address, host: host}
+	target := identifyTarget{address: address, host: host, recorder: recorder}
 	// waited는 어떤 탐침이 답을 기다리다 시간이 다 됐는지다. 모든 탐침이 바로 끊겼다면 시간을 늘려도 결과가 같다.
 	var waited atomic.Bool
 	target.open = func(ctx context.Context, wait time.Duration) (net.Conn, error) {
 		if idle != nil {
 			connection := idle
 			idle = nil
-			return &waitWatchConn{Conn: connection, waited: &waited}, connection.SetDeadline(identifyDeadline(ctx, wait))
+			exchange := recorder.exchange("", true, 0, nil)
+			return &probeConn{Conn: connection, waited: &waited, recorder: recorder, exchange: exchange}, connection.SetDeadline(identifyDeadline(ctx, wait))
 		}
+		started := time.Now()
 		connection, err := dialIdentify(ctx, address, wait)
+		exchange := recorder.exchange("", false, time.Since(started), err)
 		if err != nil {
 			return nil, err
 		}
-		return &waitWatchConn{Conn: connection, waited: &waited}, nil
+		return &probeConn{Conn: connection, waited: &waited, recorder: recorder, exchange: exchange}, nil
 	}
 	defer func() { identified.Waited = waited.Load() }()
 	// port가 클라이언트가 먼저 말하는 프로토콜을 가리키면 배너를 기다리지 않고 그 탐침부터 보낸다. 틀려도 서버가 먼저 말하는
 	// 서비스의 인사말은 탐침의 응답으로 받으므로 놓치지 않는다.
 	if hinted == 0 {
-		match, first, connection := identifyBanner(ctx, address)
+		step := recorder.begin("banner", false)
+		match, first, connection := identifyBanner(ctx, target)
+		recorder.finish(step, match.Name)
 		if match.Name != "" {
 			return match
 		}
@@ -280,9 +324,13 @@ func identifyWithStages(ctx context.Context, address string, connect time.Durati
 			// grpc-go 같은 평문 HTTP/2 서버는 연결하자마자 SETTINGS frame을 보낸다. 그때는 h2c 탐침으로 gRPC인지 가린다.
 			if isHTTP2SettingsFrame(first) {
 				target.wait, target.hinted = identifyStageTimeout, true
-				if match, _, ok := identifyH2C(ctx, target); ok {
+				step := recorder.begin("h2c", false)
+				match, _, ok := identifyH2C(ctx, target)
+				if ok {
+					recorder.finish(step, match.Name)
 					return match
 				}
+				recorder.finish(step, "")
 			}
 			// 서버가 먼저 말했는데 아는 배너가 아니면, 클라이언트가 먼저 말하는 탐침은 맞을 가능성이 낮다.
 			return protocolIdentification{Name: protocolUnknown, FirstBytes: first}
@@ -291,18 +339,25 @@ func identifyWithStages(ctx context.Context, address string, connect time.Durati
 	}
 	var firstReply []byte
 	for index, stage := range stages {
-		if ctx.Err() != nil {
+		if identifyExpired(ctx) {
+			for _, rest := range stages[index:] {
+				recorder.skip([]string{rest.name})
+			}
 			break
 		}
 		target.hinted = index < hinted
 		target.wait = identifyStageWait(stage, target.hinted, connect)
+		step := recorder.begin(stage.name, target.hinted)
 		match, reply, ok := stage.run(ctx, target)
 		if ok {
+			recorder.finish(step, match.Name)
 			return match
 		}
 		if banner, ok := matchBanner(reply); ok {
+			recorder.finish(step, banner.Name)
 			return banner
 		}
+		recorder.finish(step, "")
 		if firstReply == nil && len(reply) > 0 {
 			firstReply = reply
 		}
@@ -349,13 +404,20 @@ func dialIdentify(ctx context.Context, address string, wait time.Duration) (net.
 
 // identifyBanner는 아무것도 보내지 않고 서버가 먼저 보내는 바이트를 읽는다. 받은 바이트는 판별하지 못해도 돌려준다.
 // 서버가 아무것도 보내지 않으면 연결을 닫지 않고 돌려준다. 다음 탐침이 그 연결을 쓴다.
-func identifyBanner(ctx context.Context, address string) (protocolIdentification, []byte, net.Conn) {
-	connection, err := dialIdentify(ctx, address, identifyBannerWait)
+func identifyBanner(ctx context.Context, target identifyTarget) (protocolIdentification, []byte, net.Conn) {
+	started := time.Now()
+	connection, err := dialIdentify(ctx, target.address, identifyBannerWait)
+	exchange := target.recorder.exchange("", false, time.Since(started), err)
 	if err != nil {
 		return protocolIdentification{}, nil, nil
 	}
+	// 기록은 감싼 연결로 읽고, 다음 탐침에는 감싸지 않은 연결을 넘긴다. 다음 탐침이 자기 기록으로 다시 감싼다.
+	reader := net.Conn(connection)
+	if target.recorder != nil {
+		reader = &probeConn{Conn: connection, recorder: target.recorder, exchange: exchange}
+	}
 	buffer := make([]byte, 512)
-	count, readErr := connection.Read(buffer)
+	count, readErr := reader.Read(buffer)
 	first := buffer[:count]
 	if match, ok := matchBanner(first); ok {
 		connection.Close()
@@ -663,6 +725,7 @@ func identifyTLS(ctx context.Context, target identifyTarget) (protocolIdentifica
 		// 서버가 TLS alert로 거절하면 handshake는 실패해도 TLS 서버다. crypto/tls는 받은 alert를 Op "remote error"로 돌려준다.
 		var operation *net.OpError
 		if errors.As(err, &operation) && operation.Op == "remote error" {
+			target.note("handshake rejected with an alert: " + operation.Err.Error())
 			return protocolIdentification{Name: "tls", Detail: "alert: " + operation.Err.Error(), Basis: protocolBasisTLS}, nil, true
 		}
 		// TLS가 아닌 서버의 첫 5바이트다. SSH 같은 인사말이면 driver가 배너로 맞춘다.
@@ -681,6 +744,9 @@ func identifyTLS(ctx context.Context, target identifyTarget) (protocolIdentifica
 		parts = append(parts, "CN "+state.PeerCertificates[0].Subject.CommonName)
 	}
 	tlsDetail := strings.Join(parts, ", ")
+	if target.recorder != nil {
+		noteTLSState(target, state)
+	}
 	inner, ok := identifyInsideTLS(ctx, target, client, state.NegotiatedProtocol)
 	if !ok {
 		return protocolIdentification{Name: "tls", Detail: tlsDetail, Basis: protocolBasisTLS}, nil, true
@@ -691,15 +757,32 @@ func identifyTLS(ctx context.Context, target identifyTarget) (protocolIdentifica
 	return inner, nil, true
 }
 
+// noteTLSState는 TLS 협상 결과와 인증서를 --debug 기록에 남긴다. record는 암호화돼 있어 바이트로는 읽을 수 없다.
+func noteTLSState(target identifyTarget, state tls.ConnectionState) {
+	alpn := state.NegotiatedProtocol
+	if alpn == "" {
+		alpn = "none"
+	}
+	target.note(fmt.Sprintf("handshake %s · cipher %s · ALPN %s", tlsVersion(state.Version), tls.CipherSuiteName(state.CipherSuite), alpn))
+	if len(state.PeerCertificates) == 0 {
+		return
+	}
+	certificate := state.PeerCertificates[0]
+	days := int(time.Until(certificate.NotAfter).Hours() / 24)
+	target.note(fmt.Sprintf("certificate CN %q · issuer %q · expires in %d days · %d names · not verified here", certificate.Subject.CommonName, certificate.Issuer.CommonName, days, len(certificate.DNSNames)))
+}
+
 func identifyInsideTLS(ctx context.Context, target identifyTarget, client *tls.Conn, alpn string) (protocolIdentification, bool) {
 	if err := client.SetDeadline(identifyDeadline(ctx, identifyStageTimeout)); err != nil {
 		return protocolIdentification{}, false
 	}
-	switch alpn {
-	case "h2":
+	if alpn == "h2" {
 		return identifyHTTP2(ctx, target, client)
-	case "http/1.1":
-		if detail, _, ok, _ := httpExchange(client, target.host); ok {
+	}
+	// TLS 안쪽의 평문 교환은 따로 기록한다. 바깥 연결의 기록은 암호화된 record다.
+	plain := target.record(client, "inside TLS")
+	if alpn == "http/1.1" {
+		if detail, _, ok, _ := httpExchange(plain, target.host); ok {
 			return protocolIdentification{Name: "https", Detail: detail}, true
 		}
 		return protocolIdentification{}, false
@@ -708,7 +791,7 @@ func identifyInsideTLS(ctx context.Context, target identifyTarget, client *tls.C
 		return protocolIdentification{}, false
 	}
 	buffer := make([]byte, 512)
-	if count, _ := client.Read(buffer); count > 0 {
+	if count, _ := plain.Read(buffer); count > 0 {
 		if banner, ok := matchBanner(buffer[:count]); ok {
 			if name, secure := tlsBannerNames[banner.Name]; secure {
 				banner.Name = name
@@ -720,7 +803,7 @@ func identifyInsideTLS(ctx context.Context, target identifyTarget, client *tls.C
 	// Redis PING을 HTTP 요청보다 먼저 보낸다. Redis는 Host: header를 받으면 보안 경고를 log에 남긴다(jw-server의 Redis에서
 	// 확인했다). HTTPS 서버는 PING에 400으로 답하므로 그 응답으로 https를 판정한다.
 	inner := identifyTarget{open: func(ctx context.Context, wait time.Duration) (net.Conn, error) {
-		return client, client.SetDeadline(identifyDeadline(ctx, wait))
+		return plain, client.SetDeadline(identifyDeadline(ctx, wait))
 	}}
 	reply := identifyExchange(ctx, inner, identifyStageTimeout, []byte(redisPing))
 	if line := bannerFirstLine(reply); isRedisReply(line) {
@@ -740,7 +823,7 @@ func identifyInsideTLS(ctx context.Context, target identifyTarget, client *tls.C
 
 // identifyHTTPOverTLS는 새 TLS 연결로 GET / 를 보낸다. 앞의 연결은 PING을 받아 HTTPS 서버라도 닫혔을 수 있다.
 func identifyHTTPOverTLS(ctx context.Context, target identifyTarget) (protocolIdentification, bool) {
-	connection, err := dialIdentify(ctx, target.address, identifyStageTimeout)
+	connection, err := target.dial(ctx, identifyStageTimeout, "new TLS connection")
 	if err != nil {
 		return protocolIdentification{}, false
 	}
@@ -749,7 +832,7 @@ func identifyHTTPOverTLS(ctx context.Context, target identifyTarget) (protocolId
 	if err := client.HandshakeContext(ctx); err != nil {
 		return protocolIdentification{}, false
 	}
-	if detail, _, ok, _ := httpExchange(client, target.host); ok {
+	if detail, _, ok, _ := httpExchange(target.record(client, "inside TLS"), target.host); ok {
 		return protocolIdentification{Name: "https", Detail: detail}, true
 	}
 	return protocolIdentification{}, false
@@ -764,11 +847,12 @@ func identifyHTTP2(ctx context.Context, target identifyTarget, client *tls.Conn)
 		ForceAttemptHTTP2: true,
 	}
 	defer transport.CloseIdleConnections()
-	return grpcHealthRoundTrip(ctx, transport, "https://"+target.address)
+	return grpcHealthRoundTrip(ctx, transport, "https://"+target.address, target.note)
 }
 
 // grpcHealthRoundTrip은 transport로 gRPC health check 요청을 보내고 응답으로 grpc와 그 밖의 HTTP/2 서버(https)를 가린다.
-func grpcHealthRoundTrip(ctx context.Context, transport *http.Transport, base string) (protocolIdentification, bool) {
+// note에는 --debug 기록에 남길 요청과 응답을 보낸다.
+func grpcHealthRoundTrip(ctx context.Context, transport *http.Transport, base string, note func(string)) (protocolIdentification, bool) {
 	// gRPC 메시지 하나: 압축 안 함(0)과 길이 0. health check의 빈 요청이다.
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/grpc.health.v1.Health/Check", bytes.NewReader(make([]byte, 5)))
 	if err != nil {
@@ -777,8 +861,10 @@ func grpcHealthRoundTrip(ctx context.Context, transport *http.Transport, base st
 	request.Header.Set("Content-Type", "application/grpc")
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", "edc")
+	note("request POST /grpc.health.v1.Health/Check · content-type application/grpc · body 5 B (an empty gRPC message)")
 	response, err := transport.RoundTrip(request)
 	if err != nil {
+		note("no HTTP/2 response: " + err.Error())
 		return protocolIdentification{}, false
 	}
 	defer response.Body.Close()
@@ -786,7 +872,8 @@ func grpcHealthRoundTrip(ctx context.Context, transport *http.Transport, base st
 	if server := response.Header.Get("Server"); server != "" {
 		parts = append(parts, "server "+server)
 	}
-	if strings.HasPrefix(response.Header.Get("Content-Type"), "application/grpc") || response.Header.Get("Grpc-Status") != "" {
+	contentType := response.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "application/grpc") || response.Header.Get("Grpc-Status") != "" {
 		io.Copy(io.Discard, io.LimitReader(response.Body, identifyReadLimit))
 		status := response.Header.Get("Grpc-Status")
 		if status == "" {
@@ -795,8 +882,10 @@ func grpcHealthRoundTrip(ctx context.Context, transport *http.Transport, base st
 		if status != "" {
 			parts = append(parts, "grpc-status "+status)
 		}
+		note(fmt.Sprintf("response %s · content-type %s · grpc-status %s (%s)", parts[0], contentType, status, grpcStatusNames[status]))
 		return protocolIdentification{Name: "grpc", Detail: strings.Join(parts, ", ")}, true
 	}
+	note(fmt.Sprintf("response %s · content-type %q · no grpc-status", strings.Join(parts, " · "), contentType))
 	return protocolIdentification{Name: "https", Detail: strings.Join(parts, ", ")}, true
 }
 
@@ -818,7 +907,7 @@ func identifyHTTP(ctx context.Context, target identifyTarget) (protocolIdentific
 	connection.Close()
 	// 바로 닫은 서버(goloop 등)에는 다시 보내지 않는다. 연결 수 제한이 있는 서버에서 연결을 아낀다.
 	if waited && host == "" {
-		retry, err := dialIdentify(ctx, target.address, target.wait)
+		retry, err := target.dial(ctx, target.wait, "retry with a Host: header")
 		if err != nil {
 			return protocolIdentification{}, nil, false
 		}

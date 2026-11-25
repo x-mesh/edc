@@ -35,6 +35,11 @@ func probeDNS(ctx context.Context, name string) Result {
 }
 
 func probeTCP(ctx context.Context, address string) Result {
+	return probeTCPInspect(ctx, address, nil)
+}
+
+// probeTCPInspect는 probeTCP와 같고, 연결을 닫기 전에 inspect를 부른다. tcp check --debug가 연결 시간과 커널의 TCP 정보를 읽는다.
+func probeTCPInspect(ctx context.Context, address string, inspect func(net.Conn, time.Duration)) Result {
 	started := time.Now()
 	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -42,6 +47,9 @@ func probeTCP(ctx context.Context, address string) Result {
 	}
 	defer connection.Close()
 	duration := time.Since(started)
+	if inspect != nil {
+		inspect(connection, duration)
+	}
 	return Result{
 		Probe: "tcp.check", Status: latencyStatus(duration), StartedAt: started.UTC(),
 		DurationMS: duration.Milliseconds(),

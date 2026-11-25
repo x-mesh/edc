@@ -185,6 +185,12 @@ func errorRepeatsResultLine(result Result) bool {
 
 func printResultDetailWith(writer io.Writer, result Result, verbose, color, lineAbove bool) {
 	printCollectionDetail(writer, result, verbose, color)
+	// --debug 기록은 그것을 보려고 준 옵션이므로 -v 없이 보인다.
+	if len(result.Debug) > 0 {
+		for _, line := range formatDebugLines(result.Debug, color) {
+			fmt.Fprintln(writer, line)
+		}
+	}
 	if result.Status == StatusFail {
 		box := result
 		if lineAbove && errorRepeatsResultLine(result) {

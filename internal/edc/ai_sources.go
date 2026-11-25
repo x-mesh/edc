@@ -744,25 +744,35 @@ func (scanner *aiTokenScanner) readFile(path string, file *aiScanFile, oldest ti
 		// 파일이 잘렸거나 새로 쓰였다. 처음부터 다시 읽는다.
 		*file = aiScanFile{}
 	}
-	// io.ReadAll은 버퍼를 두 배씩 늘리며 복사하고 지운다. 크기를 아는 파일이라 한 번에 잡는다.
-	data := make([]byte, info.Size()-file.offset)
-	read, err := handle.ReadAt(data, file.offset)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
+	// 처음 추적하는 세션 파일은 수백 MB일 수 있다. 한 번에 읽으면 시작할 때 그만큼 heap을 잡고, runtime이 그 메모리를 곧바로
+	// 돌려주지 않아 RSS가 수백 MB로 남는다. 버퍼 크기만큼씩 읽고, 버퍼보다 긴 줄만 따로 이어 붙인다.
+	remaining := info.Size() - file.offset
+	reader := bufio.NewReaderSize(io.NewSectionReader(handle, file.offset, remaining), int(min(remaining, aiReadChunk)))
+	var long []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			long = append(long, chunk...)
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		record := chunk
+		if long != nil {
+			record = append(long, chunk...)
+		}
+		line(file, record[:len(record)-1], oldest)
+		file.offset += int64(len(record))
+		long = nil
 	}
-	data = data[:read]
-	end := bytes.LastIndexByte(data, '\n')
-	if end < 0 {
-		return nil
-	}
-	for rest := data[:end+1]; len(rest) > 0; {
-		cut := bytes.IndexByte(rest, '\n')
-		line(file, rest[:cut], oldest)
-		rest = rest[cut+1:]
-	}
-	file.offset += int64(end + 1)
-	return nil
 }
+
+// aiReadChunk는 세션 파일을 읽는 버퍼 크기다.
+const aiReadChunk = 1 << 20
 
 func (scanner *aiTokenScanner) add(provider string, at, oldest time.Time, usage aiUsage) {
 	if usage.empty() || at.Before(oldest) {

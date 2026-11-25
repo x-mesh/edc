@@ -128,6 +128,25 @@ func TestAIScanFindsNewFilesOnTheNextWalk(t *testing.T) {
 	}
 }
 
+// 세션 파일은 버퍼 크기씩 나눠 읽는다. 버퍼보다 긴 줄도 한 줄로 읽고, 줄바꿈이 없는 마지막 줄은 다음 scan으로 미룬다.
+func TestAIScanReadsLinesLongerThanTheBuffer(t *testing.T) {
+	codexDir, now := t.TempDir(), time.Now()
+	at := aiFixtureTime(now)
+	record := func(total int, padding int) string {
+		return `{"timestamp":"` + at + `","pad":"` + strings.Repeat("x", padding) + `","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":` + strconv.Itoa(total) + `,"output_tokens":0,"total_tokens":` + strconv.Itoa(total) + `}}}}`
+	}
+	path := filepath.Join(codexDir, "sessions", "long.jsonl")
+	writeAIFixture(t, path, record(40, 10)+"\n", record(70, aiReadChunk+100)+"\n", record(90, aiReadChunk/2))
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 70 {
+		t.Fatalf("a line longer than the buffer: codex tokens = %d, want 70", got)
+	}
+	appendAIFixture(t, path, "\n")
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 90 {
+		t.Fatalf("after the newline: codex tokens = %d, want 90", got)
+	}
+}
+
 func TestParseAIClaudeUsageKeepsKnownWindows(t *testing.T) {
 	windows, err := parseAIClaudeUsage([]byte(`{
 		"five_hour": {"utilization": 22, "resets_at": "2026-09-30T08:59:59.843792+00:00"},

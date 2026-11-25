@@ -31,6 +31,7 @@ cli:
     profile_value: "--profile takes default or full"
     min_days_range: "--min-days must be 0 or more"
     tcp_identify_conflict: "--identify works only with a single check: remove -w, --diagnose, --count, --interval, and --peer"
+    identify_value: "--identify takes no value, false, or a time such as --identify=10s: %s"
     quality_server: "--server must be an absolute http or https URL with a host and no user info: %s"
     expect_status_range: "--expect-status must be between 100 and 599"
     http_header: "-H takes Name: value, with a valid header name and no line break"

@@ -31,6 +31,7 @@ cli:
     profile_value: "--profile은 default 또는 full이어야 합니다"
     min_days_range: "--min-days는 0 이상이어야 합니다"
     tcp_identify_conflict: "--identify는 한 번 확인할 때만 쓸 수 있습니다. -w, --diagnose, --count, --interval, --peer를 빼세요"
+    identify_value: "--identify는 값 없이 쓰거나, false, 또는 --identify=10s 같은 시간을 받습니다: %s"
     quality_server: "--server는 host가 있고 사용자 정보가 없는 http 또는 https 절대 URL이어야 합니다: %s"
     expect_status_range: "--expect-status는 100에서 599 사이여야 합니다"
     http_header: "-H에는 Name: value 형식으로, 올바른 header 이름과 줄바꿈 없는 값을 줍니다"

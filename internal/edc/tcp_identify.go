@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -27,8 +28,15 @@ const (
 	identifyBannerWait = 500 * time.Millisecond
 	// identifyStageTimeout은 탐침 한 단계의 상한이다. 모르는 서버가 답하지 않아도 다음 탐침으로 넘어가게 한다.
 	identifyStageTimeout = time.Second
+	// identifyTotalTimeout은 판별 전체의 기본 상한이다. 연결만 받고 답하지 않는 서버에서 단계마다 기다린 시간이 쌓여, 연결
+	// 시간이 150ms일 때 10초를 넘었다. 측정한 정상 판별은 모두 1.2초 안에 끝났다. 부족하면 --identify=10s로 늘린다.
+	identifyTotalTimeout = 3 * time.Second
+	// identifySuggestedLimit은 unknown일 때 next로 안내하는 상한이다.
+	identifySuggestedLimit = 10 * time.Second
 	// identifyTLSBannerWait는 ALPN이 없는 TLS 연결에서 안쪽 인사말(imaps, pop3s, smtps)을 기다리는 시간이다.
 	identifyTLSBannerWait = 300 * time.Millisecond
+	// identifyBodyWait는 HTTP 400 응답의 header 뒤에 따로 오는 본문을 기다리는 시간이다. ClickHouse native port를 가린다.
+	identifyBodyWait = 200 * time.Millisecond
 	// identifyReadLimit은 탐침 하나가 읽는 바이트의 상한이다.
 	identifyReadLimit = 4096
 	// identifyPreviewBytes는 판별하지 못한 응답에서 결과에 남기는 앞부분이다.
@@ -57,6 +65,15 @@ type protocolIdentification struct {
 	FirstBytes []byte
 	// Retried는 탐침이 응답 없이 끊겨 다시 보낸 적이 있는지다.
 	Retried bool
+	// TimedOut은 판별이 상한(Limit)에 걸려 남은 단계를 보내지 못하고 끝났는지다.
+	TimedOut bool
+	// NoReply는 모든 단계를 보냈지만 어떤 탐침에도 바이트로 답하지 않았는지다. 느리게 답하는 서버도 여기에 든다.
+	NoReply bool
+	// Waited는 어떤 탐침이 답을 기다리다 시간이 다 됐는지다. false면 모든 탐침이 바로 끊겼다.
+	Waited bool
+	Limit  time.Duration
+	// Suggest가 0이 아니면 그 상한으로 다시 실행하라고 next에 안내한다.
+	Suggest time.Duration
 	// Metrics는 프로토콜마다 더 읽은 값이다. JSON 결과의 metrics에 그대로 더한다.
 	Metrics map[string]interface{}
 	// Facts는 Detail 대신 상세 패널에 보일 줄이다. 비어 있으면 Detail을 한 줄로 보인다.
@@ -98,8 +115,14 @@ var identifyStages = []identifyStage{
 	{name: "postgresql", ports: []int{5432, 6432}, run: identifyPostgreSQL},
 	{name: "tls", ports: []int{443, 465, 636, 853, 993, 995, 6443, 8443, 9443}, run: identifyTLS},
 	{name: "mongodb", ports: []int{27017, 27018, 27019}, run: identifyMongoDB},
-	{name: "http", ports: []int{80, 3000, 5000, 8000, 8008, 8080, 8888, 9000, 9200}, slow: true, run: identifyHTTP},
+	{name: "http", ports: []int{80, 3000, 5000, 8000, 8008, 8080, 8123, 8888, 9000, 9200}, slow: true, run: identifyHTTP},
 	{name: protocolNameGoloopP2P, ports: []int{7100}, run: identifyGoloop},
+	// 아래는 tcp_identify_protocols.go의 탐침이다. goloop 뒤에 두는 이유는 그 파일 머리에 있다.
+	{name: "h2c", ports: []int{50051}, run: identifyH2C},
+	{name: "amqp", ports: []int{5672}, run: identifyAMQP},
+	{name: "kafka", ports: []int{9092}, run: identifyKafka},
+	{name: "mqtt", ports: []int{1883}, run: identifyMQTT},
+	{name: "cassandra", ports: []int{9042}, run: identifyCassandra},
 }
 
 // identifySlowWait는 힌트 없는 slow 탐침의 최소 대기다.
@@ -135,17 +158,93 @@ func identifyStageWait(stage identifyStage, hinted bool, connect time.Duration) 
 // 맞지 않는 바이트를 받은 서버는 대개 연결을 끊어서, 한 연결에 이어 보내면 뒤 탐침의 결과가 흐려지기 때문이다.
 // connect는 tcp check가 잰 연결 시간이다. 짧은 탐침의 대기 상한을 여기서 정한다.
 func identifyProtocol(ctx context.Context, address string, connect time.Duration) protocolIdentification {
+	return identifyProtocolWith(ctx, address, connect, identifyOptions{})
+}
+
+// identifyFlag는 --identify 값이다. 값 없이 쓰거나 true면 기본 상한으로 판별하고, false면 판별하지 않으며, --identify=10s처럼
+// 시간을 주면 그 상한으로 판별한다. bool처럼 받는 flag라 시간은 -w=5m처럼 =로 붙여 써야 한다.
+type identifyFlag struct {
+	on    bool
+	limit time.Duration
+}
+
+func (value *identifyFlag) String() string {
+	if value == nil || !value.on {
+		return "false"
+	}
+	if value.limit > 0 {
+		return value.limit.String()
+	}
+	return "true"
+}
+
+func (value *identifyFlag) Set(text string) error {
+	switch text {
+	case "true":
+		*value = identifyFlag{on: true}
+		return nil
+	case "false":
+		*value = identifyFlag{}
+		return nil
+	}
+	limit, err := parseFlagDuration(text)
+	if err != nil || limit <= 0 {
+		return errors.New(T("cli.error.identify_value", text))
+	}
+	*value = identifyFlag{on: true, limit: limit}
+	return nil
+}
+
+func (value *identifyFlag) IsBoolFlag() bool { return true }
+
+// identifyOptions는 --identify=10s로 준 값이다. limit이 0이면 기본 상한을 쓴다. 시간을 직접 주면 patient로, 단계마다
+// 짧은 대기 대신 identifyStageTimeout까지 기다린다. 상한만 늘리면 느리게 답하는 서버를 단계마다 여전히 놓치기 때문이다.
+type identifyOptions struct {
+	limit   time.Duration
+	patient bool
+}
+
+func identifyProtocolWith(ctx context.Context, address string, connect time.Duration, options identifyOptions) protocolIdentification {
 	_, portText, err := net.SplitHostPort(address)
 	if err != nil {
 		return protocolIdentification{Name: protocolUnknown}
 	}
+	limit := options.limit
+	if limit <= 0 {
+		limit = identifyTotalTimeout
+	}
 	port, _ := strconv.Atoi(portText)
 	stages, hinted := identifyOrder(port)
-	return identifyWithStages(ctx, address, connect, stages, hinted)
+	if options.patient {
+		hinted = len(stages)
+	}
+	limited, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	identified := identifyWithStages(limited, address, connect, stages, hinted)
+	identified.Limit = limit
+	if identified.Name != protocolUnknown {
+		return identified
+	}
+	// unknown의 이유를 나눈다. 상한에 걸려 끝까지 보지 못한 것, 어떤 탐침에도 답이 없었던 것, 모르는 바이트를 받은 것이다.
+	// 앞의 둘은 시간을 늘리면 달라질 수 있어 next로 늘린 명령을 안내한다.
+	switch {
+	case errors.Is(limited.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
+		identified.TimedOut = true
+		identified.Suggest = identifySuggestedLimit
+		if options.patient {
+			identified.Suggest = 2 * limit
+		}
+	case len(identified.FirstBytes) == 0:
+		identified.NoReply = true
+		if identified.Waited && !options.patient {
+			identified.Suggest = identifySuggestedLimit
+		}
+	}
+	return identified
 }
 
 // identifyWithStages는 정해진 순서로 탐침을 보낸다. 앞의 hinted개는 port에 맞는 탐침이라 배너를 기다리지 않고 바로 보낸다.
-func identifyWithStages(ctx context.Context, address string, connect time.Duration, stages []identifyStage, hinted int) protocolIdentification {
+func identifyWithStages(ctx context.Context, address string, connect time.Duration, stages []identifyStage, hinted int) (identified protocolIdentification) {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return protocolIdentification{Name: protocolUnknown}
@@ -157,14 +256,21 @@ func identifyWithStages(ctx context.Context, address string, connect time.Durati
 		}
 	}()
 	target := identifyTarget{address: address, host: host}
+	// waited는 어떤 탐침이 답을 기다리다 시간이 다 됐는지다. 모든 탐침이 바로 끊겼다면 시간을 늘려도 결과가 같다.
+	var waited atomic.Bool
 	target.open = func(ctx context.Context, wait time.Duration) (net.Conn, error) {
 		if idle != nil {
 			connection := idle
 			idle = nil
-			return connection, connection.SetDeadline(identifyDeadline(ctx, wait))
+			return &waitWatchConn{Conn: connection, waited: &waited}, connection.SetDeadline(identifyDeadline(ctx, wait))
 		}
-		return dialIdentify(ctx, address, wait)
+		connection, err := dialIdentify(ctx, address, wait)
+		if err != nil {
+			return nil, err
+		}
+		return &waitWatchConn{Conn: connection, waited: &waited}, nil
 	}
+	defer func() { identified.Waited = waited.Load() }()
 	// port가 클라이언트가 먼저 말하는 프로토콜을 가리키면 배너를 기다리지 않고 그 탐침부터 보낸다. 틀려도 서버가 먼저 말하는
 	// 서비스의 인사말은 탐침의 응답으로 받으므로 놓치지 않는다.
 	if hinted == 0 {
@@ -173,6 +279,13 @@ func identifyWithStages(ctx context.Context, address string, connect time.Durati
 			return match
 		}
 		if len(first) > 0 {
+			// grpc-go 같은 평문 HTTP/2 서버는 연결하자마자 SETTINGS frame을 보낸다. 그때는 h2c 탐침으로 gRPC인지 가린다.
+			if isHTTP2SettingsFrame(first) {
+				target.wait, target.hinted = identifyStageTimeout, true
+				if match, _, ok := identifyH2C(ctx, target); ok {
+					return match
+				}
+			}
 			// 서버가 먼저 말했는데 아는 배너가 아니면, 클라이언트가 먼저 말하는 탐침은 맞을 가능성이 낮다.
 			return protocolIdentification{Name: protocolUnknown, FirstBytes: first}
 		}
@@ -481,6 +594,19 @@ func matchBanner(first []byte) (protocolIdentification, bool) {
 			return banner("smtp")
 		}
 		return banner("smtp/ftp")
+	case strings.HasPrefix(line, "INFO {"):
+		detail := "NATS"
+		if version := natsBannerVersion(line); version != "" {
+			detail = "version " + version
+		}
+		return protocolIdentification{Name: "nats", Detail: detail, Basis: protocolBasisBanner}, true
+	// ClickHouse의 native port는 HTTP 요청을 받으면 이 문장으로 답한다.
+	case strings.HasPrefix(line, "Port ") && strings.Contains(line, "clickhouse-client"):
+		return protocolIdentification{Name: "clickhouse", Detail: line, Basis: protocolBasisReply}, true
+	}
+	// AMQP broker는 맞지 않는 protocol header를 받으면 자기 header를 보내고 끊는다. 다른 탐침의 응답으로 오기도 한다.
+	if detail, ok := amqpHeaderDetail(first); ok {
+		return protocolIdentification{Name: "amqp", Detail: detail, Basis: protocolBasisReply}, true
 	}
 	if version, ok := identifyMySQLGreeting(first); ok {
 		return protocolIdentification{Name: "mysql", Detail: version, Basis: protocolBasisBanner}, true
@@ -522,7 +648,7 @@ func identifyTLSConfig(host string, protocols []string) *tls.Config {
 }
 
 // tlsBannerNames는 TLS 안에서 인사말을 보내는 서비스의 이름이다.
-var tlsBannerNames = map[string]string{"imap": "imaps", "pop3": "pop3s", "smtp": "smtps", "ftp": "ftps", "smtp/ftp": "smtps/ftps"}
+var tlsBannerNames = map[string]string{"imap": "imaps", "pop3": "pop3s", "smtp": "smtps", "ftp": "ftps", "smtp/ftp": "smtps/ftps", "amqp": "amqps"}
 
 // identifyTLS는 TLS handshake를 시도하고, 성공하면 그 안쪽 프로토콜까지 찾는다.
 //   - ALPN h2: HTTP/2 요청 하나로 gRPC와 HTTPS를 가린다.
@@ -640,8 +766,13 @@ func identifyHTTP2(ctx context.Context, target identifyTarget, client *tls.Conn)
 		ForceAttemptHTTP2: true,
 	}
 	defer transport.CloseIdleConnections()
+	return grpcHealthRoundTrip(ctx, transport, "https://"+target.address)
+}
+
+// grpcHealthRoundTrip은 transport로 gRPC health check 요청을 보내고 응답으로 grpc와 그 밖의 HTTP/2 서버(https)를 가린다.
+func grpcHealthRoundTrip(ctx context.Context, transport *http.Transport, base string) (protocolIdentification, bool) {
 	// gRPC 메시지 하나: 압축 안 함(0)과 길이 0. health check의 빈 요청이다.
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+target.address+"/grpc.health.v1.Health/Check", bytes.NewReader(make([]byte, 5)))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/grpc.health.v1.Health/Check", bytes.NewReader(make([]byte, 5)))
 	if err != nil {
 		return protocolIdentification{}, false
 	}
@@ -723,6 +854,7 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 		return "", []byte(status), false, status == "" && errors.As(err, &timeout) && timeout.Timeout()
 	}
 	parts := []string{strings.TrimSpace(status)}
+	clickhouse, emptyBody := false, false
 	for err == nil {
 		var line string
 		line, err = reader.ReadString('\n')
@@ -730,9 +862,35 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 		if line == "" {
 			break
 		}
-		if name, value, ok := strings.Cut(line, ":"); ok && strings.EqualFold(name, "server") {
+		name, value, ok := strings.Cut(line, ":")
+		switch {
+		case !ok:
+		case strings.EqualFold(name, "server"):
 			parts = append(parts, "server "+strings.TrimSpace(value))
-			break
+		case strings.EqualFold(name, "content-length"):
+			emptyBody = strings.TrimSpace(value) == "0"
+		// ClickHouse의 HTTP 인터페이스는 Server header 대신 X-ClickHouse-Summary 같은 header를 보낸다(26.3에서 확인).
+		case !clickhouse && len(name) > len("X-ClickHouse-") && strings.EqualFold(name[:len("X-ClickHouse-")], "X-ClickHouse-"):
+			clickhouse = true
+			parts = append(parts, "ClickHouse")
+		}
+	}
+	// ClickHouse의 native port는 HTTP 요청에 400과 "Port 9000 is for clickhouse-client program" 본문으로 답한다. 본문 첫 줄을
+	// HTTP가 아닌 응답으로 돌려주면 matchBanner가 clickhouse로 맞춘다. 이 응답에는 Content-Length가 없고 본문이 header와 다른
+	// 조각으로 올 수 있다. header와 함께 받은 바이트가 없으면 identifyBodyWait만 기다린다. 본문 없는 400을 보내고 연결을 열어
+	// 둔 서버에서 단계의 상한까지 기다리지 않게 한다.
+	if err == nil && strings.Contains(status, " 400 ") && !emptyBody {
+		if reader.Buffered() == 0 {
+			connection.SetReadDeadline(time.Now().Add(identifyBodyWait))
+		}
+		for range 2 {
+			line, readErr := reader.ReadString('\n')
+			if line = strings.TrimSpace(line); strings.Contains(line, "clickhouse-client") {
+				return "", []byte(line), false, false
+			}
+			if readErr != nil {
+				break
+			}
 		}
 	}
 	return strings.Join(parts, ", "), nil, true, false
@@ -1155,6 +1313,21 @@ func annotateProtocol(result Result, identified protocolIdentification, verbose 
 			}
 			result.Metrics["protocol_first_bytes"] = hex.EncodeToString(identified.FirstBytes)
 			facts = append(facts, protocolFactLine("first bytes", spacedHex(preview)))
+		}
+		if identified.TimedOut {
+			result.Metrics["protocol_timed_out"] = true
+			facts = append(facts, protocolFactLine("stopped", fmt.Sprintf("after %s, before every step ran", identified.Limit)))
+		}
+		if identified.NoReply {
+			result.Metrics["protocol_no_reply"] = true
+			reason := "the server closed every probe without a reply"
+			if identified.Waited {
+				reason = "none to any probe, or slower than each wait"
+			}
+			facts = append(facts, protocolFactLine("replies", reason))
+		}
+		if address, _ := result.Metrics["address"].(string); identified.Suggest > 0 && address != "" {
+			result.Next = fmt.Sprintf("edc tcp check --identify=%s %s", identified.Suggest, address)
 		}
 	} else {
 		detail := protocolDetailText(identified.Detail)

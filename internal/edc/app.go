@@ -324,9 +324,9 @@ func runTCP(args []string, version string) int {
 	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer"):
 		return runTCPDiagnose(args[1:], version)
 	}
-	identify, verbose := true, false
+	identify, verbose := identifyFlag{on: true}, false
 	flags := probeFlags{prompt: T("cli.prompt.host_port"), bind: func(set *flag.FlagSet) {
-		set.BoolVar(&identify, "identify", true, T("command.tcp.option.identify"))
+		set.Var(&identify, "identify", T("command.tcp.option.identify"))
 	}, parsed: func(options commonOptions) error {
 		verbose = options.verbose
 		return nil
@@ -336,8 +336,9 @@ func runTCP(args []string, version string) int {
 			return resultFromError("tcp.check", time.Now(), "input", errors.New(T("cli.error.host_port_required", target)))
 		}
 		result := probeTCP(ctx, target)
-		if identify && result.Error == nil {
-			result = annotateProtocol(result, identifyProtocol(ctx, target, time.Duration(result.DurationMS)*time.Millisecond), verbose)
+		if identify.on && result.Error == nil {
+			options := identifyOptions{limit: identify.limit, patient: identify.limit > 0}
+			result = annotateProtocol(result, identifyProtocolWith(ctx, target, time.Duration(result.DurationMS)*time.Millisecond, options), verbose)
 		}
 		return result
 	})

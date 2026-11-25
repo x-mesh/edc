@@ -3,7 +3,7 @@ description: Release edc (pick version, verify, tag, write release notes)
 argument-hint: "[version]"
 ---
 
-# /release-edc
+# /release
 
 Call the `edc-release` skill with the Skill tool to release edc. Follow the skill procedure. Do not copy the procedure into this file.
 

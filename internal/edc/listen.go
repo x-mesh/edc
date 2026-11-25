@@ -478,8 +478,12 @@ func listenProcessLabel(socket listenSocket, home string) string {
 			return ""
 		}
 		label = filepath.Base(args[0])
-	// Raycast Backend처럼 argv[0]을 제목으로 바꿔 쓴 process는 그 제목이 무엇인지 알려 준다.
+	// Raycast Backend처럼 argv[0]을 제목으로 바꿔 쓴 process는 그 제목이 무엇인지 알려 준다. 제목도 process가 마음대로
+	// 쓰므로, 비밀 이름이나 URL 자격 증명처럼 보이는 낱말이 있으면 보이지 않는다.
 	case !strings.HasPrefix(program, "/"):
+		if listenURLCredential.MatchString(program) || slices.ContainsFunc(strings.FieldsFunc(program, func(r rune) bool { return r == ' ' || r == '=' || r == ':' }), listenSecretFlag.MatchString) {
+			return ""
+		}
 		return topPrintableText(program)
 	default:
 		return ""

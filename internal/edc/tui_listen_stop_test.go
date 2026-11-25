@@ -329,3 +329,18 @@ func TestListenBrowserStopDimsTheBackground(t *testing.T) {
 		t.Fatal("the box title must stay highlighted")
 	}
 }
+
+func TestListenBrowserStopBoxFitsTheScreenWithALongName(t *testing.T) {
+	model, _, _ := listenStopFixture(t)
+	long := strings.Repeat("very-long-process-name-", 8)
+	model.items[0].Sockets[0].Process = long
+	model.sockets = append(model.sockets, listenSocket{Proto: "tcp", Port: 8080, Address: "::", Process: long, PID: "101"})
+	model.rebuild()
+	model.openStop = func(int, string, time.Time) (listenStopProcess, error) { return &fakeListenStop{}, nil }
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 8})
+	model, _ = listenBrowserKey(next.(listenBrowser), "S")
+	box := model.stopBox()
+	if len(box) > 8 || !strings.Contains(strings.Join(box, "\n"), confirmNoLabel()) || !strings.HasPrefix(box[len(box)-1], "└") {
+		t.Fatalf("box must fit 8 rows and keep the answers and the border:\n%s", strings.Join(box, "\n"))
+	}
+}

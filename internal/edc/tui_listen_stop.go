@@ -131,8 +131,18 @@ func (model listenBrowser) stopBox() []string {
 		top = "┌" + richPaint(title, richMagenta, true) + rest
 	}
 	bottom := "└" + strings.Repeat("─", inner) + "┘"
+	wrapped := strings.Split(ansi.Wrap(model.stop.question, inner-2, ""), "\n")
+	// 테두리 두 줄과 선택지 한 줄, 안내 한 줄을 뺀 높이를 넘는 질문은 잘라 상자가 화면보다 높아지지 않게 한다.
+	room := max(1, model.height-3)
+	if model.stop.note != "" {
+		room = max(1, room-1)
+	}
+	if len(wrapped) > room {
+		wrapped = wrapped[:room]
+		wrapped[room-1] = ansi.Truncate(wrapped[room-1], inner-3, "") + "…"
+	}
 	var question []string
-	for _, line := range strings.Split(ansi.Wrap(model.stop.question, inner-2, ""), "\n") {
+	for _, line := range wrapped {
 		if color {
 			line = richBold(line)
 		}

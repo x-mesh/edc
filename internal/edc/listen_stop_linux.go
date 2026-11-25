@@ -87,9 +87,14 @@ func (process *linuxListenStop) signal(signal syscall.Signal) error {
 		return listenStopSyscallError(err)
 	}
 	// Linux 5.1보다 오래된 커널에는 pidfd_send_signal이 없다. fd로 stat을 열 수 있으면 연 때의 process가 아직 PID를 쥐고
-	// 있다. 그 확인과 kill 사이에 process가 끝나고 PID가 다시 쓰일 틈은 남는다.
-	if _, err := process.read("stat"); err != nil {
+	// 있다. 이미 끝나 거두기만 기다리는 zombie는 곧 PID를 내놓으므로 끝난 것으로 본다. 살아 있는 process가 확인과 kill 사이에
+	// 끝나고, 거둬지고, PID가 한 바퀴 돌아 다시 쓰일 틈은 남는다.
+	stat, err := process.read("stat")
+	if err != nil {
 		return err
+	}
+	if parsed, ok := parseLinuxProcessStat(process.pid, stat); !ok || parsed.State == "Z" {
+		return errListenStopGone
 	}
 	return listenStopSyscallError(syscall.Kill(process.pid, signal))
 }

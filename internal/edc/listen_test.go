@@ -274,6 +274,8 @@ func TestListenProcessLabel(t *testing.T) {
 		{"interpreter flag first", listenSocket{Process: "node", Args: []string{"node", "--inspect", "app.js"}}, ""},
 		{"interpreter alone", listenSocket{Process: "node", Args: []string{"/usr/bin/node"}}, ""},
 		{"rewritten argv title", listenSocket{Process: "node", Args: []string{"Raycast Backend", "", ""}}, "Raycast Backend"},
+		{"title with a secret name", listenSocket{Process: "node", Args: []string{"worker token=abc123"}}, ""},
+		{"title with a URL credential", listenSocket{Process: "node", Args: []string{"proxy postgres://app:hunter2@db"}}, ""},
 		{"not an interpreter", listenSocket{Process: "nginx", Args: []string{"nginx: master process /usr/sbin/nginx"}}, ""},
 		{"no command", listenSocket{Process: "node"}, ""},
 		{"control characters are replaced", listenSocket{Process: "node", Args: []string{"node", "a\x1b[2Jb.js"}}, "a?[2Jb.js"},

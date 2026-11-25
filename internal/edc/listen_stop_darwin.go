@@ -10,7 +10,8 @@ import (
 )
 
 // darwinListenStop은 잡을 때의 시작 시각을 적어 둔다. macOS에는 pidfd가 없어서, 보내기 직전에 시작 시각을 다시 대조하고
-// kill을 쓴다. 그 대조와 kill 사이에 process가 끝나고 PID가 다시 쓰일 틈은 남는다.
+// kill을 쓴다. 이미 끝난 zombie는 곧 PID를 내놓으므로 보내지 않는다. 살아 있는 process가 대조와 kill 사이에 끝나고,
+// 거둬지고, PID가 한 바퀴 돌아 다시 쓰일 틈은 남는다.
 type darwinListenStop struct {
 	pid   int
 	start unix.Timeval
@@ -33,8 +34,8 @@ func openListenStopProcess(pid int, name string, listed time.Time) (listenStopPr
 }
 
 func (process *darwinListenStop) signal(signal syscall.Signal) error {
-	start, _, ok := darwinProcessStart(process.pid)
-	if !ok {
+	start, zombie, ok := darwinProcessStart(process.pid)
+	if !ok || zombie {
 		return errListenStopGone
 	}
 	if start != process.start {

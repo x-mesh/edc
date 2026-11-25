@@ -21,7 +21,9 @@ import (
 func debugTextFor(t *testing.T, address string, raw bool) (protocolIdentification, string) {
 	t.Helper()
 	recorder := newIdentifyRecorder(time.Now())
-	options := identifyOptions{recorder: recorder}
+	// 시험 서버는 임의의 포트에 있어 포트 힌트가 없으므로 goloop 단계는 배너와 앞 단계의 대기(2초 남짓)가 지난 뒤에 온다. 기본
+	// 상한 3초는 부하가 걸린 CI runner에서 그 앞에서 끝나 goloop 단계를 보내지 못한다. 상한만 키우고 단계별 대기는 그대로 둔다.
+	options := identifyOptions{limit: 30 * time.Second, recorder: recorder}
 	identified := identifyProtocolWith(context.Background(), address, 0, options)
 	_, portText, _ := net.SplitHostPort(address)
 	port := 0

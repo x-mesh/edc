@@ -685,7 +685,7 @@ command:
         - "(ambiguous) is the request time that only calls of an unknown request cover. Such a call occurred during several requests of one process, so edc adds it to no request. A server that handles many requests in one process has more of it."
         - "self is the time of the request that no assigned call covers."
         - "--with adds database traces, for example --with mysql,redis:6380. --port keeps only the requests to that local server port."
-        - "--process limits each trace to that process. It does not reduce the load. A recording of 10 to 20 seconds limits the load."
+        - "--process limits each trace to the process with that name (15 characters or fewer). On a busy host, it lowers the load of trace http and the database traces. A recording of 10 to 20 seconds limits the load."
         - "edc compares only the time range that all the traces recorded. If a trace fails, edc stops and prints no breakdown."
         - "The recordings stay in a directory. edc trace show <dir> prints the same breakdown again. HTTP payload is not recorded."
       show:

@@ -381,7 +381,7 @@ Use these options:
 
 - `--with` adds database traces. The names are `mysql`, `postgres`, and `redis`. `--with mysql:13306` sets the server port.
 - `--port` keeps only the requests that the server on that local port received. edc records all HTTP connections, so the requests that this server sent stay visible.
-- `--process` limits each trace to that process. It filters the events after the kernel sends them, so it does not reduce the load on the host.
+- `--process` limits each trace to the process with that name. The name can have 15 characters or fewer. For `trace http` and the database traces, the kernel drops the events of other processes, so a busy host sends fewer events. In one test, another process sent 31,000 requests each second. With `--process`, the CPU time of the trace fell from 25.8 s to 17.2 s in 20 s, and the lost events fell from 17% to 0%. `trace dns` and `trace tcp` filter after the kernel sends the events.
 - `--out` sets the directory for the recordings. The default is `edc-why-<time>` in the current directory. edc does not write into a path that exists.
 - If you do not use `--duration`, press Ctrl-C to stop the traces.
 

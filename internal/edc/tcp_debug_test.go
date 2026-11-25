@@ -157,6 +157,11 @@ func TestDebugRawReceivedHidesSecrets(t *testing.T) {
 	if got := string(debugRawReceived([]byte("HTTP/1.1 200 OK\r\nSet-Cookie: session=sec"))); got != "HTTP/1.1 200 OK\r\nSet-Cookie:"+strings.Repeat("*", 12) {
 		t.Errorf("cut header: %q", got)
 	}
+	// 1xx 응답 뒤의 최종 응답 header도 가린다.
+	hinted := "HTTP/1.1 103 Early Hints\r\nLink: </a.css>\r\n\r\nHTTP/1.1 200 OK\r\nSet-Cookie: session=secret-value\r\n\r\nbody"
+	if got := string(debugRawReceived([]byte(hinted))); strings.Contains(got, "secret-value") || !strings.Contains(got, "HTTP/1.1 200 OK\r\nSet-Cookie:"+strings.Repeat("*", 21)+"\r\n\r\nbody") {
+		t.Errorf("final response after 1xx: %q", got)
+	}
 	greeting := []byte{0x4a, 0x00, 0x00, 0x00, 0x0a}
 	greeting = append(greeting, "8.0.36\x00"...)
 	greeting = append(greeting, 1, 0, 0, 0)

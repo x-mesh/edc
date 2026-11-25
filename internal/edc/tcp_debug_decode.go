@@ -132,14 +132,20 @@ func debugRawReceived(data []byte) []byte {
 }
 
 // maskHTTPSecretHeaders는 HTTP 응답 header 가운데 httpReplyLines가 숨기는 header의 값을 가린다. 잘린 header는 끝까지 가린다.
+// 103 Early Hints 같은 1xx 응답 뒤에는 다음 응답이 이어지므로, 다음 묶음도 HTTP/로 시작하면 가린다.
 func maskHTTPSecretHeaders(data []byte) {
-	if !bytes.HasPrefix(data, []byte("HTTP/")) {
-		return
+	for bytes.HasPrefix(data, []byte("HTTP/")) {
+		end := bytes.Index(data, []byte("\r\n\r\n"))
+		if end < 0 {
+			maskHTTPHeaderBlock(data, len(data))
+			return
+		}
+		maskHTTPHeaderBlock(data, end)
+		data = data[end+4:]
 	}
-	end := bytes.Index(data, []byte("\r\n\r\n"))
-	if end < 0 {
-		end = len(data)
-	}
+}
+
+func maskHTTPHeaderBlock(data []byte, end int) {
 	start := bytes.IndexByte(data[:end], '\n') + 1
 	for start > 0 && start < end {
 		lineEnd := bytes.IndexByte(data[start:end], '\n')

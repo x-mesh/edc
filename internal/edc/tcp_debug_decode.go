@@ -75,7 +75,7 @@ func exchangeLines(stage string, exchange *debugExchange, raw bool) []debugTextL
 		header := fmt.Sprintf("recv  %%s · %d B in %s", exchange.receivedTotal, debugDuration(exchange.firstReceive-exchange.firstSendOrOpen()))
 		lines = append(lines, firstAndRest(decoded.received, header)...)
 		if raw {
-			lines = append(lines, hexLines(exchange.received, exchange.receivedTotal, decoded.receivedRegions)...)
+			lines = append(lines, hexLines(debugRawReceived(exchange.received), exchange.receivedTotal, decoded.receivedRegions)...)
 		}
 	case exchange.end != "":
 		lines = append(lines, debugTextLine{1, "recv  nothing · " + endText(exchange)})
@@ -113,6 +113,69 @@ func firstAndRest(decoded []string, header string) []debugTextLine {
 		lines = append(lines, debugTextLine{2, line})
 	}
 	return lines
+}
+
+// debugRawReceived는 raw hex로 보일 받은 바이트의 사본이다. 해석 줄에서 숨기는 값(HTTP 쿠키와 인증 header의 값, MySQL 인증
+// salt)은 raw에서도 '*'로 바꾼다.
+func debugRawReceived(data []byte) []byte {
+	masked := bytes.Clone(data)
+	maskHTTPSecretHeaders(masked)
+	maskMySQLSalt(masked)
+	return masked
+}
+
+// maskHTTPSecretHeaders는 HTTP 응답 header 가운데 httpReplyLines가 숨기는 header의 값을 가린다. 잘린 header는 끝까지 가린다.
+func maskHTTPSecretHeaders(data []byte) {
+	if !bytes.HasPrefix(data, []byte("HTTP/")) {
+		return
+	}
+	end := bytes.Index(data, []byte("\r\n\r\n"))
+	if end < 0 {
+		end = len(data)
+	}
+	start := bytes.IndexByte(data[:end], '\n') + 1
+	for start > 0 && start < end {
+		lineEnd := bytes.IndexByte(data[start:end], '\n')
+		if lineEnd < 0 {
+			lineEnd = end
+		} else {
+			lineEnd += start
+		}
+		line := data[start:lineEnd]
+		if colon := bytes.IndexByte(line, ':'); colon >= 0 {
+			switch strings.ToLower(string(line[:colon])) {
+			case "set-cookie", "authorization", "www-authenticate":
+				value := line[colon+1:]
+				value = bytes.TrimSuffix(value, []byte("\r"))
+				for index := range value {
+					value[index] = '*'
+				}
+			}
+		}
+		start = lineEnd + 1
+	}
+}
+
+// maskMySQLSalt는 MySQL handshake v10의 salt 두 조각을 가린다. 위치는 mysqlGreetingLines와 같다.
+func maskMySQLSalt(data []byte) {
+	version, ok := identifyMySQLGreeting(data)
+	if !ok {
+		return
+	}
+	mask := func(from, to int) {
+		for index := from; index < min(to, len(data)); index++ {
+			data[index] = '*'
+		}
+	}
+	position := 5 + len(version) + 1 + 4
+	mask(position, position+8)
+	position += 8 + 1 + 2 + 1 + 2 + 2
+	if position >= len(data) {
+		return
+	}
+	saltLength := int(data[position])
+	position += 1 + 10
+	mask(position, position+max(13, saltLength-8))
 }
 
 // hexLines는 offset, 16바이트 hex, ASCII를 한 줄로 쓴다. 구간이 있으면 구간 이름을 먼저 쓴다.
@@ -690,7 +753,8 @@ func decodeAMQPExchange(exchange *debugExchange) debugDecoded {
 		return decoded
 	}
 	size := int(binary.BigEndian.Uint32(data[3:7]))
-	if 7+size > len(data) || binary.BigEndian.Uint16(data[7:9]) != 10 || binary.BigEndian.Uint16(data[9:11]) != 10 {
+	// Connection.Start는 class·method 4, version 2, server-properties 길이 4바이트를 앞에 둔다. 그보다 짧으면 풀지 않는다.
+	if size < 10 || 7+size > len(data) || binary.BigEndian.Uint16(data[7:9]) != 10 || binary.BigEndian.Uint16(data[9:11]) != 10 {
 		decoded.received = autoReply(data)
 		return decoded
 	}

@@ -1,7 +1,9 @@
 package edc
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -35,8 +37,8 @@ func debugTextFor(t *testing.T, address string, raw bool) (protocolIdentificatio
 
 func TestDebugDecodesEachProtocol(t *testing.T) {
 	t.Parallel()
-	mysqlGreeting := []byte{0x10, 0x00, 0x00, 0x00, 0x0a}
-	mysqlGreeting = append(mysqlGreeting, []byte("8.0.36\x00abcdefgh")...)
+	mysqlGreeting := []byte{0x14, 0x00, 0x00, 0x00, 0x0a}
+	mysqlGreeting = append(mysqlGreeting, []byte("8.0.36\x00\x07\x00\x00\x00abcdefgh")...)
 	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Server", "edc-test")
 		http.SetCookie(writer, &http.Cookie{Name: "session", Value: "secret-value"})
@@ -73,7 +75,7 @@ func TestDebugDecodesEachProtocol(t *testing.T) {
 		{"mqtt", identifyListener(t, fakeMQTT(5, new(atomic.Bool))), []string{"CONNECT · MQTT 3.1.1 · client id edc-", "CONNACK · not authorized (5)"}, nil},
 		{"cassandra", identifyListener(t, fakeCassandra(cassandraOpSupported, cqlSupportedBody())), []string{"OPTIONS · CQL native protocol v4", "SUPPORTED · response v4", "CQL_VERSION: 3.4.7", "COMPRESSION: lz4"}, nil},
 		{"ssh", identifyListener(t, func(c net.Conn) { io.WriteString(c, "SSH-2.0-OpenSSH_9.6 Ubuntu-3\r\n") }), []string{"protocol 2.0 · software OpenSSH_9.6 · comment Ubuntu-3"}, nil},
-		{"mysql", identifyListener(t, func(c net.Conn) { c.Write(mysqlGreeting) }), []string{"MySQL greeting · protocol 10", "server version 8.0.36"}, []string{"abcdefgh"}},
+		{"mysql", identifyListener(t, func(c net.Conn) { c.Write(mysqlGreeting) }), []string{"MySQL greeting · protocol 10", "server version 8.0.36 · connection id 7"}, []string{"abcdefgh"}},
 		{"nats", identifyListener(t, func(c net.Conn) {
 			io.WriteString(c, `INFO {"server_name":"n1","version":"2.10.22","proto":1}`+"\r\n")
 			io.Copy(io.Discard, c)
@@ -91,12 +93,64 @@ func TestDebugDecodesEachProtocol(t *testing.T) {
 					t.Errorf("missing %q in\n%s", want, text)
 				}
 			}
+			// raw hex의 ASCII 열은 16바이트씩 끊기므로, 숨길 값의 앞 4바이트로 본다.
+			_, raw := debugTextFor(t, testCase.address, true)
 			for _, absent := range testCase.absent {
 				if strings.Contains(text, absent) {
 					t.Errorf("%q must be hidden in\n%s", absent, text)
 				}
+				if strings.Contains(raw, absent[:4]) || strings.Contains(raw, hex.EncodeToString([]byte(absent[:4]))) {
+					t.Errorf("%q must be hidden in the raw lines\n%s", absent, raw)
+				}
 			}
 		})
+	}
+}
+
+// raw hex도 해석 줄처럼 쿠키와 인증 header의 값, MySQL 인증 salt를 가린다. 나머지 바이트는 그대로 둔다.
+func TestDebugRawReceivedHidesSecrets(t *testing.T) {
+	t.Parallel()
+	reply := "HTTP/1.1 401 Unauthorized\r\nServer: edc-test\r\nSet-Cookie: session=secret-value\r\nWWW-Authenticate: Bearer realm=\"x\"\r\nauthorization: Basic dXNlcjpwYXNz\r\n\r\nbody"
+	want := "HTTP/1.1 401 Unauthorized\r\nServer: edc-test\r\nSet-Cookie:" + strings.Repeat("*", 21) + "\r\nWWW-Authenticate:" + strings.Repeat("*", 17) + "\r\nauthorization:" + strings.Repeat("*", 19) + "\r\n\r\nbody"
+	if got := string(debugRawReceived([]byte(reply))); got != want {
+		t.Errorf("http:\n got %q\nwant %q", got, want)
+	}
+	// header가 256바이트에서 잘려도 잘린 값은 끝까지 가린다.
+	if got := string(debugRawReceived([]byte("HTTP/1.1 200 OK\r\nSet-Cookie: session=sec"))); got != "HTTP/1.1 200 OK\r\nSet-Cookie:"+strings.Repeat("*", 12) {
+		t.Errorf("cut header: %q", got)
+	}
+	greeting := []byte{0x4a, 0x00, 0x00, 0x00, 0x0a}
+	greeting = append(greeting, "8.0.36\x00"...)
+	greeting = append(greeting, 1, 0, 0, 0)
+	greeting = append(greeting, "abcdefgh"...)
+	greeting = append(greeting, 0, 0xff, 0xff, 0x21, 0x02, 0x00, 0xff, 0xff, 21)
+	greeting = append(greeting, make([]byte, 10)...)
+	greeting = append(greeting, "ijklmnopqrst\x00"...)
+	greeting = append(greeting, "caching_sha2_password\x00"...)
+	masked := debugRawReceived(greeting)
+	for _, secret := range []string{"abcdefgh", "ijklmnopqrst"} {
+		if bytes.Contains(masked, []byte(secret)) {
+			t.Errorf("salt %q is not hidden: %q", secret, masked)
+		}
+	}
+	if !bytes.Contains(masked, []byte("8.0.36")) || !bytes.Contains(masked, []byte("caching_sha2_password")) {
+		t.Errorf("greeting lost other bytes: %q", masked)
+	}
+	if bytes.Contains(greeting, []byte("*")) {
+		t.Error("debugRawReceived changed the received bytes")
+	}
+}
+
+// 선언한 길이가 Connection.Start보다 짧은 AMQP method frame도 panic 없이 풀지 못한 응답으로 둔다.
+func TestDebugAMQPRejectsAShortStartFrame(t *testing.T) {
+	t.Parallel()
+	for size := 4; size <= 9; size++ {
+		frame := []byte{amqpFrameMethod, 0, 0, 0, 0, 0, byte(size), 0, 10, 0, 10}
+		frame = append(frame, make([]byte, size-4)...)
+		decoded := decodeAMQPExchange(&debugExchange{receivedAny: true, received: frame})
+		if len(decoded.received) == 0 || strings.HasPrefix(decoded.received[0], "Connection.Start") {
+			t.Errorf("size %d: %q", size, decoded.received)
+		}
 	}
 }
 

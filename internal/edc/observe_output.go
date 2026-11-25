@@ -63,6 +63,16 @@ func printObserveResult(writer io.Writer, result Result, verbose bool, style inf
 	if style.color {
 		label = richBold(label)
 	}
+	if tag := resultLabelTag(result); tag != "" {
+		if style.color {
+			tagColor := richCyan
+			if tag == protocolUnknown {
+				tagColor = richGray
+			}
+			tag = richPaint(tag, tagColor, false)
+		}
+		label += " " + tag
+	}
 	header := terminalStatus(result.Status, style.color) + "  " + label
 	summary := observeOutputText(result.Summary)
 	line := header + "  " + summary

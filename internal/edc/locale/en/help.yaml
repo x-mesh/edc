@@ -53,6 +53,7 @@ command:
       interval: "time between attempts (default 1s); implies --diagnose"
       peer: "run tcp expect on this host over ssh at the same time and join both results; implies --diagnose"
       wait: "try again every second until it connects (attempt timeout --timeout, default 3s); -w=5m stops after 5 minutes"
+      identify: "on by default: after the connect, send a few probes to name the protocol (banners such as SSH and MySQL, Redis, Memcached, PostgreSQL, TLS and the protocol inside it, MongoDB, HTTP, goloop P2P; a usual port tries its protocol first), and show the detail with -v; the target sees short connections that end before any login; --identify=false skips it"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
       until: "expect: stop 1s after the first SYN (syn), so the reply is recorded, or at the first completed handshake (handshake)"

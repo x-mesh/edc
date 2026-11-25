@@ -156,6 +156,7 @@ observe:
     tcp_connected: "%s 연결 성공 (%s)"
     peer_ip: "연결 IP %s"
     proxy_peer_ip: "proxy 연결 IP %s"
+    protocol_facts: "프로토콜 상세"
     final_request: "최종 요청"
     days_remaining: "%d일 남음"
     http_redirect: "redirect %d회 → %s"

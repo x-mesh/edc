@@ -11,18 +11,43 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// debugTextFor는 address를 기록과 함께 판별하고, --debug 줄을 한 문자열로 이어 돌려준다.
+// debugTextFor는 address를 기록과 함께 판별하고, --debug 줄을 한 문자열로 이어 돌려준다. 힌트 없는 포트의 전체 흐름이라
+// 배너를 기다리고 앞 단계마다 200ms 이상 기다린 뒤에야 뒤쪽 단계에 닿는다. 한 단계의 해석을 보는 시험은 debugTextForStage를 쓴다.
 func debugTextFor(t *testing.T, address string, raw bool) (protocolIdentification, string) {
+	t.Helper()
+	return debugTextWith(t, address, raw, func(recorder *identifyRecorder) protocolIdentification {
+		return identifyProtocolWith(context.Background(), address, 0, identifyOptions{recorder: recorder})
+	})
+}
+
+// debugTextForStage는 stage 하나만 힌트를 받은 것처럼 돌린다. 앞 단계의 대기를 거치지 않고, 이 단계는 응답을 200ms가 아니라
+// 1초(identifyStageTimeout) 기다린다. 부하가 걸린 CI runner에서 시험 서버의 응답이 늦어도 놓치지 않는다. 단계 사이의
+// 흐름(배너, 앞 단계가 기다린 시간, unknown)을 보는 시험은 debugTextFor를 쓴다.
+func debugTextForStage(t *testing.T, address string, raw bool, stage string) (protocolIdentification, string) {
+	t.Helper()
+	index := slices.IndexFunc(identifyStages, func(candidate identifyStage) bool { return candidate.name == stage })
+	if index < 0 {
+		t.Fatalf("no identify stage named %q", stage)
+	}
+	return debugTextWith(t, address, raw, func(recorder *identifyRecorder) protocolIdentification {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return identifyWithStages(ctx, address, 0, identifyStages[index:index+1], 1, recorder)
+	})
+}
+
+func debugTextWith(t *testing.T, address string, raw bool, identify func(*identifyRecorder) protocolIdentification) (protocolIdentification, string) {
 	t.Helper()
 	recorder := newIdentifyRecorder(time.Now())
 	options := identifyOptions{recorder: recorder}
-	identified := identifyProtocolWith(context.Background(), address, 0, options)
+	identified := identify(recorder)
 	_, portText, _ := net.SplitHostPort(address)
 	port := 0
 	for _, digit := range portText {
@@ -85,17 +110,29 @@ func TestDebugDecodesEachProtocol(t *testing.T) {
 		{"https", strings.TrimPrefix(tlsServer.URL, "https://"), []string{"handshake TLS 1.3 · cipher", "certificate CN", "not verified here", "inside TLS"}, nil},
 		{"grpc over h2c", grpc, []string{"request POST /grpc.health.v1.Health/Check", "grpc-status 12 (UNIMPLEMENTED)", "HTTP/2 connection preface, frames SETTINGS"}, nil},
 	}
+	// 배너로 맞는 서버(ssh, mysql, nats, grpc)는 연결하자마자 맞아 단계가 없다. 나머지는 그 단계 하나만 돌려, 앞 단계의 대기와
+	// 200ms 응답 제한에 걸리지 않게 한다.
+	stages := map[string]string{
+		"redis": "redis", "postgresql": "postgresql", "mongodb": "mongodb", "goloop": protocolNameGoloopP2P, "amqp": "amqp",
+		"kafka": "kafka", "mqtt": "mqtt", "cassandra": "cassandra", "http": "http", "https": "tls",
+	}
+	identifyCase := func(t *testing.T, name, address string, raw bool) (protocolIdentification, string) {
+		if stage, ok := stages[name]; ok {
+			return debugTextForStage(t, address, raw, stage)
+		}
+		return debugTextFor(t, address, raw)
+	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			_, text := debugTextFor(t, testCase.address, false)
+			_, text := identifyCase(t, testCase.name, testCase.address, false)
 			for _, want := range testCase.want {
 				if !strings.Contains(text, want) {
 					t.Errorf("missing %q in\n%s", want, text)
 				}
 			}
 			// raw hex의 ASCII 열은 16바이트씩 끊기므로, 숨길 값의 앞 4바이트로 본다.
-			_, raw := debugTextFor(t, testCase.address, true)
+			_, raw := identifyCase(t, testCase.name, testCase.address, true)
 			for _, absent := range testCase.absent {
 				if strings.Contains(text, absent) {
 					t.Errorf("%q must be hidden in\n%s", absent, text)
@@ -173,7 +210,7 @@ func TestDebugExplainsUnknown(t *testing.T) {
 
 func TestDebugRawShowsHexRegions(t *testing.T) {
 	t.Parallel()
-	_, text := debugTextFor(t, identifyListener(t, fakeGoloop), true)
+	_, text := debugTextForStage(t, identifyListener(t, fakeGoloop), true, protocolNameGoloopP2P)
 	for _, want := range []string{"header:", "payload (msgpack):", "footer (FNV-64a, ext):", "0000  00 00 01 00"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in\n%s", want, text)
@@ -185,11 +222,11 @@ func TestDebugRawShowsHexRegions(t *testing.T) {
 func TestDebugFoldsGoloopProbes(t *testing.T) {
 	t.Parallel()
 	address := identifyListener(t, fakeGoloop)
-	_, folded := debugTextFor(t, address, false)
+	_, folded := debugTextForStage(t, address, false, protocolNameGoloopP2P)
 	if count := strings.Count(folded, "SecureRequest (auth"); count != 1 {
 		t.Fatalf("folded output has %d requests:\n%s", count, folded)
 	}
-	_, full := debugTextFor(t, identifyListener(t, fakeGoloop), true)
+	_, full := debugTextForStage(t, identifyListener(t, fakeGoloop), true, protocolNameGoloopP2P)
 	if count := strings.Count(full, "SecureRequest (auth"); count != 3 {
 		t.Fatalf("raw output has %d requests:\n%s", count, full)
 	}
@@ -202,7 +239,7 @@ func TestDebugFoldsGoloopProbes(t *testing.T) {
 func TestDebugFoldShowsRefusedAndSilentProbes(t *testing.T) {
 	t.Parallel()
 	only := map[byte]bool{goloopSuiteECDHE: true}
-	_, text := debugTextFor(t, identifyListener(t, fakeGoloopWith(only, goloopAllSupported)), false)
+	_, text := debugTextForStage(t, identifyListener(t, fakeGoloopWith(only, goloopAllSupported)), false, protocolNameGoloopP2P)
 	for _, want := range []string{"proposed none + chacha → refused (invalid)", "proposed tls + aes128 → refused (invalid)", "proposed ecdhe + aes256 → answered ecdhe + aes256"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in\n%s", want, text)
@@ -234,7 +271,7 @@ func TestDebugDoesNotFoldAwayAChannel(t *testing.T) {
 		connection.Write(goloopTestPacket(goloopSecureResponse, identifyTestPeerID, response))
 		io.Copy(io.Discard, connection)
 	}
-	_, text := debugTextFor(t, identifyListener(t, withChannel), false)
+	_, text := debugTextForStage(t, identifyListener(t, withChannel), false, protocolNameGoloopP2P)
 	if !strings.Contains(text, `channel "foo"`) {
 		t.Fatalf("channel missing in\n%s", text)
 	}

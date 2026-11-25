@@ -422,9 +422,9 @@ func TestIdentifyHTTPRetriesWithHost(t *testing.T) {
 		}
 		io.WriteString(c, "HTTP/1.0 400 Bad request\r\n\r\n")
 	})
-	target := identifyTestTarget(address)
-	target.wait = 300 * time.Millisecond
-	got, _, ok := identifyHTTP(context.Background(), target)
+	// 대기는 기본값(identifyStageTimeout, 1초)을 쓴다. 첫 연결은 Host가 없어 서버가 답하지 않으므로 대기가 다 차야 다시 보내고,
+	// 그만큼 두 번째 연결의 응답을 기다릴 여유도 생긴다. 300ms로 줄이면 부하가 걸린 CI runner에서 그 응답을 놓친다.
+	got, _, ok := identifyHTTP(context.Background(), identifyTestTarget(address))
 	if !ok || got.Name != "http" || got.Detail != "HTTP/1.0 400 Bad request" || connections.Load() != 2 {
 		t.Fatalf("got %+v ok %v after %d connections", got, ok, connections.Load())
 	}

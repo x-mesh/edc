@@ -23,6 +23,8 @@ const (
 	traceWhyCallLimit = 1000
 	// traceWhyCallRows는 경로 하나 아래에 쓰는 하위 호출 행 수다. 나머지는 한 행으로 합친다.
 	traceWhyCallRows = 5
+	// traceWhyCandidateRows는 (ambiguous) 행 아래에 보이는 후보 이름의 수다.
+	traceWhyCandidateRows = 2
 )
 
 var errTraceWhyNoSharedRange = errors.New("the recordings share no time range")
@@ -54,6 +56,9 @@ type traceWhyPath struct {
 	Calls          []traceWhyCall `json:"calls"`
 	AmbiguousCalls uint64         `json:"ambiguous_calls"`
 	AmbiguousMS    float64        `json:"ambiguous_ms"`
+	// AmbiguousCandidates는 이 경로의 요청에 들어갈 수 있었던 가릴 수 없는 호출의 이름이다. 호출은 요청 안에 들어가므로 요청보다
+	// 짧다. 한 호출이 여러 경로의 후보가 될 수 있어서 시간 합은 AmbiguousMS와 맞지 않고, 시간이 큰 순서로 둔다.
+	AmbiguousCandidates []traceWhyCall `json:"ambiguous_candidates,omitempty"`
 	// Parallel은 한 요청 안에서 호출이 겹쳐, 호출 시간의 합이 요청 지연을 넘을 수 있다는 표시다.
 	Parallel bool `json:"parallel"`
 }
@@ -95,7 +100,26 @@ type traceWhyGroup struct {
 	touchedNS      uint64
 	calls          map[traceWhyCallKey]*traceWhyCallSum
 	ambiguousCalls uint64
+	ambiguousNames map[traceWhyCallKey]*traceWhyCallSum
 	parallel       bool
+}
+
+// addAmbiguousName은 가릴 수 없는 호출의 이름을 센다. 이름이 상한을 넘으면 (other)로 묶는다.
+func (group *traceWhyGroup) addAmbiguousName(key traceWhyCallKey, duration uint64) {
+	if group.ambiguousNames == nil {
+		group.ambiguousNames = map[traceWhyCallKey]*traceWhyCallSum{}
+	}
+	sum := group.ambiguousNames[key]
+	if sum == nil && len(group.ambiguousNames) >= traceWhyCallLimit {
+		key = traceWhyCallKey{name: traceGroupOther}
+		sum = group.ambiguousNames[key]
+	}
+	if sum == nil {
+		sum = &traceWhyCallSum{}
+		group.ambiguousNames[key] = sum
+	}
+	sum.calls++
+	sum.ns += duration
 }
 
 // traceWhyParent는 서버가 받은 요청 하나다. covered는 이 요청에 붙은 호출 구간의 합집합이고, touched는 거기에 가릴 수 없는
@@ -304,6 +328,7 @@ func analyzeTraceWhy(files []*traceShowFile, options traceWhyOptions) (traceWhyR
 					if !slices.Contains(seen, owner.group) {
 						seen = append(seen, owner.group)
 						owner.group.ambiguousCalls++
+						owner.group.addAmbiguousName(call.key, duration)
 					}
 				}
 			}
@@ -329,6 +354,13 @@ func analyzeTraceWhy(files []*traceShowFile, options traceWhyOptions) (traceWhyR
 		for key, sum := range group.calls {
 			path.Calls = append(path.Calls, traceWhyCall{key.kind, key.name, sum.calls, ms(sum.ns)})
 		}
+		for key, sum := range group.ambiguousNames {
+			path.AmbiguousCandidates = append(path.AmbiguousCandidates, traceWhyCall{key.kind, key.name, sum.calls, ms(sum.ns)})
+		}
+		sortCalls := func(a, b traceWhyCall) int {
+			return cmp.Or(cmp.Compare(b.MS, a.MS), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
+		}
+		slices.SortFunc(path.AmbiguousCandidates, sortCalls)
 		slices.SortFunc(path.Calls, func(a, b traceWhyCall) int {
 			return cmp.Or(cmp.Compare(b.MS, a.MS), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
 		})
@@ -393,6 +425,9 @@ func (report traceWhyReport) print(out io.Writer) {
 		}
 		if path.AmbiguousCalls != 0 {
 			table.add("", "  (ambiguous)", fmt.Sprint(path.AmbiguousCalls), fmt.Sprintf("%.1fms", path.AmbiguousMS), "", traceWhyShare(path.AmbiguousMS, path.LatencyMS))
+			for _, item := range path.AmbiguousCandidates[:min(len(path.AmbiguousCandidates), traceWhyCandidateRows)] {
+				table.add("", "    maybe "+strings.TrimSpace(item.Kind+" "+item.Name), fmt.Sprint(item.Calls), "", "", "")
+			}
 		}
 		self := "self"
 		if path.Parallel {
@@ -403,6 +438,7 @@ func (report traceWhyReport) print(out io.Writer) {
 	style.writeTable(out, table)
 	if report.AmbiguousCalls != 0 {
 		fmt.Fprintln(out, style.hint("ambiguous: request time that only calls of an unknown request cover. The process handled several requests at that time, so edc cannot tell which request made those calls."))
+		fmt.Fprintln(out, style.hint("maybe: calls that happened while the request ran and that edc cannot assign to one request. COUNT is the number of those calls."))
 	}
 	if parallel {
 		fmt.Fprintln(out, style.hint("*: calls of one request ran at the same time, so the shares of the calls can add up to more than 100%."))

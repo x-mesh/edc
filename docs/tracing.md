@@ -358,7 +358,7 @@ The rows below a path are the calls of those requests: `dns` queries, `http` req
 
 The kernel records do not connect a call to a request. edc connects them with the process ID and the time. A call belongs to a request if the same process made the call, and the call started and ended while the server handled that request.
 
-If one process handles several requests at the same time, a call can occur while the process handles two or more requests. edc adds that call to no request. The `(ambiguous)` row shows the request time that only those calls cover.
+If one process handles several requests at the same time, a call can occur while the process handles two or more requests. edc adds that call to no request. The `(ambiguous)` row shows the request time that only those calls cover. The `maybe` rows below it show the names of those calls. `COUNT` is the number of calls that happened while the request ran.
 
 ```text
 PROCESS  REQUEST / CALL                 COUNT  AVG      MAX      SHARE
@@ -385,7 +385,7 @@ Use these options:
 - `--out` sets the directory for the recordings. The default is `edc-why-<time>` in the current directory. edc does not write into a path that exists.
 - If you do not use `--duration`, press Ctrl-C to stop the traces.
 
-`trace why` adds load to the host, because `trace http` sends an event for each HTTP message. In one test, a Go server on two CPUs handled 45,900 small requests each second. With `trace why`, it handled 39,300 requests each second (14% fewer), and the two traces used about 1.3 CPUs. The p99 latency changed from 4.2 ms to 4.6 ms. Requests that do more work than this test request cause a smaller change. To limit the load, record for 10 to 20 seconds.
+`trace why` adds load to the host, because `trace http` sends an event for each HTTP message. In one test, a Go server on two CPUs handled 45,900 small requests each second. With `trace why`, it handled 39,300 requests each second (14% fewer), and the two traces used about 1.3 CPUs. The p99 latency changed from 4.2 ms to 4.6 ms. Requests that do more work than this test request cause a smaller change. To limit the load, record for 10 to 20 seconds. At 40,000 requests each second, `trace http` lost 14% of its events, and the output shows the count as `Lost events`. Use a lower request rate for a complete recording.
 
 Each trace starts at a different time. `trace http` starts some seconds later, because it looks for TLS libraries first. edc compares only the time range that all the traces recorded. The first line of the output shows that range and the full recorded time. Send the load until the traces stop.
 

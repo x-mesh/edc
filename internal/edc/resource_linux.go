@@ -58,10 +58,67 @@ func (reader *procFileReader) read(path string) ([]byte, error) {
 	}
 }
 
+// linuxSwapRefresh는 process마다 VmSwap을 다시 읽는 간격이다. status는 stat만큼 비싼데 swap 사용량은 천천히 바뀐다.
+const linuxSwapRefresh = 5 * time.Second
+
+type linuxCachedSwap struct {
+	start      uint64
+	swap       uint64
+	valid      bool
+	at         time.Time
+	generation uint64
+}
+
+// linuxSwapCache는 process마다 마지막으로 읽은 VmSwap을 둔다. 시작 tick이 다르면 PID를 다시 쓴 process라 바로 읽는다.
+type linuxSwapCache struct {
+	entries    map[int]linuxCachedSwap
+	generation uint64
+}
+
+// get은 캐시가 오래됐을 때만 read를 부른다. read가 파일이 없다고 하면 gone이 true다.
+func (cache *linuxSwapCache) get(pid int, start uint64, now time.Time, read func() ([]byte, error)) (swap uint64, valid, gone bool) {
+	if cache.entries == nil {
+		cache.entries = map[int]linuxCachedSwap{}
+	}
+	entry, ok := cache.entries[pid]
+	if ok && entry.start == start && now.Sub(entry.at) < linuxSwapRefresh && !now.Before(entry.at) {
+		entry.generation = cache.generation
+		cache.entries[pid] = entry
+		return entry.swap, entry.valid, false
+	}
+	data, err := read()
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, true
+	}
+	entry = linuxCachedSwap{start: start, at: now, generation: cache.generation}
+	if !ok {
+		// 처음 본 process들이 같은 interval에 한꺼번에 다시 읽히지 않게 PID로 읽는 시점을 나눈다.
+		entry.at = now.Add(-time.Duration(pid%5) * linuxSwapRefresh / 5)
+	}
+	if err == nil {
+		entry.swap, entry.valid = parseLinuxProcessSwap(string(data))
+	}
+	cache.entries[pid] = entry
+	return entry.swap, entry.valid, false
+}
+
+// sweep은 이번 읽기에서 보지 못한 process를 지운다. 다음 읽기 전에 부른다.
+func (cache *linuxSwapCache) sweep() {
+	for pid, entry := range cache.entries {
+		if entry.generation != cache.generation {
+			delete(cache.entries, pid)
+		}
+	}
+	cache.generation++
+}
+
 func newTopProcessReader() func() ([]topProcess, bool) {
 	tracker := &topProcessTracker{clockTicks: linuxClockTicks, pageSize: uint64(os.Getpagesize()), boot: readLinuxBootTime()}
 	files := &procFileReader{}
+	swaps := &linuxSwapCache{}
 	return func() ([]topProcess, bool) {
+		defer swaps.sweep()
+		now := time.Now()
 		memory, memoryErr := readMemInfo()
 		readSwap := linuxProcessSwapRead(memory, memoryErr)
 		entries, err := os.ReadDir("/proc")
@@ -83,13 +140,13 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				// 다른 계정의 cwd는 root가 아니면 읽을 수 없다. 그 process는 작업 디렉터리를 모르는 채로 묶인다.
 				stat.CWD, _ = os.Readlink("/proc/" + entry.Name() + "/cwd")
 				if readSwap {
-					status, err := files.read("/proc/" + entry.Name() + "/status")
+					var gone bool
+					stat.Swap, stat.SwapValid, gone = swaps.get(pid, stat.StartTicks, now, func() ([]byte, error) {
+						return files.read("/proc/" + entry.Name() + "/status")
+					})
 					// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.
-					if errors.Is(err, os.ErrNotExist) {
+					if gone {
 						continue
-					}
-					if err == nil {
-						stat.Swap, stat.SwapValid = parseLinuxProcessSwap(string(status))
 					}
 				}
 				if topFullCommand {

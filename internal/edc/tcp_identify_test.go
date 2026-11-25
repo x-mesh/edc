@@ -437,18 +437,84 @@ func TestIdentifyHTTPRetriesWithHost(t *testing.T) {
 }
 
 // 연결만 받고 답하지 않는 서버의 판별 시간은 연결 시간에 따라 늘어난다. 실제 네트워크의 값을 보려고 연결 시간을 바꿔 잰다.
-func TestIdentifySilentServerTime(t *testing.T) {
-	if testing.Short() {
-		t.Skip("measures several seconds")
-	}
+// 판별 전체는 identifyTotalTimeout에서 멈추고, 상한 때문에 멈췄다는 것을 결과에 남긴다. 연결 시간 150ms면 상한 없이 10초를 넘었다.
+func TestIdentifySilentServerStopsAtTotalTimeout(t *testing.T) {
 	t.Parallel()
 	address := identifyListener(t, func(c net.Conn) { io.Copy(io.Discard, c) })
-	for _, connect := range []time.Duration{0, 40 * time.Millisecond, 150 * time.Millisecond} {
-		started := time.Now()
-		if got := identifyProtocol(context.Background(), address, connect); got.Name != protocolUnknown {
-			t.Fatalf("connect %v: got %+v", connect, got)
+	started := time.Now()
+	got := identifyProtocol(context.Background(), address, 150*time.Millisecond)
+	elapsed := time.Since(started)
+	if got.Name != protocolUnknown || !got.TimedOut {
+		t.Fatalf("got %+v", got)
+	}
+	if elapsed > identifyTotalTimeout+500*time.Millisecond {
+		t.Fatalf("took %v, past the %v cap", elapsed, identifyTotalTimeout)
+	}
+	annotated := annotateProtocol(Result{Probe: "tcp.check", Status: StatusPass}, got, true)
+	if annotated.Metrics["protocol_timed_out"] != true || !strings.Contains(annotated.Evidence[0].Value, "stopped") {
+		t.Fatalf("timeout not visible: %+v", annotated)
+	}
+}
+
+// 모든 탐침을 바로 끊는 서버는 상한에 걸리지 않고, 시간을 늘려도 결과가 같으므로 next를 안내하지 않는다.
+func TestIdentifyUnknownWithoutTimeout(t *testing.T) {
+	t.Parallel()
+	address := identifyListener(t, func(net.Conn) {})
+	got := identifyProtocol(context.Background(), address, 0)
+	if got.Name != protocolUnknown || got.TimedOut || !got.NoReply || got.Waited || got.Suggest != 0 {
+		t.Fatalf("got %+v", got)
+	}
+	annotated := annotateProtocol(Result{Probe: "tcp.check", Metrics: map[string]interface{}{"address": address}}, got, true)
+	if annotated.Next != "" || !strings.Contains(annotated.Evidence[0].Value, "closed every probe") {
+		t.Fatalf("annotated %+v", annotated)
+	}
+}
+
+// slowRedis는 PING에 600ms 늦게 답하고 다른 탐침에는 답하지 않는다. 기본 대기(200ms)로는 놓치고, 단계마다 1초를 기다리면 찾는다.
+func slowRedis(connection net.Conn) {
+	connection.SetDeadline(time.Now().Add(10 * time.Second))
+	buffer := make([]byte, 1024)
+	count, err := connection.Read(buffer)
+	if err != nil {
+		return
+	}
+	if string(buffer[:count]) == redisPing {
+		time.Sleep(600 * time.Millisecond)
+		io.WriteString(connection, "+PONG\r\n")
+	}
+	io.Copy(io.Discard, connection)
+}
+
+func TestIdentifySlowServerNeedsLongerLimit(t *testing.T) {
+	t.Parallel()
+	address := identifyListener(t, slowRedis)
+	got := identifyProtocol(context.Background(), address, 0)
+	if got.Name != protocolUnknown || !got.Waited || got.Suggest != identifySuggestedLimit {
+		t.Fatalf("default: %+v", got)
+	}
+	annotated := annotateProtocol(Result{Probe: "tcp.check", Metrics: map[string]interface{}{"address": address}}, got, false)
+	if want := "edc tcp check --identify=10s " + address; annotated.Next != want {
+		t.Fatalf("next %q, want %q", annotated.Next, want)
+	}
+	patient := identifyProtocolWith(context.Background(), address, 0, identifyOptions{limit: identifySuggestedLimit, patient: true})
+	if patient.Name != "redis" {
+		t.Fatalf("--identify=10s: %+v", patient)
+	}
+}
+
+func TestIdentifyFlagValues(t *testing.T) {
+	cases := map[string]identifyFlag{"true": {on: true}, "false": {}, "10s": {on: true, limit: 10 * time.Second}, "7": {on: true, limit: 7 * time.Second}}
+	for text, want := range cases {
+		var got identifyFlag
+		if err := got.Set(text); err != nil || got != want {
+			t.Fatalf("%s: %+v %v", text, got, err)
 		}
-		t.Logf("silent server, connect %v: %v", connect, time.Since(started).Round(10*time.Millisecond))
+	}
+	for _, text := range []string{"abc", "0", "-3s"} {
+		var got identifyFlag
+		if err := got.Set(text); err == nil {
+			t.Fatalf("%s accepted", text)
+		}
 	}
 }
 
@@ -631,7 +697,7 @@ func TestFormatResultLineShowsProtocolTag(t *testing.T) {
 
 // 프로토콜은 label 열(24자)의 남는 자리에 그린다. tcp.check 뒤에 넘치면 설명 열이 밀리므로 이름이 길어지면 폭을 다시 봐야 한다.
 func TestProtocolNamesFitColumn(t *testing.T) {
-	names := []string{"ssh", "vnc", "mysql", "tls", "https", "grpc", "rediss", protocolUnknown}
+	names := []string{"ssh", "vnc", "mysql", "tls", "https", "grpc", "rediss", "nats", "clickhouse", protocolUnknown}
 	for _, stage := range identifyStages {
 		names = append(names, stage.name)
 	}

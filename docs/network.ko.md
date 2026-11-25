@@ -102,6 +102,38 @@ port가 어떤 단계의 흔한 port면 그 단계를 먼저 하고, 인사말�
 
 port가 가리킨 단계는 최대 1초를 기다립니다. 나머지 단계는 연결 시간으로 정한 200ms에서 1초 사이를 기다리고, HTTP 단계는 최소 500ms를 기다립니다. 한 host에서 흔한 port에 있는 서비스는 약 50ms에 판별했습니다. 같은 서비스를 흔하지 않은 port로 옮기면 Redis, PostgreSQL, Memcached, nginx, RabbitMQ, MQTT, Cassandra는 약 0.55초, ClickHouse native port는 0.75초, Kafka는 0.96초, ClickHouse HTTP 인터페이스는 1.16초, MongoDB와 goloop는 약 1.2초가 걸렸습니다. 판별은 전체 3초에서 멈춥니다. 연결만 받고 아무 답도 하지 않는 서버는 이 상한에 걸립니다. 그때 결과는 `unknown`이고, `-v`에 `stopped`가 나오며, `--json`에 `protocol_timed_out`이 추가됩니다. 어떤 탐침에도 답이 없었다면 `-v`에 `replies`가 나오고 `--json`에 `protocol_no_reply`가 추가됩니다. 시간을 늘려 달라질 수 있으면 `next` 줄에 `--identify=10s`를 붙인 명령을 보여 줍니다. `--identify=10s`처럼 시간을 주면 그 시간에서 멈추고 단계마다 1초씩 기다리므로, 느리게 답하는 서버도 찾습니다. 서버가 edc가 모르는 바이트를 보냈다면 시간을 늘려도 결과가 같으므로 `unknown`만 보이고 `next` 줄은 없습니다. 맞는 단계가 없으면 `unknown`을 보여 주고, 서버가 바이트를 보냈다면 `-v`에서 그 앞부분을 보여 줍니다. 판별 결과는 상태와 종료 코드를 바꾸지 않습니다. 대상에는 로그인 전에 끝나는 짧은 연결이 남고, 대상의 log에 오류로 기록될 수 있습니다. 예를 들어 흔하지 않은 port의 PostgreSQL은 `invalid length of startup packet`을 남기고, HTTP 서버는 탐침마다 상태 400 요청으로 기록합니다. 흔하지 않은 port에서는 앞 단계의 탐침 때문에 RabbitMQ가 `client did not start with AMQP protocol header`, Kafka가 `InvalidReceiveException`, Cassandra가 `Protocol exception`, Mosquitto가 `protocol error`를 남깁니다. 흔한 port에서도 RabbitMQ는 `client unexpectedly closed TCP connection`을 남깁니다. 이것이 문제가 되면 `--identify=false`를 붙입니다. `--json`에는 `protocol`, `protocol_detail`, `protocol_basis` metric이 추가됩니다. goloop이면 `goloop_node`, `goloop_secure_suites`, `goloop_aead_suites`도 추가되고, 응답을 받지 못한 항목이 있으면 `goloop_unchecked`가 추가됩니다. `-w`와 `--diagnose`는 프로토콜을 판별하지 않고 `--identify`도 받지 않습니다. `edc doctor`도 프로토콜을 판별하지 않습니다.
 
+`--debug`(또는 `-vv`)를 붙이면 무슨 일이 있었는지 단계별로 보여 줍니다.
+
+```text
+$ edc tcp check --debug 127.0.0.1:5672
+PASS  tcp.check amqp            127.0.0.1:5672 connected (0s), peer 127.0.0.1
+      debug:
+         +0.0ms  connect     127.0.0.1:59434 → 127.0.0.1:5672 · 0.3ms
+                 tcp         rtt 0.1ms · rto 201ms · mss 32741 · SACK on · timestamps on · window scale on · ECN off · retransmits 0
+                 identify    port 5672 points to amqp: send it first, no banner wait
+         +2.8ms  amqp        matched amqp · 1.9ms
+                               new connection · 0.3ms
+                               sent  protocol header AMQP 0-9-1 · 8 B
+                               recv  Connection.Start · AMQP 0-9 · 556 B in 1.1ms
+                                 product RabbitMQ · version 4.4.1 · platform Erlang/OTP 29.1.3 · cluster_name rabbit@5d4470206a51
+                                 mechanisms PLAIN AMQPLAIN ANONYMOUS · locales en_US
+                 result      amqp in 1.9ms
+```
+
+각 줄의 뜻은 다음과 같습니다.
+
+- `dns`: 이름의 주소 목록입니다. 연결은 Go 안에서 이름을 조회하므로, 이 줄을 위해 한 번 더 조회합니다.
+- `connect`: 출발·도착 주소와 연결 시간입니다.
+- `tcp`: handshake에서 커널이 합의한 값입니다. RTT, RTO, MSS, SACK, timestamp, window scale, ECN, 재전송 수를 보여 줍니다. Linux에서는 window scale을 `on`·`off`로만 보여 줍니다. 연결이 900ms 이상 걸리면 SYN 재전송이 있었을 가능성이 크다는 줄이 붙는데, 이것은 시간만 보고 추정한 것입니다.
+- 판별 단계마다 한 줄: 맞은 단계는 펼쳐서 보낸 것과 받은 것을 프로토콜의 말로 풀어 보여 줍니다. 나머지 단계는 보낸 것과 서버의 반응(`waited`, `closed by the server`, `reset by the server`, 맞지 않은 응답)을 한 줄로 보여 줍니다.
+- `stopped`와 `result`: 시간 상한 때문에 보내지 못한 단계와, 결과가 그렇게 나온 이유입니다.
+
+root 권한 없이는 SYN·SYN-ACK 패킷 자체를 볼 수 없습니다. `tcp` 줄은 handshake에서 합의한 결과를 보여 줍니다. 패킷을 보려면 Linux에서 root로 `edc tcp check --diagnose`를 씁니다.
+
+TLS 안쪽은 record가 암호화돼 있으므로, TLS 버전·cipher·ALPN·인증서를 보여 준 뒤 TLS 안쪽의 평문 교환을 보여 줍니다. 여기서는 인증서를 검증하지 않습니다. `Set-Cookie`, 인증 header, MySQL salt처럼 서버가 보낸 민감한 값은 숨깁니다. `--redact`는 이 줄들의 주소도 가립니다.
+
+`--debug=raw`(또는 `-vvv`)는 탐침마다 바이트를 방향별로 256바이트까지 hex로 보여 줍니다. goloop, MongoDB, AMQP, Cassandra는 `header`, `payload (msgpack)`, `footer`처럼 구간을 나눠 보여 줍니다. `--json`에는 이 줄들이 `debug`로 들어갑니다.
+
 `edc watch http -i 0.1 https://example.com`은 Ctrl-C까지 페이지를 반복 확인합니다. `-i`는 초 단위 소수(최소 `0.1`)나 `100ms` 같은 duration을 받으며, `--duration 1m`으로 종료 시각을 정할 수 있습니다. 매 sample에 HTTP status, 읽은 body byte(최대 10 MiB), 소요 시간과 수집된 DNS/TCP/TLS/TTFB 시간을 표시합니다. DNS의 IP 집합이 바뀌면 새 목록을 보여 줍니다. 완료한 표본이 있으면 마지막에 min/avg/p95/max 지연과 최장 연속 실패 시간을 요약합니다. `--json <path|->`는 마지막 요약을 포함한 JSON Lines를 출력합니다. 요약에는 `observation_status`(`observed` 또는 `no_samples`)와 `stop_reason`(`duration` 또는 `cancelled`)이 추가됩니다.
 
 완료한 표본이 없으면 텍스트 요약은 관측 종료 이유를 설명하고 지연 통계를 생략합니다. 이때 대상의 상태를 판단할 수 없습니다. 완료한 표본 없이 관측 시간이 끝나면 exit code는 `2`, 취소하면 `4`입니다. 완료한 표본이 있으면 기존 정책을 유지합니다. 실패한 표본이 있으면 `1`, 없으면 취소한 경우에도 `0`입니다.

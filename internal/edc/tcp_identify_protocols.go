@@ -6,13 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
-	"sync/atomic"
 )
 
 // 이 파일의 탐침은 identifyStages의 goloop 뒤에 온다. 모두 30바이트보다 짧아 goloop 앞에 두면 goloop가 header를 기다리며
@@ -33,7 +31,7 @@ func identifyH2C(ctx context.Context, target identifyTarget) (protocolIdentifica
 		Protocols:   &protocols,
 	}
 	defer transport.CloseIdleConnections()
-	match, ok := grpcHealthRoundTrip(ctx, transport, "http://"+target.address)
+	match, ok := grpcHealthRoundTrip(ctx, transport, "http://"+target.address, target.note)
 	if !ok {
 		return protocolIdentification{}, nil, false
 	}
@@ -52,22 +50,6 @@ func isHTTP2SettingsFrame(first []byte) bool {
 	}
 	length := int(first[0])<<16 | int(first[1])<<8 | int(first[2])
 	return length%6 == 0 && length <= 16384
-}
-
-// waitWatchConn은 읽기가 답 없이 시간을 다 썼는지 기록하는 연결이다. h2c 탐침은 http.Transport가 다른 goroutine에서 읽으므로
-// atomic으로 남긴다.
-type waitWatchConn struct {
-	net.Conn
-	waited *atomic.Bool
-}
-
-func (connection *waitWatchConn) Read(buffer []byte) (int, error) {
-	count, err := connection.Conn.Read(buffer)
-	var timeout net.Error
-	if count == 0 && errors.As(err, &timeout) && timeout.Timeout() {
-		connection.waited.Store(true)
-	}
-	return count, err
 }
 
 // amqpProtocolHeader는 AMQP 0-9-1 client가 처음 보내는 8바이트다.

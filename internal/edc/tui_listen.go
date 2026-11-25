@@ -23,9 +23,12 @@ type listenBrowser struct {
 	inspect func(context.Context, listenRow) []string
 	timeout time.Duration
 	// sockets는 마지막으로 읽은 소켓 전부이고, items는 그것을 모으고 거른 화면의 줄이다.
-	sockets                            []listenSocket
-	items                              []listenRow
-	hideLoopback                       bool
+	sockets      []listenSocket
+	items        []listenRow
+	hideLoopback bool
+	// filter는 /로 받은 글자다. 낱말마다 줄에 보이는 글자에서 찾는다. filtering은 글자를 받는 중이라는 뜻이다.
+	filter                             string
+	filtering                          bool
 	warnings                           []string
 	err                                string
 	loaded, loading                    bool
@@ -206,13 +209,16 @@ func (model listenBrowser) pidChoice(row listenRow) string {
 	return T("listenbrowse.pid_choice", active, slices.Index(pids, active)+1, len(pids))
 }
 
-// rebuild는 소켓을 줄로 모으고 loopback 숨김을 적용한다. 고른 줄이 남아 있으면 그 줄에 커서를 두고 true를 돌려준다.
+// rebuild는 소켓을 줄로 모으고 loopback 숨김과 필터를 적용한다. 고른 줄이 남아 있으면 그 줄에 커서를 두고 true를 돌려준다.
 // 남아 있지 않으면 커서는 같은 위치에 머문다.
 func (model *listenBrowser) rebuild() bool {
 	selected, hadSelection := model.selectedRow()
 	model.items = model.items[:0:0]
 	for _, row := range groupListenSockets(model.sockets) {
 		if model.hideLoopback && row.scope() == "loopback" {
+			continue
+		}
+		if !model.matchesFilter(row) {
 			continue
 		}
 		model.items = append(model.items, row)
@@ -228,6 +234,75 @@ func (model *listenBrowser) rebuild() bool {
 	}
 	model.keepCursor()
 	return found
+}
+
+// matchesFilter는 줄이 필터의 모든 낱말을 담는지다. 낱말은 공백으로 가르고 대소문자를 가리지 않으며, 포트와 프로토콜, 주소,
+// 범위, 프로세스, PID, 컨테이너 중 어디에 있어도 된다. 화면에 보이는 글자로 맞추므로 --redact로 가린 주소는 필터로 짚을 수 없다.
+func (model listenBrowser) matchesFilter(row listenRow) bool {
+	terms := strings.Fields(strings.ToLower(model.filter))
+	if len(terms) == 0 {
+		return true
+	}
+	first := row.first()
+	port := fmt.Sprintf("%d/%s", first.Port, first.Proto)
+	if first.Port == 0 {
+		port = first.Proto
+	}
+	fields := []string{port, model.rowAddresses(row), row.scope(), listenBrowserScope(row.scope()), first.Process, row.joined(func(socket listenSocket) string { return socket.PID })}
+	if first.Container != nil {
+		container := listenContainerLabel(*first.Container)
+		if model.redact {
+			container = redactIPAddresses(container)
+		}
+		fields = append(fields, container)
+	}
+	text := strings.ToLower(strings.Join(fields, " "))
+	for _, term := range terms {
+		if !strings.Contains(text, term) {
+			return false
+		}
+	}
+	return true
+}
+
+// applyFilter는 바뀐 필터로 목록을 다시 모은다. 고른 줄이 걸러졌으면 맨 위로 돌아간다.
+func (model *listenBrowser) applyFilter() {
+	if !model.rebuild() {
+		model.cursor, model.offset = 0, 0
+	}
+	model.keepCursor()
+}
+
+// updateFilterKey는 필터 글자를 받는 동안의 키다. q는 글자이므로 끝내지 않고, Ctrl-C만 끝낸다.
+func (model listenBrowser) updateFilterKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "ctrl+c":
+		return model, tea.Quit
+	case "enter":
+		model.filtering = false
+		return model, nil
+	case "esc":
+		model.filtering, model.filter = false, ""
+	case "backspace":
+		if runes := []rune(model.filter); len(runes) > 0 {
+			model.filter = string(runes[:len(runes)-1])
+		}
+	case "up":
+		model.cursor--
+		model.keepCursor()
+		return model, nil
+	case "down":
+		model.cursor++
+		model.keepCursor()
+		return model, nil
+	default:
+		if key.Text == "" {
+			return model, nil
+		}
+		model.filter += key.Text
+	}
+	model.applyFilter()
+	return model, nil
 }
 
 func (model *listenBrowser) keepCursor() {
@@ -315,6 +390,9 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if model.stop != nil {
 			return model.answerStop(key)
 		}
+		if model.filtering {
+			return model.updateFilterKey(value)
+		}
 		if key == "q" || key == "ctrl+c" {
 			return model, tea.Quit
 		}
@@ -390,6 +468,16 @@ func (model listenBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.hideLoopback = !model.hideLoopback
 			model.rebuild()
 			return model, nil
+		case "/":
+			model.filtering = true
+			return model, nil
+		case "esc":
+			// 목록에서 Esc는 필터를 푼다. 필터가 없으면 아무것도 하지 않는다.
+			if model.filter != "" {
+				model.filter = ""
+				model.applyFilter()
+			}
+			return model, nil
 		}
 		model.keepCursor()
 	}
@@ -458,7 +546,17 @@ func (model listenBrowser) View() tea.View {
 		if model.hideLoopback {
 			counts = append(counts, T("listenbrowse.loopback_hidden"))
 		}
-		lines = append(lines, svcBrowserHeading("edc listen", append(counts, state), model.color), liveKeyHints(T("listenbrowse.keys"), model.color, liveHintItem{key: "l", on: model.hideLoopback}))
+		if model.filter != "" {
+			counts = append(counts, T("listenbrowse.filtered", viewSanitize(model.filter)))
+		}
+		keys := T("listenbrowse.keys")
+		switch {
+		case model.filtering:
+			keys = T("listenbrowse.filter_input", viewSanitize(model.filter))
+		case model.filter != "":
+			keys = T("listenbrowse.keys_filtered")
+		}
+		lines = append(lines, svcBrowserHeading("edc listen", append(counts, state), model.color), liveKeyHints(keys, model.color, liveHintItem{key: "l", on: model.hideLoopback}, liveHintItem{key: "/", on: model.filter != "" && !model.filtering}))
 		notice := T("listenbrowse.reachability")
 		if model.notice != "" {
 			notice = model.notice
@@ -474,7 +572,11 @@ func (model listenBrowser) View() tea.View {
 		lines = append(lines, listenBrowserLegend(model.color)+viewSanitize(notice))
 		if len(model.items) == 0 {
 			if model.loaded {
-				lines = append(lines, T("listenbrowse.empty"))
+				if model.filter != "" && len(model.sockets) > 0 {
+					lines = append(lines, T("listenbrowse.no_match"))
+				} else {
+					lines = append(lines, T("listenbrowse.empty"))
+				}
 			}
 		} else {
 			// 고정 칸(PORT/PROTO 10, PID 10, 간격과 선택 표시 8)을 뺀 폭에서 주소 칸은 보이는 주소만큼, 많아야 절반을 쓴다.

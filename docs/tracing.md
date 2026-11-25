@@ -324,7 +324,7 @@ Use `--raw` to print JSONL events as they arrive. Use `--json` to write the conn
 
 ## trace why
 
-Use `trace why` on Linux to find where the time of an HTTP request goes. One command records `trace http`, `trace dns`, and `trace tcp` together. When the traces stop, edc divides the latency of each request into the calls that the server made for that request.
+Use `trace why` on Linux to find where the time of an HTTP request goes. One command records `trace http` and `trace dns` together. When the traces stop, edc divides the latency of each request into the calls that the server made for that request.
 
 ```bash
 sudo edc trace why --duration 30s
@@ -381,9 +381,11 @@ Use these options:
 
 - `--with` adds database traces. The names are `mysql`, `postgres`, and `redis`. `--with mysql:13306` sets the server port.
 - `--port` keeps only the requests that the server on that local port received. edc records all HTTP connections, so the requests that this server sent stay visible.
-- `--process` limits each trace to that process. `trace why` records all HTTP traffic of the host. On a busy host, use `--process`.
+- `--process` limits each trace to that process. It filters the events after the kernel sends them, so it does not reduce the load on the host.
 - `--out` sets the directory for the recordings. The default is `edc-why-<time>` in the current directory. edc does not write into a path that exists.
 - If you do not use `--duration`, press Ctrl-C to stop the traces.
+
+`trace why` adds load to the host, because `trace http` sends an event for each HTTP message. In one test, a Go server on two CPUs handled 45,900 small requests each second. With `trace why`, it handled 39,300 requests each second (14% fewer), and the two traces used about 1.3 CPUs. The p99 latency changed from 4.2 ms to 4.6 ms. Requests that do more work than this test request cause a smaller change. To limit the load, record for 10 to 20 seconds.
 
 Each trace starts at a different time. `trace http` starts some seconds later, because it looks for TLS libraries first. edc compares only the time range that all the traces recorded. The first line of the output shows that range and the full recorded time. Send the load until the traces stop.
 

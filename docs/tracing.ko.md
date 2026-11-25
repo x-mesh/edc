@@ -1067,7 +1067,8 @@ kernel 기록에는 호출과 요청을 잇는 표시가 없어서 process ID와
 
 - `--with mysql,postgres,redis`로 DB trace를 더합니다. `mysql:13306`처럼 서버 port를 붙일 수 있습니다.
 - `--port`는 그 로컬 port의 서버가 받은 요청만 남깁니다. 기록은 모든 HTTP 연결을 담으므로 그 서버가 밖으로 보낸 요청은 그대로 보입니다.
-- `--process`는 모든 trace를 그 process로 제한합니다. host의 모든 HTTP 통신을 기록하므로 바쁜 host에서는 `--process`를 쓰세요.
+- `--process`는 모든 trace를 그 process로 제한합니다. 커널이 이벤트를 보낸 뒤에 거르므로 host의 부하는 줄지 않습니다.
+- host에 부하가 생깁니다. `trace http`가 HTTP 메시지마다 이벤트를 보내기 때문입니다. 시험에서 2코어에 고정한 Go 서버는 작은 요청을 초당 45,900건 처리했고, `trace why`를 켜면 초당 39,300건(14% 감소)을 처리했습니다. 두 trace가 쓴 CPU는 약 1.3코어였고 p99 지연은 4.2ms에서 4.6ms가 됐습니다. 요청 하나가 더 많은 일을 하면 변화는 더 작습니다. 기록은 10~20초로 짧게 하세요.
 - 기록은 `--out` 디렉터리(기본값: 현재 디렉터리의 `edc-why-<시각>`)에 소유자만 읽을 수 있게 남습니다. HTTP payload는 기록하지 않습니다.
 
 trace마다 기록을 시작하는 때가 달라서(`trace http`는 TLS library를 찾느라 몇 초 늦습니다) 모든 trace가 기록한 시간대만 비교합니다. 출력 첫 줄이 그 길이를 보여 줍니다. trace가 끝날 때까지 부하를 계속 주세요. 끝날 때 `trace http`가 TLS probe를 떼는 데 30초쯤 걸릴 수 있습니다.

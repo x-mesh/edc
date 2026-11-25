@@ -679,13 +679,13 @@ command:
       lock:
         - "trace lock shows kernel lock contention and futex waits by address."
       why:
-        - "trace why records http, dns, and tcp together on Linux, then shows where the time of each HTTP request went."
+        - "trace why records http and dns together on Linux, then shows where the time of each HTTP request went."
         - "Each row is a process and a request path that a local server received. The rows below it are the calls of that request: DNS queries, outgoing HTTP requests, and database commands."
         - "edc assigns a call to a request when the same process made the call and the call started and ended during that request."
         - "(ambiguous) is the request time that only calls of an unknown request cover. Such a call occurred during several requests of one process, so edc adds it to no request. A server that handles many requests in one process has more of it."
         - "self is the time of the request that no assigned call covers."
         - "--with adds database traces, for example --with mysql,redis:6380. --port keeps only the requests to that local server port."
-        - "--process limits each trace to that process. Use it on a busy host."
+        - "--process limits each trace to that process. It does not reduce the load. A recording of 10 to 20 seconds limits the load."
         - "edc compares only the time range that all the traces recorded. If a trace fails, edc stops and prints no breakdown."
         - "The recordings stay in a directory. edc trace show <dir> prints the same breakdown again. HTTP payload is not recorded."
       show:

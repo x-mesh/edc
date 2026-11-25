@@ -24,7 +24,7 @@ const (
 	traceWhyUsage           = "edc trace why [--duration <d>] [--process <name|pid>] [--port <n>] [--with <db[:port],...>] [--out <dir>]"
 )
 
-// why는 http, dns, tcp와 고른 DB trace를 자식 process로 함께 기록하고, 서버가 받은 요청의 지연을 하위 호출로 나눈다.
+// why는 http, dns와 고른 DB trace를 자식 process로 함께 기록하고, 서버가 받은 요청의 지연을 하위 호출로 나눈다.
 // runTraceWhy가 기록을 읽으며 registry를 보므로 registry의 초깃값에 넣으면 초기화가 순환한다.
 func init() {
 	registerTraceProtocol(traceProtocolRegistration{name: "why", view: traceProtocolView{selectorLabel: "why"}, spec: traceProtocolSpec{hideTraffic: true, linuxOnly: true, prerequisites: func() error { return traceWhyPrerequisites() }}, run: runTraceWhy})
@@ -180,7 +180,7 @@ func runTraceWhy(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.why_with", err))
 		return 2
 	}
-	plan.traces = append([]traceWhyTrace{{name: "http"}, {name: "dns"}, {name: "tcp"}}, databases...)
+	plan.traces = append([]traceWhyTrace{{name: "http"}, {name: "dns"}}, databases...)
 	if err := traceWhyPrerequisites(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3

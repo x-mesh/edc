@@ -128,6 +128,19 @@ func TestAIScanFindsNewFilesOnTheNextWalk(t *testing.T) {
 	}
 }
 
+// 전체 탐색이 실패하면 다음 scan도 다시 훑어서, 오류가 다음 탐색까지 사라지지 않는다.
+func TestAIScanKeepsReportingAFailedWalk(t *testing.T) {
+	// 이름이 너무 긴 디렉터리는 root로 실행해도 읽을 수 없다.
+	codexDir, now := filepath.Join(t.TempDir(), strings.Repeat("a", 300)), time.Now()
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	if snapshot := scanner.scan(now); !snapshot.Failed["codex"] {
+		t.Fatalf("first walk did not fail: %+v", snapshot.Err)
+	}
+	if snapshot := scanner.scan(now.Add(2 * time.Second)); !snapshot.Failed["codex"] {
+		t.Fatalf("the failure vanished before the next walk: %q", snapshot.Err)
+	}
+}
+
 // 지운 세션 파일은 추적 목록에서 빠진다. 남아 있으면 scan마다 그 경로를 다시 lstat한다.
 func TestAIScanForgetsDeletedFiles(t *testing.T) {
 	codexDir, now := t.TempDir(), time.Now()

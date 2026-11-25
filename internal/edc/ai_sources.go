@@ -641,7 +641,8 @@ func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 			failed[source.provider] = true
 		}
 	}
-	if walk {
+	// 탐색이 실패하면 다음 scan도 다시 훑는다. 아는 파일만 읽으면 그 오류가 다음 탐색까지 보이지 않는다.
+	if walk && len(errs) == 0 {
 		scanner.walked = now
 	}
 	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Seconds: map[string]map[int64][]aiStampedUsage{}, Failed: failed, Err: strings.Join(errs, " · ")}

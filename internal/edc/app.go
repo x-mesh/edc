@@ -313,6 +313,10 @@ func runTCP(args []string, version string) int {
 	case args[0] != "check":
 		fmt.Fprintln(os.Stderr, T("cli.usage", tcpUsage))
 		return 2
+	// --identify는 보통 check에만 있다. -w나 diagnose로 넘어가면 그쪽 parse가 모르는 flag라고만 해서 이유를 따로 알린다.
+	case hasValueFlag(args[1:], "identify") && (tcpWaitRequested(args[1:]) || hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer")):
+		fmt.Fprintln(os.Stderr, T("cli.error.tcp_identify_conflict"))
+		return 2
 	// -w는 연결될 때까지 기다린다. --count, --interval과 함께 쓰면 그 flag를 모르는 wait 쪽 parse가 오류를 낸다.
 	case tcpWaitRequested(args[1:]):
 		return runTCPWait(args[1:], version)
@@ -320,11 +324,22 @@ func runTCP(args []string, version string) int {
 	case hasBoolFlag(args[1:], "diagnose") || hasValueFlag(args[1:], "count") || hasValueFlag(args[1:], "interval") || hasValueFlag(args[1:], "peer"):
 		return runTCPDiagnose(args[1:], version)
 	}
-	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", T("cli.prompt.host_port"), func(ctx context.Context, target string) Result {
+	identify, verbose := true, false
+	flags := probeFlags{prompt: T("cli.prompt.host_port"), bind: func(set *flag.FlagSet) {
+		set.BoolVar(&identify, "identify", true, T("command.tcp.option.identify"))
+	}, parsed: func(options commonOptions) error {
+		verbose = options.verbose
+		return nil
+	}}
+	return runTargetProbeWithFlags(args[1:], version, "tcp check", "tcp.check", flags, func(ctx context.Context, target string) Result {
 		if _, _, err := net.SplitHostPort(target); err != nil {
 			return resultFromError("tcp.check", time.Now(), "input", errors.New(T("cli.error.host_port_required", target)))
 		}
-		return probeTCP(ctx, target)
+		result := probeTCP(ctx, target)
+		if identify && result.Error == nil {
+			result = annotateProtocol(result, identifyProtocol(ctx, target, time.Duration(result.DurationMS)*time.Millisecond), verbose)
+		}
+		return result
 	})
 }
 

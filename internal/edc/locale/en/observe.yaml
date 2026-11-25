@@ -156,6 +156,7 @@ observe:
     tcp_connected: "%s connected (%s)"
     peer_ip: "peer %s"
     proxy_peer_ip: "proxy peer %s"
+    protocol_facts: "protocol detail"
     final_request: "final request"
     days_remaining: "%d days left"
     http_redirect: "%d redirect(s) → %s"

@@ -52,6 +52,51 @@ edc tcp check -w=5m 10.0.0.9:5432   # stop after 5 minutes
 
 `-w` tries again every second, and each attempt waits at most `--timeout`, 3s by default. A target that drops SYNs is then tried again every 3s, not once in 15s. In a terminal, one line shows the time, the attempt number, and the last cause. In a pipe or with `--json`, stderr gets a line only when the cause changes. When it ends, it prints the last attempt like a normal check, with the time it waited and the attempt number. The exit code is `0` when it connects, `1` when the time runs out, and `4` after Ctrl-C. Write the time limit with `=`: `-w 5m` reads `5m` as a second target, and edc tells you to write `-w=5m`. `edc alias` adds `etw` for `edc tcp check -w`.
 
+After the connect, `tcp check` also finds the protocol behind the port, and shows its name after the probe name:
+
+```text
+PASS  tcp.check goloop-p2p      10.0.0.9:7100 connected (38ms), peer 10.0.0.9
+```
+
+Add `-v` to see the detail:
+
+```bash
+edc tcp check -v 10.0.0.9:7100
+```
+
+```text
+PASS  tcp.check goloop-p2p      10.0.0.9:7100 connected (38ms)
+      protocol detail:
+        peer           10.0.0.9
+        node           hx0123456789abcdef0123456789abcdef01234567
+        secure suites  none, tls, ecdhe
+        aead suites    chacha, aes128, aes256
+        basis          goloop SecureResponse
+```
+
+With `-v`, the peer address moves from the result line to the detail, with the basis for the match. Add `--identify=false` to skip the protocol check.
+
+The port number does not decide the protocol. edc finds the protocol from the reply, so a service on an unusual port is found too. To find the protocol, edc opens a new connection for each step and stops at the first match:
+
+1. Read for 500ms and send nothing. This finds SSH, SMTP, FTP, POP3, IMAP, VNC, and MySQL from their first bytes.
+2. Send a Redis `PING`. A Redis server answers `+PONG`, or an error such as `-NOAUTH` when it needs a password.
+3. Send the Memcached `version` command.
+4. Send the PostgreSQL `SSLRequest`. A PostgreSQL server or PgBouncer answers with one byte, `S` or `N`.
+5. Start a TLS handshake, then find the protocol inside TLS:
+   - With ALPN `h2`, edc sends one gRPC health check request. A gRPC server answers with `grpc-status`, and other servers show as `https`. This request shows in the access log of the server as a `POST`.
+   - With ALPN `http/1.1`, edc sends `GET /` and shows `https`.
+   - With no ALPN, edc reads for 300ms for a greeting (`imaps`, `pop3s`, `smtps`), then sends a Redis `PING`. A Redis server shows as `rediss`, and an HTTPS server answers `400` and shows as `https`. If neither answers, edc sends `GET /` on a new connection. If nothing matches, the result shows `tls`.
+   - edc does not check the certificate here. Use `edc tls check` for that.
+6. Send the MongoDB `hello` command.
+7. Send `GET / HTTP/1.0` with no `Host:` header. The result shows the status line and the `Server` header. If the server waits and sends nothing, edc sends the request again with a `Host:` header. If the port is an HTTP port, the first request has the `Host:` header.
+8. Send the first goloop P2P authentication packet. A goloop node answers with its node address. edc then asks two more times, and lists the secure suites (`none`, `tls`, `ecdhe`) and the AEAD suites (`chacha`, `aes128`, `aes256`) that the node accepts. These lines show with `-v`. edc does not sign, so it does not join the node as a peer, and it cannot read the node role. A goloop node limits new connections from one address in each second. If the node closes the connection with no reply, edc tries again at most two times, 1s apart, and `--json` adds `protocol_retried`.
+
+The order keeps a probe away from a service that it can disturb. Redis logs `Possible SECURITY ATTACK detected` when it gets an HTTP `Host:` header. Thus the Redis `PING` goes before the HTTP request, and the first HTTP request has no `Host:` header. If the Redis step misses a Redis server, Redis answers the HTTP request with a `GET` command error, and edc finds Redis from that error. A server-first service that gets a probe still sends its greeting, and edc finds it from that greeting.
+
+If the port is a usual port for a step, that step goes first, and edc does not wait for a greeting. For example, port 6379 starts with Redis, 5432 with PostgreSQL, 27017 with MongoDB, 443 with TLS, 80 and 8080 with HTTP, and 7100 with goloop. The port only sets the order. If an SSH server listens on 6379, the result still shows `ssh`.
+
+A step that the port points to waits at most 1s. Other steps wait for a time that edc calculates from the connect time, from 200ms to 1s. The HTTP step waits at least 500ms. On one host with the services on usual ports, a check took about 50ms. With the same services on unusual ports, it took about 0.55s, and 1.2s for MongoDB and goloop. A server that accepts the connection and never answers takes the longest: about 2.7s on one host, 3.4s with a 40ms connect time, and 6.5s with a 150ms connect time. When no step matches, the result shows `unknown`. If the server sent bytes, `-v` shows the first bytes. The protocol does not change the status or the exit code. The target sees short connections that end before any login, and its log can show them as errors. For example, PostgreSQL on an unusual port logs `invalid length of startup packet` for the Redis and Memcached probes, and an HTTP server logs each probe as a request with status 400. If that is a problem, add `--identify=false`. `--json` adds the `protocol`, `protocol_detail`, and `protocol_basis` metrics. For goloop, it also adds `goloop_node`, `goloop_secure_suites`, and `goloop_aead_suites`, and `goloop_unchecked` when a reply did not come. `-w` and `--diagnose` do not check the protocol, and they do not accept `--identify`. `edc doctor` does not check the protocol.
+
 `edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.

@@ -847,7 +847,7 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 	}
 	reader := bufio.NewReader(io.LimitReader(connection, identifyReadLimit))
 	status, err := reader.ReadString('\n')
-	if !strings.HasPrefix(status, "HTTP/1.") && !strings.HasPrefix(status, "HTTP/2") {
+	if !httpStatusLine(status) {
 		var timeout net.Error
 		return "", []byte(status), false, status == "" && errors.As(err, &timeout) && timeout.Timeout()
 	}
@@ -886,6 +886,22 @@ func httpExchange(connection net.Conn, host string) (detail string, reply []byte
 		}
 	}
 	return strings.Join(parts, ", "), nil, true, false
+}
+
+// httpStatusLine은 줄바꿈으로 끝난 HTTP 상태 줄인지 본다. 버전과 세 자리 상태 코드가 있어야 한다. "HTTP/1."로 시작하는
+// 다른 서비스의 배너를 HTTP로 보지 않는다.
+func httpStatusLine(line string) bool {
+	if !strings.HasSuffix(line, "\n") {
+		return false
+	}
+	version, rest, _ := strings.Cut(strings.TrimRight(line, "\r\n"), " ")
+	code, _, _ := strings.Cut(rest, " ")
+	switch version {
+	case "HTTP/1.0", "HTTP/1.1", "HTTP/2", "HTTP/2.0":
+	default:
+		return false
+	}
+	return len(code) == 3 && code[0] >= '1' && code[0] <= '5' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9'
 }
 
 // goloop P2P packet은 header 30바이트(protocol 2, sub protocol 2, 보낸 peer ID 20, dest 1, ttl 1, payload 길이 4),

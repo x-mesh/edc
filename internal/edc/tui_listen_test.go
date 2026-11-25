@@ -273,3 +273,16 @@ func TestListenBrowserDetailDropsColorFromResultText(t *testing.T) {
 		}
 	}
 }
+
+func TestListenBrowserShowsWhatAnInterpreterRuns(t *testing.T) {
+	model := listenBrowserFixture(t)
+	model.sockets = []listenSocket{
+		{Proto: "tcp", Port: 5173, Address: "0.0.0.0", Process: "node", PID: "7", Args: []string{"node", "/srv/web/node_modules/.bin/vite", "--password", "x"}, Cwd: "/srv/web"},
+		{Proto: "tcp", Port: 7265, Address: "127.0.0.1", Process: "node", PID: "8", Args: []string{"Raycast Backend"}},
+	}
+	model.rebuild()
+	view := model.View().Content
+	if !strings.Contains(view, "node · vite (web)") || !strings.Contains(view, "node · Raycast Backend") || strings.Contains(view, "--password") {
+		t.Fatalf("interpreter labels:\n%s", view)
+	}
+}

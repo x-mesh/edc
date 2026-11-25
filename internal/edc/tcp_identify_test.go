@@ -436,6 +436,29 @@ func TestIdentifyHTTPRetriesWithHost(t *testing.T) {
 	}
 }
 
+// 버전과 세 자리 상태 코드가 있는 상태 줄만 HTTP로 본다. "HTTP/1."로 시작할 뿐인 배너는 HTTP가 아니다.
+func TestIdentifyHTTPNeedsAWholeStatusLine(t *testing.T) {
+	t.Parallel()
+	for reply, want := range map[string]bool{
+		"HTTP/1.1 200 OK\r\n\r\n":         true,
+		"HTTP/1.0 400\r\n\r\n":            true,
+		"HTTP/2 404 Not Found\r\n\r\n":    true,
+		"HTTP/1.\r\n\r\n":                 false,
+		"HTTP/1.1\r\n\r\n":                false,
+		"HTTP/1.1 OK\r\n\r\n":             false,
+		"HTTP/1.1 2000 OK\r\n\r\n":        false,
+		"HTTP/1.1 600 Odd\r\n\r\n":        false,
+		"HTTP/1.9 200 OK\r\n\r\n":         false,
+		"HTTP/1.1 200 OK with no newline": false,
+	} {
+		address := identifyListener(t, replyServer(func([]byte) []byte { return []byte(reply) }))
+		got, _, ok := identifyHTTP(context.Background(), identifyTestTarget(address))
+		if ok != want || (want && got.Name != "http") {
+			t.Errorf("%q: got %+v ok %v", reply, got, ok)
+		}
+	}
+}
+
 // 연결만 받고 답하지 않는 서버의 판별 시간은 연결 시간에 따라 늘어난다. 실제 네트워크의 값을 보려고 연결 시간을 바꿔 잰다.
 // 판별 전체는 identifyTotalTimeout에서 멈추고, 상한 때문에 멈췄다는 것을 결과에 남긴다. 연결 시간 150ms면 상한 없이 10초를 넘었다.
 func TestIdentifySilentServerStopsAtTotalTimeout(t *testing.T) {

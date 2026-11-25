@@ -254,6 +254,9 @@ type topModel struct {
 	// notice는 다음 키까지 상태 줄에 보이는 안내다.
 	notice      string
 	statusCache map[string][]string
+	// layoutCache는 화면 한 번 동안의 host 열 배치다. 배치는 폭과 열 묶음에만 따라 달라지는데, 표의 줄마다 다시 계산하면
+	// 화면 한 번에 열 목록을 수십 번 새로 만든다.
+	layoutCache *topHostLayout
 	// input은 /로 연 필터 입력 중인지다. inputText는 입력한 글자다.
 	input           bool
 	inputText       string
@@ -878,6 +881,7 @@ func (model topModel) dashboardView() tea.View {
 		return view
 	}
 	model.statusCache = map[string][]string{}
+	model.layoutCache = &topHostLayout{}
 	if model.view == topViewSplit {
 		return model.splitView()
 	}
@@ -1910,7 +1914,25 @@ func (model topModel) tableRow(row topDashboardRow) string {
 	return formatTopColumnsWidth(row.at.Format("15:04:05"), columns, kept, model.limits.color, model.displayWidth())
 }
 
+type topHostLayout struct {
+	columns     []topAllColumn
+	signalWidth int
+	ok          bool
+}
+
+// hostLayout은 화면 한 번 동안 같은 배치를 돌려준다. 호출자는 열 목록을 읽기만 한다.
 func (model topModel) hostLayout() ([]topAllColumn, int) {
+	if model.layoutCache == nil {
+		return model.computeHostLayout()
+	}
+	if !model.layoutCache.ok {
+		model.layoutCache.columns, model.layoutCache.signalWidth = model.computeHostLayout()
+		model.layoutCache.ok = true
+	}
+	return model.layoutCache.columns, model.layoutCache.signalWidth
+}
+
+func (model topModel) computeHostLayout() ([]topAllColumn, int) {
 	columns, signalWidth := topAllLayoutOf(model.displayWidth(), topAllGroupColumns(model.columnGroups))
 	if model.details.System != "darwin" {
 		return columns, signalWidth

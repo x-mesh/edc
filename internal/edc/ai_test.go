@@ -107,6 +107,64 @@ func TestAIScanWaitsForTheLineToEnd(t *testing.T) {
 	}
 }
 
+// scan마다 디렉터리를 모두 훑지 않는다. 새 세션 파일은 다음 전체 탐색에서, 아는 파일이 자란 것은 바로 읽는다.
+func TestAIScanFindsNewFilesOnTheNextWalk(t *testing.T) {
+	codexDir, now := t.TempDir(), time.Now()
+	at := aiFixtureTime(now)
+	line := func(total int) string {
+		return `{"timestamp":"` + at + `","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":` + strconv.Itoa(total) + `,"output_tokens":0,"total_tokens":` + strconv.Itoa(total) + `}}}}` + "\n"
+	}
+	writeAIFixture(t, filepath.Join(codexDir, "sessions", "a.jsonl"), line(40))
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 40 {
+		t.Fatalf("first walk: codex tokens = %d, want 40", got)
+	}
+	writeAIFixture(t, filepath.Join(codexDir, "sessions", "b.jsonl"), line(50))
+	if got := aiSumBuckets(scanner.scan(now.Add(2*time.Second)), "codex").total(); got != 40 {
+		t.Fatalf("between walks a new file must wait: codex tokens = %d, want 40", got)
+	}
+	if got := aiSumBuckets(scanner.scan(now.Add(aiWalkInterval)), "codex").total(); got != 90 {
+		t.Fatalf("next walk: codex tokens = %d, want 90", got)
+	}
+}
+
+// 지운 세션 파일은 추적 목록에서 빠진다. 남아 있으면 scan마다 그 경로를 다시 lstat한다.
+func TestAIScanForgetsDeletedFiles(t *testing.T) {
+	codexDir, now := t.TempDir(), time.Now()
+	at := aiFixtureTime(now)
+	path := filepath.Join(codexDir, "sessions", "a.jsonl")
+	writeAIFixture(t, path, `{"timestamp":"`+at+`","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"output_tokens":0,"total_tokens":40}}}}`+"\n")
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 40 || len(scanner.files) != 1 {
+		t.Fatalf("first walk: codex tokens = %d, %d files", got, len(scanner.files))
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := aiSumBuckets(scanner.scan(now.Add(2*time.Second)), "codex").total(); got != 40 || len(scanner.files) != 0 {
+		t.Fatalf("after the delete: codex tokens = %d, %d files", got, len(scanner.files))
+	}
+}
+
+// 세션 파일은 버퍼 크기씩 나눠 읽는다. 버퍼보다 긴 줄도 한 줄로 읽고, 줄바꿈이 없는 마지막 줄은 다음 scan으로 미룬다.
+func TestAIScanReadsLinesLongerThanTheBuffer(t *testing.T) {
+	codexDir, now := t.TempDir(), time.Now()
+	at := aiFixtureTime(now)
+	record := func(total int, padding int) string {
+		return `{"timestamp":"` + at + `","pad":"` + strings.Repeat("x", padding) + `","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":` + strconv.Itoa(total) + `,"output_tokens":0,"total_tokens":` + strconv.Itoa(total) + `}}}}`
+	}
+	path := filepath.Join(codexDir, "sessions", "long.jsonl")
+	writeAIFixture(t, path, record(40, 10)+"\n", record(70, aiReadChunk+100)+"\n", record(90, aiReadChunk/2))
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 70 {
+		t.Fatalf("a line longer than the buffer: codex tokens = %d, want 70", got)
+	}
+	appendAIFixture(t, path, "\n")
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 90 {
+		t.Fatalf("after the newline: codex tokens = %d, want 90", got)
+	}
+}
+
 func TestParseAIClaudeUsageKeepsKnownWindows(t *testing.T) {
 	windows, err := parseAIClaudeUsage([]byte(`{
 		"five_hour": {"utilization": 22, "resets_at": "2026-09-30T08:59:59.843792+00:00"},

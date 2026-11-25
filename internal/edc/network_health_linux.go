@@ -19,7 +19,13 @@ func collectLinuxNetworkHealth(procRoot, sysRoot string) *networkHealth {
 	if namespace, err := os.Readlink(filepath.Join(procRoot, "self/ns/net")); err == nil {
 		health.Scope = namespace
 	}
-	read := func(path string) ([]byte, error) { return os.ReadFile(filepath.Join(procRoot, path)) }
+	// top은 interval마다 이 파일들을 모두 읽는다. procFileReader는 os.ReadFile의 netpoller 등록과 fstat을 건너뛴다.
+	// 돌려준 slice는 다음 읽기에서 덮이므로 복사해 넘긴다.
+	files := &procFileReader{}
+	read := func(path string) ([]byte, error) {
+		data, err := files.read(filepath.Join(procRoot, path))
+		return append([]byte(nil), data...), err
+	}
 	for _, name := range networkSettingNames {
 		data, err := read("sys/" + strings.ReplaceAll(name, ".", "/"))
 		value := networkUnavailable("not exposed")
@@ -119,13 +125,14 @@ func collectLinuxNICCounters(classNet string) (map[string]networkReading, map[st
 		return result, nil
 	}
 	perInterface := map[string]map[string]networkReading{}
+	files := &procFileReader{}
 	for _, entry := range entries {
 		if entry.Name() == "lo" {
 			continue
 		}
 		counters := map[string]networkReading{}
 		for name, file := range networkNICCounters {
-			data, err := os.ReadFile(filepath.Join(classNet, entry.Name(), "statistics", file))
+			data, err := files.read(filepath.Join(classNet, entry.Name(), "statistics", file))
 			if err != nil {
 				counters[name] = networkReadError(err)
 				continue

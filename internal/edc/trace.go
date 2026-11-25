@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -783,7 +784,9 @@ func runTraceProtocol(args []string) int {
 	aggregate.useLocalDNS()
 	rawSockets := traceRawSockets{}
 	if options.raw {
-		encoder = json.NewEncoder(os.Stdout)
+		raw := newTraceRawWriter(os.Stdout)
+		defer raw.Close()
+		encoder = json.NewEncoder(raw)
 	} else if options.jsonPath == "" && options.groupBy == "" {
 		printTraceEventHeader(traceLabel(args[0], options.side))
 	}
@@ -1858,4 +1861,50 @@ func traceBytes(bytes uint64) string {
 
 func traceTrafficRate(traffic traceTraffic) string {
 	return fmt.Sprintf("%.1f B/s · %.1f bps · %.3f Mbps", traffic.BytesPerSecond, traffic.BitsPerSecond, traffic.MegabitsPerSecond)
+}
+
+// traceRawWriter는 --raw의 JSON 줄을 모아서 쓴다. 줄마다 write를 부르면 한 이벤트에 시스템 호출 하나가 든다. 이벤트가 뜸해도
+// 줄이 오래 남지 않게 traceRawFlushInterval마다 비운다.
+type traceRawWriter struct {
+	mu     sync.Mutex
+	writer *bufio.Writer
+	stop   chan struct{}
+	done   chan struct{}
+}
+
+const traceRawFlushInterval = 200 * time.Millisecond
+
+func newTraceRawWriter(out io.Writer) *traceRawWriter {
+	raw := &traceRawWriter{writer: bufio.NewWriterSize(out, 64<<10), stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(raw.done)
+		ticker := time.NewTicker(traceRawFlushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				raw.mu.Lock()
+				raw.writer.Flush()
+				raw.mu.Unlock()
+			case <-raw.stop:
+				return
+			}
+		}
+	}()
+	return raw
+}
+
+func (raw *traceRawWriter) Write(data []byte) (int, error) {
+	raw.mu.Lock()
+	defer raw.mu.Unlock()
+	return raw.writer.Write(data)
+}
+
+// Close는 남은 줄을 쓰고 비우는 goroutine을 멈춘다.
+func (raw *traceRawWriter) Close() {
+	close(raw.stop)
+	<-raw.done
+	raw.mu.Lock()
+	raw.writer.Flush()
+	raw.mu.Unlock()
 }

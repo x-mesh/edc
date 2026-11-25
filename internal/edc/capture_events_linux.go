@@ -1384,12 +1384,12 @@ func (raw captureEventRaw) event(clockOffset int64) captureEvent {
 
 func formatCaptureAddress(family uint16, address [16]byte, port uint16) string {
 	if family == 2 {
-		return fmt.Sprintf("%d.%d.%d.%d:%d", address[0], address[1], address[2], address[3], port)
+		return netip.AddrPortFrom(netip.AddrFrom4([4]byte(address[:4])), port).String()
 	}
 	if family == 10 {
 		// dual-stack socket의 IPv4 상대는 ::ffff:a.b.c.d로 담겨 온다. IPv4로 써야 같은 상대가 한 주소로 보인다.
 		if netip.AddrFrom16(address).Is4In6() {
-			return fmt.Sprintf("%d.%d.%d.%d:%d", address[12], address[13], address[14], address[15], port)
+			return netip.AddrPortFrom(netip.AddrFrom4([4]byte(address[12:16])), port).String()
 		}
 		// RFC 5952 축약형으로 쓴다. 풀어 쓰면 ::1이 0:0:0:0:0:0:0:1이 되어 읽기 어렵다.
 		return netip.AddrPortFrom(netip.AddrFrom16(address), port).String()

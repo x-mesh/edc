@@ -71,3 +71,20 @@ func TestStartedBeforeListAllowsForTheBootTimeRounding(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxListenStopRefusesWhenTheKernelHasNoPidfdSendSignal(t *testing.T) {
+	dir, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	original := pidfdSendSignal
+	defer func() { pidfdSendSignal = original }()
+	pidfdSendSignal = func(int, syscall.Signal, *unix.Siginfo, int) error { return syscall.ENOSYS }
+	process := &linuxListenStop{dir: dir, pid: os.Getpid()}
+	for _, signal := range []syscall.Signal{0, syscall.SIGTERM} {
+		if err := process.signal(signal); !errors.Is(err, errListenStopUnsupported) {
+			t.Fatalf("signal %d without pidfd_send_signal = %v, want errListenStopUnsupported", signal, err)
+		}
+	}
+}

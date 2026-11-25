@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -64,7 +65,7 @@ func TestDebugDecodesEachProtocol(t *testing.T) {
 			return nil
 		})), []string{"SSLRequest · length 8 · code 80877103", "'N': the server does not offer SSL"}, nil},
 		{"mongodb", identifyListener(t, fakeMongoDB), []string{"OP_MSG hello", "OP_MSG reply to 0x65646321", "maxWireVersion 21", "setName rs0"}, nil},
-		{"goloop", identifyListener(t, fakeGoloop), []string{"SecureRequest (auth 0x0000 / 0x0100)", "SecureResponse (auth 0x0000 / 0x0200)", "hash ok", "node hx0123456789abcdef0123456789abcdef01234567", "secure suites [none] · aead suites [chacha]"}, nil},
+		{"goloop", identifyListener(t, fakeGoloop), []string{"SecureRequest (auth 0x0000 / 0x0100)", "SecureResponse (auth 0x0000 / 0x0200)", "hash ok", "node hx0123456789abcdef0123456789abcdef01234567", "3 connections, each proposes one secure suite", "proposed none + chacha → answered none + chacha", "proposed ecdhe + aes256 → answered ecdhe + aes256"}, []string{`channel ""`, "error none", "key P-256"}},
 		{"amqp", identifyListener(t, func(c net.Conn) {
 			if readExactly(c, amqpProtocolHeader) {
 				c.Write(amqpStartFrame("RabbitMQ", "4.1.0"))
@@ -177,6 +178,119 @@ func TestDebugRawShowsHexRegions(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in\n%s", want, text)
 		}
+	}
+}
+
+// goloop은 방식 후보마다 연결을 열어 같은 모양을 세 번 보낸다. 기본 출력은 모양을 한 번만 쓰고, raw는 연결마다 모두 쓴다.
+func TestDebugFoldsGoloopProbes(t *testing.T) {
+	t.Parallel()
+	address := identifyListener(t, fakeGoloop)
+	_, folded := debugTextFor(t, address, false)
+	if count := strings.Count(folded, "SecureRequest (auth"); count != 1 {
+		t.Fatalf("folded output has %d requests:\n%s", count, folded)
+	}
+	_, full := debugTextFor(t, identifyListener(t, fakeGoloop), true)
+	if count := strings.Count(full, "SecureRequest (auth"); count != 3 {
+		t.Fatalf("raw output has %d requests:\n%s", count, full)
+	}
+	if !strings.Contains(full, "new connection") {
+		t.Fatalf("raw output does not separate the connections:\n%s", full)
+	}
+}
+
+// 접힌 줄은 노드가 요청한 방식과 다른 방식을 골랐거나 답하지 않은 연결도 보여 준다.
+func TestDebugFoldShowsRefusedAndSilentProbes(t *testing.T) {
+	t.Parallel()
+	only := map[byte]bool{goloopSuiteECDHE: true}
+	_, text := debugTextFor(t, identifyListener(t, fakeGoloopWith(only, goloopAllSupported)), false)
+	for _, want := range []string{"proposed none + chacha → refused (invalid)", "proposed tls + aes128 → refused (invalid)", "proposed ecdhe + aes256 → answered ecdhe + aes256"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "error none") {
+		t.Errorf("empty error shown:\n%s", text)
+	}
+	// 응답마다 payload 크기가 다르면 대표 크기를 쓰지 않는다.
+	if strings.Contains(text, "SecureResponse (auth 0x0000 / 0x0200) · dest 0xff · ttl 1 · payload") {
+		t.Errorf("response size shown although it differs between connections:\n%s", text)
+	}
+}
+
+// 접힌 줄에는 channel 자리가 없으므로, 노드가 비어 있지 않은 channel로 답하면 접지 않고 기본 출력에 channel을 쓴다.
+func TestDebugDoesNotFoldAwayAChannel(t *testing.T) {
+	t.Parallel()
+	withChannel := func(connection net.Conn) {
+		connection.SetDeadline(time.Now().Add(5 * time.Second))
+		header := make([]byte, goloopHeaderSize)
+		if _, err := io.ReadFull(connection, header); err != nil {
+			return
+		}
+		rest := make([]byte, int(binary.BigEndian.Uint32(header[26:30]))+goloopFooterSize)
+		if _, err := io.ReadFull(connection, rest); err != nil {
+			return
+		}
+		response := []byte{0x95, 0xa3, 'f', 'o', 'o', rest[4], rest[7], 0xc4, 0x00, 0xa0}
+		connection.Write(goloopTestPacket(goloopSecureResponse, identifyTestPeerID, response))
+		io.Copy(io.Discard, connection)
+	}
+	_, text := debugTextFor(t, identifyListener(t, withChannel), false)
+	if !strings.Contains(text, `channel "foo"`) {
+		t.Fatalf("channel missing in\n%s", text)
+	}
+}
+
+// 맞은 단계 하나뿐이면 result 줄이 단계 줄과 같은 말이라 쓰지 않는다. 앞 단계가 기다렸으면 전체 시간을 위해 쓴다.
+func TestDebugResultLineOnlyWhenItAddsSomething(t *testing.T) {
+	t.Parallel()
+	single := identifyListener(t, func(c net.Conn) { io.WriteString(c, "SSH-2.0-OpenSSH_9.6\r\n") })
+	if _, text := debugTextFor(t, single, false); strings.Contains(text, "result ") {
+		t.Fatalf("redundant result line:\n%s", text)
+	}
+	_, silent := debugTextFor(t, identifyListener(t, fakeRedis("+PONG\r\n")), false)
+	if !strings.Contains(silent, "result redis in ") {
+		t.Fatalf("result line missing after a banner wait:\n%s", silent)
+	}
+}
+
+// 방향 글머리는 색이 없어도 보낸 줄과 받은 줄을 가른다. 색은 그 위에 얹는다.
+func TestFormatDebugLinesMarksDirectionAndColor(t *testing.T) {
+	lines := []DebugLine{
+		{AtMS: 1, Kind: "redis", Text: "matched redis · 1.0ms"},
+		{AtMS: -1, Depth: 1, Text: debugSendMark + "RESP command PING · 14 B"},
+		{AtMS: -1, Depth: 1, Text: debugReceiveMark + "RESP simple string PONG · 7 B in 0.4ms"},
+		{AtMS: 3, Kind: "mongodb", Text: "sent hello · reset by the server after 0.1ms, no reply"},
+		{AtMS: -1, Kind: "result", Text: "unknown: 1 steps waited without a reply, 0 closed, 0 replied with something else"},
+	}
+	plain := strings.Join(formatDebugLines(lines, false), "\n")
+	if strings.Contains(plain, "\033[") {
+		t.Fatalf("escape in plain output: %q", plain)
+	}
+	for _, want := range []string{"→ RESP command PING · 14 B", "← RESP simple string PONG"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in\n%s", want, plain)
+		}
+	}
+	colored := formatDebugLines(lines, true)
+	if len(colored) != len(lines)+1 {
+		t.Fatalf("got %d lines", len(colored))
+	}
+	for index, want := range map[int]string{
+		1: "matched redis",     // 맞은 단계
+		2: "RESP command PING", // 보낸 줄
+		3: "PONG",              // 받은 줄
+		4: "reset by the server",
+		5: "unknown",
+	} {
+		if !strings.Contains(colored[index], "\033[") || !strings.Contains(colored[index], want) {
+			t.Errorf("line %d is not colored or lost %q: %q", index, want, colored[index])
+		}
+	}
+	// 보낸 줄과 받은 줄의 글머리는 서로 다른 색이다.
+	sendColor := strings.SplitN(colored[2], "→", 2)[0]
+	receiveColor := strings.SplitN(colored[3], "←", 2)[0]
+	if sendColor == receiveColor {
+		t.Errorf("send and receive share a color: %q", colored[2])
 	}
 }
 

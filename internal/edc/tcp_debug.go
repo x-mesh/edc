@@ -361,9 +361,17 @@ func tcpDebugLines(connect debugConnect, recorder *identifyRecorder, identified 
 			continue
 		}
 		add(step.start, step.name, 0, expandedStepHeader(step))
-		for _, exchange := range step.exchanges {
-			for _, line := range exchangeLines(step.name, exchange, raw) {
+		// raw는 연결마다의 바이트를 보려는 것이라 접지 않는다.
+		if folded := foldedStepLines(step, raw); folded != nil {
+			for _, line := range folded {
 				add(-1, "", line.depth, line.text)
+			}
+		} else {
+			for _, exchange := range step.exchanges {
+				showConnection := len(step.exchanges) > 1
+				for _, line := range exchangeLines(step.name, exchange, raw, showConnection) {
+					add(-1, "", line.depth, line.text)
+				}
 			}
 		}
 		for _, note := range step.notes {
@@ -373,8 +381,19 @@ func tcpDebugLines(connect debugConnect, recorder *identifyRecorder, identified 
 	if len(recorder.skipped) > 0 {
 		add(-1, "stopped", 0, fmt.Sprintf("%s limit before %s", identified.Limit, strings.Join(recorder.skipped, ", ")))
 	}
-	add(-1, "result", 0, resultText(recorder, identified))
+	// 맞은 단계 하나뿐이면 결과 줄은 그 단계 줄과 같은 말이다. 앞 단계가 기다린 시간이 있거나 unknown일 때만 쓴다.
+	if identified.Name == protocolUnknown || len(recorder.steps) > 1 {
+		add(-1, "result", 0, resultText(recorder, identified))
+	}
 	return lines
+}
+
+// foldedStepLines는 같은 모양의 연결이 반복된 단계를 접은 줄이다. raw이거나 접을 수 없으면 nil이다.
+func foldedStepLines(step *debugStep, raw bool) []debugTextLine {
+	if raw || step.name != protocolNameGoloopP2P {
+		return nil
+	}
+	return foldGoloopStep(step)
 }
 
 func identifyPlanText(recorder *identifyRecorder, port int, options identifyOptions) string {
@@ -512,6 +531,69 @@ func debugText(raw string) string {
 	return text
 }
 
+// debugStyle은 debug 줄 하나에 입힐 색이다. 빈 값은 터미널 기본색이다. 색은 읽기를 돕는 것이라, 색이 없는 출력도 글만으로
+// 같은 뜻이어야 한다. 줄을 만드는 쪽의 글머리와 종류로 정하므로 저장된 기록(report show)도 같은 색으로 그려진다.
+type debugStyle struct {
+	kind, text string
+	bold       bool
+}
+
+func styleDebugLine(line DebugLine) debugStyle {
+	trouble := strings.Contains(line.Text, "closed by the server") || strings.Contains(line.Text, "reset by the server") || strings.HasPrefix(line.Text, "connect failed")
+	switch line.Kind {
+	case "":
+		if trouble {
+			return debugStyle{text: richYellow}
+		}
+		return debugStyle{}
+	case "dns", "identify":
+		return debugStyle{kind: richCyan}
+	case "connect":
+		if strings.HasPrefix(line.Text, "failed") {
+			return debugStyle{kind: richRed, text: richRed}
+		}
+		return debugStyle{kind: richCyan}
+	case "tcp":
+		if strings.Contains(line.Text, "likely a SYN retransmit") {
+			return debugStyle{kind: richCyan, text: richYellow}
+		}
+		return debugStyle{kind: richCyan}
+	case "stopped":
+		return debugStyle{kind: richYellow, text: richYellow}
+	case "result":
+		if strings.HasPrefix(line.Text, "unknown") {
+			return debugStyle{kind: richYellow, text: richYellow}
+		}
+		return debugStyle{kind: richGreen, text: richGreen}
+	}
+	// 나머지는 판별 단계의 이름이다. 맞은 단계는 눈에 띄게, 맞지 않은 단계는 흐리게 둔다. 서버가 끊거나 거부한 단계는 노랗게 둔다.
+	switch {
+	case strings.HasPrefix(line.Text, "matched"):
+		return debugStyle{kind: richGreen, bold: true}
+	case trouble:
+		return debugStyle{kind: richGray, text: richYellow}
+	}
+	return debugStyle{kind: richGray, text: richGray}
+}
+
+// paintDebugText는 줄 내용에 색을 입힌다. 보낸 줄(→)과 받은 줄(←)은 글머리만 칠한다.
+func paintDebugText(text, color string) string {
+	switch {
+	case strings.HasPrefix(text, debugSendMark):
+		return richPaint(strings.TrimSpace(debugSendMark), richBlue, true) + " " + paintDebugBody(strings.TrimPrefix(text, debugSendMark), color)
+	case strings.HasPrefix(text, debugReceiveMark):
+		return richPaint(strings.TrimSpace(debugReceiveMark), richGreen, true) + " " + paintDebugBody(strings.TrimPrefix(text, debugReceiveMark), color)
+	}
+	return paintDebugBody(text, color)
+}
+
+func paintDebugBody(text, color string) string {
+	if color == "" {
+		return text
+	}
+	return richPaint(text, color, false)
+}
+
 // formatDebugLines는 기록을 터미널 줄로 그린다. 왼쪽에 경과 시각, 그다음 종류, 그다음 내용을 둔다.
 func formatDebugLines(lines []DebugLine, color bool) []string {
 	output := make([]string, 0, len(lines)+1)
@@ -530,13 +612,18 @@ func formatDebugLines(lines []DebugLine, color bool) []string {
 		}
 		kind := fmt.Sprintf("%-11s", line.Kind)
 		indent := strings.Repeat("  ", line.Depth)
+		text := line.Text
 		if color {
+			style := styleDebugLine(line)
 			at = richDim(fmt.Sprintf("%9s", at))
-			kind = richPaint(kind, richCyan, false)
+			if style.kind != "" {
+				kind = richPaint(kind, style.kind, style.bold)
+			}
+			text = paintDebugText(text, style.text)
 		} else {
 			at = fmt.Sprintf("%9s", at)
 		}
-		output = append(output, fmt.Sprintf("      %s  %s %s%s", at, kind, indent, line.Text))
+		output = append(output, fmt.Sprintf("      %s  %s %s%s", at, kind, indent, text))
 	}
 	return output
 }

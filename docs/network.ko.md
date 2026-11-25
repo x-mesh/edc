@@ -112,12 +112,10 @@ PASS  tcp.check amqp            127.0.0.1:5672 connected (0s), peer 127.0.0.1
                  tcp         rtt 0.1ms · rto 201ms · mss 32741 · SACK on · timestamps on · window scale on · ECN off · retransmits 0
                  identify    port 5672 points to amqp: send it first, no banner wait
          +2.8ms  amqp        matched amqp · 1.9ms
-                               new connection · 0.3ms
-                               sent  protocol header AMQP 0-9-1 · 8 B
-                               recv  Connection.Start · AMQP 0-9 · 556 B in 1.1ms
+                               → protocol header AMQP 0-9-1 · 8 B
+                               ← Connection.Start · AMQP 0-9 · 556 B in 1.1ms
                                  product RabbitMQ · version 4.4.1 · platform Erlang/OTP 29.1.3 · cluster_name rabbit@5d4470206a51
                                  mechanisms PLAIN AMQPLAIN ANONYMOUS · locales en_US
-                 result      amqp in 1.9ms
 ```
 
 각 줄의 뜻은 다음과 같습니다.
@@ -125,8 +123,12 @@ PASS  tcp.check amqp            127.0.0.1:5672 connected (0s), peer 127.0.0.1
 - `dns`: 이름의 주소 목록입니다. 연결은 Go 안에서 이름을 조회하므로, 이 줄을 위해 한 번 더 조회합니다.
 - `connect`: 출발·도착 주소와 연결 시간입니다.
 - `tcp`: handshake에서 커널이 합의한 값입니다. RTT, RTO, MSS, SACK, timestamp, window scale, ECN, 재전송 수를 보여 줍니다. Linux에서는 window scale을 `on`·`off`로만 보여 줍니다. 연결이 900ms 이상 걸리면 SYN 재전송이 있었을 가능성이 크다는 줄이 붙는데, 이것은 시간만 보고 추정한 것입니다.
-- 판별 단계마다 한 줄: 맞은 단계는 펼쳐서 보낸 것과 받은 것을 프로토콜의 말로 풀어 보여 줍니다. 나머지 단계는 보낸 것과 서버의 반응(`waited`, `closed by the server`, `reset by the server`, 맞지 않은 응답)을 한 줄로 보여 줍니다.
-- `stopped`와 `result`: 시간 상한 때문에 보내지 못한 단계와, 결과가 그렇게 나온 이유입니다.
+- 판별 단계마다 한 줄: 맞은 단계는 펼쳐서 보낸 것(`→`)과 받은 것(`←`)을 프로토콜의 말로 풀어 보여 줍니다. 나머지 단계는 보낸 것과 서버의 반응(`waited`, `closed by the server`, `reset by the server`, 맞지 않은 응답)을 한 줄로 보여 줍니다.
+- goloop 노드에는 연결이 세 번 열립니다. 암호 방식(secure suite) 후보마다 하나씩입니다. edc는 packet 모양을 한 번만 보여 주고, 연결마다 edc가 제안한 방식과 노드가 고른 방식을 한 줄씩 보여 줍니다. `--debug=raw`는 연결마다 모두 보여 줍니다.
+- `stopped`: 시간 상한 때문에 보내지 못한 단계입니다.
+- `result`: 결과가 그렇게 나온 이유입니다. 프로토콜이 `unknown`이거나 단계를 둘 이상 시도했을 때만 나옵니다. 맞은 단계가 하나뿐이면 그 단계 줄이 이미 같은 말을 합니다.
+
+색을 쓰는 터미널에서는 맞은 단계가 굵은 초록, `→`가 파랑, `←`가 초록으로 보입니다. 맞지 않은 단계는 회색이고, 서버가 끊거나 거부한 연결은 노랑입니다. 색이 없어도 글의 뜻은 같습니다.
 
 root 권한 없이는 SYN·SYN-ACK 패킷 자체를 볼 수 없습니다. `tcp` 줄은 handshake에서 합의한 결과를 보여 줍니다. 패킷을 보려면 Linux에서 root로 `edc tcp check --diagnose`를 씁니다.
 

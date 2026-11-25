@@ -53,6 +53,7 @@ command:
       interval: "time between attempts (default 1s); implies --diagnose"
       peer: "run tcp expect on this host over ssh at the same time and join both results; implies --diagnose"
       wait: "try again every second until it connects (attempt timeout --timeout, default 3s); -w=5m stops after 5 minutes"
+      identify: "on by default: after the connect, send a few probes to name the protocol (banners such as SSH, MySQL and NATS, Redis, Memcached, PostgreSQL, TLS and the protocol inside it, MongoDB, HTTP and ClickHouse, goloop P2P, h2c and gRPC, AMQP, Kafka, MQTT, Cassandra; a usual port tries its protocol first), and show the detail with -v; it stops after 3s, and --identify=10s waits longer and gives each probe 1s; the target sees short connections that end before any login; --identify=false skips it"
       from: "expect: count only packets from this address or range"
       duration: "expect: how long to wait; omit it to wait until Ctrl-C"
       until: "expect: stop 1s after the first SYN (syn), so the reply is recorded, or at the first completed handshake (handshake)"
@@ -685,7 +686,7 @@ command:
         - "(ambiguous) is the request time that only calls of an unknown request cover. Such a call occurred during several requests of one process, so edc adds it to no request. A server that handles many requests in one process has more of it."
         - "self is the time of the request that no assigned call covers."
         - "--with adds database traces, for example --with mysql,redis:6380. --port keeps only the requests to that local server port."
-        - "--process limits each trace to that process. It does not reduce the load. A recording of 10 to 20 seconds limits the load."
+        - "--process limits each trace to the process with that name (15 characters or fewer). On a busy host, it lowers the load of trace http and the database traces. A recording of 10 to 20 seconds limits the load."
         - "edc compares only the time range that all the traces recorded. If a trace fails, edc stops and prints no breakdown."
         - "The recordings stay in a directory. edc trace show <dir> prints the same breakdown again. HTTP payload is not recorded."
       show:

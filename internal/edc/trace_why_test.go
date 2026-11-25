@@ -107,7 +107,10 @@ func TestTraceWhyLeavesACallThatSeveralRequestsContainUnassigned(t *testing.T) {
 	}
 	var out bytes.Buffer
 	report.print(&out)
-	for _, want := range []string{"Ambiguous calls: 1 (0% of call time)", "\t  (ambiguous)\t1\t1.0ms\t\t0%", "\t  (ambiguous)\t1\t1.0ms\t\t20%", "ambiguous: request time that only calls of an unknown request cover"} {
+	if candidates := slow.AmbiguousCandidates; len(candidates) != 1 || candidates[0].Name != "fast.test A" || candidates[0].Calls != 1 {
+		t.Fatalf("/slow candidates = %+v", candidates)
+	}
+	for _, want := range []string{"\t    maybe dns fast.test A\t1\t", "maybe: calls that happened while the request ran", "Ambiguous calls: 1 (0% of call time)", "\t  (ambiguous)\t1\t1.0ms\t\t0%", "\t  (ambiguous)\t1\t1.0ms\t\t20%", "ambiguous: request time that only calls of an unknown request cover"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output %q does not contain %q", out.String(), want)
 		}

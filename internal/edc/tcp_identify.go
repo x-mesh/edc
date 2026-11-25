@@ -37,6 +37,8 @@ const (
 	identifyTLSBannerWait = 300 * time.Millisecond
 	// identifyBodyWait는 HTTP 400 응답의 header 뒤에 따로 오는 본문을 기다리는 시간이다. ClickHouse native port를 가린다.
 	identifyBodyWait = 200 * time.Millisecond
+	// identifyBannerRestWait는 판정하지 못한 배너 조각 뒤에 나머지가 오기를 기다리는 시간이다. TCP는 배너를 한 번에 주지 않을 수 있다.
+	identifyBannerRestWait = 200 * time.Millisecond
 	// identifyReadLimit은 탐침 하나가 읽는 바이트의 상한이다.
 	identifyReadLimit = 4096
 	// identifyPreviewBytes는 판별하지 못한 응답에서 결과에 남기는 앞부분이다.
@@ -420,11 +422,26 @@ func identifyBanner(ctx context.Context, target identifyTarget) (protocolIdentif
 	}
 	buffer := make([]byte, 512)
 	count, readErr := reader.Read(buffer)
-	first := buffer[:count]
-	if match, ok := matchBanner(first); ok {
-		connection.Close()
-		return match, first, nil
+	for {
+		if match, ok := matchBanner(buffer[:count]); ok {
+			connection.Close()
+			return match, buffer[:count], nil
+		}
+		if count == 0 || count == len(buffer) || readErr != nil {
+			break
+		}
+		rest := time.Now().Add(identifyBannerRestWait)
+		if stage := identifyDeadline(ctx, identifyBannerWait-time.Since(started)); stage.Before(rest) {
+			rest = stage
+		}
+		if connection.SetReadDeadline(rest) != nil {
+			break
+		}
+		var more int
+		more, readErr = reader.Read(buffer[count:])
+		count += more
 	}
+	first := buffer[:count]
 	var timeout net.Error
 	if count > 0 || !errors.As(readErr, &timeout) || !timeout.Timeout() {
 		// 받은 것이 있거나 서버가 닫았으면 이 연결은 다시 쓸 수 없다.

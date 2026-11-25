@@ -117,6 +117,11 @@ func TestIdentifyProtocol(t *testing.T) {
 		name, address, protocol, detail, basis string
 	}{
 		{"ssh", identifyListener(t, func(c net.Conn) { io.WriteString(c, "SSH-2.0-OpenSSH_9.6\r\n") }), "ssh", "SSH-2.0-OpenSSH_9.6", protocolBasisBanner},
+		{"banner in two pieces", identifyListener(t, func(c net.Conn) {
+			io.WriteString(c, "SS")
+			time.Sleep(50 * time.Millisecond)
+			io.WriteString(c, "H-2.0-OpenSSH_9.6\r\n")
+		}), "ssh", "SSH-2.0-OpenSSH_9.6", protocolBasisBanner},
 		{"smtp", identifyListener(t, func(c net.Conn) { io.WriteString(c, "220 mail.example ESMTP Postfix\r\n") }), "smtp", "220 mail.example ESMTP Postfix", protocolBasisBanner},
 		{"mysql", identifyListener(t, func(c net.Conn) { c.Write(mysqlGreeting) }), "mysql", "8.0.36", protocolBasisBanner},
 		{"https over http/1.1", strings.TrimPrefix(tlsServer.URL, "https://"), "https", "HTTP/1.0 200 OK", protocolBasisTLSInner},

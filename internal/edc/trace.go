@@ -788,8 +788,7 @@ func runTraceProtocol(args []string) int {
 	if options.raw {
 		// --raw는 이벤트마다 JSON을 만들어서 할당이 많다. 요청이 초당 4만 건일 때 GC를 덜 돌리면 잃는 이벤트가 17%에서 6%로
 		// 줄었고, 대신 메모리가 약 140MB에서 340MB까지 늘었다. 메모리 한도를 넘으면 GC가 다시 자주 돈다.
-		debug.SetGCPercent(traceRawGCPercent)
-		debug.SetMemoryLimit(traceRawMemoryLimit)
+		setTraceRawGC()
 		raw = newTraceRawWriter(os.Stdout)
 		defer raw.Close()
 		encoder = json.NewEncoder(raw)
@@ -1889,6 +1888,13 @@ const (
 	traceRawGCPercent     = 400
 	traceRawMemoryLimit   = 512 << 20
 )
+
+// setTraceRawGC는 --raw의 GC 설정을 건다. GOMEMLIMIT으로 더 낮은 한도를 정했으면 그 한도를 둔다. -1은 한도를 바꾸지 않고
+// 읽기만 한다.
+func setTraceRawGC() {
+	debug.SetGCPercent(traceRawGCPercent)
+	debug.SetMemoryLimit(min(debug.SetMemoryLimit(-1), traceRawMemoryLimit))
+}
 
 func newTraceRawWriter(out io.Writer) *traceRawWriter {
 	raw := &traceRawWriter{writer: bufio.NewWriterSize(out, 64<<10), stop: make(chan struct{}), done: make(chan struct{})}

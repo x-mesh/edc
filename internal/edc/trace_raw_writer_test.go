@@ -3,6 +3,8 @@ package edc
 import (
 	"bytes"
 	"errors"
+	"math"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,5 +78,21 @@ func TestTraceRawWriterReportsAWriteFailure(t *testing.T) {
 	}
 	if err := raw.Close(); !errors.Is(err, syscall.ENOSPC) {
 		t.Fatalf("Close after a failed periodic flush = %v", err)
+	}
+}
+
+// --raw는 GC를 늦추지만, 사용자가 GOMEMLIMIT으로 정한 더 낮은 한도는 그대로 둔다.
+func TestTraceRawGCKeepsALowerMemoryLimit(t *testing.T) {
+	gcPercent, limit := debug.SetGCPercent(100), debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetGCPercent(gcPercent); debug.SetMemoryLimit(limit) })
+	debug.SetMemoryLimit(64 << 20)
+	setTraceRawGC()
+	if got := debug.SetMemoryLimit(-1); got != 64<<20 {
+		t.Fatalf("a lower limit was replaced: %d", got)
+	}
+	debug.SetMemoryLimit(math.MaxInt64)
+	setTraceRawGC()
+	if got := debug.SetMemoryLimit(-1); got != traceRawMemoryLimit {
+		t.Fatalf("no limit was set: %d", got)
 	}
 }

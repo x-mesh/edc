@@ -506,7 +506,14 @@ type aiTokenScanner struct {
 	seconds map[string]map[int64][]aiStampedUsage
 	// seen은 Claude 응답 하나가 여러 줄에 기록되는 것을 한 번만 센다.
 	seen map[string]aiSeenMessage
+	// walked는 마지막으로 디렉터리를 모두 훑은 시각이다. 그 사이의 scan은 이미 아는 파일의 크기만 본다.
+	walked time.Time
 }
+
+// aiWalkInterval은 새 세션 파일을 찾으려고 디렉터리를 모두 훑는 간격이다. 기록 디렉터리에는 파일 수천 개와 디렉터리
+// 수백 개가 쌓이는데 하루 안에 바뀌는 파일은 수십 개라, scan마다 훑으면 탐색이 top의 CPU 대부분을 차지했다. 새로 시작한
+// 세션의 token은 이 간격만큼 늦게 잡힐 수 있다.
+const aiWalkInterval = 15 * time.Second
 
 func newAITokenScanner(claudeDir, codexDir string) *aiTokenScanner {
 	return &aiTokenScanner{
@@ -612,6 +619,8 @@ func (snapshot aiUsageSnapshot) rows(end time.Time, size time.Duration, count in
 
 func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 	oldest := now.Add(-aiRetention)
+	// 시계가 뒤로 가도 훑도록 차이의 절댓값을 본다.
+	walk := scanner.walked.IsZero() || now.Sub(scanner.walked).Abs() >= aiWalkInterval
 	var errs []string
 	failed := map[string]bool{}
 	for _, source := range []struct {
@@ -621,10 +630,19 @@ func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 		{"claude", filepath.Join(scanner.claudeDir, "projects"), scanner.claudeLine},
 		{"codex", filepath.Join(scanner.codexDir, "sessions"), scanner.codexLine},
 	} {
-		if err := scanner.walk(source.dir, oldest, source.line); err != nil {
+		var err error
+		if walk {
+			err = scanner.walk(source.dir, oldest, source.line)
+		} else {
+			err = scanner.readKnown(source.dir, oldest, source.line)
+		}
+		if err != nil {
 			errs = append(errs, source.provider+": "+err.Error())
 			failed[source.provider] = true
 		}
+	}
+	if walk {
+		scanner.walked = now
 	}
 	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Seconds: map[string]map[int64][]aiStampedUsage{}, Failed: failed, Err: strings.Join(errs, " · ")}
 	for provider, seconds := range scanner.seconds {
@@ -667,18 +685,45 @@ func (scanner *aiTokenScanner) walk(root string, oldest time.Time, line func(*ai
 		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".jsonl") {
 			return err
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
 		file, tracked := scanner.files[path]
 		if !tracked {
-			info, err := entry.Info()
 			// 기록이 멈춘 파일은 보관 구간에 더할 줄이 없다.
-			if err != nil || info.ModTime().Before(oldest) {
+			if info.ModTime().Before(oldest) {
 				return nil
 			}
 			file = &aiScanFile{}
 			scanner.files[path] = file
 		}
+		// 읽은 뒤 자라지 않은 파일은 열지 않는다. 세션 파일은 수천 개인데 2초마다 대부분 그대로라, 열고 fstat하고 닫는 비용이
+		// 탐색의 대부분이었다. 크기가 줄었으면 readFile이 처음부터 다시 읽는다.
+		if info.Size() == file.offset {
+			return nil
+		}
 		return scanner.readFile(path, file, oldest, line)
 	})
+}
+
+// readKnown은 이미 아는 파일 가운데 root 아래에 있고 읽은 뒤 자란 파일만 읽는다. 사라진 파일은 건너뛰고, 다음 전체
+// 탐색도 그 파일을 만나지 않는다.
+func (scanner *aiTokenScanner) readKnown(root string, oldest time.Time, line func(*aiScanFile, []byte, time.Time)) error {
+	prefix := root + string(filepath.Separator)
+	for path, file := range scanner.files {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil || info.Size() == file.offset {
+			continue
+		}
+		if err := scanner.readFile(path, file, oldest, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readFile은 줄바꿈으로 끝난 줄만 읽는다. 기록 중인 마지막 줄은 다음 scan에서 온전히 읽는다.

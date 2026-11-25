@@ -107,6 +107,27 @@ func TestAIScanWaitsForTheLineToEnd(t *testing.T) {
 	}
 }
 
+// scan마다 디렉터리를 모두 훑지 않는다. 새 세션 파일은 다음 전체 탐색에서, 아는 파일이 자란 것은 바로 읽는다.
+func TestAIScanFindsNewFilesOnTheNextWalk(t *testing.T) {
+	codexDir, now := t.TempDir(), time.Now()
+	at := aiFixtureTime(now)
+	line := func(total int) string {
+		return `{"timestamp":"` + at + `","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":` + strconv.Itoa(total) + `,"output_tokens":0,"total_tokens":` + strconv.Itoa(total) + `}}}}` + "\n"
+	}
+	writeAIFixture(t, filepath.Join(codexDir, "sessions", "a.jsonl"), line(40))
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	if got := aiSumBuckets(scanner.scan(now), "codex").total(); got != 40 {
+		t.Fatalf("first walk: codex tokens = %d, want 40", got)
+	}
+	writeAIFixture(t, filepath.Join(codexDir, "sessions", "b.jsonl"), line(50))
+	if got := aiSumBuckets(scanner.scan(now.Add(2*time.Second)), "codex").total(); got != 40 {
+		t.Fatalf("between walks a new file must wait: codex tokens = %d, want 40", got)
+	}
+	if got := aiSumBuckets(scanner.scan(now.Add(aiWalkInterval)), "codex").total(); got != 90 {
+		t.Fatalf("next walk: codex tokens = %d, want 90", got)
+	}
+}
+
 func TestParseAIClaudeUsageKeepsKnownWindows(t *testing.T) {
 	windows, err := parseAIClaudeUsage([]byte(`{
 		"five_hour": {"utilization": 22, "resets_at": "2026-09-30T08:59:59.843792+00:00"},

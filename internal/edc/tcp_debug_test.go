@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -213,6 +214,29 @@ func TestDebugFoldShowsRefusedAndSilentProbes(t *testing.T) {
 	// 응답마다 payload 크기가 다르면 대표 크기를 쓰지 않는다.
 	if strings.Contains(text, "SecureResponse (auth 0x0000 / 0x0200) · dest 0xff · ttl 1 · payload") {
 		t.Errorf("response size shown although it differs between connections:\n%s", text)
+	}
+}
+
+// 접힌 줄에는 channel 자리가 없으므로, 노드가 비어 있지 않은 channel로 답하면 접지 않고 기본 출력에 channel을 쓴다.
+func TestDebugDoesNotFoldAwayAChannel(t *testing.T) {
+	t.Parallel()
+	withChannel := func(connection net.Conn) {
+		connection.SetDeadline(time.Now().Add(5 * time.Second))
+		header := make([]byte, goloopHeaderSize)
+		if _, err := io.ReadFull(connection, header); err != nil {
+			return
+		}
+		rest := make([]byte, int(binary.BigEndian.Uint32(header[26:30]))+goloopFooterSize)
+		if _, err := io.ReadFull(connection, rest); err != nil {
+			return
+		}
+		response := []byte{0x95, 0xa3, 'f', 'o', 'o', rest[4], rest[7], 0xc4, 0x00, 0xa0}
+		connection.Write(goloopTestPacket(goloopSecureResponse, identifyTestPeerID, response))
+		io.Copy(io.Discard, connection)
+	}
+	_, text := debugTextFor(t, identifyListener(t, withChannel), false)
+	if !strings.Contains(text, `channel "foo"`) {
+		t.Fatalf("channel missing in\n%s", text)
 	}
 }
 

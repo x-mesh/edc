@@ -708,7 +708,7 @@ func goloopPacketLines(data []byte, request bool) ([]string, []hexRegion) {
 
 // foldGoloopStep은 goloop 단계가 방식 후보마다 연결을 열어 같은 모양을 반복한 것을 한 묶음으로 접는다. 요청과 응답의 모양은
 // 한 번만 쓰고, 연결마다 제안한 방식과 노드가 고른 방식을 한 줄씩 쓴다. 접을 수 없으면(연결이 하나이거나 읽지 못한 packet이
-// 있으면) nil이다.
+// 있으면) nil이다. 접힌 줄에는 channel 자리가 없어서, 비어 있지 않은 channel이 있으면 접지 않고 packet마다 쓴다.
 func foldGoloopStep(step *debugStep) []debugTextLine {
 	if len(step.exchanges) < 2 {
 		return nil
@@ -725,13 +725,13 @@ func foldGoloopStep(step *debugStep) []debugTextLine {
 			return nil
 		}
 		request, problem := parseGoloopSecure(exchange.sent, true)
-		if problem != "" || !request.body {
+		if problem != "" || !request.body || request.channel != "" {
 			return nil
 		}
 		current := probe{request: request, exchange: exchange}
 		if exchange.receivedAny {
 			response, problem := parseGoloopSecure(exchange.received, false)
-			if problem != "" || !response.body {
+			if problem != "" || !response.body || response.channel != "" {
 				return nil
 			}
 			current.response, current.replied = response, true

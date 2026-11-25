@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -784,6 +785,10 @@ func runTraceProtocol(args []string) int {
 	aggregate.useLocalDNS()
 	rawSockets := traceRawSockets{}
 	if options.raw {
+		// --raw는 이벤트마다 JSON을 만들어서 할당이 많다. 요청이 초당 4만 건일 때 GC를 덜 돌리면 잃는 이벤트가 17%에서 6%로
+		// 줄었고, 대신 메모리가 약 140MB에서 340MB까지 늘었다. 메모리 한도를 넘으면 GC가 다시 자주 돈다.
+		debug.SetGCPercent(traceRawGCPercent)
+		debug.SetMemoryLimit(traceRawMemoryLimit)
 		raw := newTraceRawWriter(os.Stdout)
 		defer raw.Close()
 		encoder = json.NewEncoder(raw)
@@ -1872,7 +1877,11 @@ type traceRawWriter struct {
 	done   chan struct{}
 }
 
-const traceRawFlushInterval = 200 * time.Millisecond
+const (
+	traceRawFlushInterval = 200 * time.Millisecond
+	traceRawGCPercent     = 400
+	traceRawMemoryLimit   = 512 << 20
+)
 
 func newTraceRawWriter(out io.Writer) *traceRawWriter {
 	raw := &traceRawWriter{writer: bufio.NewWriterSize(out, 64<<10), stop: make(chan struct{}), done: make(chan struct{})}

@@ -13,7 +13,10 @@ func TestLinuxSwapCacheRereadsOnlyWhenStale(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	reads := 0
 	read := func(kb string) func() ([]byte, error) {
-		return func() ([]byte, error) { reads++; return []byte("Name:\tx\nVmSize:\t10 kB\nVmSwap:\t" + kb + " kB\n"), nil }
+		return func() ([]byte, error) {
+			reads++
+			return []byte("Name:\tx\nVmSize:\t10 kB\nVmSwap:\t" + kb + " kB\n"), nil
+		}
 	}
 	// PID 5는 5로 나눈 나머지가 0이라 처음 읽은 시각부터 간격을 센다.
 	if swap, valid, gone := cache.get(5, 100, now, read("4")); swap != 4096 || !valid || gone || reads != 1 {

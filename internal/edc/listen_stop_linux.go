@@ -52,10 +52,9 @@ func openLinuxListenStop(procRoot string, pid int, name string, listed time.Time
 		dir.Close()
 		return nil, errors.New("cannot read the process start time")
 	}
-	// 목록을 읽은 뒤 PID를 다시 쓴 process는 목록보다 늦게 시작했다. 이름이 같은 process(python3, node)도 이것으로 거른다.
-	// btime은 초 단위라 시작 시각이 1초 안쪽으로 이르게 계산될 수 있다. tick을 먼저 Duration으로 바꾸면 오래 켠 호스트에서 넘친다.
+	// tick을 먼저 Duration으로 바꾸면 오래 켠 호스트에서 넘친다.
 	started := boot.Add(time.Duration(float64(parsed.StartTicks) / linuxClockTicks * float64(time.Second)))
-	if strings.TrimSpace(comm) != name || started.After(listed) {
+	if strings.TrimSpace(comm) != name || !startedBeforeList(started, listed) {
 		dir.Close()
 		return nil, errListenStopChanged
 	}
@@ -65,6 +64,16 @@ func openLinuxListenStop(procRoot string, pid int, name string, listed time.Time
 		return nil, err
 	}
 	return process, nil
+}
+
+// listenStopStartSlack은 btime이 초 단위로 내림되어 계산한 시작 시각이 실제보다 최대 1초 이른 만큼이다.
+const listenStopStartSlack = time.Second
+
+// startedBeforeList는 process가 목록을 읽기 전에 시작했는지 본다. 목록을 읽은 뒤 PID를 다시 쓴 process는 이름이 같아도
+// (python3, node) 목록보다 늦게 시작했으므로 이것으로 거른다. 계산한 시작 시각이 이르게 나올 수 있어서 그만큼 여유를 더해 비교한다.
+// 그래서 목록을 읽기 직전 1초 안에 시작한 process는 거절하고, 그 반대로 틀리는 일은 없다.
+func startedBeforeList(started, listed time.Time) bool {
+	return !started.Add(listenStopStartSlack).After(listed)
 }
 
 func (process *linuxListenStop) read(name string) (string, error) {

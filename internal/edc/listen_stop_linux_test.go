@@ -52,3 +52,22 @@ func TestLinuxListenStopReportsAProcessThatExitsWhileOpening(t *testing.T) {
 		t.Fatalf("want gone, got %v", err)
 	}
 }
+
+func TestStartedBeforeListAllowsForTheBootTimeRounding(t *testing.T) {
+	listed := time.Unix(1_000_000, 0)
+	for _, test := range []struct {
+		name    string
+		started time.Time
+		want    bool
+	}{
+		{"well before the list", listed.Add(-time.Minute), true},
+		{"a full second before the list", listed.Add(-listenStopStartSlack), true},
+		{"within the rounding of the list", listed.Add(-listenStopStartSlack + time.Millisecond), false},
+		{"at the list", listed, false},
+		{"after the list", listed.Add(time.Second), false},
+	} {
+		if got := startedBeforeList(test.started, listed); got != test.want {
+			t.Errorf("%s: startedBeforeList = %v, want %v", test.name, got, test.want)
+		}
+	}
+}

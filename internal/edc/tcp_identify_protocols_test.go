@@ -162,6 +162,25 @@ func TestIdentifyMoreProtocols(t *testing.T) {
 			}
 			return []byte("HTTP/1.0 400 Bad Request\r\n\r\nPort 9000 is for clickhouse-client program\nYou must use port 8123 for HTTP.\n")
 		})), "clickhouse", "Port 9000 is for clickhouse-client program"},
+		// 본문이 header와 다른 조각으로 와도 ClickHouse native port로 본다.
+		{"clickhouse native in two writes", identifyListener(t, func(c net.Conn) {
+			c.SetDeadline(time.Now().Add(5 * time.Second))
+			buffer := make([]byte, 1024)
+			if _, err := c.Read(buffer); err != nil || !bytes.HasPrefix(buffer, []byte("GET / HTTP/1.0")) {
+				return
+			}
+			io.WriteString(c, "HTTP/1.0 400 Bad Request\r\n\r\n")
+			time.Sleep(50 * time.Millisecond)
+			io.WriteString(c, "Port 9000 is for clickhouse-client program\nYou must use port 8123 for HTTP.\n")
+			io.Copy(io.Discard, c)
+		}), "clickhouse", "Port 9000 is for clickhouse-client program"},
+		// 본문 없는 400을 보내고 연결을 열어 둔 서버는 HTTP다.
+		{"http 400 with no body", identifyListener(t, replyServer(func(request []byte) []byte {
+			if !bytes.HasPrefix(request, []byte("GET / HTTP/1.0")) {
+				return nil
+			}
+			return []byte("HTTP/1.0 400 Bad Request\r\n\r\n")
+		})), "http", "HTTP/1.0 400 Bad Request"},
 		{"clickhouse http", strings.TrimPrefix(clickhouseHTTP.URL, "http://"), "http", "HTTP/1.0 200 OK, ClickHouse"},
 		{"grpc over h2c", h2cListener.Addr().String(), "grpc", "HTTP/2 200, grpc-status 12"},
 	}

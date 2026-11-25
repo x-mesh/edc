@@ -784,12 +784,13 @@ func runTraceProtocol(args []string) int {
 	}
 	aggregate.useLocalDNS()
 	rawSockets := traceRawSockets{}
+	var raw *traceRawWriter
 	if options.raw {
 		// --raw는 이벤트마다 JSON을 만들어서 할당이 많다. 요청이 초당 4만 건일 때 GC를 덜 돌리면 잃는 이벤트가 17%에서 6%로
 		// 줄었고, 대신 메모리가 약 140MB에서 340MB까지 늘었다. 메모리 한도를 넘으면 GC가 다시 자주 돈다.
 		debug.SetGCPercent(traceRawGCPercent)
 		debug.SetMemoryLimit(traceRawMemoryLimit)
-		raw := newTraceRawWriter(os.Stdout)
+		raw = newTraceRawWriter(os.Stdout)
 		defer raw.Close()
 		encoder = json.NewEncoder(raw)
 	} else if options.jsonPath == "" && options.groupBy == "" {
@@ -828,6 +829,10 @@ func runTraceProtocol(args []string) int {
 		// collector는 다른 protocol의 event도 받아 센다. 요약의 event 수는 이 출력에 쓴 줄 수와 같아야 한다.
 		summary.EventCount = written
 		if err := encoder.Encode(summary); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if err := raw.Close(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -1871,10 +1876,12 @@ func traceTrafficRate(traffic traceTraffic) string {
 // traceRawWriter는 --raw의 JSON 줄을 모아서 쓴다. 줄마다 write를 부르면 한 이벤트에 시스템 호출 하나가 든다. 이벤트가 뜸해도
 // 줄이 오래 남지 않게 traceRawFlushInterval마다 비운다.
 type traceRawWriter struct {
-	mu     sync.Mutex
-	writer *bufio.Writer
-	stop   chan struct{}
-	done   chan struct{}
+	mu        sync.Mutex
+	writer    *bufio.Writer
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 const (
@@ -1909,11 +1916,15 @@ func (raw *traceRawWriter) Write(data []byte) (int, error) {
 	return raw.writer.Write(data)
 }
 
-// Close는 남은 줄을 쓰고 비우는 goroutine을 멈춘다.
-func (raw *traceRawWriter) Close() {
-	close(raw.stop)
-	<-raw.done
-	raw.mu.Lock()
-	raw.writer.Flush()
-	raw.mu.Unlock()
+// Close는 남은 줄을 쓰고 비우는 goroutine을 멈춘다. bufio.Writer는 한 번 난 쓰기 오류를 계속 돌려주므로, 주기적으로
+// 비우다 난 오류도 여기서 돌려준다. 여러 번 불러도 처음의 결과를 돌려준다.
+func (raw *traceRawWriter) Close() error {
+	raw.closeOnce.Do(func() {
+		close(raw.stop)
+		<-raw.done
+		raw.mu.Lock()
+		raw.closeErr = raw.writer.Flush()
+		raw.mu.Unlock()
+	})
+	return raw.closeErr
 }

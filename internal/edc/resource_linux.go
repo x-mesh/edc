@@ -23,8 +23,44 @@ import (
 const linuxClockTicks = 100
 
 // newTopProcessReader는 /proc/<pid>/stat의 CPU tick을 직전 읽기와 비교한다. 첫 읽기는 기준점만 만든다.
+// procFileReader는 /proc의 작은 파일을 버퍼 하나로 읽는다. os.ReadFile은 파일마다 netpoller 등록을 시도하고(fcntl,
+// 실패하는 epoll_ctl) 크기를 알려고 fstat을 부르는데, /proc 파일은 등록되지 않고 크기도 0으로 나온다. top은 매 interval
+// process마다 이 파일들을 읽으므로 open, read, close만 부르고 버퍼를 다시 쓴다.
+type procFileReader struct{ buffer []byte }
+
+// read가 돌려준 slice는 다음 read까지만 유효하다. 버퍼를 나눠 쓰므로 동시에 부르지 않는다. top에서는
+// topProcessSampler.refreshing이 process 읽기를 하나씩만 돌린다.
+func (reader *procFileReader) read(path string) ([]byte, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	defer syscall.Close(fd)
+	if reader.buffer == nil {
+		reader.buffer = make([]byte, 4096)
+	}
+	size := 0
+	for {
+		if size == len(reader.buffer) {
+			reader.buffer = append(reader.buffer, make([]byte, len(reader.buffer))...)
+		}
+		read, err := syscall.Read(fd, reader.buffer[size:])
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return nil, &os.PathError{Op: "read", Path: path, Err: err}
+		}
+		if read == 0 {
+			return reader.buffer[:size], nil
+		}
+		size += read
+	}
+}
+
 func newTopProcessReader() func() ([]topProcess, bool) {
 	tracker := &topProcessTracker{clockTicks: linuxClockTicks, pageSize: uint64(os.Getpagesize()), boot: readLinuxBootTime()}
+	files := &procFileReader{}
 	return func() ([]topProcess, bool) {
 		memory, memoryErr := readMemInfo()
 		readSwap := linuxProcessSwapRead(memory, memoryErr)
@@ -39,7 +75,7 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			// 목록을 읽은 뒤 끝난 process는 파일이 없다.
-			data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+			data, err := files.read("/proc/" + entry.Name() + "/stat")
 			if err != nil {
 				continue
 			}
@@ -47,7 +83,7 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				// 다른 계정의 cwd는 root가 아니면 읽을 수 없다. 그 process는 작업 디렉터리를 모르는 채로 묶인다.
 				stat.CWD, _ = os.Readlink("/proc/" + entry.Name() + "/cwd")
 				if readSwap {
-					status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
+					status, err := files.read("/proc/" + entry.Name() + "/status")
 					// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.
 					if errors.Is(err, os.ErrNotExist) {
 						continue
@@ -57,7 +93,7 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 					}
 				}
 				if topFullCommand {
-					if argv, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline"); err == nil {
+					if argv, err := files.read("/proc/" + entry.Name() + "/cmdline"); err == nil {
 						if line := linuxProcessCommandLine(argv); line != "" {
 							stat.Command = line
 						}

@@ -23,13 +23,16 @@ The browser requires interactive stdin and stdout, UTF-8, a terminal other than 
 | t | Open `edc top --interactive --process <pid>` | Open the selected process in top |
 | x | Show a CPU trace command | Show a CPU trace command |
 | S | Ask for confirmation, then send SIGTERM to the selected PID | Ask for confirmation, then send SIGTERM to the selected PID |
+| / | Type text to filter the rows | — |
 | l | Hide or show loopback rows | — |
 | p | Select the next PID of a row with two or more PIDs | Select the next PID |
 | r | Refresh the socket list | Reload selected socket's process details |
-| Esc, Backspace | — | Return to the same selection and viewport |
+| Esc, Backspace | Esc clears the filter | Return to the same selection and viewport |
 | q, Ctrl-C | Exit | Exit |
 
 The list puts sockets that differ only by address or PID in one row, as `edc listen -B` does. The header shows the number of sockets and the number of rows. The ADDRESS column shows the addresses of the row. In color, the address is yellow for all addresses, cyan for a specific address, and gray for loopback. The notice line starts with this legend. The port is bold, the PID is gray, and the container after `→` is cyan. The ADDRESS column uses at most half of the free width. A longer address list is cut, and the footer shows all addresses. If a row has two or more PIDs, the PID column shows the selected PID and the number of other PIDs, for example `1682348 +1`. At the start, the browser selects the first PID. `p` selects the next PID, and `t` and `x` use the selected PID. The footer shows the selected PID, its position, and the `p` key, for example `PID 1682348 (1/2) · p next PID`. The details screen shows the same text below the key line. If a refresh removes the selected process, the browser selects the first PID of the row again. The footer shows all addresses of the selected row.
+
+`/` filters the list as you type. A row stays when it contains every word that you typed. Words are separated by spaces, and the match ignores case. edc looks at the port and protocol, the addresses, the binding scope (`all`, `specific`, `loopback`), the process name, the PIDs, and the container. For example, `tcp nginx` shows the TCP rows of nginx, and `loopback` shows the loopback rows. With `--redact`, edc matches the text that the screen shows, so a hidden address cannot be found with the filter. Enter keeps the filter and returns to the list keys. Esc clears it. While you type, `q` is a letter and only Ctrl-C quits. Up and Down still select a row. The header shows `filter <text>` and the number of rows. Refresh and `l` keep the filter. If the filter removes the selected row, the selection moves to the first row. If no row matches, the list says so.
 
 Refresh preserves the selected row by protocol, port, process name, binding scope, and container. If it disappears, selection moves to the first remaining row. `l` hides the loopback rows until you press `l` again, also after a refresh. If the selected row is a loopback row, the selection stays at the same position. A failed refresh retains the last successful snapshot and shows an error. It does not imply that the old snapshot is current.
 

@@ -31,7 +31,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	if recorder != nil {
 		model.attachRecorder(recorder)
 	}
-	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout), tea.WithFPS(topRenderFPS)).Run()
 	finished, ok := final.(topModel)
 	if ok {
 		finished.closeAI()
@@ -1913,6 +1913,10 @@ func (model topModel) tableRow(row topDashboardRow) string {
 	}
 	return formatTopColumnsWidth(row.at.Format("15:04:05"), columns, kept, model.limits.color, model.displayWidth())
 }
+
+// topRenderFPS는 화면을 다시 그리는 최대 빈도다. 표는 interval마다 바뀌고 키 입력은 50ms 안에 그려지면 충분한데,
+// bubbletea 기본값 60은 바뀐 것이 없어도 초당 60번 깨어난다.
+const topRenderFPS = 20
 
 type topHostLayout struct {
 	columns     []topAllColumn

@@ -118,6 +118,7 @@ type traceScreenModel struct {
 	mysqlRowIndex     map[int]int
 	mysqlPending      map[traceMySQLPairKey][]int
 	mysqlPendingKey   map[int]traceMySQLPairKey
+	groupReportCache  *traceScreenGroupReportCacheState
 	// stats는 --stats-only 화면이 읽는 누적 집계이고, statsSnapshot은 마지막으로 읽은 보고서다. stats가 nil이면 event 화면이다.
 	stats         *traceStatsSource
 	statsSnapshot traceStatsSnapshot
@@ -430,7 +431,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, slow: options.slow, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24, selected: -1, payloads: traceFullPayloads{minimum: httpPayloadHead}, messageNumbers: map[uint64]int{}, payloadEvicted: map[int]bool{}, payloadRevisions: map[int]uint64{},
-		payloadLines: options.payloadExplicit && options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container),
+		payloadLines: options.payloadExplicit && options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container), groupReportCache: new(traceScreenGroupReportCacheState),
 	}
 	if options.tlsFinder != nil {
 		for _, notice := range options.tlsFinder.notices {
@@ -543,6 +544,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 		now := time.Now()
 		updatedDetail := false
 		updatedPreview := false
+		groupReportsChanged := false
 		for _, event := range value.events {
 			if event.TLSNotice != "" {
 				model.addTLSNotice(event.TLSNotice)
@@ -552,6 +554,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 				if traceProtocol(event) != model.protocol {
 					continue
 				}
+				groupReportsChanged = true
 				number, ok := model.messageNumbers[event.MessageID]
 				if !ok || number < model.first || number >= model.first+len(model.events) {
 					continue
@@ -560,6 +563,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 				model.keepEventPayload(number, event)
 				model.payloadRevisions[number]++
 				event.Payload, event.gzipped = strings.Clone(traceTrimText(event.Payload, httpPayloadHead)), nil
+				event.Update = false
 				model.events[index] = event
 				if model.detail != nil && model.detail.number == number {
 					updatedDetail = true
@@ -578,6 +582,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 			}
 			model.received++
 			if traceProtocol(event) == model.protocol {
+				groupReportsChanged = true
 				number := model.first + len(model.events)
 				if event.MessageID != 0 {
 					model.messageNumbers[event.MessageID] = number
@@ -601,6 +606,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 			}
 		}
 		if len(model.events) > traceScreenEventLimit {
+			groupReportsChanged = true
 			drop := len(model.events) - traceScreenEventLimit
 			for number := model.first; number < model.first+drop; number++ {
 				delete(model.payloadEvicted, number)
@@ -625,6 +631,11 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 				model.detail = nil
 				model.detailGeneration++
 				model.detailJobPending = nil
+			}
+		}
+		if groupReportsChanged {
+			if model.groupReportCache != nil {
+				model.groupReportCache.report = nil
 			}
 		}
 		var detailCmd tea.Cmd
@@ -1307,17 +1318,35 @@ func traceScreenPadRows(rows []string, available int) []string {
 	return rows
 }
 
+type traceScreenGroupReportCache struct {
+	key        string
+	summarizer *traceGroupSummarizer
+}
+
+type traceScreenGroupReportCacheState struct {
+	report *traceScreenGroupReportCache
+}
+
 func (model traceScreenModel) groupReport() traceGroupReport {
 	if model.stats != nil {
 		return model.statsSnapshot.report
 	}
-	filtered := make([]captureEvent, 0, len(model.events))
-	for _, event := range model.events {
-		if traceEventMatchesText(event, model.filter) {
-			filtered = append(filtered, event)
-		}
+	key := strings.Join([]string{model.groupBy, model.filter, model.process, model.destination}, "\x00")
+	if model.groupReportCache == nil {
+		return summarizeTraceGroups(model.protocol, model.groupBy, model.events, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
 	}
-	return summarizeTraceGroups(model.protocol, model.groupBy, filtered, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
+	cache := model.groupReportCache.report
+	if cache == nil || cache.key != key {
+		summarizer := newTraceGroupSummarizer(model.protocol, model.groupBy)
+		for _, event := range model.events {
+			if traceEventMatchesText(event, model.filter) && traceProtocol(event) == model.protocol && traceEventMatches(event, model.process, model.destination) {
+				summarizer.observe(event)
+			}
+		}
+		cache = &traceScreenGroupReportCache{key: key, summarizer: summarizer}
+		model.groupReportCache.report = cache
+	}
+	return cache.summarizer.report(captureSummary{}, model.windowDuration(time.Now()))
 }
 
 // windowDuration은 model.events가 덮는 시간이다. 창이 잘린 뒤에도 session 시작부터 재면 event 수는

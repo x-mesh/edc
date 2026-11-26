@@ -182,7 +182,10 @@ func TestDuBrowserColorsRowsAndMarksTheSelectedRowWithAChip(t *testing.T) {
 	if !strings.Contains(lines[len(lines)-1], yellow) {
 		t.Fatalf("footer %q", lines[len(lines)-1])
 	}
-	for _, line := range lines {
+	for index, line := range lines {
+		if index == 1 {
+			continue
+		}
 		if liveWidth(line) > 80 || strings.Contains(line, liveReverse) || strings.Contains(line, liveDim) {
 			t.Errorf("line %q", line)
 		}

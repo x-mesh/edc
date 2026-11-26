@@ -1289,8 +1289,8 @@ func TestTraceScreenGroupReportCacheRefreshesAfterEventChanges(t *testing.T) {
 	updated.Update = true
 	next, _ := model.Update(traceEventMsg{events: []captureEvent{updated}})
 	model = next.(traceScreenModel)
-	if len(model.groupReports) != 0 {
-		t.Fatalf("cache after update = %d entries", len(model.groupReports))
+	if model.groupReportCache.report != nil {
+		t.Fatal("cache remains after update")
 	}
 	add("second.example")
 	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "second.example" {
@@ -1303,7 +1303,7 @@ func TestTraceScreenGroupReportCacheRefreshesAfterEventChanges(t *testing.T) {
 	}
 	model.first = 0
 	model.arrivals = make([]time.Time, traceScreenEventLimit)
-	model.groupReports = map[string]*traceGroupSummarizer{}
+	model.groupReportCache.report = nil
 	_ = model.groupReport()
 	next, _ = model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Target: "new.example", Method: "GET", Path: "/"}}})
 	model = next.(traceScreenModel)

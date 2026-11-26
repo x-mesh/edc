@@ -118,7 +118,7 @@ type traceScreenModel struct {
 	mysqlRowIndex     map[int]int
 	mysqlPending      map[traceMySQLPairKey][]int
 	mysqlPendingKey   map[int]traceMySQLPairKey
-	groupReports      map[string]*traceGroupSummarizer
+	groupReportCache  *traceScreenGroupReportCacheState
 	// stats는 --stats-only 화면이 읽는 누적 집계이고, statsSnapshot은 마지막으로 읽은 보고서다. stats가 nil이면 event 화면이다.
 	stats         *traceStatsSource
 	statsSnapshot traceStatsSnapshot
@@ -431,7 +431,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, slow: options.slow, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24, selected: -1, payloads: traceFullPayloads{minimum: httpPayloadHead}, messageNumbers: map[uint64]int{}, payloadEvicted: map[int]bool{}, payloadRevisions: map[int]uint64{},
-		payloadLines: options.payloadExplicit && options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container), groupReports: map[string]*traceGroupSummarizer{},
+		payloadLines: options.payloadExplicit && options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container), groupReportCache: new(traceScreenGroupReportCacheState),
 	}
 	if options.tlsFinder != nil {
 		for _, notice := range options.tlsFinder.notices {
@@ -633,7 +633,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 			}
 		}
 		if groupReportsChanged {
-			clear(model.groupReports)
+			model.groupReportCache.report = nil
 		}
 		var detailCmd tea.Cmd
 		if updatedDetail && model.detail != nil && !model.stopping {
@@ -1315,31 +1315,35 @@ func traceScreenPadRows(rows []string, available int) []string {
 	return rows
 }
 
+type traceScreenGroupReportCache struct {
+	key        string
+	summarizer *traceGroupSummarizer
+}
+
+type traceScreenGroupReportCacheState struct {
+	report *traceScreenGroupReportCache
+}
+
 func (model traceScreenModel) groupReport() traceGroupReport {
 	if model.stats != nil {
 		return model.statsSnapshot.report
 	}
-	if model.groupReports == nil {
-		filtered := make([]captureEvent, 0, len(model.events))
-		for _, event := range model.events {
-			if traceEventMatchesText(event, model.filter) {
-				filtered = append(filtered, event)
-			}
-		}
-		return summarizeTraceGroups(model.protocol, model.groupBy, filtered, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
-	}
 	key := strings.Join([]string{model.groupBy, model.filter, model.process, model.destination}, "\x00")
-	summarizer := model.groupReports[key]
-	if summarizer == nil {
-		summarizer = newTraceGroupSummarizer(model.protocol, model.groupBy)
+	if model.groupReportCache == nil {
+		return summarizeTraceGroups(model.protocol, model.groupBy, model.events, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
+	}
+	cache := model.groupReportCache.report
+	if cache == nil || cache.key != key {
+		summarizer := newTraceGroupSummarizer(model.protocol, model.groupBy)
 		for _, event := range model.events {
 			if traceEventMatchesText(event, model.filter) && traceProtocol(event) == model.protocol && traceEventMatches(event, model.process, model.destination) {
 				summarizer.observe(event)
 			}
 		}
-		model.groupReports[key] = summarizer
+		cache = &traceScreenGroupReportCache{key: key, summarizer: summarizer}
+		model.groupReportCache.report = cache
 	}
-	return summarizer.report(captureSummary{}, model.windowDuration(time.Now()))
+	return cache.summarizer.report(captureSummary{}, model.windowDuration(time.Now()))
 }
 
 // windowDuration은 model.events가 덮는 시간이다. 창이 잘린 뒤에도 session 시작부터 재면 event 수는

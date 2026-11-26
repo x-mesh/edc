@@ -563,6 +563,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 				model.keepEventPayload(number, event)
 				model.payloadRevisions[number]++
 				event.Payload, event.gzipped = strings.Clone(traceTrimText(event.Payload, httpPayloadHead)), nil
+				event.Update = false
 				model.events[index] = event
 				if model.detail != nil && model.detail.number == number {
 					updatedDetail = true
@@ -633,7 +634,9 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 			}
 		}
 		if groupReportsChanged {
-			model.groupReportCache.report = nil
+			if model.groupReportCache != nil {
+				model.groupReportCache.report = nil
+			}
 		}
 		var detailCmd tea.Cmd
 		if updatedDetail && model.detail != nil && !model.stopping {

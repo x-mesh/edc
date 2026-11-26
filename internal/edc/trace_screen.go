@@ -1572,12 +1572,17 @@ func formatTraceScreenEventLabels(event captureEvent, destination, name string, 
 func traceScreenEventCells(event captureEvent, destination, name string, width int) []string {
 	process, source := emptyAs(event.Process, "-"), emptyAs(event.Source, "-")
 	timeColumn, destinationWidth, eventWidth, sourceWidth := traceScreenColumns(width)
-	cell := func(value string, cellWidth int) string { return liveCell(traceFit(value, cellWidth), cellWidth) }
+	cell := func(value string, cellWidth int) string { return traceScreenCell(value, cellWidth) }
 	cells := []string{cell(process, traceScrollProcessWidth), cell(destination, destinationWidth), cell(name, eventWidth), cell(source, sourceWidth)}
 	if timeColumn > 0 {
 		cells = append([]string{cell(traceEventClock(event), traceScrollTimeWidth)}, cells...)
 	}
 	return cells
+}
+
+func traceScreenCell(value string, width int) string {
+	value = traceFit(value, width)
+	return value + strings.Repeat(" ", max(0, width-liveWidth(value)))
 }
 
 // traceStyledEventLabels는 넓은 화면의 event 행을 칠한다. 시각과 source는 회색, event 칸은 severity의 색이다.

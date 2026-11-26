@@ -928,6 +928,21 @@ func TestTopProcessGroupNameDropsArgumentsAndPath(t *testing.T) {
 	}
 }
 
+func TestFillTopProcessCWDReadsOnlyDuplicateCommands(t *testing.T) {
+	processes := []topProcess{{PID: 1, Command: "node"}, {PID: 2, Command: "node"}, {PID: 3, Command: "postgres"}}
+	var read []int
+	fillTopProcessCWDForDuplicateCommands(processes, func(pid int) string {
+		read = append(read, pid)
+		return fmt.Sprintf("/work/%d", pid)
+	})
+	if !reflect.DeepEqual(read, []int{1, 2}) {
+		t.Fatalf("read PIDs = %v, want [1 2]", read)
+	}
+	if processes[0].CWD != "/work/1" || processes[1].CWD != "/work/2" || processes[2].CWD != "" {
+		t.Fatalf("processes = %+v", processes)
+	}
+}
+
 func TestTopProcessSamplerClearsCachedMatchesWhenFilterChanges(t *testing.T) {
 	filter, err := parseTopProcessFilter("worker")
 	if err != nil {

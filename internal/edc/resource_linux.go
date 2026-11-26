@@ -137,8 +137,6 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
-				// 다른 계정의 cwd는 root가 아니면 읽을 수 없다. 그 process는 작업 디렉터리를 모르는 채로 묶인다.
-				stat.CWD, _ = os.Readlink("/proc/" + entry.Name() + "/cwd")
 				if readSwap {
 					var gone bool
 					stat.Swap, stat.SwapValid, gone = swaps.get(pid, stat.StartTicks, now, func() ([]byte, error) {
@@ -162,6 +160,29 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 		return tracker.update(time.Now(), stats)
 	}
 }
+
+func newTopProcessGroupCWDResolver() func([]topProcess) {
+	return func(processes []topProcess) {
+		fillTopProcessCWDForDuplicateCommands(processes, func(pid int) string {
+			// 다른 계정의 cwd는 root가 아니면 읽을 수 없다. 그 process는 작업 디렉터리를 모르는 채로 묶인다.
+			cwd, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+			return cwd
+		})
+	}
+}
+
+func newTopProcessCWDResolver() func([]topProcess) {
+	return func(processes []topProcess) {
+		for index := range processes {
+			if processes[index].CWD != "" {
+				continue
+			}
+			processes[index].CWD, _ = os.Readlink("/proc/" + strconv.Itoa(processes[index].PID) + "/cwd")
+		}
+	}
+}
+
+func newTopProcessThreadFiller() func([]topProcess) { return nil }
 
 // readLinuxBootTime은 /proc/stat의 btime(부팅 시각, Unix 초)을 읽는다. 없으면 zero다.
 func readLinuxBootTime() time.Time {

@@ -124,3 +124,22 @@ func BenchmarkTraceScreenView(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkTraceScreenPairedDetailSnapshot(b *testing.B) {
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, 0, traceScreenEventLimit)
+	for index := 0; index < traceScreenEventLimit/2; index++ {
+		events = append(events,
+			captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, requestID: uint64(index + 1), Method: "GET", Target: "api.example", Path: fmt.Sprintf("/resources/%d", index)},
+			captureEvent{Protocol: "http", Event: "http_response", requestID: uint64(index + 1), Target: "api.example", Path: fmt.Sprintf("/resources/%d", index)},
+		)
+	}
+	next, _ := model.Update(traceEventMsg{events: events})
+	model = next.(traceScreenModel)
+	number := model.first + len(model.events) - 2
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = model.detailSnapshot(number, 0)
+	}
+}

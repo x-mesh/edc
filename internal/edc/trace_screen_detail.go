@@ -337,17 +337,14 @@ func (model traceScreenModel) detailSnapshot(number int, generation uint64) trac
 	var responseRevision uint64
 	responseNumber := -1
 	if traceScreenPairs(model.protocol) {
-		for _, row := range model.displayRows() {
-			if row.primary == number && row.response >= model.first && row.response < model.first+len(model.events) {
-				value := cloneTraceEvent(model.events[row.response-model.first])
-				response = &value
-				responseNumber = row.response
-				responseRevision = model.payloadRevisions[row.response]
-				if model.protocol == "http" {
-					message := model.detailSnapshot(row.response, generation)
-					responseMessage = &message
-				}
-				break
+		if paired := model.pairedScreenResponse(number); paired >= 0 {
+			value := cloneTraceEvent(model.events[paired-model.first])
+			response = &value
+			responseNumber = paired
+			responseRevision = model.payloadRevisions[paired]
+			if model.protocol == "http" {
+				message := model.detailSnapshot(paired, generation)
+				responseMessage = &message
 			}
 		}
 	}

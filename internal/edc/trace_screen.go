@@ -500,13 +500,12 @@ func waitTraceMessage(eventCh <-chan captureEvent, resultCh <-chan traceFinished
 
 // Update는 message를 처리한 뒤 미리 보기를 맞춘다. 고른 event는 키와 새 event 양쪽에서 바뀌므로 한곳에서 맞춘다.
 func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	next, cmd := model.update(msg)
-	updated := next.(traceScreenModel)
+	updated, cmd := model.update(msg)
 	previewCmd := updated.requestPreviewBuild()
 	return updated, tea.Batch(cmd, previewCmd)
 }
 
-func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 	switch value := msg.(type) {
 	case tea.WindowSizeMsg:
 		resized := model.width != value.Width || model.height != value.Height
@@ -703,7 +702,8 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.stopTick++
 		return model, traceStopTick(model.stopTick)
 	case tea.KeyPressMsg:
-		return model.updateKey(value)
+		next, cmd := model.updateKey(value)
+		return next.(traceScreenModel), cmd
 	}
 	return model, nil
 }

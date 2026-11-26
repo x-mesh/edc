@@ -381,20 +381,33 @@ func (model traceScreenModel) displayRowMatches(row traceScreenRow) bool {
 	return traceEventMatchesText(model.events[row.response-model.first], model.filter)
 }
 
+// pairedScreenResponse는 요청 number와 한 행으로 합친 응답의 번호다. 짝이 없거나 응답이 목록에서 빠졌으면 -1이다.
+func (model traceScreenModel) pairedScreenResponse(number int) int {
+	if model.mysqlRowIndex != nil {
+		index, ok := model.mysqlRowIndex[number]
+		if !ok {
+			return -1
+		}
+		response := model.mysqlRows[index].response
+		if response < model.first || response >= model.first+len(model.events) {
+			return -1
+		}
+		return response
+	}
+	for _, row := range model.displayRows() {
+		if row.primary == number && row.response >= model.first && row.response < model.first+len(model.events) {
+			return row.response
+		}
+	}
+	return -1
+}
+
 // pairedHTTPResponse는 HTTP 요청 number와 한 행으로 합친 응답의 번호다. 짝이 없거나 응답이 목록에서 빠졌으면 -1이다.
 func (model traceScreenModel) pairedHTTPResponse(number int) int {
 	if model.protocol != "http" {
 		return -1
 	}
-	index, ok := model.mysqlRowIndex[number]
-	if !ok {
-		return -1
-	}
-	response := model.mysqlRows[index].response
-	if response < model.first || response >= model.first+len(model.events) {
-		return -1
-	}
-	return response
+	return model.pairedScreenResponse(number)
 }
 
 func (model traceScreenModel) displayRowForSelected(rows []traceScreenRow) int {

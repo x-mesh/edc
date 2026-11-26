@@ -143,3 +143,22 @@ func BenchmarkTraceScreenPairedDetailSnapshot(b *testing.B) {
 		_ = model.detailSnapshot(number, 0)
 	}
 }
+
+func BenchmarkTraceScreenGroupReport(b *testing.B) {
+	model := newTraceScreenModel("http", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, traceScreenEventLimit)
+	for index := range events {
+		events[index] = captureEvent{
+			Protocol: "http", Event: traceHTTPRequestEvent, Process: fmt.Sprintf("service-%d", index%10),
+			Source: "10.0.0.1:54321", Target: fmt.Sprintf("api-%d.example", index%100),
+			Method: "GET", Path: fmt.Sprintf("/resources/%d", index),
+		}
+	}
+	next, _ := model.Update(traceEventMsg{events: events})
+	model = next.(traceScreenModel)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = model.groupReport()
+	}
+}

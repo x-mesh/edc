@@ -1272,3 +1272,42 @@ func TestTraceScrollColumnsGiveWideScreensToDestinationAndEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceScreenGroupReportCacheRefreshesAfterEventChanges(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	add := func(target string) {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Target: target, Method: "GET", Path: "/"}}})
+		model = next.(traceScreenModel)
+	}
+	add("first.example")
+	model.events[0].MessageID = 1
+	model.messageNumbers[1] = model.first
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "first.example" {
+		t.Fatalf("first report = %+v", report.Groups)
+	}
+	updated := model.events[0]
+	updated.Update = true
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{updated}})
+	model = next.(traceScreenModel)
+	if len(model.groupReports) != 0 {
+		t.Fatalf("cache after update = %d entries", len(model.groupReports))
+	}
+	add("second.example")
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "second.example" {
+		t.Fatalf("report after append = %+v", report.Groups)
+	}
+
+	model.events = make([]captureEvent, traceScreenEventLimit)
+	for index := range model.events {
+		model.events[index] = captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Target: "old.example", Method: "GET", Path: "/"}
+	}
+	model.first = 0
+	model.arrivals = make([]time.Time, traceScreenEventLimit)
+	model.groupReports = map[string]*traceGroupSummarizer{}
+	_ = model.groupReport()
+	next, _ = model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Target: "new.example", Method: "GET", Path: "/"}}})
+	model = next.(traceScreenModel)
+	if report := model.groupReport(); len(report.Groups) != 2 || report.Groups[0].Group != "new.example" || report.Groups[1].Group != "old.example" {
+		t.Fatalf("report after eviction = %+v", report.Groups)
+	}
+}

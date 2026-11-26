@@ -970,7 +970,7 @@ func TestOnlyHTTPTraceHasThePathView(t *testing.T) {
 	}
 	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	next, _ := model.updateKey(tea.KeyPressMsg{Code: 'u', Text: "u"})
-	if next.(traceScreenModel).groupBy != traceGroupByPath {
+	if next.groupBy != traceGroupByPath {
 		t.Fatal("u did not switch the http trace to the path view")
 	}
 	if got := nextTraceGroup(traceGroupViews("http"), traceGroupByPath, 1); got != "" {
@@ -982,7 +982,7 @@ func TestOnlyHTTPTraceHasThePathView(t *testing.T) {
 		}
 	}
 	model = newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
-	if next, _ := model.updateKey(tea.KeyPressMsg{Code: 'u', Text: "u"}); next.(traceScreenModel).groupBy != "" {
+	if next, _ := model.updateKey(tea.KeyPressMsg{Code: 'u', Text: "u"}); next.groupBy != "" {
 		t.Fatal("u switched the tcp trace to the path view")
 	}
 	stderr := traceCaptureOutput(t, &os.Stderr, func() {

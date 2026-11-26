@@ -182,7 +182,7 @@ func TestDNSTraceHasNoPortView(t *testing.T) {
 	}
 	model := newTraceScreenModel("dns", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	next, _ := model.updateKey(tea.KeyPressMsg{Code: 'p', Text: "p"})
-	if next.(traceScreenModel).groupBy != traceGroupByTarget {
+	if next.groupBy != traceGroupByTarget {
 		t.Fatal("p switched the dns trace to the port view")
 	}
 	if got := nextTraceGroup(traceGroupViews("dns"), traceGroupByTarget, 1); got != traceGroupByProcess {

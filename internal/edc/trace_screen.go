@@ -703,7 +703,7 @@ func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 		return model, traceStopTick(model.stopTick)
 	case tea.KeyPressMsg:
 		next, cmd := model.updateKey(value)
-		return next.(traceScreenModel), cmd
+		return next, cmd
 	}
 	return model, nil
 }
@@ -740,7 +740,7 @@ func (model *traceScreenModel) normalizeSelection() {
 	model.selected, model.preview, model.previewOffset = -1, nil, 0
 }
 
-func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (traceScreenModel, tea.Cmd) {
 	if key.String() == "ctrl+c" {
 		cmd := model.requestStop()
 		return model, cmd

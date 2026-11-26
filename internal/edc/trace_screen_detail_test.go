@@ -458,7 +458,7 @@ func TestTraceScreenSelectionFollowsTheFilterAndKeptEvents(t *testing.T) {
 	model.filtering = true
 	model.input.SetValue("curl")
 	next, _ := model.updateKey(tea.KeyPressMsg{Code: tea.KeyEnter})
-	model = next.(traceScreenModel)
+	model = next
 	if model.selected != -1 {
 		t.Fatalf("applying a filter kept the selection %d", model.selected)
 	}

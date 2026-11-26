@@ -135,7 +135,7 @@ func traceStatsHelp(protocol string) string {
 }
 
 // updateStatsKey는 통계 화면의 키다. 보기만 바꾸고 나머지는 event 목록이 있어야 하는 키라 무시한다.
-func (model traceScreenModel) updateStatsKey(key string) (tea.Model, tea.Cmd) {
+func (model traceScreenModel) updateStatsKey(key string) (traceScreenModel, tea.Cmd) {
 	views := traceStatsViews(model.protocol)
 	next := model.groupBy
 	switch key {

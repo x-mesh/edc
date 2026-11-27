@@ -110,9 +110,9 @@ version_compare() {
 	old_ifs=$IFS
 	IFS=.
 	set -- $left
-	left_major=$1 left_minor=$2 left_patch=$3 left_extra=$4
+	left_major=${1-} left_minor=${2-} left_patch=${3-} left_extra=${4-}
 	set -- $right
-	right_major=$1 right_minor=$2 right_patch=$3 right_extra=$4
+	right_major=${1-} right_minor=${2-} right_patch=${3-} right_extra=${4-}
 	IFS=$old_ifs
 	[ -n "$left_major" ] && [ -n "$left_minor" ] && [ -n "$left_patch" ] && [ -z "$left_extra" ] || return 2
 	[ -n "$right_major" ] && [ -n "$right_minor" ] && [ -n "$right_patch" ] && [ -z "$right_extra" ] || return 2
@@ -128,8 +128,10 @@ version_compare() {
 existing="$BINDIR/edc"
 if [ -x "$existing" ]; then
 	installed=$("$existing" version 2>/dev/null | sed -n 's/^edc \([^ ]*\).*/\1/p' | head -1) || installed=""
-	if [ -n "$installed" ] && ! version_compare "$VERSION" "$installed"; then
-		echo "edc $installed is already newer than or equal to $VERSION"
+	# Refuse only a downgrade. The same version installs again so that a damaged binary can be
+	# replaced, and a version that cannot be compared (devel, prerelease) never blocks a release.
+	if [ -n "$installed" ] && version_compare "$installed" "$VERSION"; then
+		echo "edc $installed is newer than $VERSION; not downgrading"
 		exit 0
 	fi
 fi

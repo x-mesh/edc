@@ -32,6 +32,7 @@ const darwinProcessTimeout = 800 * time.Millisecond
 
 var darwinProcessRusageReader = readDarwinProcessRusage
 var darwinProcessTaskInfoReader = readDarwinProcessTaskInfo
+var darwinProcessThreadReader = readDarwinProcessThreads
 var darwinProcessNow = time.Now
 
 // newTopProcessReader는 macOS ps를 쓴다. macOS의 %cpu는 최근 사용률의 감쇠 평균이라 그대로 쓸 수 있다.
@@ -54,11 +55,6 @@ func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) 
 		}
 		processes := parseTopProcesses(string(output))
 		for index := range processes {
-			processes[index].CWD = darwinProcessCWD(processes[index].PID)
-			threads, err := readDarwinProcessThreads(processes[index].PID)
-			if err == nil {
-				processes[index].Threads = threads
-			}
 			// 다른 사용자 소유 process는 root로 실행할 때만 읽는다. 그때는 MemoryValid가 false로 남아 RSS로 대신한다.
 			if readRusage {
 				if usage, err := darwinProcessRusageReader(processes[index].PID); err == nil {
@@ -111,6 +107,33 @@ func (kernel *darwinKernelTaskCPU) read() (topProcess, bool) {
 }
 
 func newTopProcessReader() func() ([]topProcess, bool) { return newTopProcessReaderWithRusage(true) }
+
+func newTopProcessGroupCWDResolver() func([]topProcess) {
+	return func(processes []topProcess) {
+		fillTopProcessCWDForDuplicateCommands(processes, darwinProcessCWD)
+	}
+}
+
+func newTopProcessCWDResolver() func([]topProcess) {
+	return func(processes []topProcess) {
+		for index := range processes {
+			if processes[index].CWD != "" {
+				continue
+			}
+			processes[index].CWD = darwinProcessCWD(processes[index].PID)
+		}
+	}
+}
+
+func newTopProcessThreadFiller() func([]topProcess) {
+	return func(processes []topProcess) {
+		for index := range processes {
+			if threads, err := darwinProcessThreadReader(processes[index].PID); err == nil {
+				processes[index].Threads = threads
+			}
+		}
+	}
+}
 
 func darwinRusageReads(hasSample bool) int {
 	if hasSample {

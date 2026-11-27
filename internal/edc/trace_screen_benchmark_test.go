@@ -86,3 +86,79 @@ func BenchmarkTraceScreenPreviewCachedNavigation(b *testing.B) {
 		model = next.(traceScreenModel)
 	}
 }
+
+func BenchmarkTraceScreenView(b *testing.B) {
+	base := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, traceScreenEventLimit)
+	for index := range events {
+		events[index] = captureEvent{
+			Protocol:    "http",
+			Event:       traceHTTPRequestEvent,
+			Process:     "service",
+			Source:      "10.0.0.1:54321",
+			Target:      "api.example",
+			Method:      "GET",
+			Path:        fmt.Sprintf("/resources/%d", index),
+			TimestampNS: uint64(index + 1),
+		}
+	}
+	next, _ := base.Update(traceEventMsg{events: events})
+	base = next.(traceScreenModel)
+	base.width, base.height = 120, 30
+
+	for _, benchmark := range []struct {
+		name  string
+		width int
+	}{
+		{name: "wide", width: 120},
+		{name: "narrow", width: 80},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			model := base
+			model.width = benchmark.width
+			b.ReportAllocs()
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				_ = model.View()
+			}
+		})
+	}
+}
+
+func BenchmarkTraceScreenPairedDetailSnapshot(b *testing.B) {
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, 0, traceScreenEventLimit)
+	for index := 0; index < traceScreenEventLimit/2; index++ {
+		events = append(events,
+			captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, requestID: uint64(index + 1), Method: "GET", Target: "api.example", Path: fmt.Sprintf("/resources/%d", index)},
+			captureEvent{Protocol: "http", Event: "http_response", requestID: uint64(index + 1), Target: "api.example", Path: fmt.Sprintf("/resources/%d", index)},
+		)
+	}
+	next, _ := model.Update(traceEventMsg{events: events})
+	model = next.(traceScreenModel)
+	number := model.first + len(model.events) - 2
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = model.detailSnapshot(number, 0)
+	}
+}
+
+func BenchmarkTraceScreenGroupReport(b *testing.B) {
+	model := newTraceScreenModel("http", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, traceScreenEventLimit)
+	for index := range events {
+		events[index] = captureEvent{
+			Protocol: "http", Event: traceHTTPRequestEvent, Process: fmt.Sprintf("service-%d", index%10),
+			Source: "10.0.0.1:54321", Target: fmt.Sprintf("api-%d.example", index%100),
+			Method: "GET", Path: fmt.Sprintf("/resources/%d", index),
+		}
+	}
+	next, _ := model.Update(traceEventMsg{events: events})
+	model = next.(traceScreenModel)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = model.groupReport()
+	}
+}

@@ -118,6 +118,7 @@ type traceScreenModel struct {
 	mysqlRowIndex     map[int]int
 	mysqlPending      map[traceMySQLPairKey][]int
 	mysqlPendingKey   map[int]traceMySQLPairKey
+	groupReportCache  *traceScreenGroupReportCacheState
 	// stats는 --stats-only 화면이 읽는 누적 집계이고, statsSnapshot은 마지막으로 읽은 보고서다. stats가 nil이면 event 화면이다.
 	stats         *traceStatsSource
 	statsSnapshot traceStatsSnapshot
@@ -381,20 +382,33 @@ func (model traceScreenModel) displayRowMatches(row traceScreenRow) bool {
 	return traceEventMatchesText(model.events[row.response-model.first], model.filter)
 }
 
+// pairedScreenResponse는 요청 number와 한 행으로 합친 응답의 번호다. 짝이 없거나 응답이 목록에서 빠졌으면 -1이다.
+func (model traceScreenModel) pairedScreenResponse(number int) int {
+	if model.mysqlRowIndex != nil {
+		index, ok := model.mysqlRowIndex[number]
+		if !ok {
+			return -1
+		}
+		response := model.mysqlRows[index].response
+		if response < model.first || response >= model.first+len(model.events) {
+			return -1
+		}
+		return response
+	}
+	for _, row := range model.displayRows() {
+		if row.primary == number && row.response >= model.first && row.response < model.first+len(model.events) {
+			return row.response
+		}
+	}
+	return -1
+}
+
 // pairedHTTPResponse는 HTTP 요청 number와 한 행으로 합친 응답의 번호다. 짝이 없거나 응답이 목록에서 빠졌으면 -1이다.
 func (model traceScreenModel) pairedHTTPResponse(number int) int {
 	if model.protocol != "http" {
 		return -1
 	}
-	index, ok := model.mysqlRowIndex[number]
-	if !ok {
-		return -1
-	}
-	response := model.mysqlRows[index].response
-	if response < model.first || response >= model.first+len(model.events) {
-		return -1
-	}
-	return response
+	return model.pairedScreenResponse(number)
 }
 
 func (model traceScreenModel) displayRowForSelected(rows []traceScreenRow) int {
@@ -417,7 +431,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, slow: options.slow, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24, selected: -1, payloads: traceFullPayloads{minimum: httpPayloadHead}, messageNumbers: map[uint64]int{}, payloadEvicted: map[int]bool{}, payloadRevisions: map[int]uint64{},
-		payloadLines: options.payloadExplicit && options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container),
+		payloadLines: options.payloadExplicit && options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container), groupReportCache: new(traceScreenGroupReportCacheState),
 	}
 	if options.tlsFinder != nil {
 		for _, notice := range options.tlsFinder.notices {
@@ -500,13 +514,12 @@ func waitTraceMessage(eventCh <-chan captureEvent, resultCh <-chan traceFinished
 
 // Update는 message를 처리한 뒤 미리 보기를 맞춘다. 고른 event는 키와 새 event 양쪽에서 바뀌므로 한곳에서 맞춘다.
 func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	next, cmd := model.update(msg)
-	updated := next.(traceScreenModel)
+	updated, cmd := model.update(msg)
 	previewCmd := updated.requestPreviewBuild()
 	return updated, tea.Batch(cmd, previewCmd)
 }
 
-func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (model traceScreenModel) update(msg tea.Msg) (traceScreenModel, tea.Cmd) {
 	switch value := msg.(type) {
 	case tea.WindowSizeMsg:
 		resized := model.width != value.Width || model.height != value.Height
@@ -531,6 +544,7 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		now := time.Now()
 		updatedDetail := false
 		updatedPreview := false
+		groupReportsChanged := false
 		for _, event := range value.events {
 			if event.TLSNotice != "" {
 				model.addTLSNotice(event.TLSNotice)
@@ -540,6 +554,7 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if traceProtocol(event) != model.protocol {
 					continue
 				}
+				groupReportsChanged = true
 				number, ok := model.messageNumbers[event.MessageID]
 				if !ok || number < model.first || number >= model.first+len(model.events) {
 					continue
@@ -548,6 +563,7 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				model.keepEventPayload(number, event)
 				model.payloadRevisions[number]++
 				event.Payload, event.gzipped = strings.Clone(traceTrimText(event.Payload, httpPayloadHead)), nil
+				event.Update = false
 				model.events[index] = event
 				if model.detail != nil && model.detail.number == number {
 					updatedDetail = true
@@ -566,6 +582,7 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			model.received++
 			if traceProtocol(event) == model.protocol {
+				groupReportsChanged = true
 				number := model.first + len(model.events)
 				if event.MessageID != 0 {
 					model.messageNumbers[event.MessageID] = number
@@ -589,6 +606,7 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(model.events) > traceScreenEventLimit {
+			groupReportsChanged = true
 			drop := len(model.events) - traceScreenEventLimit
 			for number := model.first; number < model.first+drop; number++ {
 				delete(model.payloadEvicted, number)
@@ -613,6 +631,11 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				model.detail = nil
 				model.detailGeneration++
 				model.detailJobPending = nil
+			}
+		}
+		if groupReportsChanged {
+			if model.groupReportCache != nil {
+				model.groupReportCache.report = nil
 			}
 		}
 		var detailCmd tea.Cmd
@@ -703,7 +726,8 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.stopTick++
 		return model, traceStopTick(model.stopTick)
 	case tea.KeyPressMsg:
-		return model.updateKey(value)
+		next, cmd := model.updateKey(value)
+		return next, cmd
 	}
 	return model, nil
 }
@@ -740,7 +764,7 @@ func (model *traceScreenModel) normalizeSelection() {
 	model.selected, model.preview, model.previewOffset = -1, nil, 0
 }
 
-func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (traceScreenModel, tea.Cmd) {
 	if key.String() == "ctrl+c" {
 		cmd := model.requestStop()
 		return model, cmd
@@ -1294,17 +1318,35 @@ func traceScreenPadRows(rows []string, available int) []string {
 	return rows
 }
 
+type traceScreenGroupReportCache struct {
+	key        string
+	summarizer *traceGroupSummarizer
+}
+
+type traceScreenGroupReportCacheState struct {
+	report *traceScreenGroupReportCache
+}
+
 func (model traceScreenModel) groupReport() traceGroupReport {
 	if model.stats != nil {
 		return model.statsSnapshot.report
 	}
-	filtered := make([]captureEvent, 0, len(model.events))
-	for _, event := range model.events {
-		if traceEventMatchesText(event, model.filter) {
-			filtered = append(filtered, event)
-		}
+	key := strings.Join([]string{model.groupBy, model.filter, model.process, model.destination}, "\x00")
+	if model.groupReportCache == nil {
+		return summarizeTraceGroups(model.protocol, model.groupBy, model.events, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
 	}
-	return summarizeTraceGroups(model.protocol, model.groupBy, filtered, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
+	cache := model.groupReportCache.report
+	if cache == nil || cache.key != key {
+		summarizer := newTraceGroupSummarizer(model.protocol, model.groupBy)
+		for _, event := range model.events {
+			if traceEventMatchesText(event, model.filter) && traceProtocol(event) == model.protocol && traceEventMatches(event, model.process, model.destination) {
+				summarizer.observe(event)
+			}
+		}
+		cache = &traceScreenGroupReportCache{key: key, summarizer: summarizer}
+		model.groupReportCache.report = cache
+	}
+	return cache.summarizer.report(captureSummary{}, model.windowDuration(time.Now()))
 }
 
 // windowDuration은 model.events가 덮는 시간이다. 창이 잘린 뒤에도 session 시작부터 재면 event 수는
@@ -1572,12 +1614,17 @@ func formatTraceScreenEventLabels(event captureEvent, destination, name string, 
 func traceScreenEventCells(event captureEvent, destination, name string, width int) []string {
 	process, source := emptyAs(event.Process, "-"), emptyAs(event.Source, "-")
 	timeColumn, destinationWidth, eventWidth, sourceWidth := traceScreenColumns(width)
-	cell := func(value string, cellWidth int) string { return liveCell(traceFit(value, cellWidth), cellWidth) }
+	cell := func(value string, cellWidth int) string { return traceScreenCell(value, cellWidth) }
 	cells := []string{cell(process, traceScrollProcessWidth), cell(destination, destinationWidth), cell(name, eventWidth), cell(source, sourceWidth)}
 	if timeColumn > 0 {
 		cells = append([]string{cell(traceEventClock(event), traceScrollTimeWidth)}, cells...)
 	}
 	return cells
+}
+
+func traceScreenCell(value string, width int) string {
+	value = traceFit(value, width)
+	return value + strings.Repeat(" ", max(0, width-liveWidth(value)))
 }
 
 // traceStyledEventLabels는 넓은 화면의 event 행을 칠한다. 시각과 source는 회색, event 칸은 severity의 색이다.

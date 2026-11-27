@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,7 @@ func runUpdate(args []string, version string) int {
 
 	latest := strings.TrimPrefix(tag, "v")
 	current := strings.TrimPrefix(version, "v")
-	if latest == current {
+	if latest == current || versionCompare(latest, current) < 0 {
 		fmt.Println(T("cli.update.already_latest", current))
 		return 0
 	}
@@ -140,6 +141,40 @@ func runUpdate(args []string, version string) int {
 	}
 
 	fmt.Println(T("cli.update.replaced", latest, target))
+	return 0
+}
+
+// versionCompare compares stable major.minor.patch versions. A non-stable value
+// compares as equal so development builds retain the existing update behavior.
+func versionCompare(left, right string) int {
+	parse := func(value string) ([3]int, bool) {
+		var parts [3]int
+		fields := strings.Split(strings.TrimPrefix(value, "v"), ".")
+		if len(fields) != len(parts) {
+			return parts, false
+		}
+		for index, field := range fields {
+			part, err := strconv.Atoi(field)
+			if err != nil || part < 0 {
+				return parts, false
+			}
+			parts[index] = part
+		}
+		return parts, true
+	}
+	leftParts, leftOK := parse(left)
+	rightParts, rightOK := parse(right)
+	if !leftOK || !rightOK {
+		return 0
+	}
+	for index := range leftParts {
+		if leftParts[index] < rightParts[index] {
+			return -1
+		}
+		if leftParts[index] > rightParts[index] {
+			return 1
+		}
+	}
 	return 0
 }
 

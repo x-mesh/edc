@@ -458,7 +458,7 @@ func TestTraceScreenSelectionFollowsTheFilterAndKeptEvents(t *testing.T) {
 	model.filtering = true
 	model.input.SetValue("curl")
 	next, _ := model.updateKey(tea.KeyPressMsg{Code: tea.KeyEnter})
-	model = next.(traceScreenModel)
+	model = next
 	if model.selected != -1 {
 		t.Fatalf("applying a filter kept the selection %d", model.selected)
 	}
@@ -1270,5 +1270,71 @@ func TestTraceScrollColumnsGiveWideScreensToDestinationAndEvent(t *testing.T) {
 		if test.width >= 120 && traceScrollProcessWidth+destination+event+source+3 != test.width {
 			t.Errorf("width %d: columns do not fill the line", test.width)
 		}
+	}
+}
+
+func TestTraceScreenGroupReportCacheRefreshesAfterEventChanges(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	add := func(target string) {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Target: target, Method: "GET", Path: "/"}}})
+		model = next.(traceScreenModel)
+	}
+	add("first.example")
+	model.events[0].MessageID = 1
+	model.messageNumbers[1] = model.first
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "first.example" {
+		t.Fatalf("first report = %+v", report.Groups)
+	}
+	updated := model.events[0]
+	updated.Update = true
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{updated}})
+	model = next.(traceScreenModel)
+	if model.groupReportCache == nil || model.groupReportCache.report != nil {
+		t.Fatal("cache remains after update")
+	}
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "first.example" {
+		t.Fatalf("report after update = %+v", report.Groups)
+	}
+	add("second.example")
+	if report := model.groupReport(); len(report.Groups) != 2 || report.Groups[0].Group != "first.example" || report.Groups[1].Group != "second.example" {
+		t.Fatalf("report after append = %+v", report.Groups)
+	}
+
+	model.events = make([]captureEvent, traceScreenEventLimit)
+	for index := range model.events {
+		model.events[index] = captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Target: "old.example", Method: "GET", Path: "/"}
+	}
+	model.first = 0
+	model.arrivals = make([]time.Time, traceScreenEventLimit)
+	model.groupReportCache = new(traceScreenGroupReportCacheState)
+	_ = model.groupReport()
+	next, _ = model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Target: "new.example", Method: "GET", Path: "/"}}})
+	model = next.(traceScreenModel)
+	if report := model.groupReport(); len(report.Groups) != 2 || report.Groups[0].Group != "new.example" || report.Groups[1].Group != "old.example" {
+		t.Fatalf("report after eviction = %+v", report.Groups)
+	}
+}
+
+func TestTraceScreenGroupReportCacheReplacesFilterAndView(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{
+		{Protocol: "http", Event: traceHTTPRequestEvent, Process: "alpha", Target: "first.example", Method: "GET", Path: "/first"},
+		{Protocol: "http", Event: traceHTTPRequestEvent, Process: "beta", Target: "second.example", Method: "GET", Path: "/second"},
+	}})
+	model = next.(traceScreenModel)
+	if report := model.groupReport(); len(report.Groups) != 2 {
+		t.Fatalf("initial report = %+v", report.Groups)
+	}
+	model.filter = "second"
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "second.example" {
+		t.Fatalf("filtered report = %+v", report.Groups)
+	}
+	model.groupBy = traceGroupByProcess
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "beta" {
+		t.Fatalf("filtered process report = %+v", report.Groups)
+	}
+	model.filter = ""
+	if report := model.groupReport(); len(report.Groups) != 2 || report.Groups[0].Group != "alpha" || report.Groups[1].Group != "beta" {
+		t.Fatalf("process report = %+v", report.Groups)
 	}
 }

@@ -361,6 +361,20 @@ func topProcessGroupName(command string) string {
 	return name
 }
 
+// fillTopProcessCWDForDuplicateCommands는 같은 실행 파일 이름이 둘 이상일 때만 cwd를 읽는다.
+// 이름이 하나뿐이면 cwd는 그룹과 화면에 영향을 주지 않는다.
+func fillTopProcessCWDForDuplicateCommands(processes []topProcess, read func(int) string) {
+	counts := make(map[string]int, len(processes))
+	for _, process := range processes {
+		counts[topProcessGroupName(process.Command)]++
+	}
+	for index := range processes {
+		if counts[topProcessGroupName(processes[index].Command)] > 1 {
+			processes[index].CWD = read(processes[index].PID)
+		}
+	}
+}
+
 // groupTopProcesses는 process를 실행 파일 이름으로 묶고, I/O·CPU·RSS 기준으로 각각 앞선 묶음을 모은다.
 // 보기마다 다른 기준으로 고르므로 세 기준의 상위 묶음을 함께 넘기고, 행마다 남는 묶음 수를 작게 묶어 둔다.
 // groupTopProcesses는 이름과 작업 디렉터리가 같은 process를 묶는다. 서로 다른 worktree에서 같은 crate를 빌드하는 두
@@ -498,6 +512,9 @@ type topProcessSampler struct {
 	valid, running bool
 	updated        time.Time
 	read           func() ([]topProcess, bool)
+	fillGroupCWD   func([]topProcess)
+	fillCWD        func([]topProcess)
+	fillThreads    func([]topProcess)
 	// enrich는 목록에 남은 process에만 비싼 값(I/O, fd)을 채운다. 없으면 채우지 않는다.
 	enrich func([]topProcess)
 	// fillIO는 필터가 없을 때 process의 I/O rate만 채운다. enrich보다 싸서 후보마다 매번 돌려도 된다.
@@ -535,7 +552,7 @@ func linuxProcessCommandLine(data []byte) string {
 	return strings.Join(args, " ")
 }
 
-var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller(), countFDs: newTopProcessFDCounter(), growth: newTopMemoryGrowthTracker()}
+var processSampler = &topProcessSampler{read: newTopProcessReader(), fillGroupCWD: newTopProcessGroupCWDResolver(), fillCWD: newTopProcessCWDResolver(), fillThreads: newTopProcessThreadFiller(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller(), countFDs: newTopProcessFDCounter(), growth: newTopMemoryGrowthTracker()}
 
 // topProcessIOTracker는 /proc/<pid>/io를 두 번 읽은 차이로 process의 I/O rate를 구한다.
 // root가 아니면 다른 사용자의 process를 읽지 못해 그 process는 DiskValid가 false로 남는다.
@@ -658,6 +675,12 @@ func (sampler *topProcessSampler) refresh() {
 	processes = filter.apply(processes)
 	total := topProcessTotal{}
 	if filter.active() {
+		if sampler.fillCWD != nil {
+			sampler.fillCWD(processes)
+		}
+		if sampler.fillThreads != nil {
+			sampler.fillThreads(processes)
+		}
 		total = totalTopProcesses(processes)
 	}
 	total.Blocked, total.BlockedValid = blocked, valid && blockedValid
@@ -697,12 +720,18 @@ func (sampler *topProcessSampler) refresh() {
 	} else if scanIO && sampler.fillIO != nil {
 		// 디스크 대기는 CPU와 메모리에 드러나지 않으므로 I/O가 큰 process를 후보에 넣으려면 전부 읽어야 한다.
 		sampler.fillIO(processes)
+		if sampler.fillGroupCWD != nil {
+			sampler.fillGroupCWD(processes)
+		}
 		total.Groups = groupTopProcesses(processes)
 		processes = topProcessCandidatesByIO(processes)
 		if sampler.countFDs != nil {
 			sampler.countFDs(processes)
 		}
 	} else {
+		if sampler.fillGroupCWD != nil {
+			sampler.fillGroupCWD(processes)
+		}
 		total.Groups = groupTopProcesses(processes)
 		processes = topProcessCandidatesUpTo(processes, limit)
 		if sampler.fillIO != nil {
@@ -711,6 +740,12 @@ func (sampler *topProcessSampler) refresh() {
 		if sampler.countFDs != nil {
 			sampler.countFDs(processes)
 		}
+	}
+	if !filter.active() && sampler.fillThreads != nil {
+		sampler.fillThreads(processes)
+	}
+	if !filter.active() && sampler.fillCWD != nil {
+		sampler.fillCWD(processes)
 	}
 	for index := range processes {
 		if stats, ok := observed[processes[index].PID]; ok {

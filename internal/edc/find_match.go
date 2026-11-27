@@ -515,11 +515,20 @@ func findScore(matcher findMatcher, paths []string, candidates []int32, workers 
 	}
 	workers = max(1, min(workers, (total+findScoreChunk-1)/findScoreChunk))
 	parts := make([][]findHit, workers)
+	// 한 글자 fuzzy query는 대부분의 경로가 맞는다. worker별 slice를 append로 키우면 이전 배열을 여러 번
+	// 복사해 후보 수의 몇 배를 할당한다. 더 긴 query는 match 비율이 낮으므로 기존처럼 필요한 만큼만 키운다.
+	preallocate := false
+	if fuzzy, ok := matcher.(findFuzzy); ok && len(fuzzy.terms) == 1 && len(fuzzy.terms[0].text) == 1 {
+		preallocate = true
+	}
 	var group sync.WaitGroup
 	for worker := range workers {
 		group.Go(func() {
 			from, to := worker*total/workers, (worker+1)*total/workers
 			var hits []findHit
+			if preallocate {
+				hits = make([]findHit, 0, to-from)
+			}
 			for position := from; position < to; position++ {
 				index := position
 				if candidates != nil {

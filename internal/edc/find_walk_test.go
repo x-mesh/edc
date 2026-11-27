@@ -330,3 +330,69 @@ func TestFindWalkSendsALargeDirectoryInBatches(t *testing.T) {
 		t.Errorf("batch sizes = %v", sizes)
 	}
 }
+
+func BenchmarkFindWalkFilesystem(b *testing.B) {
+	root := b.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	for directory := 0; directory < 200; directory++ {
+		path := filepath.Join(root, fmt.Sprintf("d%03d", directory))
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			b.Fatal(err)
+		}
+		for file := 0; file < 100; file++ {
+			name := fmt.Sprintf("f%03d.txt", file)
+			if err := os.WriteFile(filepath.Join(path, name), []byte(name), 0o644); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(path, ".gitignore"), []byte("ignored\n"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "ignored"), []byte("ignored"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for _, benchmark := range []struct {
+		name     string
+		stat     bool
+		noIgnore bool
+		workers  int
+	}{
+		{name: "workers_1", noIgnore: true, workers: 1},
+		{name: "workers_4", noIgnore: true, workers: 4},
+		{name: "stat", stat: true, noIgnore: true, workers: 4},
+		{name: "ignore", workers: 4},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			options := findWalkOptions{roots: []string{root}, workers: benchmark.workers, stat: benchmark.stat, noIgnore: benchmark.noIgnore}
+			sources := testFindSources(nil)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				statted, ignored := 0, 0
+				report := findWalk(context.Background(), options, sources, func(entries []findEntry) bool {
+					for _, entry := range entries {
+						if entry.statted {
+							statted++
+						}
+						if filepath.Base(entry.path) == "ignored" {
+							ignored++
+						}
+					}
+					return true
+				})
+				if report.Directories != 201 {
+					b.Fatalf("directories = %d", report.Directories)
+				}
+				if benchmark.stat && statted == 0 {
+					b.Fatal("stat walk returned no statted entries")
+				}
+				if !benchmark.noIgnore && ignored != 0 {
+					b.Fatalf("ignore walk returned %d ignored entries", ignored)
+				}
+			}
+		})
+	}
+}

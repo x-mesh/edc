@@ -5,6 +5,22 @@ description: Cut an edc release — pick the version, verify locally, open and m
 
 # edc release
 
+## Version selection guard
+
+Never use `git describe` to choose a release version. It only sees tags reachable from the current branch.
+
+Before local validation and again immediately before pushing a tag, find the repository-wide published stable maximum. Ignore drafts and prereleases:
+
+```bash
+gh api --paginate 'repos/x-mesh/edc/releases?per_page=100' \
+  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+  | sort -V | tail -1
+```
+
+The candidate must be strictly greater than that value and must not already be a tag. Never release directly from `develop`; merge `develop` into `main` through the release PR, then tag the verified `origin/main` merge commit. A dirty local `main` worktree is not an exception.
+
+For a mistaken lower public release, do not delete, hide, retag, or move old releases. Publish a strictly higher corrective version and include a downgrade guard in `edc update`.
+
 Release `edc` with an annotated `v<version>` tag. GitHub Actions builds every asset and publishes the release. Never upload an asset by hand.
 
 The release goes from `develop` to `main` through a pull request. The tag goes on the merge commit of that PR.
@@ -145,15 +161,7 @@ Read the `v0.95.0` notes for the shape.
 
 ## If the release run fails
 
-Delete the tag, fix the cause, then tag again with the same number. A published release needs `gh release delete` first.
-
-```bash
-gh release delete v<version> --yes   # only if the release exists
-git push origin :refs/tags/v<version>
-git tag -d v<version>
-```
-
-Never move a tag that a release already published. Users who installed it get a different binary under the same version.
+A pushed tag is public. Do not delete, move, or reuse it. If the workflow failed before any release was published, fix the cause and select a new, strictly higher version. If a release was published, publish a higher corrective version. Never delete a release or a tag unless the user separately and explicitly authorizes that exact destructive action.
 
 ## Rules
 

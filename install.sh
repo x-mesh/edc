@@ -101,6 +101,41 @@ if [ "$VERSION" = "latest" ]; then
 	[ -n "$VERSION" ] || fail "cannot read the latest version from https://github.com/$REPO/releases/latest"
 fi
 
+version_compare() {
+	left=${1#v}
+	right=${2#v}
+	case "$left:$right" in
+	*[!0-9.:]* | *..* | :* | *:) return 2 ;;
+	esac
+	old_ifs=$IFS
+	IFS=.
+	set -- $left
+	left_major=${1-} left_minor=${2-} left_patch=${3-} left_extra=${4-}
+	set -- $right
+	right_major=${1-} right_minor=${2-} right_patch=${3-} right_extra=${4-}
+	IFS=$old_ifs
+	[ -n "$left_major" ] && [ -n "$left_minor" ] && [ -n "$left_patch" ] && [ -z "$left_extra" ] || return 2
+	[ -n "$right_major" ] && [ -n "$right_minor" ] && [ -n "$right_patch" ] && [ -z "$right_extra" ] || return 2
+	for pair in "$left_major:$right_major" "$left_minor:$right_minor" "$left_patch:$right_patch"; do
+		left_part=${pair%%:*}
+		right_part=${pair#*:}
+		if [ "$left_part" -gt "$right_part" ]; then return 0; fi
+		if [ "$left_part" -lt "$right_part" ]; then return 1; fi
+	done
+	return 1
+}
+
+existing="$BINDIR/edc"
+if [ -x "$existing" ]; then
+	installed=$("$existing" version 2>/dev/null | sed -n 's/^edc \([^ ]*\).*/\1/p' | head -1) || installed=""
+	# Refuse only a downgrade. The same version installs again so that a damaged binary can be
+	# replaced, and a version that cannot be compared (devel, prerelease) never blocks a release.
+	if [ -n "$installed" ] && version_compare "$installed" "$VERSION"; then
+		echo "edc $installed is newer than $VERSION; not downgrading"
+		exit 0
+	fi
+fi
+
 asset="edc_${VERSION}_${os}_${arch}.tar.gz"
 base="https://github.com/$REPO/releases/download/v${VERSION}"
 

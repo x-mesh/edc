@@ -1329,7 +1329,11 @@ func TestTraceScreenGroupReportCacheReplacesFilterAndView(t *testing.T) {
 	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "second.example" {
 		t.Fatalf("filtered report = %+v", report.Groups)
 	}
-	model.groupBy, model.filter = traceGroupByProcess, ""
+	model.groupBy = traceGroupByProcess
+	if report := model.groupReport(); len(report.Groups) != 1 || report.Groups[0].Group != "beta" {
+		t.Fatalf("filtered process report = %+v", report.Groups)
+	}
+	model.filter = ""
 	if report := model.groupReport(); len(report.Groups) != 2 || report.Groups[0].Group != "alpha" || report.Groups[1].Group != "beta" {
 		t.Fatalf("process report = %+v", report.Groups)
 	}

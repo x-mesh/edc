@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"runtime/debug"
 	"strings"
@@ -110,8 +111,7 @@ func BenchmarkTraceRawWriter(b *testing.B) {
 		}
 	})
 	b.Run("encode_buffered", func(b *testing.B) {
-		var out bytes.Buffer
-		raw := newTraceRawWriter(&out)
+		raw := newTraceRawWriter(io.Discard)
 		defer raw.Close()
 		encoder := json.NewEncoder(raw)
 		b.ReportAllocs()

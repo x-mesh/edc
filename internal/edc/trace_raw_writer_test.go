@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"math"
 	"runtime/debug"
@@ -95,4 +96,30 @@ func TestTraceRawGCKeepsALowerMemoryLimit(t *testing.T) {
 	if got := debug.SetMemoryLimit(-1); got != traceRawMemoryLimit {
 		t.Fatalf("no limit was set: %d", got)
 	}
+}
+
+func BenchmarkTraceRawWriter(b *testing.B) {
+	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "service", Source: "10.0.0.1:40000", Destination: "10.0.0.2:443", Method: "POST", Target: "api.example", Path: "/orders/42", Payload: "POST /orders/42 HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n{\"order\":42}"}
+	b.Run("encode", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for index := 0; index < b.N; index++ {
+			if _, err := json.Marshal(event); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("encode_buffered", func(b *testing.B) {
+		var out bytes.Buffer
+		raw := newTraceRawWriter(&out)
+		defer raw.Close()
+		encoder := json.NewEncoder(raw)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for index := 0; index < b.N; index++ {
+			if err := encoder.Encode(event); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

@@ -12,8 +12,8 @@ Never use `git describe` to choose a release version. It only sees tags reachabl
 Before local validation and again immediately before pushing a tag, find the repository-wide published stable maximum. Ignore drafts and prereleases:
 
 ```bash
-gh release list --limit 200 --json tagName,isDraft,isPrerelease \
-  --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+gh api --paginate 'repos/x-mesh/edc/releases?per_page=100' \
+  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
   | sort -V | tail -1
 ```
 
@@ -161,15 +161,7 @@ Read the `v0.95.0` notes for the shape.
 
 ## If the release run fails
 
-Delete the tag, fix the cause, then tag again with the same number. A published release needs `gh release delete` first.
-
-```bash
-gh release delete v<version> --yes   # only if the release exists
-git push origin :refs/tags/v<version>
-git tag -d v<version>
-```
-
-Never move a tag that a release already published. Users who installed it get a different binary under the same version.
+A pushed tag is public. Do not delete, move, or reuse it. If the workflow failed before any release was published, fix the cause and select a new, strictly higher version. If a release was published, publish a higher corrective version. Never delete a release or a tag unless the user separately and explicitly authorizes that exact destructive action.
 
 ## Rules
 

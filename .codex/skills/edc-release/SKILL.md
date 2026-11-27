@@ -161,21 +161,7 @@ Read the `v0.95.0` notes for the shape.
 
 ## If the release run fails
 
-First check whether the run created a release for the tag.
-
-```bash
-gh release view v<version> --json isDraft,assets
-```
-
-If no release exists, or only a draft release exists, no user received a binary. Delete the draft if there is one, delete the tag, fix the cause, then tag again with the same number.
-
-```bash
-gh release delete v<version> --yes   # only for a draft release
-git push origin :refs/tags/v<version>
-git tag -d v<version>
-```
-
-If a published release exists, even one with only some assets, do not delete it and do not move or reuse its tag. Users who installed it get a different binary under the same version. Fix the cause and release the next strictly higher version.
+A pushed tag is public. Do not delete, move, or reuse it. If the workflow failed before any release was published, fix the cause and select a new, strictly higher version. If a release was published, publish a higher corrective version. Never delete a release or a tag unless the user separately and explicitly authorizes that exact destructive action.
 
 ## Rules
 

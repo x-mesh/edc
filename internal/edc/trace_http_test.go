@@ -1805,3 +1805,99 @@ func TestTraceScreenShowsHTTPResponseAfterItsRequestIsEvicted(t *testing.T) {
 		t.Fatalf("rows after eviction = %d, tail %+v", len(rows), rows[len(rows)-2:])
 	}
 }
+
+func BenchmarkHTTPTrackerHTTP1(b *testing.B) {
+	request := "POST /orders/42 HTTP/1.1\r\nHost: api.example\r\nContent-Type: application/json\r\nAuthorization: Bearer secret\r\nContent-Length: 15\r\n\r\n{\"ok\":true}"
+	response := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"ok\":true}"
+	for _, payload := range []bool{false, true} {
+		b.Run(map[bool]string{false: "summary", true: "payload"}[payload], func(b *testing.B) {
+			tracker := newHTTPTracker(traceClientSide, payload, false)
+			var at uint64
+			b.ReportAllocs()
+			b.SetBytes(int64(len(request) + len(response)))
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				at += 2_000_000
+				if _, ok := tracker.event(httpTestPacket(request, at, true), 0); !ok {
+					b.Fatal("request was not parsed")
+				}
+				if _, ok := tracker.event(httpTestPacket(response, at+1_000_000, false), 0); !ok {
+					b.Fatal("response was not parsed")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkHTTPTrackerHTTP2(b *testing.B) {
+	requestHeaders := http2TestHeaders(
+		hpack.HeaderField{Name: ":method", Value: "POST"},
+		hpack.HeaderField{Name: ":scheme", Value: "https"},
+		hpack.HeaderField{Name: ":authority", Value: "api.example"},
+		hpack.HeaderField{Name: ":path", Value: "/orders/42"},
+		hpack.HeaderField{Name: "authorization", Value: "Bearer secret"},
+	)
+	responseHeaders := http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"}, hpack.HeaderField{Name: "content-type", Value: "application/json"})
+	request := append(append([]byte{}, http2Preface...), http2TestFrame(1, 0x4, 1, requestHeaders)...)
+	request = append(request, http2TestFrame(0, 0x1, 1, []byte(`{"order":42}`))...)
+	response := append(http2TestFrame(1, 0x4, 1, responseHeaders), http2TestFrame(0, 0x1, 1, []byte(`{"ok":true}`))...)
+	for _, payload := range []bool{false, true} {
+		b.Run(map[bool]string{false: "summary", true: "payload"}[payload], func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(request) + len(response)))
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				tracker := newHTTPTracker(traceClientSide, payload, false)
+				if payload {
+					tracker.h2PayloadLimit = httpPayloadHead
+				}
+				if events, claimed := tracker.http2Events(httpTestPacket(string(request), 1_000_000, true), 0); !claimed || len(events) != 1 {
+					b.Fatal("request was not parsed")
+				}
+				if events, claimed := tracker.http2Events(http2TestPacket(response, 2_000_000, false, 0), 0); !claimed || len(events) != 1 {
+					b.Fatal("response was not parsed")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkHTTPTrackerHTTP2KeepAlive(b *testing.B) {
+	requestHeaders := http2TestHeaders(
+		hpack.HeaderField{Name: ":method", Value: "POST"},
+		hpack.HeaderField{Name: ":scheme", Value: "https"},
+		hpack.HeaderField{Name: ":authority", Value: "api.example"},
+		hpack.HeaderField{Name: ":path", Value: "/orders/42"},
+		hpack.HeaderField{Name: "authorization", Value: "Bearer secret"},
+	)
+	responseHeaders := http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"}, hpack.HeaderField{Name: "content-type", Value: "application/json"})
+	for _, payload := range []bool{false, true} {
+		b.Run(map[bool]string{false: "summary", true: "payload"}[payload], func(b *testing.B) {
+			tracker := newHTTPTracker(traceClientSide, payload, false)
+			if payload {
+				tracker.h2PayloadLimit = httpPayloadHead
+			}
+			preface := httpTestPacket(string(http2Preface), 0, true)
+			if events, claimed := tracker.http2Events(preface, 0); !claimed || len(events) != 0 {
+				b.Fatal("preface was not accepted")
+			}
+			requestOffset, responseOffset := len(http2Preface), 0
+			b.ReportAllocs()
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				stream := uint32(index*2 + 1)
+				request := http2TestFrame(1, 0x4, stream, requestHeaders)
+				request = append(request, http2TestFrame(0, 0x1, stream, []byte(`{"order":42}`))...)
+				response := append(http2TestFrame(1, 0x4, stream, responseHeaders), http2TestFrame(0, 0x1, stream, []byte(`{"ok":true}`))...)
+				if events, claimed := tracker.http2Events(http2TestPacket(request, uint64(index*2+1), true, requestOffset), 0); !claimed || len(events) != 1 {
+					b.Fatal("request was not parsed")
+				}
+				requestOffset += len(request)
+				if events, claimed := tracker.http2Events(http2TestPacket(response, uint64(index*2+2), false, responseOffset), 0); !claimed || len(events) != 1 {
+					b.Fatal("response was not parsed")
+				}
+				responseOffset += len(response)
+			}
+		})
+	}
+}

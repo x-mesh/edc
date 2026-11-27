@@ -316,3 +316,20 @@ func buildArchive(t *testing.T, files map[string]string) []byte {
 	}
 	return buffer.Bytes()
 }
+
+func TestVersionCompare(t *testing.T) {
+	for _, test := range []struct {
+		left, right string
+		want        int
+	}{
+		{"0.96.1", "0.96.0", 1},
+		{"0.96.0", "0.96.1", -1},
+		{"v1.0.0", "0.96.1", 1},
+		{"0.96.0", "0.96.0", 0},
+		{"devel", "0.96.0", 0},
+	} {
+		if got := versionCompare(test.left, test.right); got != test.want {
+			t.Errorf("versionCompare(%q, %q) = %d, want %d", test.left, test.right, got, test.want)
+		}
+	}
+}

@@ -5,6 +5,22 @@ description: Cut an edc release — pick the version, verify locally, open and m
 
 # edc release
 
+## Version selection guard
+
+Never use `git describe` to choose a release version. It only sees tags reachable from the current branch.
+
+Before local validation and again immediately before pushing a tag, find the repository-wide published stable maximum. Ignore drafts and prereleases:
+
+```bash
+gh release list --limit 200 --json tagName,isDraft,isPrerelease \
+  --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+  | sort -V | tail -1
+```
+
+The candidate must be strictly greater than that value and must not already be a tag. Never release directly from `develop`; merge `develop` into `main` through the release PR, then tag the verified `origin/main` merge commit. A dirty local `main` worktree is not an exception.
+
+For a mistaken lower public release, do not delete, hide, retag, or move old releases. Publish a strictly higher corrective version and include a downgrade guard in `edc update`.
+
 Release `edc` with an annotated `v<version>` tag. GitHub Actions builds every asset and publishes the release. Never upload an asset by hand.
 
 The release goes from `develop` to `main` through a pull request. The tag goes on the merge commit of that PR.

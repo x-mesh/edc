@@ -192,7 +192,7 @@ type packTally struct {
 func packWriteTar(ctx context.Context, roots []packRoot, dst io.Writer, options packOptions, tally *packTally) (files int, read int64, skipped int, err error) {
 	var compressor io.WriteCloser
 	if options.useZstd {
-		compressor = newZstdWriter(dst, options.level)
+		compressor = newZstdWriter(dst, options.level, options.jobs)
 	} else if compressor, err = newGzipWriter(dst, options.level, options.jobs); err != nil {
 		return 0, 0, 0, err
 	}

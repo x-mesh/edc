@@ -146,6 +146,67 @@ func TestCompressGzipJobsGiveTheSameBytes(t *testing.T) {
 	}
 }
 
+// 병렬 zstd는 조각마다 frame을 쓰고 순서대로 잇는다. 조각 경계 근처의 크기도 다시 풀면 같은 바이트이고, 조각은 입력으로만
+// 나뉘므로 goroutine 수와 관계없이 같은 바이트를 쓴다.
+func TestCompressZstdJobsRoundTripAtChunkEdges(t *testing.T) {
+	log := codecLog()
+	for _, size := range []int{0, 1, zstdChunkSize - 1, zstdChunkSize, zstdChunkSize + 1, 3*zstdChunkSize + 123} {
+		content := bytes.Repeat(log, size/len(log)+1)[:size]
+		var outputs [][]byte
+		for _, jobs := range []int{1, 2, 8} {
+			var packed bytes.Buffer
+			writer := newZstdWriter(&packed, compressZstdLevel, jobs)
+			// Write를 조각 크기와 맞지 않는 단위로 나눠 부른다.
+			for rest := content; len(rest) > 0; {
+				step := min(len(rest), 64<<10+7)
+				if _, err := writer.Write(rest[:step]); err != nil {
+					t.Fatal(err)
+				}
+				rest = rest[step:]
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var plain bytes.Buffer
+			if err := decompressStream(&plain, bytes.NewReader(packed.Bytes())); err != nil || !bytes.Equal(plain.Bytes(), content) {
+				t.Fatalf("size %d jobs %d: %d bytes back, err %v", size, jobs, plain.Len(), err)
+			}
+			outputs = append(outputs, packed.Bytes())
+		}
+		if !bytes.Equal(outputs[1], outputs[2]) {
+			t.Fatalf("size %d: jobs 2 and 8 wrote different bytes", size)
+		}
+	}
+}
+
+type codecFailingWriter struct{ writes int }
+
+func (writer *codecFailingWriter) Write(data []byte) (int, error) {
+	if writer.writes++; writer.writes > 1 {
+		return 0, errors.New("disk full")
+	}
+	return len(data), nil
+}
+
+// 출력이 실패하면 남은 조각을 기다리며 멈추지 않고 그 오류를 돌려준다.
+func TestCompressZstdParallelReportsAWriteError(t *testing.T) {
+	content := bytes.Repeat(codecLog(), 4*zstdChunkSize/len(codecLog())+1)
+	done := make(chan error, 1)
+	go func() {
+		writer := newZstdWriter(&codecFailingWriter{}, compressZstdLevel, 4)
+		_, writeErr := io.Copy(writer, bytes.NewReader(content))
+		done <- errors.Join(writeErr, writer.Close())
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "disk full") {
+			t.Fatalf("err = %v, want disk full", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the writer did not return after a failed write")
+	}
+}
+
 // 이미 있는 출력은 덮어쓰지 않는다. 이미 압축된 파일과 심볼릭 링크는 압축하지 않는다.
 func TestCompressRefusesToOverwriteOrRecompress(t *testing.T) {
 	dir := t.TempDir()

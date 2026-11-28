@@ -22,12 +22,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -401,6 +403,40 @@ func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]lin
 	if err != nil {
 		return nil, fmt.Errorf("--tls %s: %w", target.path, err)
 	}
+	if traceTLSUprobeMulti() {
+		var groups []*traceUprobeGroup
+		find := func(program *ebpf.Program, ret, byAddress bool) *traceUprobeGroup {
+			for _, group := range groups {
+				if group.program == program && group.ret == ret && (len(group.addresses) > 0) == byAddress {
+					return group
+				}
+			}
+			group := &traceUprobeGroup{program: program, ret: ret}
+			groups = append(groups, group)
+			return group
+		}
+		for _, symbol := range target.symbols {
+			pair := programs[symbol]
+			offset, byAddress := target.offsets[symbol]
+			cookie := uint64(0)
+			if index := slices.Index(traceTLSNSSFunctions, symbol); index >= 0 {
+				cookie = uint64(index + 1)
+			}
+			for ret, program := range []*ebpf.Program{pair[0], pair[1]} {
+				if program == nil {
+					continue
+				}
+				group := find(program, ret == 1, byAddress)
+				if byAddress {
+					group.addresses = append(group.addresses, offset)
+				} else {
+					group.symbols = append(group.symbols, symbol)
+				}
+				group.cookies = append(group.cookies, cookie)
+			}
+		}
+		return attachTraceUprobeGroups(executable, target.path, groups)
+	}
 	var links []link.Link
 	for _, symbol := range target.symbols {
 		pair := programs[symbol]
@@ -458,6 +494,24 @@ func attachTraceTLSGo(objects *captureEventsObjects, target traceTLSTarget) (lin
 			traceTLSGoWrite: {objects.GoTlsArm64WriteEntry, objects.GoTlsArm64WriteExit},
 			traceTLSGoClose: {objects.GoTlsArm64CloseEntry, nil},
 		}
+	}
+	if traceTLSUprobeMulti() {
+		var groups []*traceUprobeGroup
+		for _, name := range []string{traceTLSGoRead, traceTLSGoWrite} {
+			if len(target.goReturns[name]) == 0 {
+				return nil, fmt.Errorf("--tls %s: missing Go TLS RET offsets", target.path)
+			}
+			// RET 지점은 함수 안의 일반 명령이라 uretprobe가 아니라 uprobe로 붙인다.
+			groups = append(groups, &traceUprobeGroup{program: pairs[name][1], addresses: target.goReturns[name]})
+		}
+		for _, name := range []string{traceTLSGoClose, traceTLSGoRead, traceTLSGoWrite} {
+			offset, exists := target.offsets[name]
+			if !exists {
+				return nil, fmt.Errorf("--tls %s: missing Go TLS entry offset", target.path)
+			}
+			groups = append(groups, &traceUprobeGroup{program: pairs[name][0], addresses: []uint64{offset}})
+		}
+		return attachTraceUprobeGroups(executable, target.path, groups)
 	}
 	attach := func(name string, program *ebpf.Program, offset uint64) error {
 		probe, attachErr := executable.Uprobe("", program, &link.UprobeOptions{Address: offset})
@@ -779,7 +833,57 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	spec.Programs["inet_csk_accept_exit"].Name = "inet_csk_accept_exit"
 	spec.Programs["inet_csk_accept_exit_legacy"] = acceptSpec.Copy()
 	spec.Programs["inet_csk_accept_exit_legacy"].Name = "inet_csk_accept_exit_legacy"
+	if traceTLSUprobeMulti() {
+		for _, program := range spec.Programs {
+			if program.Type == ebpf.Kprobe && (strings.HasPrefix(program.SectionName, "uprobe") || strings.HasPrefix(program.SectionName, "uretprobe")) {
+				program.AttachType = ebpf.AttachTraceUprobeMulti
+			}
+		}
+	}
 	return spec.LoadAndAssign(objects, nil)
+}
+
+// traceTLSUprobeMultiAvailable은 kernel이 uprobe_multi link를 지원하는지다. 하나씩 붙인 uprobe는 해제할 때 kernel이 하나씩
+// 기다려, TLS 파일 29개에 uprobe 355개를 붙인 host에서 trace가 끝나는 데 약 28초가 더 걸렸다. 파일과 program마다 묶으면
+// link마다 한 번만 기다린다. program의 attach 방식은 load할 때 정해지므로 load와 attach가 같은 답을 봐야 한다.
+var traceTLSUprobeMultiAvailable = sync.OnceValue(func() bool { return features.HaveBPFLinkUprobeMulti() == nil })
+
+// traceTLSSingleUprobes는 시험에서 uprobe_multi가 있는 kernel에서도 하나씩 붙이는 경로를 쓰게 한다.
+var traceTLSSingleUprobes atomic.Bool
+
+func traceTLSUprobeMulti() bool {
+	return !traceTLSSingleUprobes.Load() && traceTLSUprobeMultiAvailable()
+}
+
+type traceUprobeGroup struct {
+	program   *ebpf.Program
+	ret       bool
+	symbols   []string
+	addresses []uint64
+	cookies   []uint64
+}
+
+// attachTraceUprobeGroups는 묶음마다 link 하나를 만든다. 심볼로 찾는 지점과 주소를 아는 지점은 cilium/ebpf가 한 호출에 받지 않아 나눈다.
+func attachTraceUprobeGroups(executable *link.Executable, path string, groups []*traceUprobeGroup) ([]link.Link, error) {
+	var links []link.Link
+	for _, group := range groups {
+		attach := executable.UprobeMulti
+		if group.ret {
+			attach = executable.UretprobeMulti
+		}
+		var attached link.Link
+		var err error
+		if len(group.symbols) > 0 {
+			attached, err = attach(group.symbols, group.program, &link.UprobeMultiOptions{Cookies: group.cookies})
+		} else {
+			attached, err = attach(nil, group.program, &link.UprobeMultiOptions{Addresses: group.addresses, Cookies: group.cookies})
+		}
+		if err != nil {
+			return links, fmt.Errorf("--tls %s: attach %d uprobes: %w", path, len(group.symbols)+len(group.addresses), err)
+		}
+		links = append(links, attached)
+	}
+	return links, nil
 }
 
 func tcpRecvmsgArgumentCount() (int, error) {

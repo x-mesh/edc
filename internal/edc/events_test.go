@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -63,49 +64,51 @@ func evaluateEventsFixture(sources eventsSources) []Result {
 	return evaluateEvents(collectEventsFacts(context.Background(), sources, 6*time.Hour))
 }
 
+// eventsKernelCases는 실제 커널 줄과 그 줄에서 읽어야 하는 신호다. 빈 kind는 신호가 아닌 줄이다.
+var eventsKernelCases = []struct {
+	message, kind, brief string
+}{
+	{"Out of memory: Killed process 4242 (java) total-vm:8123456kB, anon-rss:4012345kB, file-rss:0kB, shmem-rss:0kB, UID:1000 pgtables:9000kB oom_score_adj:0", eventsOOM, "java pid=4242 cgroup=?"},
+	{"Memory cgroup out of memory: Killed process 777 (node) total-vm:1234kB, anon-rss:512kB", eventsOOM, "node pid=777 cgroup=?"},
+	// 4.x 커널은 Kill process로 쓴다.
+	{"Out of memory: Kill process 99 (mysqld) score 901 or sacrifice child", eventsOOM, "mysqld pid=99 cgroup=?"},
+	{"nginx[1234]: segfault at 0 ip 000055d5c0a1b2c3 sp 00007ffd2b3c4d50 error 4 in nginx[55d5c0a00000+100000] likely on CPU 3 (core 3, socket 0)", eventsSegfault, "nginx pid=1234 segfault"},
+	{"traps: python3[5678] general protection fault ip:7f1e2d3c4b5a sp:7ffc1a2b3c4d error:0 in libc.so.6[7f1e2d200000+195000]", eventsSegfault, "python3 pid=5678 general protection"},
+	{"blk_update_request: I/O error, dev sda, sector 2048 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0", eventsDiskIO, "dev=sda"},
+	{"I/O error, dev nvme0n1, sector 123456 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2", eventsDiskIO, "dev=nvme0n1"},
+	{"Buffer I/O error on dev sdb1, logical block 0, async page read", eventsDiskIO, "dev=sdb1"},
+	{"critical medium error, dev sdc, sector 99 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0", eventsDiskIO, "dev=sdc"},
+	{"XFS (dm-2): metadata I/O error in \"xfs_trans_read_buf_map\" at daddr 0x2 len 1 error 5", eventsDiskIO, "dev=dm-2"},
+	{"EXT4-fs (sda1): Remounting filesystem read-only", eventsFSReadonly, "dev=sda1"},
+	{"BTRFS info (device sdd1): forced readonly", eventsFSReadonly, "dev=sdd1"},
+	{"XFS (sdb1): Log I/O Error Detected. Shutting down filesystem", "", ""},
+	{"XFS (sdb2): Filesystem has been shut down due to log error (0x2).", eventsFSReadonly, "dev=sdb2"},
+	{"e1000e 0000:00:1f.6 eno1: NIC Link is Down", eventsLink, "eno1 down"},
+	{"igb 0000:01:00.0 eth1: igb: eth1 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX/TX", eventsLink, "eth1 up"},
+	{"r8169 0000:02:00.0 enp2s0: Link is Down", eventsLink, "enp2s0 down"},
+	{"IPv6: ADDRCONF(NETDEV_CHANGE): ens3: link becomes ready", eventsLink, "ens3 up"},
+	{"INFO: task kworker/u8:3:1234 blocked for more than 122 seconds.", eventsHungTask, "kworker/u8:3 pid=1234 122s"},
+	{"INFO: task java:4242 blocked for more than 120 seconds.", eventsHungTask, "java pid=4242 120s"},
+	{"watchdog: BUG: soft lockup - CPU#3 stuck for 23s! [java:4242]", eventsLockup, "soft lockup cpu=3 23s java pid=4242"},
+	{"NMI watchdog: Watchdog detected hard LOCKUP on cpu 2", eventsLockup, "hard lockup cpu=2"},
+	{"rcu: INFO: rcu_sched detected stalls on CPUs/tasks:", eventsLockup, "rcu_sched stall"},
+	{"INFO: rcu_preempt self-detected stall on CPU", eventsLockup, "rcu_preempt stall"},
+	{"BUG: workqueue lockup - pool cpus=1 node=0 flags=0x0 nice=0 stuck for 35s!", eventsLockup, "workqueue lockup cpus=1"},
+	{"BUG: unable to handle kernel NULL pointer dereference at 0000000000000010", eventsOops, "BUG: unable to handle kernel NULL pointer dereference"},
+	{"BUG: unable to handle page fault for address: ffffffffc0a1b2c3", eventsOops, "BUG: unable to handle page fault"},
+	{"kernel BUG at mm/slub.c:1234!", eventsOops, "kernel BUG at mm/slub.c:1234!"},
+	{"Oops: 0002 [#1] SMP PTI", eventsOops, "Oops"},
+	{"Kernel panic - not syncing: Fatal exception", eventsOops, "Kernel panic"},
+	{"general protection fault, probably for non-canonical address 0xdead000000000100: 0000 [#1] SMP NOPTI", eventsOops, "general protection fault"},
+	{"WARNING: CPU: 2 PID: 345 at drivers/net/ethernet/intel/igb/igb_main.c:1234 igb_poll+0x12/0x34 [igb]", eventsOops, "WARNING at drivers/net/ethernet/intel/igb/igb_main.c:1234 pid=345"},
+	{"Call Trace:", "", ""},
+	{"RIP: 0010:igb_poll+0x12/0x34 [igb]", "", ""},
+	{"systemd-journald[300]: Received SIGTERM", "", ""},
+	{"audit: type=1400 audit(1700000000.123:45): apparmor=\"DENIED\"", "", ""},
+}
+
 func TestEventsKernelMatchersReadRealLines(t *testing.T) {
-	cases := []struct {
-		message, kind, brief string
-	}{
-		{"Out of memory: Killed process 4242 (java) total-vm:8123456kB, anon-rss:4012345kB, file-rss:0kB, shmem-rss:0kB, UID:1000 pgtables:9000kB oom_score_adj:0", eventsOOM, "java pid=4242 cgroup=?"},
-		{"Memory cgroup out of memory: Killed process 777 (node) total-vm:1234kB, anon-rss:512kB", eventsOOM, "node pid=777 cgroup=?"},
-		// 4.x 커널은 Kill process로 쓴다.
-		{"Out of memory: Kill process 99 (mysqld) score 901 or sacrifice child", eventsOOM, "mysqld pid=99 cgroup=?"},
-		{"nginx[1234]: segfault at 0 ip 000055d5c0a1b2c3 sp 00007ffd2b3c4d50 error 4 in nginx[55d5c0a00000+100000] likely on CPU 3 (core 3, socket 0)", eventsSegfault, "nginx pid=1234 segfault"},
-		{"traps: python3[5678] general protection fault ip:7f1e2d3c4b5a sp:7ffc1a2b3c4d error:0 in libc.so.6[7f1e2d200000+195000]", eventsSegfault, "python3 pid=5678 general protection"},
-		{"blk_update_request: I/O error, dev sda, sector 2048 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0", eventsDiskIO, "dev=sda"},
-		{"I/O error, dev nvme0n1, sector 123456 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2", eventsDiskIO, "dev=nvme0n1"},
-		{"Buffer I/O error on dev sdb1, logical block 0, async page read", eventsDiskIO, "dev=sdb1"},
-		{"critical medium error, dev sdc, sector 99 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0", eventsDiskIO, "dev=sdc"},
-		{"XFS (dm-2): metadata I/O error in \"xfs_trans_read_buf_map\" at daddr 0x2 len 1 error 5", eventsDiskIO, "dev=dm-2"},
-		{"EXT4-fs (sda1): Remounting filesystem read-only", eventsFSReadonly, "dev=sda1"},
-		{"BTRFS info (device sdd1): forced readonly", eventsFSReadonly, "dev=sdd1"},
-		{"XFS (sdb1): Log I/O Error Detected. Shutting down filesystem", "", ""},
-		{"XFS (sdb2): Filesystem has been shut down due to log error (0x2).", eventsFSReadonly, "dev=sdb2"},
-		{"e1000e 0000:00:1f.6 eno1: NIC Link is Down", eventsLink, "eno1 down"},
-		{"igb 0000:01:00.0 eth1: igb: eth1 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX/TX", eventsLink, "eth1 up"},
-		{"r8169 0000:02:00.0 enp2s0: Link is Down", eventsLink, "enp2s0 down"},
-		{"IPv6: ADDRCONF(NETDEV_CHANGE): ens3: link becomes ready", eventsLink, "ens3 up"},
-		{"INFO: task kworker/u8:3:1234 blocked for more than 122 seconds.", eventsHungTask, "kworker/u8:3 pid=1234 122s"},
-		{"INFO: task java:4242 blocked for more than 120 seconds.", eventsHungTask, "java pid=4242 120s"},
-		{"watchdog: BUG: soft lockup - CPU#3 stuck for 23s! [java:4242]", eventsLockup, "soft lockup cpu=3 23s java pid=4242"},
-		{"NMI watchdog: Watchdog detected hard LOCKUP on cpu 2", eventsLockup, "hard lockup cpu=2"},
-		{"rcu: INFO: rcu_sched detected stalls on CPUs/tasks:", eventsLockup, "rcu_sched stall"},
-		{"INFO: rcu_preempt self-detected stall on CPU", eventsLockup, "rcu_preempt stall"},
-		{"BUG: workqueue lockup - pool cpus=1 node=0 flags=0x0 nice=0 stuck for 35s!", eventsLockup, "workqueue lockup cpus=1"},
-		{"BUG: unable to handle kernel NULL pointer dereference at 0000000000000010", eventsOops, "BUG: unable to handle kernel NULL pointer dereference"},
-		{"BUG: unable to handle page fault for address: ffffffffc0a1b2c3", eventsOops, "BUG: unable to handle page fault"},
-		{"kernel BUG at mm/slub.c:1234!", eventsOops, "kernel BUG at mm/slub.c:1234!"},
-		{"Oops: 0002 [#1] SMP PTI", eventsOops, "Oops"},
-		{"Kernel panic - not syncing: Fatal exception", eventsOops, "Kernel panic"},
-		{"general protection fault, probably for non-canonical address 0xdead000000000100: 0000 [#1] SMP NOPTI", eventsOops, "general protection fault"},
-		{"WARNING: CPU: 2 PID: 345 at drivers/net/ethernet/intel/igb/igb_main.c:1234 igb_poll+0x12/0x34 [igb]", eventsOops, "WARNING at drivers/net/ethernet/intel/igb/igb_main.c:1234 pid=345"},
-		{"Call Trace:", "", ""},
-		{"RIP: 0010:igb_poll+0x12/0x34 [igb]", "", ""},
-		{"systemd-journald[300]: Received SIGTERM", "", ""},
-		{"audit: type=1400 audit(1700000000.123:45): apparmor=\"DENIED\"", "", ""},
-	}
-	for _, test := range cases {
+	for _, test := range eventsKernelCases {
 		signals := matchKernelLines([]kernelLine{{Time: eventsTestNow, Message: test.message}})
 		if test.kind == "" {
 			if len(signals) != 0 {
@@ -115,6 +118,28 @@ func TestEventsKernelMatchersReadRealLines(t *testing.T) {
 		}
 		if len(signals) != 1 || signals[0].Kind != test.kind || signals[0].Brief != test.brief {
 			t.Errorf("%q = %+v, want %s %q", test.message, signals, test.kind, test.brief)
+		}
+	}
+}
+
+// 키워드가 패턴의 고정 글자를 빠뜨리면 그 신호가 조용히 사라진다. 패턴마다 그 패턴에 맞는 실제 줄이 있고, 그 줄이 키워드 검사를 지나야 한다.
+func TestEventsKernelKeywordsCoverEveryPattern(t *testing.T) {
+	patterns := []*regexp.Regexp{eventsOOMKilled, eventsSegfaultLine, eventsGPFault, eventsHungTaskLine, eventsSoftLockup, eventsHardLockup,
+		eventsRCUStall, eventsWorkqueueLockup, eventsKernelWarning, eventsLinkNIC, eventsLinkPlain, eventsLinkReady}
+	patterns = append(append(append(patterns, eventsDiskErrors...), eventsReadonly...), eventsOopsLines...)
+	for _, pattern := range patterns {
+		matched := false
+		for _, test := range eventsKernelCases {
+			if !pattern.MatchString(test.message) {
+				continue
+			}
+			matched = true
+			if !eventsKernelCandidate(test.message) {
+				t.Errorf("%q는 %s에 맞지만 키워드 검사에서 빠진다", test.message, pattern)
+			}
+		}
+		if !matched {
+			t.Errorf("%s에 맞는 줄이 eventsKernelCases에 없다", pattern)
 		}
 	}
 }

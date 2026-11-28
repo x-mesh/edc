@@ -3,11 +3,14 @@ package edc
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 type catTestRun struct {
@@ -287,3 +290,63 @@ func TestCatStopsAfterAWriteFails(t *testing.T) {
 type catFailingWriter struct{}
 
 func (catFailingWriter) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+
+// 줄바꿈이 없는 큰 입력은 catLineLimit씩 나누어 낸다. 번호는 줄의 처음에만 붙고, 가리기는 값의 끝을 모르므로 멈춘다.
+func TestCatSplitsALineLongerThanTheLimit(t *testing.T) {
+	long := strings.Repeat("x", 2*catLineLimit+10)
+	root := writeCatFiles(t, map[string]string{"min.txt": long + "\nnext\n", ".env": "TOKEN=" + long + "\n"})
+	pipe := runCatTest(t, catOutput{numbers: true}, catOptions{}, filepath.Join(root, "min.txt"))
+	if want := "     1\t" + long + "\n     2\tnext\n"; !pipe.ok || pipe.stdout.String() != want {
+		t.Errorf("pipe: ok=%v, %d bytes, stderr %q", pipe.ok, pipe.stdout.Len(), pipe.stderr.String())
+	}
+	terminal := runCatTest(t, catOutput{terminal: true, numbers: true}, catOptions{}, filepath.Join(root, "min.txt"))
+	if want := "   1  " + long + "\n   2  next\n"; !terminal.ok || !strings.HasSuffix(terminal.stdout.String(), want) {
+		t.Errorf("terminal: ok=%v, %d bytes, stderr %q", terminal.ok, terminal.stdout.Len(), terminal.stderr.String())
+	}
+	masked := runCatTest(t, catOutput{mask: true}, catOptions{}, filepath.Join(root, ".env"))
+	if masked.ok || strings.Contains(masked.stdout.String(), "xxxx") || !strings.Contains(masked.stderr.String(), "cannot be masked") {
+		t.Errorf("mask: ok=%v, stdout %q, stderr %q", masked.ok, masked.stdout.String(), masked.stderr.String())
+	}
+}
+
+// TestCatPagerHelper는 아래 시험이 띄우는 process다. pager가 떠 있는 동안 받은 Ctrl-C로는 죽지 않고, pager가 끝난 뒤의
+// Ctrl-C로는 죽어야 한다.
+func TestCatPagerHelper(t *testing.T) {
+	if os.Getenv("EDC_CAT_PAGER_HELPER") != "1" {
+		t.Skip("helper process for TestCatPagerIgnoresCtrlCOnlyWhileItRuns")
+	}
+	pager := startCatPager("sleep 30")
+	if pager == nil {
+		t.Fatal("sleep did not start")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := pager.command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-pager.exited
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+	t.Fatal("Ctrl-C after the pager ended did not stop the process")
+}
+
+// pager가 떠 있는 동안에만 Ctrl-C를 무시한다. 끝나지 않는 입력을 읽다가 pager가 닫혀도 Ctrl-C로 edc를 멈출 수 있다.
+func TestCatPagerIgnoresCtrlCOnlyWhileItRuns(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skip("sleep is not available")
+	}
+	helper := exec.Command(os.Args[0], "-test.run=^TestCatPagerHelper$")
+	helper.Env = append(os.Environ(), "EDC_CAT_PAGER_HELPER=1")
+	output, err := helper.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("helper: %v\n%s", err, output)
+	}
+	if status, ok := exit.Sys().(syscall.WaitStatus); !ok || !status.Signaled() || status.Signal() != syscall.SIGINT {
+		t.Fatalf("helper did not end by SIGINT: %v\n%s", err, output)
+	}
+}

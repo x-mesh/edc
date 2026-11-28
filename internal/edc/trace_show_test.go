@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -198,11 +200,31 @@ func TestTraceShowRejectsBadTraceWhyDirectories(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(noRange, "http.jsonl"), oldData, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// 받은 기록 안의 링크가 디렉터리 밖의 파일을 가리켜도 그 파일을 읽지 않는다.
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("root:secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedRecording := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`)
+	if err := os.Symlink(outside, filepath.Join(linkedRecording, "http.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	linkedManifest := directory("", "http.jsonl")
+	if err := os.Symlink(outside, filepath.Join(linkedManifest, traceWhyManifestName)); err != nil {
+		t.Fatal(err)
+	}
+	fifoRecording := directory(`{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`)
+	if err := syscall.Mkfifo(filepath.Join(fifoRecording, "http.jsonl"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for name, test := range map[string]struct {
 		args []string
 		code int
 		want string
 	}{
+		"linked recording":  {[]string{linkedRecording}, 2, "http.jsonl: is a symbolic link"},
+		"linked manifest":   {[]string{linkedManifest}, 2, traceWhyManifestName + ": is a symbolic link"},
+		"fifo recording":    {[]string{fifoRecording}, 2, "http.jsonl: is not a regular file"},
 		"no manifest":       {[]string{directory("", "http.jsonl")}, 2, traceWhyManifestName},
 		"broken manifest":   {[]string{directory("{", "http.jsonl")}, 2, traceWhyManifestName},
 		"other version":     {[]string{directory(`{"version":2,"traces":[]}`, "http.jsonl")}, 2, "version 2 is not supported"},
@@ -217,7 +239,7 @@ func TestTraceShowRejectsBadTraceWhyDirectories(t *testing.T) {
 		stderr := traceCaptureOutput(t, &os.Stderr, func() {
 			stdout = traceCaptureOutput(t, &os.Stdout, func() { code = runTraceShow(test.args) })
 		})
-		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) {
+		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) || strings.Contains(stderr, "root:secret") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout, stderr)
 		}
 	}
@@ -372,7 +394,56 @@ func TestTraceShowRefusesSymbolicLinksInATraceWhyDirectory(t *testing.T) {
 			t.Fatalf("exit = %d", code)
 		}
 	})
-	if !strings.Contains(stderr, "not a regular file") {
+	if !strings.Contains(stderr, "is a symbolic link") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+// 읽는 동안 기록 디렉터리나 기록 파일을 바깥을 가리키는 링크로 바꿔도 바깥 기록을 읽지 않는다. 디렉터리 안의
+// http.jsonl은 기록이 아니라 읽기에 실패하므로, 읽기가 성공하면 바깥 기록을 읽은 것이다.
+func TestTraceWhyDirectoryReadSurvivesSwaps(t *testing.T) {
+	summary := captureSummary{Event: "capture_summary", TraceProtocol: "http", StartBootTimeNS: 1, EndBootTimeNS: 10_000 * whyTestMS}
+	outsideFile := traceShowWrite(t, "http.jsonl", whyTestRequest(7, "/a", 400, 300), summary)
+	outsideDirectory := filepath.Dir(outsideFile)
+	base := t.TempDir()
+	inside := filepath.Join(base, "inside")
+	if err := os.Mkdir(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"version":1,"traces":[{"name":"http","file":"http.jsonl"}]}`
+	if err := os.WriteFile(filepath.Join(inside, traceWhyManifestName), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	view := filepath.Join(base, "view")
+	swap := func(target, path string) {
+		next := path + ".next"
+		os.Remove(next)
+		os.Symlink(target, next)
+		os.Rename(next, path)
+	}
+	recording := filepath.Join(inside, "http.jsonl")
+	swap(inside, view)
+	var stop atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for !stop.Load() {
+			swap(inside, view)
+			os.WriteFile(recording+".regular", []byte("not a trace\n"), 0o600)
+			os.Rename(recording+".regular", recording)
+			swap(outsideDirectory, view)
+			swap(outsideFile, recording)
+		}
+	}()
+	leaked, reads := 0, 0
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); reads++ {
+		if _, _, err := readTraceWhyDirectory(view); err == nil {
+			leaked++
+		}
+	}
+	stop.Store(true)
+	<-done
+	if leaked != 0 {
+		t.Fatalf("%d of %d reads returned the recording outside the directory", leaked, reads)
 	}
 }

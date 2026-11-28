@@ -109,6 +109,23 @@ func cpuTestSleep(until time.Time) {
 }
 
 // TestCPUProfileHelper는 아래 시험이 띄우는 process다. spin은 사용자 공간에서, syscall은 kernel 안에서 CPU를 쓴다.
+// C library의 .rodata를 4 byte씩 훑지 않도록 Go binary만 pclntab을 찾는다. 이 시험 binary는 Go이고 /bin/sh는 C다.
+func TestCPUGoBinaryTellsGoFromC(t *testing.T) {
+	for path, want := range map[string]bool{"/proc/self/exe": true, "/bin/sh": false} {
+		file, err := elf.Open(path)
+		if err != nil {
+			t.Skip(err)
+		}
+		if got := cpuGoBinary(file); got != want {
+			t.Errorf("cpuGoBinary(%s) = %v, want %v", path, got, want)
+		}
+		if got := cpuGoPCLN(file) != nil; got != want {
+			t.Errorf("cpuGoPCLN(%s) found a table = %v, want %v", path, got, want)
+		}
+		file.Close()
+	}
+}
+
 func TestCPUProfileHelper(t *testing.T) {
 	until := time.Now().Add(4 * time.Second)
 	switch os.Getenv("EDC_CPU_HELPER") {

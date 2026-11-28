@@ -191,7 +191,7 @@ var cpuPCLNMagics = map[uint32]bool{0xfffffffb: true, 0xfffffffa: true, 0xffffff
 // cgo binary는 .dynsym에 C 심볼 몇 개만 있어서, 심볼이 있어도 Go 함수는 이 표에서만 찾을 수 있다.
 func cpuGoPCLN(file *elf.File) *gosym.Table {
 	text := file.Section(".text")
-	if text == nil {
+	if text == nil || !cpuGoBinary(file) {
 		return nil
 	}
 	for _, candidate := range cpuPCLNCandidates(file) {
@@ -206,6 +206,13 @@ func cpuGoPCLN(file *elf.File) *gosym.Table {
 type cpuPCLN struct {
 	data []byte
 	addr uint64
+}
+
+// cpuGoBinary는 Go linker가 남기는 section이 있는지다. 이 section은 실행할 때 쓰는 영역이라 strip으로 지워지지 않는다.
+// 없으면 C library라 pclntab을 찾지 않는다. libc 같은 library의 .rodata 전체를 4 byte씩 훑으면 trace cpu와 trace lock이
+// 끝날 때 CPU를 1초 넘게 썼다.
+func cpuGoBinary(file *elf.File) bool {
+	return file.Section(".gopclntab") != nil || file.Section(".go.buildinfo") != nil || file.Section(".note.go.buildid") != nil
 }
 
 // cpuPCLNCandidates는 pclntab일 수 있는 byte열과 그 주소다. 내부 linker는 .gopclntab section을 만든다. PIE를 외부

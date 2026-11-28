@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -323,6 +325,45 @@ func TestCatPipeNumbersMatchCatN(t *testing.T) {
 	}
 	if lines := strings.Count(got, "\n"); lines != 1_000_000 {
 		t.Fatalf("%d lines, want 1000000", lines)
+	}
+}
+
+type catSyncBuffer struct {
+	lock   sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *catSyncBuffer) Write(data []byte) (int, error) {
+	buffer.lock.Lock()
+	defer buffer.lock.Unlock()
+	return buffer.buffer.Write(data)
+}
+
+func (buffer *catSyncBuffer) String() string {
+	buffer.lock.Lock()
+	defer buffer.lock.Unlock()
+	return buffer.buffer.String()
+}
+
+// pipe의 -n은 줄이 끝나지 않은 채 멈춘 입력도 cat -n처럼 받은 만큼 바로 낸다.
+func TestCatPipeNumbersShowAnUnfinishedLine(t *testing.T) {
+	reader, writer := io.Pipe()
+	var stdout catSyncBuffer
+	output := catOutput{numbers: true, stdout: bufio.NewWriter(&stdout), stderr: io.Discard}
+	done := make(chan bool, 1)
+	go func() { done <- output.content("-", "", reader, -1) }()
+	if _, err := writer.Write([]byte("line one\npartial")); err != nil {
+		t.Fatal(err)
+	}
+	want := "     1\tline one\n     2\tpartial"
+	for deadline := time.Now().Add(5 * time.Second); stdout.String() != want; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("stdout = %q while the pipe stays open, want %q", stdout.String(), want)
+		}
+	}
+	writer.Close()
+	if !<-done || stdout.String() != want {
+		t.Fatalf("after close: stdout %q", stdout.String())
 	}
 }
 

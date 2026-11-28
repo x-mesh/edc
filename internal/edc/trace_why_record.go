@@ -17,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -337,7 +339,14 @@ func recordTraceWhy(plan traceWhyPlan, stop <-chan struct{}, finishing func()) e
 // readTraceWhyDirectory는 why.json에 적힌 기록을 읽는다. 적힌 파일이 없으면 디렉터리의 다른 파일로 대신하지 않는다.
 func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest, error) {
 	var manifest traceWhyManifest
-	handle, err := openTraceWhyEntry(filepath.Join(directory, traceWhyManifestName))
+	// 디렉터리는 한 번만 열고 그 안의 파일은 이 핸들 기준으로 연다. 경로를 다시 해석하면 읽는 사이에 디렉터리를
+	// 다른 곳을 가리키는 링크로 바꿔 O_NOFOLLOW를 피할 수 있다.
+	root, err := os.OpenFile(directory, os.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, manifest, err
+	}
+	defer root.Close()
+	handle, err := openTraceWhyEntry(root, traceWhyManifestName)
 	if err != nil {
 		return nil, manifest, fmt.Errorf("%s: %w", traceWhyManifestName, err)
 	}
@@ -358,7 +367,7 @@ func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest
 		if trace.File == "" || trace.File != filepath.Base(trace.File) {
 			return nil, manifest, fmt.Errorf("%s: %q is not a file name in the directory", traceWhyManifestName, trace.File)
 		}
-		handle, err := openTraceWhyEntry(filepath.Join(directory, trace.File))
+		handle, err := openTraceWhyEntry(root, trace.File)
 		if err != nil {
 			return nil, manifest, fmt.Errorf("%s: %w", trace.File, err)
 		}
@@ -373,14 +382,15 @@ func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest
 }
 
 // openTraceWhyEntry는 기록 디렉터리 안의 일반 파일만 연다. 받은 기록을 sudo로 볼 때 심볼릭 링크로 디렉터리 밖의 파일을 읽거나 FIFO에서 멈추지 않는다.
-func openTraceWhyEntry(path string) (*os.File, error) {
-	handle, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, syscall.ELOOP) {
+func openTraceWhyEntry(root *os.File, name string) (*os.File, error) {
+	fd, err := unix.Openat(int(root.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ELOOP) {
 		return nil, errors.New("is a symbolic link")
 	}
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "open", Path: filepath.Join(root.Name(), name), Err: err}
 	}
+	handle := os.NewFile(uintptr(fd), filepath.Join(root.Name(), name))
 	info, err := handle.Stat()
 	if err == nil && !info.Mode().IsRegular() {
 		err = errors.New("is not a regular file")

@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -112,7 +114,7 @@ func compressRun(args []string, stdin, stdout, stderr *os.File) int {
 	}
 	options.convert = func(dst io.Writer, src io.Reader) error {
 		if *useZstd {
-			return compressZstd(dst, src, *level)
+			return compressZstd(dst, src, *level, *jobs)
 		}
 		return compressGzip(dst, src, *level, *jobs)
 	}
@@ -532,7 +534,110 @@ func compressGzip(dst io.Writer, src io.Reader, level, jobs int) error {
 	return writer.Close()
 }
 
-func newZstdWriter(dst io.Writer, level int) io.WriteCloser { return zstd.NewWriter(dst, level) }
+// zstdChunkSize는 병렬로 압축하는 조각의 크기다. 조각마다 독립된 frame이 되고, zstd는 이어 붙인 frame을 한 stream으로
+// 푼다. 470MB 로그를 12코어로 1~16 MiB 조각에 나눠 재 보니 4 MiB가 가장 빨랐다.
+const zstdChunkSize = 4 << 20
+
+// newZstdWriter는 jobs가 2 이상이면 조각을 jobs개 goroutine으로 압축한다. Writer 하나는 코어 하나만 써서 470MB 로그가
+// zstd -T0의 0.33초보다 네 배 가까이 느린 1.25초 걸렸다.
+func newZstdWriter(dst io.Writer, level, jobs int) io.WriteCloser {
+	if jobs < 2 {
+		return zstd.NewWriter(dst, level)
+	}
+	writer := &zstdParallelWriter{dst: dst, chunks: make(chan zstdChunk), pending: make(chan chan []byte, jobs),
+		spare: make(chan []byte, jobs+1), done: make(chan error, 1)}
+	for range jobs {
+		writer.workers.Go(func() {
+			for chunk := range writer.chunks {
+				chunk.frame <- zstd.Encode(nil, chunk.data, level)
+				select {
+				case writer.spare <- chunk.data[:0]:
+				default:
+				}
+			}
+		})
+	}
+	go writer.emit()
+	return writer
+}
+
+type zstdChunk struct {
+	data  []byte
+	frame chan []byte
+}
+
+// zstdParallelWriter는 조각을 받은 순서대로 frame을 쓴다. pending의 용량이 메모리에 두는 조각 수를 제한한다.
+type zstdParallelWriter struct {
+	dst     io.Writer
+	buffer  []byte
+	sent    bool
+	chunks  chan zstdChunk
+	pending chan chan []byte
+	spare   chan []byte
+	done    chan error
+	failed  atomic.Pointer[error]
+	workers sync.WaitGroup
+}
+
+func (writer *zstdParallelWriter) Write(data []byte) (int, error) {
+	written := 0
+	for len(data) > 0 {
+		if err := writer.failed.Load(); err != nil {
+			return written, *err
+		}
+		if writer.buffer == nil {
+			select {
+			case writer.buffer = <-writer.spare:
+			default:
+				writer.buffer = make([]byte, 0, zstdChunkSize)
+			}
+		}
+		size := min(len(data), zstdChunkSize-len(writer.buffer))
+		writer.buffer = append(writer.buffer, data[:size]...)
+		data, written = data[size:], written+size
+		if len(writer.buffer) == zstdChunkSize {
+			writer.send()
+		}
+	}
+	return written, nil
+}
+
+func (writer *zstdParallelWriter) send() {
+	frame := make(chan []byte, 1)
+	writer.pending <- frame
+	writer.chunks <- zstdChunk{data: writer.buffer, frame: frame}
+	writer.buffer, writer.sent = nil, true
+}
+
+// emit은 쓰기에 실패해도 남은 frame을 받아 버린다. 그래야 Write와 worker가 막히지 않고 Close가 끝난다.
+func (writer *zstdParallelWriter) emit() {
+	var err error
+	for frame := range writer.pending {
+		data := <-frame
+		if err != nil {
+			continue
+		}
+		if _, err = writer.dst.Write(data); err != nil {
+			writer.failed.Store(&err)
+		}
+	}
+	writer.done <- err
+}
+
+// Close는 남은 조각을 보내고 모든 frame을 쓴 뒤 돌아온다. 빈 입력도 빈 frame 하나를 써서 올바른 zstd 파일이 된다.
+func (writer *zstdParallelWriter) Close() error {
+	if len(writer.buffer) > 0 || !writer.sent {
+		if writer.buffer == nil {
+			writer.buffer = []byte{}
+		}
+		writer.send()
+	}
+	close(writer.chunks)
+	close(writer.pending)
+	err := <-writer.done
+	writer.workers.Wait()
+	return err
+}
 
 // newGzipWriter는 jobs개 goroutine으로 압축하는 gzip writer다. edc pack은 tar를 이 writer에 바로 쓴다.
 func newGzipWriter(dst io.Writer, level, jobs int) (io.WriteCloser, error) {
@@ -548,8 +653,8 @@ func newGzipWriter(dst io.Writer, level, jobs int) (io.WriteCloser, error) {
 	return writer, nil
 }
 
-func compressZstd(dst io.Writer, src io.Reader, level int) error {
-	writer := newZstdWriter(dst, level)
+func compressZstd(dst io.Writer, src io.Reader, level, jobs int) error {
+	writer := newZstdWriter(dst, level, jobs)
 	if _, err := io.CopyBuffer(writer, src, make([]byte, codecBufferSize)); err != nil {
 		writer.Close()
 		return err

@@ -1,7 +1,6 @@
 package edc
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -137,26 +136,12 @@ func keepAISessionInfo(info *aiSessionInfo, previous aiSessionInfo) {
 
 // readAIClaudeTokens는 읽은 위치부터 끝난 줄의 token을 더한다. 처음에는 파일 전체를 읽는다.
 func readAIClaudeTokens(path string, cached *aiActivityCache) {
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-	if _, err := file.Seek(cached.offset, io.SeekStart); err != nil {
-		return
-	}
-	reader := bufio.NewReaderSize(file, 256<<10)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
-		cached.offset += int64(len(line))
+	cached.offset, _ = readAITranscriptLines(path, cached.offset, func(line []byte) {
 		if at, usage, ok := aiClaudeUsageDelta(line, cached.seen); ok {
 			cached.tokens.add(usage)
 			cached.points = append(cached.points, aiTokenPoint{at: at, total: cached.tokens.total()})
 		}
-	}
+	})
 }
 
 // aiTokenRate는 최근 aiRateWindow의 분당 token과, 그 값이 세션 평균보다 빠른지 돌려준다.

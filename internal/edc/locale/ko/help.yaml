@@ -903,7 +903,7 @@ command:
     option:
       zstd: ".gz 대신 .zst로 씀"
       level: "수준 1(빠름)~9(작음), 기본값은 gzip 6, zstd 3"
-      jobs: "gzip을 압축하는 goroutine 수, 기본값은 CPU 수"
+      jobs: "압축하는 goroutine 수, 기본값은 CPU 수"
       stdout: "stdout으로 쓰고 입력을 남김"
       output: "출력 경로, 입력이 하나일 때"
       remove: "출력을 다 쓰고 fsync한 뒤 입력을 지움"
@@ -911,7 +911,7 @@ command:
       - "app.log 옆에 app.log.gz를 쓰고 app.log는 남깁니다. 이미 있는 파일은 덮어쓰지 않습니다."
       - "출력은 입력의 수정 시각과 권한을 이어받습니다. root로 실행하면 소유자도 이어받습니다."
       - "쓰는 중에 실패하면 만들던 출력을 지우고 입력은 남깁니다."
-      - "zstd는 수준 3보다 높여도 더 작아지지 않습니다. -j는 gzip에만 적용됩니다."
+      - "zstd는 수준 3보다 높여도 더 작아지지 않습니다. -j가 1보다 크면 zstd는 입력 4 MiB마다 frame 하나를 씁니다."
       - "파일을 주지 않으면 stdin을 읽어 stdout으로 씁니다. 압축한 바이트는 터미널에 쓰지 않습니다."
       - "파일을 하나씩 압축합니다. 디렉터리는 edc pack이나 tar로 묶습니다."
       - "Linux에서는 다른 프로세스가 입력을 쓰기 모드로 열어 두었으면 --rm을 줘도 지우지 않습니다."

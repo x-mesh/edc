@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -336,11 +339,19 @@ func recordTraceWhy(plan traceWhyPlan, stop <-chan struct{}, finishing func()) e
 // readTraceWhyDirectory는 why.json에 적힌 기록을 읽는다. 적힌 파일이 없으면 디렉터리의 다른 파일로 대신하지 않는다.
 func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest, error) {
 	var manifest traceWhyManifest
-	manifestPath := filepath.Join(directory, traceWhyManifestName)
-	if err := requireTraceWhyRegularFile(manifestPath); err != nil {
+	// 디렉터리는 한 번만 열고 그 안의 파일은 이 핸들 기준으로 연다. 경로를 다시 해석하면 읽는 사이에 디렉터리를
+	// 다른 곳을 가리키는 링크로 바꿔 O_NOFOLLOW를 피할 수 있다.
+	root, err := os.OpenFile(directory, os.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
 		return nil, manifest, err
 	}
-	data, err := os.ReadFile(manifestPath)
+	defer root.Close()
+	handle, err := openTraceWhyEntry(root, traceWhyManifestName)
+	if err != nil {
+		return nil, manifest, fmt.Errorf("%s: %w", traceWhyManifestName, err)
+	}
+	data, err := io.ReadAll(handle)
+	handle.Close()
 	if err != nil {
 		return nil, manifest, err
 	}
@@ -356,11 +367,12 @@ func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest
 		if trace.File == "" || trace.File != filepath.Base(trace.File) {
 			return nil, manifest, fmt.Errorf("%s: %q is not a file name in the directory", traceWhyManifestName, trace.File)
 		}
-		path := filepath.Join(directory, trace.File)
-		if err := requireTraceWhyRegularFile(path); err != nil {
+		handle, err := openTraceWhyEntry(root, trace.File)
+		if err != nil {
 			return nil, manifest, fmt.Errorf("%s: %w", trace.File, err)
 		}
-		file, err := openTraceShowFile(path)
+		file, err := readTraceShowFile(handle)
+		handle.Close()
 		if err != nil {
 			return nil, manifest, fmt.Errorf("%s: %w", trace.File, err)
 		}
@@ -369,16 +381,25 @@ func readTraceWhyDirectory(directory string) ([]*traceShowFile, traceWhyManifest
 	return files, manifest, nil
 }
 
-// requireTraceWhyRegularFile은 심볼릭 링크를 거부한다. 기록 디렉터리 안의 링크로 디렉터리 밖의 파일을 읽지 않는다.
-func requireTraceWhyRegularFile(path string) error {
-	info, err := os.Lstat(path)
+// openTraceWhyEntry는 기록 디렉터리 안의 일반 파일만 연다. 받은 기록을 sudo로 볼 때 심볼릭 링크로 디렉터리 밖의 파일을 읽거나 FIFO에서 멈추지 않는다.
+func openTraceWhyEntry(root *os.File, name string) (*os.File, error) {
+	fd, err := unix.Openat(int(root.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ELOOP) {
+		return nil, errors.New("is a symbolic link")
+	}
 	if err != nil {
-		return err
+		return nil, &os.PathError{Op: "open", Path: filepath.Join(root.Name(), name), Err: err}
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file in the directory", filepath.Base(path))
+	handle := os.NewFile(uintptr(fd), filepath.Join(root.Name(), name))
+	info, err := handle.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = errors.New("is not a regular file")
 	}
-	return nil
+	if err != nil {
+		handle.Close()
+		return nil, err
+	}
+	return handle, nil
 }
 
 // printTraceWhyDirectory는 기록 디렉터리의 분석을 출력한다. 읽지 못한 디렉터리는 2, 분석할 수 없는 기록은 1을 돌려준다.

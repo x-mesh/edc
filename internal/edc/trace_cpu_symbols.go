@@ -2,8 +2,10 @@ package edc
 
 import (
 	"bufio"
+	"bytes"
 	"debug/elf"
 	"debug/gosym"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -226,7 +228,22 @@ func cpuPCLNCandidates(file *elf.File) []cpuPCLN {
 		if err != nil {
 			continue
 		}
-		for offset := 0; offset+8 <= len(data); offset += 4 {
+		// header는 0xffffff로 시작하는 magic과 0 두 byte다. 4 byte마다 맞춰 보면 libc 같은 C library의 .rodata 전체를
+		// 훑느라 trace cpu와 trace lock이 끝날 때 CPU를 1초 넘게 썼다. 고정된 byte를 bytes.Index로 찾아 그 자리만 본다.
+		anchor, shift := []byte{0xff, 0xff, 0xff, 0, 0}, 1
+		if file.ByteOrder == binary.BigEndian {
+			anchor, shift = []byte{0xff, 0xff, 0xff}, 0
+		}
+		for from := 0; ; {
+			found := bytes.Index(data[from:], anchor)
+			if found < 0 {
+				break
+			}
+			offset := from + found - shift
+			from += found + 1
+			if offset < 0 || offset%4 != 0 || offset+8 > len(data) {
+				continue
+			}
 			header := data[offset:]
 			if !cpuPCLNMagics[file.ByteOrder.Uint32(header)] || header[4] != 0 || header[5] != 0 {
 				continue

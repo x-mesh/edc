@@ -482,7 +482,7 @@ func packCompressFile(ctx context.Context, path string, size int64, options pack
 		defer options.report.track(viewSanitize(path), size, &read, nil)()
 		src = packContextReader{ctx: ctx, reader: packCountingReader{reader: src, count: &read}}
 		if options.useZstd {
-			return compressZstd(dst, src, options.level)
+			return compressZstd(dst, src, options.level, options.jobs)
 		}
 		return compressGzip(dst, src, options.level, options.jobs)
 	}

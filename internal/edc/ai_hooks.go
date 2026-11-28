@@ -1,7 +1,6 @@
 package edc
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -595,30 +594,13 @@ func (tail *aiEventTail) read() error {
 
 // readAIHookLines는 offset부터 마지막 줄바꿈까지 읽고 다음에 읽을 위치를 돌려준다.
 func readAIHookLines(path string, offset int64, events *[]aiHookEvent) (int64, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return offset, err
-	}
-	defer file.Close()
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		return offset, err
-	}
-	reader := bufio.NewReaderSize(file, 64<<10)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err == io.EOF {
-			return offset, nil
-		}
-		if err != nil {
-			return offset, err
-		}
-		offset += int64(len(line))
+	return readAITranscriptLines(path, offset, func(line []byte) {
 		var event aiHookEvent
 		// 줄 하나가 깨져도 나머지 세션은 보인다.
 		if json.Unmarshal(line, &event) == nil && event.Session != "" {
 			*events = append(*events, event)
 		}
-	}
+	})
 }
 
 func readAIHookEvents(path string) ([]aiHookEvent, error) {

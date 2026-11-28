@@ -439,12 +439,20 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 	for _, tc := range []struct {
 		mode, argument string
 		port           uint16
+		// single은 uprobe_multi가 없는 kernel처럼 uprobe를 하나씩 붙인다.
+		single bool
 	}{
-		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443}, {"normal", "errors", 0},
-		{"external-normal", "", 0}, {"external-stripped", "", 0}, {"external-pie", "", 0},
-		{"boring-normal", "", 0}, {"boring-external-normal", "", 0},
+		{"normal", "", 0, false}, {"stripped", "", 0, false}, {"pie", "", 0, false}, {"normal", "stack", 0, false}, {"normal", "stack", 443, false}, {"normal", "errors", 0, false},
+		{"external-normal", "", 0, false}, {"external-stripped", "", 0, false}, {"external-pie", "", 0, false},
+		{"boring-normal", "", 0, false}, {"boring-external-normal", "", 0, false}, {"normal", "", 0, true},
 	} {
-		t.Run(tc.mode+"-"+tc.argument+"-"+fmt.Sprint(tc.port), func(t *testing.T) {
+		name := tc.mode + "-" + tc.argument + "-" + fmt.Sprint(tc.port)
+		if tc.single {
+			name += "-single"
+		}
+		t.Run(name, func(t *testing.T) {
+			traceTLSSingleUprobes.Store(tc.single)
+			t.Cleanup(func() { traceTLSSingleUprobes.Store(false) })
 			fixture := traceTLSGoFixture(t, goCommand, tc.mode)
 			finder, _, _, err := resolveTraceTLSTargets(traceTLSMode(fixture))
 			if err != nil {

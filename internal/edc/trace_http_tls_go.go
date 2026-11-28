@@ -29,6 +29,7 @@ var traceTLSGoVersions = map[string]bool{
 	"go1.23.7":  true,
 	"go1.23.8":  true,
 	"go1.23.12": true,
+	"go1.24.0":  true,
 	"go1.25.0":  true,
 	"go1.26.4":  true,
 	"go1.26.5":  true,

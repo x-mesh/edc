@@ -37,7 +37,7 @@ func TestTraceTLSGoSentinelUsesSectionNames(t *testing.T) {
 }
 
 func TestTraceTLSGoVersionsAreExact(t *testing.T) {
-	want := []string{"go1.21.5", "go1.21.7", "go1.23.4", "go1.23.7", "go1.23.8", "go1.23.12", "go1.25.0", "go1.26.4", "go1.26.5", "go1.26.7", "go1.26.8", "go1.26.10", "go1.27.1", "go1.27.3", "go1.27.4"}
+	want := []string{"go1.21.5", "go1.21.7", "go1.23.4", "go1.23.7", "go1.23.8", "go1.23.12", "go1.24.0", "go1.25.0", "go1.26.4", "go1.26.5", "go1.26.7", "go1.26.8", "go1.26.10", "go1.27.1", "go1.27.3", "go1.27.4"}
 	if len(traceTLSGoVersions) != len(want) {
 		t.Fatalf("supported versions=%v", traceTLSGoVersions)
 	}

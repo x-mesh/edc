@@ -3,6 +3,7 @@ package edc
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,42 @@ func TestAIActivityReaderCountsClaudeTokensOnceAndKeepsCounting(t *testing.T) {
 	appendAIFixture(t, path, second+"\n")
 	if _, _, info = reader.read("claude", path); info.Tokens.Requests != 2 || info.Tokens.Output != 55 {
 		t.Fatalf("new lines must add to the total: %+v", info.Tokens)
+	}
+}
+
+func TestAIActivityReaderCountsLongClaudeLinesAndWaitsForTheLastOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.jsonl")
+	usage := `{"type":"assistant","timestamp":"2026-10-29T06:40:20Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-5-5",` +
+		`"content":[{"type":"text","text":"` + strings.Repeat("a", 600<<10) + `"}],"usage":{"input_tokens":10,"output_tokens":5}}}`
+	output := `{"type":"user","timestamp":"2026-10-29T06:40:21Z","message":{"content":"` + strings.Repeat("b", 600<<10) + `"}}`
+	unfinished := strings.NewReplacer(`"m1"`, `"m2"`, `"r1"`, `"r2"`).Replace(usage)
+	if err := os.WriteFile(path, []byte(usage+"\n"+output+"\n"+unfinished), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := aiActivityReader{}
+	if _, _, info := reader.read("claude", path); info.Tokens.Requests != 1 || info.Tokens.Output != 5 {
+		t.Fatalf("a line longer than the read buffer must count once, the unfinished one not yet: %+v", info.Tokens)
+	}
+	appendAIFixture(t, path, "\n")
+	if _, _, info := reader.read("claude", path); info.Tokens.Requests != 2 || info.Tokens.Output != 10 {
+		t.Fatalf("the finished line must count from where it started: %+v", info.Tokens)
+	}
+}
+
+func BenchmarkReadAIClaudeTokens(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "c.jsonl")
+	usage := `{"type":"assistant","timestamp":"2026-10-29T06:40:20Z","requestId":"r1","message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":5}}}`
+	output := `{"type":"user","timestamp":"2026-10-29T06:40:21Z","message":{"content":"` + strings.Repeat("b", 8<<10) + `"}}`
+	var data strings.Builder
+	for i := range 2000 {
+		data.WriteString(strings.Replace(usage, `"m1"`, `"m`+strconv.Itoa(i)+`"`, 1) + "\n" + output + "\n")
+	}
+	if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		readAIClaudeTokens(path, &aiActivityCache{seen: map[string]aiSeenMessage{}})
 	}
 }
 

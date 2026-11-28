@@ -146,16 +146,28 @@ func readAIClaudeTokens(path string, cached *aiActivityCache) {
 		return
 	}
 	reader := bufio.NewReaderSize(file, 256<<10)
+	// 줄마다 새로 할당하지 않는다. 대부분의 줄은 도구 출력처럼 길고 usage가 없어 바로 버려진다.
+	var long []byte
 	for {
-		line, err := reader.ReadBytes('\n')
+		chunk, err := reader.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			long = append(long, chunk...)
+			continue
+		}
 		if err != nil {
 			return
+		}
+		line := chunk
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			line = long
 		}
 		cached.offset += int64(len(line))
 		if at, usage, ok := aiClaudeUsageDelta(line, cached.seen); ok {
 			cached.tokens.add(usage)
 			cached.points = append(cached.points, aiTokenPoint{at: at, total: cached.tokens.total()})
 		}
+		long = long[:0]
 	}
 }
 

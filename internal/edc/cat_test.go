@@ -309,6 +309,23 @@ func TestCatSplitsALineLongerThanTheLimit(t *testing.T) {
 	}
 }
 
+// pipe의 -n은 cat -n과 같은 byte를 쓴다. 줄 끝의 \r과 빈 줄은 그대로 두고, 읽기 buffer보다 긴 줄에는 번호를 한 번만
+// 붙이며, 일곱 자리 번호는 여섯 칸을 넘어 그대로 쓴다.
+func TestCatPipeNumbersMatchCatN(t *testing.T) {
+	long := strings.Repeat("y", 200<<10)
+	text := "one\r\n\r\n" + long + "\n" + strings.Repeat("\n", 999_997) + "last"
+	root := writeCatFiles(t, map[string]string{"app.log": text})
+	pipe := runCatTest(t, catOutput{numbers: true}, catOptions{}, filepath.Join(root, "app.log"))
+	got := pipe.stdout.String()
+	head := "     1\tone\r\n     2\t\r\n     3\t" + long + "\n     4\t\n"
+	if !pipe.ok || !strings.HasPrefix(got, head) || !strings.HasSuffix(got, "999999\t\n1000000\t\n1000001\tlast") {
+		t.Fatalf("ok=%v, %d bytes, stderr %q", pipe.ok, len(got), pipe.stderr.String())
+	}
+	if lines := strings.Count(got, "\n"); lines != 1_000_000 {
+		t.Fatalf("%d lines, want 1000000", lines)
+	}
+}
+
 // TestCatPagerHelper는 아래 시험이 띄우는 process다. pager가 떠 있는 동안 받은 Ctrl-C로는 죽지 않고, pager가 끝난 뒤의
 // Ctrl-C로는 죽어야 한다.
 func TestCatPagerHelper(t *testing.T) {

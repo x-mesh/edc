@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -287,6 +288,9 @@ func (output *catOutput) content(title, name string, source io.Reader, size int6
 		}
 		return true
 	}
+	if !output.terminal && !output.mask && !output.color {
+		return output.numbered(source)
+	}
 	// 앞부분은 한 번만 읽는다. pipe에서 8 KiB가 찰 때까지 기다리면 느리게 들어오는 입력이 그동안 보이지 않는다.
 	sample := make([]byte, grepBinaryProbe)
 	count, err := io.ReadAtLeast(source, sample, 1)
@@ -372,6 +376,46 @@ func (output *catOutput) content(title, name string, source io.Reader, size int6
 			return true
 		}
 		if err != nil {
+			output.problem(T("cat.failed", err))
+			return false
+		}
+		// 읽어 둔 줄을 다 냈으면 내보낸다. 느리게 들어오는 pipe 입력이 buffer가 찰 때까지 묶이지 않는다.
+		if reader.Buffered() == 0 {
+			output.stdout.Flush()
+		}
+	}
+}
+
+// numbered는 터미널이 아니고 색과 mask가 없을 때 cat -n처럼 줄마다 번호를 붙인다. 이때는 구문을 나눠도 글자가 그대로라
+// 읽은 byte를 문자열로 바꾸지 않고 쓴다. 줄마다 할당하던 경로는 470MB 로그에 5초가 걸렸고 cat -n은 0.36초였다.
+func (output *catOutput) numbered(source io.Reader) bool {
+	reader := bufio.NewReaderSize(source, 64<<10)
+	prefix := make([]byte, 0, 32)
+	start := true
+	for number := 1; ; {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 && output.failed == nil {
+			if start {
+				prefix = strconv.AppendInt(prefix[:0], int64(number), 10)
+				if pad := 6 - len(prefix); pad > 0 {
+					prefix = append(prefix[:0], "      "[:pad]...)
+					prefix = strconv.AppendInt(prefix, int64(number), 10)
+				}
+				prefix = append(prefix, '\t')
+				_, output.failed = output.stdout.Write(prefix)
+			}
+			if output.failed == nil {
+				_, output.failed = output.stdout.Write(chunk)
+			}
+		}
+		// 버퍼보다 긴 줄은 나누어 읽는다. 이어지는 조각에는 번호를 붙이지 않는다.
+		if start = err != bufio.ErrBufferFull; start && len(chunk) > 0 {
+			number++
+		}
+		if err == io.EOF || output.failed != nil {
+			return true
+		}
+		if err != nil && err != bufio.ErrBufferFull {
 			output.problem(T("cat.failed", err))
 			return false
 		}
